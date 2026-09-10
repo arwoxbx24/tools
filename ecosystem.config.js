@@ -847,6 +847,63 @@ module.exports = {
       cron_restart: '*/30 * * * *',
       error_file: '/root/.pm2/logs/pm2-reconcile-guard-error.log',
       out_file: '/root/.pm2/logs/pm2-reconcile-guard-out.log'
+    },
+    {
+      name: 'hh-autoheal',
+      script: '/root/workspaces/projects/hh-scoring/.venv/bin/python',
+      args: ['scripts/autoheal.py'],
+      interpreter: 'none',
+      cwd: '/root/workspaces/projects/hh-scoring',
+      cron_restart: '*/30 * * * *',
+      autorestart: false,
+    },
+    {
+      // ID 71 — hh-scoring версия
+      name: 'hh-limit-watch',
+      script: '/root/workspaces/projects/hh-scoring/scripts/hh_limit_watch.py',
+      args: [],
+      interpreter: '.venv/bin/python',
+      cwd: '/root/workspaces/projects/hh-scoring',
+      max_restarts: 50,
+      restart_delay: 5000,
+      exp_backoff_restart_delay: 1000,
+      autorestart: false,
+    },
+    {
+      // ID 78 — старый бинарь litestream (замещён ID 79)
+      name: 'hh-litestream-legacy',
+      script: '/usr/local/bin/litestream',
+      args: ['replicate', '-config', '/etc/litestream.yml'],
+      interpreter: 'none',
+      cwd: '/root/workspaces/projects/hh-scoring',
+      max_restarts: 50,
+      restart_delay: 5000,
+      exp_backoff_restart_delay: 1000,
+      autorestart: false,
+    },
+    {
+      // ID 69 — arwox-biz версия (переименована во избежание конфликта с ID 80)
+      name: 'hh-screening-monitor-arwox',
+      script: '/root/workspaces/projects/arwox-biz/hr/hh-screening/scripts/monitor_daemon.py',
+      args: [],
+      interpreter: '../hh-import/venv/bin/python',
+      cwd: '/root/workspaces/projects/arwox-biz/hr/hh-screening',
+      max_restarts: 50,
+      min_uptime: 60000,
+      restart_delay: 5000,
+      exp_backoff_restart_delay: 1000,
+    },
+    {
+      // ID 70 — arwox-biz версия, stopped
+      name: 'hh-limit-watch-arwox',
+      script: '/root/workspaces/projects/arwox-biz/hr/hh-screening/scripts/hh_limit_watch.py',
+      args: [],
+      interpreter: '../hh-import/venv/bin/python',
+      cwd: '/root/workspaces/projects/arwox-biz/hr/hh-screening',
+      max_restarts: 50,
+      restart_delay: 5000,
+      exp_backoff_restart_delay: 1000,
+      autorestart: false,
     }
   ]
 };
