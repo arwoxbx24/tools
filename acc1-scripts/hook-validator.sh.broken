@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+# Hook Validator — detects broken hooks that don't read stdin correctly
+# Claude Code hooks receive JSON via stdin. Correct: INPUT="$(cat)" or direct jq
+# Broken: $TOOL_INPUT, $CLAUDE_TOOL_INPUT, "$1" for tool data
+set +e
+
+HOOKS_DIR="/root/workspaces/tools/acc1-scripts/hooks"
+OK=0; BROKEN=0; EXEMPT=0
+
+# Event hooks that don't need stdin tool data
+EXEMPT_HOOKS="auto-context-restore.sh auto-context-save-stop.sh auto-reload-service.sh block-unverified-ports.sh commit-blocker.sh count-code-lines.sh post-recovery-check.sh rules-reload-reminder.sh skill-activator-plan.sh skill-deactivator-stop.sh track-task-usage.sh ultrathink-detector.sh plan-audit.sh"
+
+echo "=== HOOK INPUT VALIDATOR ==="
+echo ""
+
+BROKEN_LIST=""
+
+for f in "$HOOKS_DIR"/*.sh; do
+  [ -f "$f" ] || continue
+  name=$(basename "$f")
+
+  # Skip exempt hooks
+  if echo " $EXEMPT_HOOKS " | grep -q " $name "; then
+    EXEMPT=$((EXEMPT + 1))
+    continue
+  fi
+
+  # Check: does it read stdin?
+  reads_stdin=0
+  grep -q '$(cat)' "$f" 2>/dev/null && reads_stdin=1
+  grep -q '$(jq ' "$f" 2>/dev/null && reads_stdin=1
+
+  # Check: does it use broken patterns?
+  uses_broken=0
+  broken_detail=""
+
+  # Pattern 1: $TOOL_INPUT used as variable (not assignment like TOOL_INPUT="...")
+  if grep -Pn '\$TOOL_INPUT(?!=)|\$\{TOOL_INPUT\}' "$f" 2>/dev/null | grep -v '^\s*#' | head -1 | read -r line; then
+    uses_broken=1
+    broken_detail="uses \$TOOL_INPUT (undefined env var): $line"
+  fi
+
+  # Pattern 2: $CLAUDE_TOOL_INPUT
+  if grep -Pn '\$CLAUDE_TOOL_INPUT|\$\{CLAUDE_TOOL_INPUT\}' "$f" 2>/dev/null | grep -v '^\s*#' | head -1 | read -r line; then
+    uses_broken=1
+    broken_detail="uses \$CLAUDE_TOOL_INPUT (undefined env var): $line"
+  fi
+
+  # Pattern 3: Using $1 for tool data (file_path="$1", command="$1")
+  # But NOT for UserPromptSubmit hooks where $1 might be valid
+  if grep -Pn '(file_path|command|tool_name)="\$1"' "$f" 2>/dev/null | grep -v '^\s*#' | head -1 | read -r line; then
+    uses_broken=1
+    broken_detail="uses \$1 for tool data (not passed by Claude Code): $line"
+  fi
+
+  # Classify
+  if [ "$uses_broken" -eq 1 ]; then
+    BROKEN=$((BROKEN + 1))
+    BROKEN_LIST="${BROKEN_LIST}  BROKEN: $name — $broken_detail\n"
+    [ -z "$QUIET" ] && echo "  BROKEN: $name — $broken_detail"
+  elif [ "$reads_stdin" -eq 1 ]; then
+    OK=$((OK + 1))
+    [ -z "$QUIET" ] && echo "  OK: $name"
+  else
+    # No stdin reading detected — might be OK if hook only checks tool_name from event
+    CHECK=$((CHECK + 1))
+    [ -z "$QUIET" ] && echo "  CHECK: $name (no stdin reading detected)"
+  fi
+done
+
+test_hook_runtime() {
+    local hook_path="$1"
+    local filename="$(basename "$hook_path")"
+
+    # Skip exempt hooks
+    if is_exempt_hook "$filename" "$hook_path"; then
+        return 0
+    fi
+
+    # Create mock payload
+    local payload='{"tool_name":"Bash","tool_input":{"command":"echo test","description":"Test"}}'
+
+    # Test hook - capture both stdout and stderr
+    local output
+    output=$(echo "$payload" | bash "$hook_path" 2>&1) || true
+
+    # Check for errors
+    if echo "$output" | grep -qE "jq: error|unbound variable|command not found|bad substitution"; then
+        return 1
+    fi
+
+    return 0
+}
+
+main() {
+    echo -e "${BLUE}=== Hook Validator ===${NC}"
+    echo -e "${BLUE}Checking hooks in: $HOOKS_DIR${NC}\n"
+
+    # Process each hook
+    for hook_path in "$HOOKS_DIR"/*.sh; do
+        [[ -f "$hook_path" ]] || continue
+        filename="$(basename "$hook_path")"
+
+        # Check stdin pattern
+        result=$(check_stdin_pattern "$hook_path")
+        status="${result%%|*}"
+        detail="${result#*|}"
+
+        case "$status" in
+            OK)
+                ((OK_COUNT++))
+                echo -e "${GREEN}✓${NC} $filename"
+                ;;
+            EXEMPT)
+                ((EXEMPT_COUNT++))
+                echo -e "${BLUE}○${NC} $filename (exempt)"
+                ;;
+            BROKEN)
+                ((BROKEN_COUNT++))
+                BROKEN_HOOKS+=("$filename: $detail")
+                echo -e "${RED}✗${NC} $filename - BROKEN"
+                echo -e "  ${RED}$detail${NC}"
+                ;;
+            SUSPECT)
+                # Test with payload to confirm
+                if ! test_hook_runtime "$hook_path"; then
+                    ((SUSPECT_COUNT++))
+                    SUSPECT_HOOKS+=("$filename: No stdin reading, runtime test failed")
+                    echo -e "${YELLOW}?${NC} $filename - SUSPECT"
+                else
+                    ((OK_COUNT++))
+                    echo -e "${GREEN}✓${NC} $filename (works without stdin)"
+                fi
+                ;;
+        esac
+    done
+
+    # Summary
+    echo -e "\n${BLUE}=== Summary ===${NC}"
+    echo -e "Total: $((OK_COUNT + BROKEN_COUNT + EXEMPT_COUNT + SUSPECT_COUNT))"
+    echo -e "${GREEN}OK:${NC} $OK_COUNT"
+    echo -e "${BLUE}Exempt:${NC} $EXEMPT_COUNT"
+    echo -e "${RED}Broken:${NC} $BROKEN_COUNT"
+    echo -e "${YELLOW}Suspect:${NC} $SUSPECT_COUNT"
+
+    # Report broken hooks
+    if [[ $BROKEN_COUNT -gt 0 ]]; then
+        echo -e "\n${RED}=== Broken Hooks ===${NC}"
+        for hook in "${BROKEN_HOOKS[@]}"; do
+            echo -e "${RED}✗${NC} $hook"
+        done
+    fi
+
+    # Report suspect hooks
+    if [[ $SUSPECT_COUNT -gt 0 ]]; then
+        echo -e "\n${YELLOW}=== Suspect Hooks ===${NC}"
+        for hook in "${SUSPECT_HOOKS[@]}"; do
+            echo -e "${YELLOW}?${NC} $hook"
+        done
+    fi
+
+    # Exit code
+    if [[ $BROKEN_COUNT -gt 0 ]] || [[ $SUSPECT_COUNT -gt 0 ]]; then
+        echo -e "\n${RED}VALIDATION FAILED${NC}"
+        exit 1
+    else
+        echo -e "\n${GREEN}ALL HOOKS VALID${NC}"
+        exit 0
+    fi
+}
+
+# Run main
+main

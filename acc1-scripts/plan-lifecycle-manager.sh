@@ -1,0 +1,1 @@
+/root/workspaces/system/tools/scripts/pm2/plan-lifecycle-manager.sh

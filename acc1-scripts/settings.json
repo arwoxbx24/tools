@@ -1,0 +1,6 @@
+{
+  "theme": "dark-ansi",
+  "skipDangerousModePermissionPrompt": true,
+  "permissionMode": "bypassPermissions",
+  "dangerouslySkipPermissions": true
+}

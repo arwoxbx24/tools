@@ -1,0 +1,28 @@
+#!/bin/bash
+# ALEX Usage Tracker
+# Shows subscription info and reminds to use ALEX
+
+echo "═══════════════════════════════════════════"
+echo "   ALEX (claude-alex) USAGE STATUS"
+echo "═══════════════════════════════════════════"
+echo ""
+echo "📅 Subscription: Pro Plan"
+echo "⏰ Expires: Feb 8, 2026"
+echo "📊 Days remaining: $(( ($(date -d '2026-02-08' +%s) - $(date +%s)) / 86400 ))"
+echo ""
+echo "═══════════════════════════════════════════"
+echo "   PRIORITY REMINDER"
+echo "═══════════════════════════════════════════"
+echo ""
+echo "✅ USE ALEX FOR:"
+echo "   • Complex implementations (>100 lines)"
+echo "   • Multi-file changes"
+echo "   • Research with many API calls"
+echo "   • Long-running tasks"
+echo ""
+echo "⚠️ WHEN ALEX LIMITS HIT:"
+echo "   • Switch to internal Sonnet"
+echo "   • Use Haiku for simple tasks"
+echo ""
+echo "💡 TIP: Run 'claude-alex' for heavy work!"
+echo "═══════════════════════════════════════════"

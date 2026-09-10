@@ -1,0 +1,13 @@
+{
+  "timestamp": "2026-09-10T11:49:22+03:00",
+  "status": "PASS",
+  "checks": {
+    "hooks_syntax": {"status":"PASS","errors":[],"output":"All hooks syntax OK "},
+    "settings_json": {"status":"PASS","errors":[],"output":"All settings.json files valid "},
+    "pm2_services": {"status":"PASS","errors":[],"output":"PM2 issues: sched-clean-disk:missing sched-clear-ram:missing context-gc:stopped context-heartbeat:st"},
+    "redis": {"status":"PASS","errors":[],"output":"Redis OK: used_memory_human:1.95M, Keys: DB0= DB1= DB2= "},
+    "scripts_syntax": {"status":"PASS","errors":[],"output":"All scripts syntax OK "}
+  },
+  "uptime_hours": 500.70,
+  "validator_pid": 3555056
+}

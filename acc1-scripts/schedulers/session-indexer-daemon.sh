@@ -1,0 +1,1 @@
+/root/workspaces/system/tools/scripts/schedulers/session-indexer-daemon.sh

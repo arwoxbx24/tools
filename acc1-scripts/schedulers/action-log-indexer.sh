@@ -1,0 +1,1 @@
+/root/workspaces/system/tools/scripts/schedulers/action-log-indexer.sh
