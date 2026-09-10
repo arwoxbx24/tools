@@ -835,6 +835,18 @@ module.exports = {
       autorestart: false,
       error_file: '/root/.pm2/logs/yubikey-v2-error.log',
       out_file: '/root/.pm2/logs/yubikey-v2-out.log'
+    },
+    {
+      name: 'pm2-reconcile-guard',
+      script: '/root/workspaces/tools/scripts/pm2/pm2-reconcile-guard.sh',
+      cwd: '/root/workspaces/tools',
+      interpreter: 'bash',
+      exec_mode: 'fork_mode',
+      instances: 1,
+      autorestart: false,
+      cron_restart: '*/30 * * * *',
+      error_file: '/root/.pm2/logs/pm2-reconcile-guard-error.log',
+      out_file: '/root/.pm2/logs/pm2-reconcile-guard-out.log'
     }
   ]
 };
