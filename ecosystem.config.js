@@ -833,7 +833,7 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: false,
-      error_file: '/root/workspaces/projects/yubikey-v2/CLAUDE_CODE_MAX_OUTPUT_TOKENS=16384',
+      error_file: '/root/.pm2/logs/yubikey-v2-error.log',
       out_file: '/root/.pm2/logs/yubikey-v2-out.log'
     }
   ]
