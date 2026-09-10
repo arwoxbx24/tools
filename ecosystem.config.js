@@ -121,7 +121,7 @@ module.exports = {
         'run',
         'api'
       ],
-      cwd: '/root/workspaces/projects/bitrix-margin-cockpit',
+      cwd: '/root/workspaces/projects/bitrix/bitrix-margin-cockpit',
       interpreter: '/root/.nvm/versions/node/v20.19.4/bin/node',
       exec_mode: 'fork_mode',
       instances: 1,
@@ -136,7 +136,7 @@ module.exports = {
         'run',
         'dev'
       ],
-      cwd: '/root/workspaces/projects/bitrix-margin-cockpit',
+      cwd: '/root/workspaces/projects/bitrix/bitrix-margin-cockpit',
       interpreter: '/root/.nvm/versions/node/v20.19.4/bin/node',
       exec_mode: 'fork_mode',
       instances: 1,
