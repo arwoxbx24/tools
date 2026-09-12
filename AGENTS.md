@@ -1,5 +1,11 @@
 # Agent Instructions
 
+## Secrets & Tools — one place (owner, 12.09.2026, all providers)
+
+- This directory is THE single home for reusable scripts, wrappers and utilities (`/root/workspaces/tools/`). Project-local wrappers stay in their project; temporary files go to the session scratchpad or `/tmp`, never here.
+- Secrets never live here. All passwords, keys, tokens, sessions and `.env` files live ONLY in `/root/workspaces/secrets/`; scripts reference them by path (`env_file`, `source /root/workspaces/secrets/<name>.env`). Agents write the variable NAME and PATH, never the value.
+- Ready-made service with its own `.env`: do not break it; move to `secrets/` if its docs allow an external path, otherwise register it in the «Секреты вне secrets/» table of `/root/workspaces/REGISTRY.md`.
+
 This project uses **bd** (beads) for issue tracking. Run `bd prime` for full workflow context.
 
 > **Architecture in one line:** Issues live in a local Dolt database
