@@ -1,0 +1,120 @@
+#!/usr/bin/env python3
+"""taskctl — stdlib-only task CLI for the dcfg pair ledger.
+
+Ledger: docs/config-contour-2708/cc-tasks.md (markdown table).
+Prefix rule: only ids matching ^(dcfg|cdc)- are managed here.
+Any other prefix -> exit 3 with FOREIGN-PREFIX.
+"""
+import fcntl
+import os
+import re
+import sys
+from datetime import date
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+TASKS = os.path.join(ROOT, "docs", "config-contour-2708", "cc-tasks.md")
+ALLOWED = re.compile(r"^(dcfg|cdc)-(\d+)$")
+ROW = re.compile(r"^\|\s*((?:dcfg|cdc)-\d+)\s*\|")
+
+
+def die(msg, code):
+    print(msg, file=sys.stderr)
+    sys.exit(code)
+
+
+def foreign(task_id):
+    die(f"FOREIGN-PREFIX: {task_id} is not managed by the dcfg pair registry", 3)
+
+
+def check_id(task_id):
+    if not ALLOWED.match(task_id):
+        foreign(task_id)
+
+
+def load():
+    with open(TASKS, encoding="utf-8") as f:
+        return f.read().splitlines()
+
+
+def rows(lines):
+    out = []
+    for i, ln in enumerate(lines):
+        m = ROW.match(ln)
+        if m:
+            cells = [c.strip() for c in ln.strip().strip("|").split("|")]
+            out.append((i, m.group(1), cells))
+    return out
+
+
+def next_id(lines):
+    n = 0
+    for _, tid, _ in rows(lines):
+        n = max(n, int(ALLOWED.match(tid).group(2)))
+    return f"dcfg-{n + 1:03d}"
+
+
+def find_row(lines, task_id):
+    for i, tid, cells in rows(lines):
+        if tid == task_id:
+            return i, cells
+    die(f"NOT-FOUND: {task_id}", 2)
+
+
+def fmt(cells):
+    return "| " + " | ".join(cells) + " |"
+
+
+def main():
+    argv = sys.argv[1:]
+    if not argv or argv[0] not in ("list", "create", "claim", "close"):
+        die("usage: taskctl {list|create <title>|claim <id> <actor>|close <id>}", 2)
+    cmd, args = argv[0], argv[1:]
+
+    if cmd == "list":
+        if args:
+            die("list takes no arguments", 2)
+        with open(TASKS, encoding="utf-8") as f:
+            sys.stdout.write(f.read())
+        return
+
+    lock_path = TASKS + ".lock"
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    try:
+        lines = load()
+        if cmd == "create":
+            if not args:
+                die("usage: taskctl create <title>", 2)
+            tid = next_id(lines)
+            cells = [tid, "open", " ".join(args), "-", date.today().isoformat()]
+            lines.append(fmt(cells))
+            print(tid)
+        elif cmd == "claim":
+            if len(args) != 2:
+                die("usage: taskctl claim <id> <actor>", 2)
+            tid, actor = args
+            check_id(tid)
+            i, cells = find_row(lines, tid)
+            if cells[1] != "open":
+                die(f"CONFLICT: {tid} is {cells[1]}", 4)
+            cells[1], cells[3] = "claimed", actor
+            lines[i] = fmt(cells)
+            print(f"claimed {tid} -> {actor}")
+        else:  # close
+            if len(args) != 1:
+                die("usage: taskctl close <id>", 2)
+            tid = args[0]
+            check_id(tid)
+            i, cells = find_row(lines, tid)
+            cells[1] = "closed"
+            lines[i] = fmt(cells)
+            print(f"closed {tid}")
+        with open(TASKS, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+if __name__ == "__main__":
+    main()

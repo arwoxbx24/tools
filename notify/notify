@@ -1,0 +1,99 @@
+#!/usr/bin/env python3
+"""Thin CLI over tools/notify_transport.py for sandboxed agent use.
+
+Usage:
+  tools/notify send --from claude-doctor --type log --data '{"message": "hi"}' [--to AGENT]
+  tools/notify read [--since-id N] [--from-agent NAME] [--as AGENT]
+  tools/notify ack <event_id>
+  tools/notify pending [--as AGENT]
+  tools/notify recover [--as AGENT]
+  tools/notify state
+  tools/notify cleanup [--max-age-hours N]
+  tools/notify reset
+
+All commands print JSON to stdout. Exit code 0 on success, 1 on error.
+"""
+
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from notify_transport import NotifyTransport
+
+
+def _parse_args(argv):
+    opts, pos = {}, []
+    it = iter(range(len(argv)))
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a.startswith("--"):
+            key = a[2:].replace("-", "_")
+            if i + 1 < len(argv) and not argv[i + 1].startswith("--"):
+                opts[key] = argv[i + 1]
+                i += 2
+            else:
+                opts[key] = True
+                i += 1
+        else:
+            pos.append(a)
+            i += 1
+    return pos, opts
+
+
+def main(argv=None):
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if not argv:
+        print(__doc__, file=sys.stderr)
+        return 1
+    cmd, rest = argv[0], argv[1:]
+    pos, opts = _parse_args(rest)
+    t = NotifyTransport(opts.get("state_file")) if "state_file" in opts else NotifyTransport()
+
+    try:
+        if cmd == "send":
+            if opts["from"] == opts.get("to"):
+                print("SELF-SEND", file=sys.stderr)
+                return 1
+            data = json.loads(opts.get("data", "{}"))
+            eid = t.write_event(
+                from_agent=opts["from"],
+                type=opts["type"],
+                data=data,
+                recipient=opts.get("to"),
+            )
+            out = {"event_id": eid}
+        elif cmd == "read":
+            out = t.read_events(
+                since_id=int(opts.get("since_id", 0)),
+                from_agent=opts.get("from_agent"),
+                recipient=opts.get("as"),
+            )
+        elif cmd == "ack":
+            out = {"acknowledged": t.ack(int(pos[0]))}
+        elif cmd == "pending":
+            out = t.get_pending(recipient=opts.get("as"))
+        elif cmd == "recover":
+            out = t.recover(recipient=opts.get("as"))
+        elif cmd == "state":
+            out = t.get_state()
+        elif cmd == "cleanup":
+            out = {"removed": t.cleanup(int(opts.get("max_age_hours", 24)))}
+        elif cmd == "reset":
+            t.reset()
+            out = {"reset": True}
+        else:
+            print(f"unknown subcommand: {cmd}", file=sys.stderr)
+            return 1
+    except (KeyError, ValueError, json.JSONDecodeError, IndexError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+
+    print(json.dumps(out, ensure_ascii=False, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

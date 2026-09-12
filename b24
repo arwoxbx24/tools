@@ -1,0 +1,289 @@
+#!/usr/bin/env python3
+"""b24 — Bitrix24 REST CLI (webhook). Любой метод API.
+
+Использование:
+  b24 <method> [key=value ...]          # параметры формой (массивы: повторяй key[]=v)
+  b24 <method> --json '{...}'           # тело JSON'ом (для вложенных структур)
+  b24 <method> --json-file PATH         # тело JSON из файла (большой payload)
+  b24 <method> ... --pick result.task   # вытащить путь из ответа (a.b.0.c)
+  b24 <method> ... --raw                # полный ответ (с time и т.п.)
+  b24 <method> ... --all                # СПИСОЧНЫЕ: авто-пагинация, собрать ВСЕ страницы в один массив
+  b24 <method> ... --count              # СПИСОЧНЫЕ: вернуть только total (число записей)
+  b24 --batch                           # до 50 вызовов ОДНИМ запросом, строки из stdin:
+                                        #   имя: метод key=value 'key2=значение с пробелом' key3[]=v
+                                        #   значения с пробелами — В КАВЫЧКАХ (shlex).
+                                        #   в значениях можно $result[имя][путь] из предыдущих строк
+
+Примеры:
+  b24 user.get ID=1
+  b24 crm.lead.list 'filter[SOURCE_ID]=WEB' --all --pick ''
+  b24 crm.deal.list --count
+  b24 im.dialog.messages.get DIALOG_ID=1 --paginate   # курсорная пагинация (FIRST_ID/LAST_ID, LIMIT<=50)
+  b24 tasks.task.update --json '{"taskId":3978,"fields":{"TITLE":"..."}}'
+  b24 disk.file.get ID=123 --download   # ссылка на скачивание (то же, что --pick result.DOWNLOAD_URL)
+  b24 --batch <<'EOF'
+  f1: crm.deal.userfield.add fields[USER_TYPE_ID]=string 'fields[EDIT_FORM_LABEL][ru]=Сфера деятельности'
+  EOF
+
+Webhook: env B24_WEBHOOK, иначе дефолт (arwox, user 1).
+Ошибка API -> stderr + exit 1. Успех -> pretty JSON result в stdout.
+"""
+import json
+import os
+import shlex
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+def _load_env(path):
+    """Load KEY=VALUE lines from a dotenv file (skip # comments/blank lines)."""
+    d = {}
+    try:
+        for line in open(path, encoding="utf-8"):
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                d[k.strip()] = v.strip()
+    except Exception:
+        pass
+    return d
+
+
+# WEBHOOK: env B24_WEBHOOK wins, else load from B24_ENV_PATH, else fail-closed
+WEBHOOK = os.environ.get("B24_WEBHOOK")
+if not WEBHOOK:
+    env_path = os.environ.get("B24_ENV_PATH", "/root/workspaces/projects/secrets/services/b24.env")
+    env = _load_env(env_path)
+    WEBHOOK = env.get("B24_WEBHOOK")
+
+if not WEBHOOK:
+    sys.exit("B24_WEBHOOK not set (env or B24_ENV_PATH .env file)")
+
+WEBHOOK = WEBHOOK.rstrip("/")
+TRANSIENT = ("QUERY_LIMIT_EXCEEDED", "OPERATION_TIME_LIMIT", "ERROR_CORE", "ACTION_FAILED")
+_MAX_PAGES = 400  # предохранитель авто-пагинации (400*50 = 20000 записей)
+
+
+def call(method, data, headers, retries=3):
+    url = f"{WEBHOOK}/{method}"
+    for attempt in range(retries):
+        try:
+            with urllib.request.urlopen(
+                    urllib.request.Request(url, data=data, headers=headers), timeout=30) as r:
+                parsed = json.loads(r.read())
+            if parsed.get("error") in TRANSIENT and attempt < retries - 1:
+                time.sleep(2 ** attempt)
+                continue
+            return parsed
+        except urllib.error.HTTPError as exc:
+            body = exc.read()
+            if (exc.code == 429 or exc.code >= 500) and attempt < retries - 1:
+                time.sleep(2 ** attempt)
+                continue
+            try:
+                return json.loads(body)  # Bitrix кладёт error в тело и на 4xx
+            except Exception:
+                sys.exit(f"HTTP {exc.code}: {body[:300]!r}")
+        except Exception as exc:
+            if attempt < retries - 1:
+                time.sleep(2 ** attempt)
+                continue
+            sys.exit(f"network error: {exc}")
+
+
+def _q(k, v):
+    return f"{urllib.parse.quote(k, safe='[]')}={urllib.parse.quote(v, safe='$[]')}"
+
+
+def parse_batch_line(line):
+    """'имя: метод key=value ...' -> ('имя', 'метод?url-encoded-query').
+    Токенизация через shlex: значения с пробелами берутся в кавычки. Массивы: key[]=v."""
+    if ":" not in line:
+        sys.exit(f"batch: строка без 'имя:': {line!r}")
+    name, call_s = line.split(":", 1)
+    toks = shlex.split(call_s.strip())
+    if not toks:
+        sys.exit(f"batch '{name.strip()}': пустой вызов")
+    method = toks[0]
+    bad = [t for t in toks[1:] if "=" not in t]
+    if bad:
+        sys.exit(f"batch '{name.strip()}': аргумент без '=': {bad[0]!r} "
+                 f"(значения с пробелами берите в кавычки)")
+    q = "&".join(_q(*t.split("=", 1)) for t in toks[1:])
+    return name.strip(), method + ("?" + q if q else "")
+
+
+def run_batch():
+    cmd = {}
+    for line in sys.stdin:
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        name, call_str = parse_batch_line(line)
+        cmd[name] = call_str
+    if not cmd:
+        sys.exit("batch: нет команд")
+    if len(cmd) > 50:
+        sys.exit("batch: максимум 50 команд")
+    body = json.dumps({"halt": 0, "cmd": cmd}).encode()
+    parsed = call("batch", body, {"Content-Type": "application/json"})
+    res = parsed.get("result", {})
+    errs = res.get("result_error") or {}
+    if errs:
+        print(json.dumps(errs, ensure_ascii=False, indent=1), file=sys.stderr)
+    print(json.dumps(res.get("result"), ensure_ascii=False, indent=1))
+    sys.exit(1 if errs else 0)
+
+
+def _result_items(result):
+    """Достать список-элементы из result списочного метода (list | {items:[]} | {tasks:[]})."""
+    if isinstance(result, list):
+        return result
+    if isinstance(result, dict):
+        for k in ("items", "tasks", "orders", "products"):
+            if isinstance(result.get(k), list):
+                return result[k]
+    return None
+
+
+def paginate_cursor(method, pairs):
+    """Курсорная пагинация (im.dialog.messages.get): FIRST_ID/LAST_ID, LIMIT<=50, пока страница не пуста."""
+    pairs = list(pairs)
+    if not any(k.upper() == "LIMIT" for k, _ in pairs):
+        pairs.append(("LIMIT", "50"))
+    backward = any(k.upper() == "LAST_ID" for k, _ in pairs) and \
+        not any(k.upper() == "FIRST_ID" for k, _ in pairs)
+    key = "LAST_ID" if backward else "FIRST_ID"
+    cursor = next((v for k, v in pairs if k.upper() == key), None)
+    pairs = [(k, v) for k, v in pairs if k.upper() != key]
+    acc = []
+    for _ in range(_MAX_PAGES):
+        cur = pairs + ([(key, str(cursor))] if cursor is not None else [])
+        data = urllib.parse.urlencode(cur).encode()
+        parsed = call(method, data, {})
+        if parsed.get("error"):
+            print(json.dumps(parsed, ensure_ascii=False, indent=1), file=sys.stderr)
+            sys.exit(1)
+        items = _result_items(parsed.get("result"))
+        if not items:
+            return acc
+        acc.extend(items)
+        edge = items[0] if backward else items[-1]
+        if not isinstance(edge, dict) or "ID" not in edge:
+            sys.exit("--paginate: нет ID в элементе страницы")
+        cursor = edge["ID"]
+    sys.exit(f"--paginate: превышен предел {_MAX_PAGES} страниц")
+
+
+def paginate(method, pairs):
+    """Авто-пагинация списочного метода: идём по 'next', собираем все страницы."""
+    acc, start = [], 0
+    for _ in range(_MAX_PAGES):
+        data = urllib.parse.urlencode(pairs + [("start", str(start))]).encode()
+        parsed = call(method, data, {})
+        if parsed.get("error"):
+            print(json.dumps(parsed, ensure_ascii=False, indent=1), file=sys.stderr)
+            sys.exit(1)
+        items = _result_items(parsed.get("result"))
+        if items is None:
+            sys.exit("--all: метод не списочный (result не массив)")
+        acc.extend(items)
+        nxt = parsed.get("next")
+        if nxt is None:
+            return acc
+        start = nxt
+    sys.exit(f"--all: превышен предел {_MAX_PAGES} страниц")
+
+
+def main():
+    args = sys.argv[1:]
+    if not args or args[0] in ("-h", "--help"):
+        sys.exit(__doc__)
+    if args[0] == "--batch":
+        return run_batch()
+
+    method, rest = args[0], args[1:]
+    raw = pick = None
+    download = False
+    all_pages = count_only = False
+    pairs, body_json = [], None
+    it = iter(rest)
+    for a in it:
+        if a == "--raw":
+            raw = True
+        elif a == "--all":
+            all_pages = True
+        elif a == "--paginate":
+            all_pages = "cursor"
+        elif a == "--count":
+            count_only = True
+        elif a == "--pick":
+            pick = next(it, None)
+            if pick is None:
+                sys.exit("--pick требует путь")
+        elif a == "--download":
+            download = True
+        elif a == "--json":
+            body_json = next(it, None) or sys.exit("--json требует тело")
+        elif a == "--json-file":
+            path = next(it, None) or sys.exit("--json-file требует путь к файлу")
+            with open(path) as _f:
+                body_json = _f.read()
+        elif "=" in a:
+            pairs.append(tuple(a.split("=", 1)))
+        else:
+            sys.exit(f"не понял аргумент: {a!r} (нужно key=value)")
+
+    if download:
+        if method != "disk.file.get":
+            sys.exit("--download поддерживается только для disk.file.get")
+        if pick is not None:
+            sys.exit("--download нельзя сочетать с --pick")
+        pick = "result.DOWNLOAD_URL"
+
+    if (all_pages or count_only) and body_json:
+        sys.exit("--all/--count работают с key=value параметрами, не с --json")
+
+    if count_only:
+        data = urllib.parse.urlencode(pairs + [("start", "-1")]).encode()
+        parsed = call(method, data, {})
+        if parsed.get("error"):
+            print(json.dumps(parsed, ensure_ascii=False, indent=1), file=sys.stderr)
+            sys.exit(1)
+        print(parsed.get("total", 0))
+        return
+
+    if all_pages == "cursor":
+        print(json.dumps(paginate_cursor(method, pairs), ensure_ascii=False, indent=1))
+        return
+
+    if all_pages:
+        print(json.dumps(paginate(method, pairs), ensure_ascii=False, indent=1))
+        return
+
+    if body_json:
+        data, headers = body_json.encode(), {"Content-Type": "application/json"}
+    else:
+        data, headers = urllib.parse.urlencode(pairs).encode(), {}
+
+    parsed = call(method, data, headers)
+    if parsed.get("error"):
+        print(json.dumps(parsed, ensure_ascii=False, indent=1), file=sys.stderr)
+        sys.exit(1)
+    out = parsed if raw else parsed.get("result")
+    if pick:
+        for key in pick.split("."):
+            if isinstance(out, dict):
+                out = out.get(key)
+            elif isinstance(out, list) and key.isdigit():
+                out = out[int(key)]
+            else:
+                out = None
+                break
+    print(json.dumps(out, ensure_ascii=False, indent=1))
+
+
+if __name__ == "__main__":
+    main()
