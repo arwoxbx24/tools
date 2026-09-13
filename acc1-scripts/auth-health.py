@@ -2,8 +2,8 @@
 """Validate Google and AssemblyAI credentials without exposing their values."""
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import json
-import os
 import time
 import urllib.error
 import urllib.parse
@@ -120,10 +120,13 @@ def main():
     parser.add_argument("--secrets-root", type=Path, default=Path("/root/workspaces/secrets"))
     args = parser.parse_args()
     assembly, oauth, service_accounts = candidates(args.secrets_root)
-    payload = {
-        "google_credentials": check_google(oauth, service_accounts),
-        "assemblyai_credentials": check_assembly(assembly),
-    }
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        google = pool.submit(check_google, oauth, service_accounts)
+        assemblyai = pool.submit(check_assembly, assembly)
+        payload = {
+            "google_credentials": google.result(),
+            "assemblyai_credentials": assemblyai.result(),
+        }
     print(json.dumps(payload, sort_keys=True))
     return 0 if all(item["status"] == "PASS" for item in payload.values()) else 1
 

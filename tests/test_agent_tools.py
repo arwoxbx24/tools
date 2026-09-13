@@ -74,6 +74,25 @@ class AgentToolsTest(unittest.TestCase):
         finally:
             os.unlink(check.name)
 
+    def test_validator_never_publishes_check_output(self):
+        with tempfile.NamedTemporaryFile("w", delete=False) as check:
+            check.write("#!/bin/bash\necho SECRET_TOKEN=must-not-leak\n")
+        try:
+            result = subprocess.run(
+                [
+                    "bash", "-c",
+                    'SCHED_VALIDATOR_SOURCE_ONLY=1 source "$1"; run_check probe "$2"',
+                    "bash", SCRIPTS / "sched-validator.sh", check.name,
+                ],
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout), {"status": "PASS", "reason": "ok"})
+            self.assertNotIn("must-not-leak", result.stdout)
+        finally:
+            os.unlink(check.name)
+
     def test_credential_probe_reports_only_safe_status(self):
         with tempfile.TemporaryDirectory() as secrets_root:
             result = subprocess.run(

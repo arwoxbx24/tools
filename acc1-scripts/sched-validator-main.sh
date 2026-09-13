@@ -41,29 +41,26 @@ log_error() {
 run_check() {
     local name="$1"
     local script="$2"
-    local result
     local exit_code
 
     # Check if script exists
     if [ ! -f "$script" ]; then
-        echo '{"status":"SKIP","errors":["script not found"]}'
+        echo '{"status":"FAIL","reason":"script_not_found"}'
         return
     fi
 
     # Run with timeout and capture ALL output
-    if result=$(timeout 30 bash "$script" 2>&1); then
+    if timeout 30 bash "$script" >/dev/null 2>&1; then
         exit_code=0
     else
         exit_code=$?
     fi
 
     if [ $exit_code -eq 0 ]; then
-        echo '{"status":"PASS","errors":[],"output":"'"$(echo "$result" | head -c 100 | tr '\n' ' ')"'"}'
+        echo '{"status":"PASS","reason":"ok"}'
     else
-        log_error "$name failed (exit $exit_code): $result"
-        # Escape result for JSON
-        local escaped_result=$(echo "$result" | tr '\n' ' ' | sed 's/"/\\"/g' | head -c 150)
-        echo '{"status":"FAIL","errors":["'"$escaped_result"'"]}'
+        log_error "$name failed (exit $exit_code)"
+        echo '{"status":"FAIL","reason":"exit_nonzero","exit_code":'"$exit_code"'}'
     fi
 }
 
