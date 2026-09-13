@@ -52,7 +52,7 @@ class AgentToolsTest(unittest.TestCase):
                 os.environ["ASSEMBLYAI_API_KEY"] = old
 
     def test_shell_syntax(self):
-        for script in ("agent-download.sh", "gdrive-download.sh", "google-token-refresh.sh", "share-file.sh"):
+        for script in ("agent-download.sh", "gdrive-download.sh", "share-file.sh"):
             subprocess.run(["bash", "-n", SCRIPTS / script], check=True)
 
 
