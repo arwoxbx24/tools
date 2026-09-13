@@ -6,6 +6,7 @@ import io
 import json
 import os
 import re
+import stat
 import sys
 import tempfile
 import time
@@ -17,10 +18,11 @@ TOKEN = re.compile(r"\b[A-Z][A-Z0-9_]*\b")
 MISSING_SUFFIXES = (
     "_API_KEY", "_TOKEN", "_REFRESH_TOKEN", "_LOGIN", "_PASSWORD",
     "_SESSION", "_COOKIE", "_OTP_SEED", "_WEBHOOK",
-    "_CLIENT_SECRET", "_CLIENT_ID", "_URL", "_ID", "_VALUE",
+    "_CLIENT_SECRET", "_CLIENT_ID", "_VALUE",
 )
-SKIP_DIRS = {".git", "node_modules", ".venv", ".agent-work", "__pycache__", "specs", ".beads", ".dolt", ".repowise-workspace", ".repowise"}
+SKIP_DIRS = {".git", "node_modules", ".venv", ".agent-work", "__pycache__", "specs", ".beads", ".dolt", ".repowise-workspace", ".repowise", ".worktrees"}
 ZONES = ("services", "projects", "system/services", "acc1-legacy/services")
+KNOWN_CONFLICTS = frozenset({"B24_WEBHOOK", "NPM_EMAIL", "OPENAI_API_KEY", "OPENROUTER_API_KEY"})
 
 def parse_env_names(path):
     names = []
@@ -80,7 +82,7 @@ def find_consumers(entries, scan_dirs, out):
             dirs[:] = [name for name in dirs if name not in SKIP_DIRS and not os.path.islink(os.path.join(root, name))]
             for filename in files:
                 path = os.path.join(root, filename)
-                if (filename.endswith(".md") or os.path.islink(path) or
+                if (filename == "ENV-REGISTRY.yaml" or filename.endswith(".md") or os.path.islink(path) or
                         os.path.realpath(path) == out_real):
                     continue
                 try:
@@ -99,7 +101,9 @@ def find_consumers(entries, scan_dirs, out):
                 for entry in {id(item): item for item in by_path + by_name}.values():
                     entry["consumers"].add(path)
                     found.add((entry["service"], path))
-                candidates = {name for name in TOKEN.findall(text)
+                candidates = {name for line in text.splitlines()
+                              if not line.lstrip().startswith(("#", "//"))
+                              for name in TOKEN.findall(line)
                               if name.endswith(MISSING_SUFFIXES) and name not in all_names}
                 for entry in by_path:
                     entry["missing"].update(candidates)
@@ -185,12 +189,15 @@ def parse_raw(text, service):
         decoded = None
     if isinstance(decoded, dict):
         def flatten(value, label=""):
+            nonlocal unparsed
             if isinstance(value, dict):
                 for key, child in value.items():
                     flatten(child, (label + "_" if label else "") + str(key))
             elif isinstance(value, (str, int, float)) and not isinstance(value, bool):
                 value = str(value).strip()
-                if value:
+                if "\n" in value or "\r" in value:
+                    unparsed += 1
+                elif value:
                     values[env_name(label, service, used)] = value
         flatten(decoded)
         return values, unparsed
@@ -228,7 +235,9 @@ def parse_raw(text, service):
     return values, unparsed
 
 def merge_env(path, values):
-    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    parent = os.path.dirname(path)
+    os.makedirs(parent, mode=0o700, exist_ok=True)
+    os.chmod(parent, 0o700)
     lines = []
     if os.path.exists(path):
         with open(path, encoding="utf-8", errors="replace") as handle:
@@ -258,7 +267,7 @@ def merge_env(path, values):
         raise
 
 def shell_quote(value):
-    return "'" + value.replace("\\", "\\\\").replace("\r", "\\r").replace("\n", "\\n").replace("'", "'\\''") + "'"
+    return "'" + value.replace("'", "'\"'\"'") + "'"
 
 def intake(secrets):
     inbox = os.path.join(secrets, "inbox")
@@ -278,7 +287,16 @@ def intake(secrets):
             return counters
         for filename in sorted(os.listdir(inbox)):
             path = os.path.join(inbox, filename)
-            if filename.startswith(".") or filename == "done" or not os.path.isfile(path) or os.path.islink(path):
+            if filename.startswith(".") or filename == "done":
+                continue
+            try:
+                metadata = os.lstat(path)
+            except OSError:
+                counters["intake_skipped"] += 1
+                continue
+            if (not stat.S_ISREG(metadata.st_mode) or
+                    metadata.st_uid != os.getuid() or metadata.st_mode & 0o077):
+                counters["intake_skipped"] += 1
                 continue
             stem, extension = os.path.splitext(filename)
             service = stem.lower().replace(" ", "-").replace("_", "-")
@@ -341,6 +359,11 @@ def build(secrets, out, scan_dirs):
     for entry in entries:
         for name in entry["variables"]:
             name_counts[name] = name_counts.get(name, 0) + 1
+    unknown_conflicts = sorted(name for name, count in name_counts.items()
+                               if count > 1 and name not in KNOWN_CONFLICTS)
+    if unknown_conflicts:
+        print("unknown name conflict: " + unknown_conflicts[0], file=sys.stderr)
+        sys.exit(2)
     counters = {"files_scanned": files_scanned, "entries_written": len(entries),
                 "symlinks_skipped": symlinks_skipped, "schema_violation_files": schema_violation_files,
                 "schema_violation_lines": schema_violation_lines, "consumers_found": consumers_found,
@@ -352,7 +375,7 @@ def build(secrets, out, scan_dirs):
     return counters
 
 def selftest():
-    assert shell_quote("EXAMPLE-ONE'S") == "'EXAMPLE-ONE'\\''S'"
+    assert shell_quote("back\\slash and ' quote") == "'back\\slash and '\"'\"' quote'"
     with tempfile.TemporaryDirectory() as base:
         secrets = os.path.join(base, "secrets")
         services = os.path.join(secrets, "services")
@@ -362,6 +385,7 @@ def selftest():
         os.makedirs(services)
         os.makedirs(projects)
         os.makedirs(scan)
+        os.makedirs(os.path.join(scan, ".worktrees", "copy"))
         inbox = os.path.join(secrets, "inbox")
         os.makedirs(inbox)
         figma_token = "EXAMPLE-FIGMA-ACCESS-VALUE"
@@ -369,22 +393,26 @@ def selftest():
         with open(os.path.join(inbox, "figma.txt"), "w", encoding="utf-8") as handle:
             handle.write("Personal access token\n" + figma_token + "\nEmail: user@example.com\nПароль: " + figma_password + "\nwebhook = https://hooks.example.com/x\n# comment\n")
         with open(os.path.join(inbox, "slack.json"), "w", encoding="utf-8") as handle:
-            handle.write('{"bot_token":"EXAMPLE-NOT-A-REAL-TOKEN","app":{"client_secret":"EXAMPLE-NOT-A-REAL-SECRET","password":"pa$$word\\nsecond"}}')
+            handle.write('{"bot_token":"EXAMPLE-NOT-A-REAL-TOKEN","app":{"client_secret":"EXAMPLE-NOT-A-REAL-SECRET","password":"pa$$word"}}')
         with open(os.path.join(inbox, "Bad Name!.txt"), "w", encoding="utf-8") as handle:
             handle.write("ignored")
         with open(os.path.join(inbox, "unparsed.txt"), "w", encoding="utf-8") as handle:
             handle.write("какая-то фраза без метки")
+        for filename in ("figma.txt", "slack.json", "Bad Name!.txt", "unparsed.txt"):
+            os.chmod(os.path.join(inbox, filename), 0o600)
         with open(os.path.join(services, "alpha.env"), "w", encoding="utf-8") as handle:
-            handle.write("ALPHA_API_KEY=x1\nexport ALPHA_TOKEN=x2\n# comment\nbad line\nlower=1\n")
+            handle.write("ALPHA_API_KEY=secretval1\nexport ALPHA_TOKEN=secretval2\n# comment\nbad line\nlower=1\n")
+        with open(os.path.join(scan, ".worktrees", "copy", "ENV-REGISTRY.yaml"), "w", encoding="utf-8") as handle:
+            handle.write(os.path.join(services, "alpha.env") + "\nMODEL_ID\nAWS_ACCESS_KEY_ID\n")
         with open(os.path.join(secrets, "beta.env"), "w", encoding="utf-8") as handle:
-            handle.write("BETA_TOKEN=x3\n")
+            handle.write("BETA_TOKEN=secretval3\n")
         with open(os.path.join(projects, "gamma.env"), "w", encoding="utf-8") as handle:
-            handle.write("GAMMA_TOKEN=x4\n")
+            handle.write("GAMMA_TOKEN=secretval4\n")
         os.symlink(os.path.join(services, "alpha.env"), os.path.join(services, "link.env"))
         consumer = os.path.join(scan, "consumer.sh")
         other = os.path.join(scan, "other.py")
         with open(consumer, "w", encoding="utf-8") as handle:
-            handle.write(os.path.join(services, "alpha.env") + " ALPHA_API_KEY X_MISSING_TOKEN X_CLIENT_ID BETA_TOKEN HOME")
+            handle.write(os.path.join(services, "alpha.env") + " ALPHA_API_KEY X_MISSING_TOKEN X_CLIENT_ID BETA_TOKEN BASE_URL GORSE_URL LLM_REQUEST_ID OPENROUTER_BASE_URL HOME\n# MODEL_ID AWS_ACCESS_KEY_ID\n// COMMENT_TOKEN")
         with open(other, "w", encoding="utf-8") as handle:
             handle.write("BETA_TOKEN")
         with open(os.path.join(scan, "note.md"), "w", encoding="utf-8") as handle:
@@ -402,6 +430,7 @@ def selftest():
         figma_env = os.path.join(services, "figma.env")
         slack_env = os.path.join(services, "slack.env")
         assert os.stat(figma_env).st_mode & 0o777 == 0o600
+        assert os.stat(services).st_mode & 0o777 == 0o700
         assert os.listdir(os.path.join(inbox, "done")) and not os.path.exists(os.path.join(inbox, "figma.txt"))
         assert os.path.exists(os.path.join(inbox, "unparsed.txt")) and not os.path.exists(os.path.join(services, "unparsed.env"))
         with open(figma_env, encoding="utf-8") as handle:
@@ -409,7 +438,7 @@ def selftest():
         with open(slack_env, encoding="utf-8") as handle:
             slack_text = handle.read()
         assert "FIGMA_TOKEN='" + figma_token + "'" in figma_text and "FIGMA_PASSWORD='" + figma_password + "'" in figma_text
-        assert "SLACK_APP_PASSWORD='pa$$word\\nsecond'" in slack_text
+        assert "SLACK_APP_PASSWORD='pa$$word'" in slack_text
         assert entries["alpha"]["variables"] == ["ALPHA_API_KEY", "ALPHA_TOKEN"]
         assert sorted(entries["alpha"]["consumers"]) == [consumer]
         assert sorted(entries["alpha"]["missing"]) == ["X_CLIENT_ID", "X_MISSING_TOKEN"]
@@ -418,23 +447,54 @@ def selftest():
         assert first["name_conflicts"] == 0 and entries["alpha"]["auth"] == entries["alpha"]["refresh"] == "unknown"
         with open(out, encoding="utf-8") as handle:
             text = handle.read()
-        assert not any(value in text or value in output.getvalue() for value in ("x1", "x2", "x3", "x4", figma_token, figma_password))
+        assert not any(value in text or value in output.getvalue() for value in ("secretval1", "secretval2", "secretval3", "secretval4", figma_token, figma_password))
         assert re.search(r"^\s*[A-Z][A-Z0-9_]*=", text, re.M) is None
         text = text.replace("- service: alpha\n", "- service: alpha\n", 1).replace("  auth: unknown\n  refresh: unknown\n", "  auth: api_key\n  refresh: static\n", 1)
         with open(out, "w", encoding="utf-8") as handle:
             handle.write(text)
         os.unlink(os.path.join(secrets, "beta.env"))
-        second = build(secrets, out, [scan])
+        with contextlib.redirect_stdout(io.StringIO()):
+            second = build(secrets, out, [scan])
         entries = {entry["service"]: entry for entry in second["_entries"]}
         assert second["entries_written"] == 4 and "beta" not in entries
         assert entries["alpha"]["auth"] == "api_key" and entries["alpha"]["refresh"] == "static"
         with open(os.path.join(inbox, "figma.txt"), "w", encoding="utf-8") as handle:
             handle.write("Personal access token\nEXAMPLE-NEW-FIGMA-VALUE\n")
-        third = build(secrets, out, [scan])
+        os.chmod(os.path.join(inbox, "figma.txt"), 0o600)
+        with contextlib.redirect_stdout(io.StringIO()):
+            third = build(secrets, out, [scan])
         with open(figma_env, encoding="utf-8") as handle:
             figma_text = handle.read()
         assert "EXAMPLE-NEW-FIGMA-VALUE" in figma_text and "FIGMA_LOGIN='user@example.com'" in figma_text
         assert {entry["service"] for entry in third["_entries"]} >= {"figma", "slack"}
+        with open(os.path.join(inbox, "newline.json"), "w", encoding="utf-8") as handle:
+            handle.write('{"token":"one\\ntwo"}')
+        os.chmod(os.path.join(inbox, "newline.json"), 0o600)
+        insecure = os.path.join(inbox, "insecure.txt")
+        with open(insecure, "w", encoding="utf-8") as handle:
+            handle.write("token=ignored")
+        os.chmod(insecure, 0o644)
+        symlink = os.path.join(inbox, "symlink.txt")
+        os.symlink(insecure, symlink)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            secured = build(secrets, out, [scan])
+        assert secured["intake_skipped"] == 3 and secured["intake_unparsed"] == 2
+        assert os.path.exists(insecure) and os.path.islink(symlink)
+        assert os.path.exists(os.path.join(inbox, "newline.json"))
+        assert "intake service=newline unparsed=1 skipped" in output.getvalue()
+        with open(os.path.join(services, "duplicate.env"), "w", encoding="utf-8") as handle:
+            handle.write("ALPHA_TOKEN=x\n")
+        before_conflict = open(out, "rb").read()
+        error_output = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(error_output):
+                build(secrets, out, [scan])
+            assert False
+        except SystemExit as error:
+            assert error.code == 2
+        assert "unknown name conflict: ALPHA_TOKEN" in error_output.getvalue()
+        assert open(out, "rb").read() == before_conflict
         before = open(out, "rb").read()
         mtime = os.stat(out).st_mtime_ns
         try:
