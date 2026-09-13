@@ -13,4 +13,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python3 tests/test_agent_tools.py
+      - name: Run tests
+        shell: bash
+        run: |
+          set +e
+          output=$(python3 tests/test_agent_tools.py 2>&1)
+          status=$?
+          printf '%s\n' "$output"
+          if [ "$status" -ne 0 ]; then
+            message=${output//$'\n'/%0A}
+            printf '::error title=Unit tests failed::%s\n' "$message"
+            exit "$status"
+          fi
