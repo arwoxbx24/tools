@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import contextlib
+import fcntl
 import io
 import json
 import os
@@ -16,6 +17,7 @@ TOKEN = re.compile(r"\b[A-Z][A-Z0-9_]*\b")
 MISSING_SUFFIXES = (
     "_API_KEY", "_TOKEN", "_REFRESH_TOKEN", "_LOGIN", "_PASSWORD",
     "_SESSION", "_COOKIE", "_OTP_SEED", "_WEBHOOK",
+    "_CLIENT_SECRET", "_CLIENT_ID", "_URL", "_ID", "_VALUE",
 )
 SKIP_DIRS = {".git", "node_modules", ".venv", ".agent-work", "__pycache__", "specs", ".beads", ".dolt", ".repowise-workspace", ".repowise"}
 ZONES = ("services", "projects", "system/services", "acc1-legacy/services")
@@ -226,7 +228,7 @@ def parse_raw(text, service):
     return values, unparsed
 
 def merge_env(path, values):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
     lines = []
     if os.path.exists(path):
         with open(path, encoding="utf-8", errors="replace") as handle:
@@ -236,10 +238,10 @@ def merge_env(path, values):
     for line in lines:
         match = re.match(r"^(?:export\s+)?([A-Z][A-Z0-9_]*)=", line)
         if match and match.group(1) in remaining:
-            merged.append(match.group(1) + "=" + remaining.pop(match.group(1)))
+            merged.append(match.group(1) + "=" + shell_quote(remaining.pop(match.group(1))))
         else:
             merged.append(line)
-    merged.extend(name + "=" + value for name, value in remaining.items())
+    merged.extend(name + "=" + shell_quote(value) for name, value in remaining.items())
     fd, temp = tempfile.mkstemp(dir=os.path.dirname(path), text=True)
     try:
         os.fchmod(fd, 0o600)
@@ -255,6 +257,9 @@ def merge_env(path, values):
             pass
         raise
 
+def shell_quote(value):
+    return "'" + value.replace("\\", "\\\\").replace("\r", "\\r").replace("\n", "\\n").replace("'", "'\\''") + "'"
+
 def intake(secrets):
     inbox = os.path.join(secrets, "inbox")
     done = os.path.join(inbox, "done")
@@ -264,30 +269,42 @@ def intake(secrets):
     os.chmod(done, 0o700)
     counters = {"intake_files": 0, "intake_names": 0, "intake_unparsed": 0,
                 "intake_skipped": 0, "intake_errors": 0}
-    for filename in sorted(os.listdir(inbox)):
-        path = os.path.join(inbox, filename)
-        if filename == "done" or not os.path.isfile(path) or os.path.islink(path):
-            continue
-        stem, extension = os.path.splitext(filename)
-        service = stem.lower().replace(" ", "-").replace("_", "-")
-        if not re.fullmatch(r"[a-z0-9-]+", service):
-            counters["intake_skipped"] += 1
-            continue
+    lock_fd = os.open(os.path.join(inbox, ".lock"), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
         try:
-            with open(path, encoding="utf-8", errors="replace") as handle:
-                values, unparsed = parse_raw(handle.read(), service)
-            merge_env(os.path.join(secrets, "services", service + ".env"), values)
-            timestamp = datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
-            destination = os.path.join(done, service + "-" + timestamp + extension)
-            os.replace(path, destination)
-            os.chmod(destination, 0o600)
-            counters["intake_files"] += 1
-            counters["intake_names"] += len(values)
-            counters["intake_unparsed"] += unparsed
-            print("intake service=" + service + " names=" + yaml_list(sorted(values)) + " unparsed=" + str(unparsed))
-        except Exception:
-            counters["intake_errors"] += 1
-            traceback.print_exc(file=sys.stderr)
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print("intake locked, skip")
+            return counters
+        for filename in sorted(os.listdir(inbox)):
+            path = os.path.join(inbox, filename)
+            if filename.startswith(".") or filename == "done" or not os.path.isfile(path) or os.path.islink(path):
+                continue
+            stem, extension = os.path.splitext(filename)
+            service = stem.lower().replace(" ", "-").replace("_", "-")
+            if not re.fullmatch(r"[a-z0-9-]+", service):
+                counters["intake_skipped"] += 1
+                continue
+            try:
+                with open(path, encoding="utf-8", errors="replace") as handle:
+                    values, unparsed = parse_raw(handle.read(), service)
+                if unparsed:
+                    counters["intake_unparsed"] += unparsed
+                    print("intake service=" + service + " unparsed=" + str(unparsed) + " skipped")
+                    continue
+                merge_env(os.path.join(secrets, "services", service + ".env"), values)
+                timestamp = datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+                destination = os.path.join(done, service + "-" + timestamp + extension)
+                os.replace(path, destination)
+                os.chmod(destination, 0o600)
+                counters["intake_files"] += 1
+                counters["intake_names"] += len(values)
+                print("intake service=" + service + " names=" + yaml_list(sorted(values)) + " unparsed=0")
+            except Exception:
+                counters["intake_errors"] += 1
+                traceback.print_exc(file=sys.stderr)
+    finally:
+        os.close(lock_fd)
     return counters
 
 def build(secrets, out, scan_dirs):
@@ -335,6 +352,7 @@ def build(secrets, out, scan_dirs):
     return counters
 
 def selftest():
+    assert shell_quote("EXAMPLE-ONE'S") == "'EXAMPLE-ONE'\\''S'"
     with tempfile.TemporaryDirectory() as base:
         secrets = os.path.join(base, "secrets")
         services = os.path.join(secrets, "services")
@@ -346,14 +364,16 @@ def selftest():
         os.makedirs(scan)
         inbox = os.path.join(secrets, "inbox")
         os.makedirs(inbox)
-        figma_token = "figd_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"
-        figma_password = "p@ss word 1"
+        figma_token = "EXAMPLE-FIGMA-ACCESS-VALUE"
+        figma_password = "EXAMPLE-PASSWORD-VALUE"
         with open(os.path.join(inbox, "figma.txt"), "w", encoding="utf-8") as handle:
-            handle.write("Personal access token\n" + figma_token + "\nEmail: user@example.com\nПароль: " + figma_password + "\nwebhook = https://hooks.example.com/x\n# comment\n\njunk line here\n")
+            handle.write("Personal access token\n" + figma_token + "\nEmail: user@example.com\nПароль: " + figma_password + "\nwebhook = https://hooks.example.com/x\n# comment\n")
         with open(os.path.join(inbox, "slack.json"), "w", encoding="utf-8") as handle:
-            handle.write('{"bot_token":"EXAMPLE-not-a-real-token-1","app":{"client_secret":"EXAMPLE-not-a-real-secret-2"}}')
+            handle.write('{"bot_token":"EXAMPLE-NOT-A-REAL-TOKEN","app":{"client_secret":"EXAMPLE-NOT-A-REAL-SECRET","password":"pa$$word\\nsecond"}}')
         with open(os.path.join(inbox, "Bad Name!.txt"), "w", encoding="utf-8") as handle:
             handle.write("ignored")
+        with open(os.path.join(inbox, "unparsed.txt"), "w", encoding="utf-8") as handle:
+            handle.write("какая-то фраза без метки")
         with open(os.path.join(services, "alpha.env"), "w", encoding="utf-8") as handle:
             handle.write("ALPHA_API_KEY=x1\nexport ALPHA_TOKEN=x2\n# comment\nbad line\nlower=1\n")
         with open(os.path.join(secrets, "beta.env"), "w", encoding="utf-8") as handle:
@@ -364,7 +384,7 @@ def selftest():
         consumer = os.path.join(scan, "consumer.sh")
         other = os.path.join(scan, "other.py")
         with open(consumer, "w", encoding="utf-8") as handle:
-            handle.write(os.path.join(services, "alpha.env") + " ALPHA_API_KEY X_MISSING_TOKEN BETA_TOKEN HOME")
+            handle.write(os.path.join(services, "alpha.env") + " ALPHA_API_KEY X_MISSING_TOKEN X_CLIENT_ID BETA_TOKEN HOME")
         with open(other, "w", encoding="utf-8") as handle:
             handle.write("BETA_TOKEN")
         with open(os.path.join(scan, "note.md"), "w", encoding="utf-8") as handle:
@@ -375,19 +395,24 @@ def selftest():
         entries = {entry["service"]: entry for entry in first["_entries"]}
         assert first["files_scanned"] == 5 and first["symlinks_skipped"] == 1
         assert first["schema_violation_files"] == 1 and first["schema_violation_lines"] == 2
-        assert first["intake_files"] == 2 and first["intake_names"] == 6 and first["intake_unparsed"] == 1
+        assert first["intake_files"] == 2 and first["intake_names"] == 7 and first["intake_unparsed"] == 1
         assert first["intake_skipped"] == 1 and first["intake_errors"] == 0
         assert entries["figma"]["variables"] == ["FIGMA_TOKEN", "FIGMA_LOGIN", "FIGMA_PASSWORD", "FIGMA_WEBHOOK"]
-        assert entries["slack"]["variables"] == ["SLACK_BOT_TOKEN", "SLACK_APP_CLIENT_SECRET"]
+        assert entries["slack"]["variables"] == ["SLACK_BOT_TOKEN", "SLACK_APP_CLIENT_SECRET", "SLACK_APP_PASSWORD"]
         figma_env = os.path.join(services, "figma.env")
+        slack_env = os.path.join(services, "slack.env")
         assert os.stat(figma_env).st_mode & 0o777 == 0o600
         assert os.listdir(os.path.join(inbox, "done")) and not os.path.exists(os.path.join(inbox, "figma.txt"))
+        assert os.path.exists(os.path.join(inbox, "unparsed.txt")) and not os.path.exists(os.path.join(services, "unparsed.env"))
         with open(figma_env, encoding="utf-8") as handle:
             figma_text = handle.read()
-        assert figma_token in figma_text and figma_password in figma_text
+        with open(slack_env, encoding="utf-8") as handle:
+            slack_text = handle.read()
+        assert "FIGMA_TOKEN='" + figma_token + "'" in figma_text and "FIGMA_PASSWORD='" + figma_password + "'" in figma_text
+        assert "SLACK_APP_PASSWORD='pa$$word\\nsecond'" in slack_text
         assert entries["alpha"]["variables"] == ["ALPHA_API_KEY", "ALPHA_TOKEN"]
         assert sorted(entries["alpha"]["consumers"]) == [consumer]
-        assert sorted(entries["alpha"]["missing"]) == ["X_MISSING_TOKEN"]
+        assert sorted(entries["alpha"]["missing"]) == ["X_CLIENT_ID", "X_MISSING_TOKEN"]
         assert sorted(entries["beta"]["consumers"]) == [consumer, other] and not entries["beta"]["missing"]
         assert entries["gamma"]["schema_violation"] is False
         assert first["name_conflicts"] == 0 and entries["alpha"]["auth"] == entries["alpha"]["refresh"] == "unknown"
@@ -404,11 +429,11 @@ def selftest():
         assert second["entries_written"] == 4 and "beta" not in entries
         assert entries["alpha"]["auth"] == "api_key" and entries["alpha"]["refresh"] == "static"
         with open(os.path.join(inbox, "figma.txt"), "w", encoding="utf-8") as handle:
-            handle.write("Personal access token\nfigd_NEWTOKEN0123456789012345\n")
+            handle.write("Personal access token\nEXAMPLE-NEW-FIGMA-VALUE\n")
         third = build(secrets, out, [scan])
         with open(figma_env, encoding="utf-8") as handle:
             figma_text = handle.read()
-        assert "figd_NEWTOKEN0123456789012345" in figma_text and "FIGMA_LOGIN=user@example.com" in figma_text
+        assert "EXAMPLE-NEW-FIGMA-VALUE" in figma_text and "FIGMA_LOGIN='user@example.com'" in figma_text
         assert {entry["service"] for entry in third["_entries"]} >= {"figma", "slack"}
         before = open(out, "rb").read()
         mtime = os.stat(out).st_mtime_ns
