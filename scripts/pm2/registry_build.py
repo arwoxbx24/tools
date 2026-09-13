@@ -301,18 +301,18 @@ def build(secrets, out, scan_dirs):
     for root, dirs, files in os.walk(secrets, followlinks=False):
         dirs[:] = [name for name in dirs if not os.path.islink(os.path.join(root, name))]
         for filename in files:
-            if not filename.endswith(".env"):
-                continue
             path = os.path.join(root, filename)
             if os.path.islink(path):
                 symlinks_skipped += 1
                 continue
-            files_scanned += 1
-            name = filename[:-4]
-            service = name if not any(entry["service"] == name for entry in entries) else name + "@" + os.path.basename(root)
             variables, violations = parse_env_names(path)
+            if not filename.endswith(".env") and not variables:
+                continue
+            files_scanned += 1
+            name = filename[:-4] if filename.endswith(".env") else filename
+            service = name if not any(entry["service"] == name for entry in entries) else name + "@" + os.path.basename(root)
             zone = os.path.relpath(root, secrets).replace(os.sep, "/")
-            bad_file = zone not in ZONES
+            bad_file = zone not in ZONES or not filename.endswith(".env")
             schema_violation_files += int(bad_file)
             schema_violation_lines += violations
             auth, refresh = manual.get(service, ("unknown", "unknown"))
@@ -360,6 +360,8 @@ def selftest():
             handle.write("BETA_TOKEN=x3\n")
         with open(os.path.join(projects, "gamma.env"), "w", encoding="utf-8") as handle:
             handle.write("GAMMA_TOKEN=x4\n")
+        with open(os.path.join(services, "legacy.txt"), "w", encoding="utf-8") as handle:
+            handle.write("ASSEMBLYAI_API_KEY=secret-value-assemblyai\n")
         os.symlink(os.path.join(services, "alpha.env"), os.path.join(services, "link.env"))
         consumer = os.path.join(scan, "consumer.sh")
         other = os.path.join(scan, "other.py")
@@ -373,8 +375,8 @@ def selftest():
         with contextlib.redirect_stdout(output):
             first = build(secrets, out, [scan])
         entries = {entry["service"]: entry for entry in first["_entries"]}
-        assert first["files_scanned"] == 5 and first["symlinks_skipped"] == 1
-        assert first["schema_violation_files"] == 1 and first["schema_violation_lines"] == 2
+        assert first["files_scanned"] == 6 and first["symlinks_skipped"] == 1
+        assert first["schema_violation_files"] == 2 and first["schema_violation_lines"] == 2
         assert first["intake_files"] == 2 and first["intake_names"] == 6 and first["intake_unparsed"] == 1
         assert first["intake_skipped"] == 1 and first["intake_errors"] == 0
         assert entries["figma"]["variables"] == ["FIGMA_TOKEN", "FIGMA_LOGIN", "FIGMA_PASSWORD", "FIGMA_WEBHOOK"]
@@ -390,10 +392,12 @@ def selftest():
         assert sorted(entries["alpha"]["missing"]) == ["X_MISSING_TOKEN"]
         assert sorted(entries["beta"]["consumers"]) == [consumer, other] and not entries["beta"]["missing"]
         assert entries["gamma"]["schema_violation"] is False
+        assert entries["legacy.txt"]["variables"] == ["ASSEMBLYAI_API_KEY"]
+        assert entries["legacy.txt"]["schema_violation"] is True
         assert first["name_conflicts"] == 0 and entries["alpha"]["auth"] == entries["alpha"]["refresh"] == "unknown"
         with open(out, encoding="utf-8") as handle:
             text = handle.read()
-        assert not any(value in text or value in output.getvalue() for value in ("x1", "x2", "x3", "x4", figma_token, figma_password))
+        assert not any(value in text or value in output.getvalue() for value in ("x1", "x2", "x3", "x4", figma_token, figma_password, "secret-value-assemblyai"))
         assert re.search(r"^\s*[A-Z][A-Z0-9_]*=", text, re.M) is None
         text = text.replace("- service: alpha\n", "- service: alpha\n", 1).replace("  auth: unknown\n  refresh: unknown\n", "  auth: api_key\n  refresh: static\n", 1)
         with open(out, "w", encoding="utf-8") as handle:
@@ -401,7 +405,7 @@ def selftest():
         os.unlink(os.path.join(secrets, "beta.env"))
         second = build(secrets, out, [scan])
         entries = {entry["service"]: entry for entry in second["_entries"]}
-        assert second["entries_written"] == 4 and "beta" not in entries
+        assert second["entries_written"] == 5 and "beta" not in entries
         assert entries["alpha"]["auth"] == "api_key" and entries["alpha"]["refresh"] == "static"
         with open(os.path.join(inbox, "figma.txt"), "w", encoding="utf-8") as handle:
             handle.write("Personal access token\nfigd_NEWTOKEN0123456789012345\n")
