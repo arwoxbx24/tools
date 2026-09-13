@@ -54,17 +54,6 @@ module.exports = {
       out_file: '/root/.pm2/logs/arwox-landing-hub-out.log'
     },
     {
-      name: 'auto-commit',
-      script: '/root/workspaces/tools/scripts/pm2/auto-commit-daemon.sh',
-      cwd: '/root/workspaces/projects',
-      interpreter: 'bash',
-      exec_mode: 'fork_mode',
-      instances: 1,
-      autorestart: true,
-      error_file: '/root/.pm2/logs/auto-commit-error.log',
-      out_file: '/root/.pm2/logs/auto-commit-out.log'
-    },
-    {
       name: 'backup-rotation',
       script: '/root/workspaces/tools/scripts/pm2/backup-rotation.sh',
       cwd: '/root/workspaces/projects',
