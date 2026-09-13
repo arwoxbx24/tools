@@ -748,6 +748,18 @@ module.exports = {
       out_file: '/root/.pm2/logs/security-scanner-out.log'
     },
     {
+      name: 'secrets-registry',
+      script: '/root/workspaces/tools/scripts/pm2/registry_build.py',
+      cwd: '/root/workspaces/tools',
+      interpreter: 'python3',
+      exec_mode: 'fork_mode',
+      instances: 1,
+      autorestart: false,
+      cron_restart: '0 * * * *',
+      error_file: '/root/.pm2/logs/secrets-registry-error.log',
+      out_file: '/root/.pm2/logs/secrets-registry-out.log'
+    },
+    {
       name: 'session-indexer',
       script: '/root/workspaces/tools/scripts/schedulers/session-indexer-daemon.sh',
       cwd: '/root/workspaces/projects',
