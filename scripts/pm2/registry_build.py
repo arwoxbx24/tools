@@ -14,7 +14,7 @@ MISSING_SUFFIXES = (
     "_API_KEY", "_TOKEN", "_REFRESH_TOKEN", "_LOGIN", "_PASSWORD",
     "_SESSION", "_COOKIE", "_OTP_SEED", "_WEBHOOK",
 )
-SKIP_DIRS = {".git", "node_modules", ".venv", ".agent-work", "__pycache__", "specs"}
+SKIP_DIRS = {".git", "node_modules", ".venv", ".agent-work", "__pycache__", "specs", ".beads", ".dolt", ".repowise-workspace", ".repowise"}
 ZONES = ("services", "projects", "system/services", "acc1-legacy/services")
 
 def parse_env_names(path):
