@@ -21,6 +21,7 @@ import re
 import urllib.request
 import urllib.parse
 import urllib.error
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Tuple, Dict
 
@@ -297,8 +298,20 @@ def get_sa_token() -> Optional[str]:
         return None
 
 
+def parse_expiry(value) -> float:
+    """Return an OAuth expiry as a Unix timestamp."""
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return 0
+    return 0
+
+
 def get_oauth_token() -> Optional[str]:
-    """Tier 3: Get token from OAuth2 refresh token (legacy fallback)."""
+    """Tier 2: Get or refresh the OAuth2 access token."""
     if not OAUTH_TOKEN_PATH.exists():
         return None
 
@@ -312,10 +325,10 @@ def get_oauth_token() -> Optional[str]:
 
         # Try to use existing access token if not expired
         access_token = token_data.get("access_token")
-        expiry = token_data.get("expiry")
+        expiry = token_data.get("token_expiry")
         if access_token and expiry:
             # Check if token is still valid (with 5 min buffer)
-            expiry_time = time.time() if isinstance(expiry, (int, float)) else 0
+            expiry_time = parse_expiry(expiry)
             if expiry_time > time.time() + 300:
                 return access_token
 
@@ -343,7 +356,19 @@ def get_oauth_token() -> Optional[str]:
             return None
 
         new_token_data = json.loads(response)
-        return new_token_data.get("access_token")
+        access_token = new_token_data.get("access_token")
+        if access_token:
+            token_data["access_token"] = access_token
+            token_data["token_expiry"] = datetime.fromtimestamp(
+                time.time() + int(new_token_data.get("expires_in", 3600)), timezone.utc
+            ).isoformat().replace("+00:00", "Z")
+            if new_token_data.get("refresh_token"):
+                token_data["refresh_token"] = new_token_data["refresh_token"]
+            tmp_path = OAUTH_TOKEN_PATH.with_suffix(".json.tmp")
+            tmp_path.write_text(json.dumps(token_data, indent=2) + "\n")
+            os.chmod(tmp_path, 0o600)
+            tmp_path.replace(OAUTH_TOKEN_PATH)
+        return access_token
 
     except Exception as e:
         print(f"OAuth token error: {e}", file=sys.stderr)
@@ -469,17 +494,16 @@ def download_folder(folder_id: str, output_dir: Path) -> list:
 
     token = None
     if not files:
-        # Try with service account
-        token = get_sa_token()
-        if token:
-            print("Using service account for folder listing", file=sys.stderr)
-            files = list_folder_files(folder_id, token)
-
-    if not files and not token:
-        # Try OAuth
+        # Try OAuth first, then the service account fallback.
         token = get_oauth_token()
         if token:
             print("Using OAuth2 for folder listing", file=sys.stderr)
+            files = list_folder_files(folder_id, token)
+
+    if not files:
+        token = get_sa_token()
+        if token:
+            print("Using service account for folder listing", file=sys.stderr)
             files = list_folder_files(folder_id, token)
 
     if not files:
@@ -593,18 +617,7 @@ def main():
 
     print("Public download failed, trying authenticated methods...", file=sys.stderr)
 
-    # Tier 2: Try service account
-    token = get_sa_token()
-    if token:
-        print("Using service account authentication", file=sys.stderr)
-        filepath = download_with_auth(file_id, token, output_dir)
-        if filepath:
-            print(filepath)
-            sys.exit(0)
-    else:
-        print("Service account not available", file=sys.stderr)
-
-    # Tier 3: Try OAuth refresh
+    # Tier 2: Try OAuth refresh
     token = get_oauth_token()
     if token:
         print("Using OAuth2 authentication", file=sys.stderr)
@@ -614,6 +627,17 @@ def main():
             sys.exit(0)
     else:
         print("OAuth2 not available", file=sys.stderr)
+
+    # Tier 3: Try service account fallback
+    token = get_sa_token()
+    if token:
+        print("Using service account authentication", file=sys.stderr)
+        filepath = download_with_auth(file_id, token, output_dir)
+        if filepath:
+            print(filepath)
+            sys.exit(0)
+    else:
+        print("Service account not available", file=sys.stderr)
 
     # All methods failed
     print("All download methods failed", file=sys.stderr)

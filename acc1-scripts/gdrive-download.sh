@@ -2,8 +2,8 @@
 # gdrive-download.sh — Download files from Google Drive
 # Обёртка над gdrive-download.py — трёхуровневая стратегия:
 #   1. Публичный доступ (без авторизации)
-#   2. Service Account (JWT, автоматический)
-#   3. OAuth2 refresh (legacy fallback)
+#   2. OAuth2 refresh
+#   3. Service Account (JWT fallback)
 #
 # Usage: bash gdrive-download.sh "https://drive.google.com/file/d/FILE_ID/view"
 # Output: prints local path of downloaded file
