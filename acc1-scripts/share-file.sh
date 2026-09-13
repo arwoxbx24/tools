@@ -5,7 +5,7 @@
 
 set -e
 
-ENV_FILE="/root/workspaces/tools/etc/tools-env"
+ENV_FILE="${TOOLS_ENV_FILE:-/root/workspaces/secrets/services/tools.env}"
 if [ -f "$ENV_FILE" ]; then
     . "$ENV_FILE"
 else
@@ -31,12 +31,9 @@ if [ -n "$MINIO_IP" ]; then
 else
     MINIO_ENDPOINT_LOCAL="https://io.b244.ru"
 fi
-MINIO_ACCESS_KEY="$MINIO_ACCESS_KEY"
-MINIO_SECRET_KEY="$MINIO_SECRET_KEY"
 MINIO_BUCKET="files"
 
 KUTT_API="http://localhost:3000"
-KUTT_API_KEY="$KUTT_API_KEY"
 KUTT_DOMAIN="b244.ru"
 
 # Public URL base - bucket 'files' is configured for public read access
@@ -396,7 +393,7 @@ fi
 echo -e "${YELLOW}[4/4] Creating short link via Kutt...${NC}"
 
 # Slug generation for minimal short links
-LINK_COUNTER_FILE="/root/workspaces/projects/tools/.kutt-link-counter"
+LINK_COUNTER_FILE="/root/workspaces/tools/.kutt-link-counter"
 LINK_ALPHABET="abcdefghkmnpqrstuvwxyzABCDEFGHKLMNPQRSTUVWXYZ23456789"
 PRESERVED_URLS="login|signup|logout|settings|stats|report|banned|terms|privacy|api|url-password|url-info|confirm-email|subscriptions|reset-password|verify-email"
 
