@@ -1,1 +1,1 @@
-/root/workspaces/system/tools/scripts/pm2/sched-validator.sh
+sched-validator-main.sh

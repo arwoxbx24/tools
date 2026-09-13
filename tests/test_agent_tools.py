@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import os
 import subprocess
 import sys
@@ -52,8 +53,39 @@ class AgentToolsTest(unittest.TestCase):
                 os.environ["ASSEMBLYAI_API_KEY"] = old
 
     def test_shell_syntax(self):
-        for script in ("agent-download.sh", "gdrive-download.sh", "share-file.sh"):
+        for script in ("agent-download.sh", "gdrive-download.sh", "share-file.sh", "sched-validator.sh"):
             subprocess.run(["bash", "-n", SCRIPTS / script], check=True)
+
+    def test_validator_preserves_failed_exit_code(self):
+        with tempfile.NamedTemporaryFile("w", delete=False) as check:
+            check.write("#!/bin/bash\nexit 7\n")
+        try:
+            result = subprocess.run(
+                ["timeout", "2",
+                    "bash", "-c",
+                    'SCHED_VALIDATOR_SOURCE_ONLY=1 source "$1"; run_check probe "$2"',
+                    "bash", SCRIPTS / "sched-validator.sh", check.name,
+                ],
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout)["status"], "FAIL")
+        finally:
+            os.unlink(check.name)
+
+    def test_credential_probe_reports_only_safe_status(self):
+        with tempfile.TemporaryDirectory() as secrets_root:
+            result = subprocess.run(
+                [sys.executable, SCRIPTS / "auth-health.py", "--secrets-root", secrets_root],
+                text=True,
+                capture_output=True,
+            )
+        self.assertEqual(result.returncode, 1)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["google_credentials"]["reason"], "not_found")
+        self.assertEqual(payload["assemblyai_credentials"]["reason"], "not_found")
+        self.assertNotIn("value", result.stdout.lower())
 
 
 if __name__ == "__main__":
