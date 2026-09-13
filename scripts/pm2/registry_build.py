@@ -15,6 +15,7 @@ MISSING_SUFFIXES = (
     "_SESSION", "_COOKIE", "_OTP_SEED", "_WEBHOOK",
 )
 SKIP_DIRS = {".git", "node_modules", ".venv", ".agent-work", "__pycache__", "specs"}
+ZONES = ("services", "projects", "system/services", "acc1-legacy/services")
 
 def parse_env_names(path):
     names = []
@@ -62,6 +63,13 @@ def find_consumers(entries, scan_dirs, out):
     found = set()
     out_real = os.path.realpath(out)
     all_names = {name for entry in entries for name in entry["variables"]}
+    name_to_entries = {}
+    path_to_entry = {}
+    for entry in entries:
+        path_to_entry[entry["file"]] = entry
+        for name in entry["variables"]:
+            name_to_entries.setdefault(name, []).append(entry)
+    names = re.compile(r"\b(?:" + "|".join(map(re.escape, sorted(all_names, key=len, reverse=True))) + r")\b") if all_names else None
     for scan_dir in scan_dirs:
         for root, dirs, files in os.walk(scan_dir, followlinks=False):
             dirs[:] = [name for name in dirs if name not in SKIP_DIRS and not os.path.islink(os.path.join(root, name))]
@@ -81,8 +89,8 @@ def find_consumers(entries, scan_dirs, out):
                     text = data.decode("utf-8", errors="replace")
                 except OSError:
                     continue
-                by_path = [entry for entry in entries if entry["file"] in text]
-                by_name = [entry for entry in entries if any(re.search(r"\b" + name + r"\b", text) for name in entry["variables"])]
+                by_path = [path_to_entry[path] for path in path_to_entry if path in text]
+                by_name = [entry for name in set(names.findall(text)) for entry in name_to_entries[name]] if names else []
                 for entry in {id(item): item for item in by_path + by_name}.values():
                     entry["consumers"].add(path)
                     found.add((entry["service"], path))
@@ -90,7 +98,6 @@ def find_consumers(entries, scan_dirs, out):
                               if name.endswith(MISSING_SUFFIXES) and name not in all_names}
                 for entry in by_path:
                     entry["missing"].update(candidates)
-    # ponytail: O(N services x M files); replace with one regex alternation plus reverse map if duration exceeds 30s.
     return len(found)
 
 def yaml_list(items):
@@ -146,7 +153,8 @@ def build(secrets, out, scan_dirs):
             name = filename[:-4]
             service = name if not any(entry["service"] == name for entry in entries) else name + "@" + os.path.basename(root)
             variables, violations = parse_env_names(path)
-            bad_file = path != os.path.join(secrets, "services", name + ".env")
+            zone = os.path.relpath(root, secrets).replace(os.sep, "/")
+            bad_file = zone not in ZONES
             schema_violation_files += int(bad_file)
             schema_violation_lines += violations
             auth, refresh = manual.get(service, ("unknown", "unknown"))
@@ -171,14 +179,18 @@ def selftest():
     with tempfile.TemporaryDirectory() as base:
         secrets = os.path.join(base, "secrets")
         services = os.path.join(secrets, "services")
+        projects = os.path.join(secrets, "projects")
         scan = os.path.join(base, "scan")
         out = os.path.join(base, "out", "registry.yaml")
         os.makedirs(services)
+        os.makedirs(projects)
         os.makedirs(scan)
         with open(os.path.join(services, "alpha.env"), "w", encoding="utf-8") as handle:
             handle.write("ALPHA_API_KEY=x1\nexport ALPHA_TOKEN=x2\n# comment\nbad line\nlower=1\n")
         with open(os.path.join(secrets, "beta.env"), "w", encoding="utf-8") as handle:
             handle.write("BETA_TOKEN=x3\n")
+        with open(os.path.join(projects, "gamma.env"), "w", encoding="utf-8") as handle:
+            handle.write("GAMMA_TOKEN=x4\n")
         os.symlink(os.path.join(services, "alpha.env"), os.path.join(services, "link.env"))
         consumer = os.path.join(scan, "consumer.sh")
         other = os.path.join(scan, "other.py")
@@ -190,16 +202,17 @@ def selftest():
             handle.write("ALPHA_API_KEY")
         first = build(secrets, out, [scan])
         entries = {entry["service"]: entry for entry in first["_entries"]}
-        assert first["files_scanned"] == 2 and first["symlinks_skipped"] == 1
+        assert first["files_scanned"] == 3 and first["symlinks_skipped"] == 1
         assert first["schema_violation_files"] == 1 and first["schema_violation_lines"] == 2
         assert entries["alpha"]["variables"] == ["ALPHA_API_KEY", "ALPHA_TOKEN"]
         assert sorted(entries["alpha"]["consumers"]) == [consumer]
         assert sorted(entries["alpha"]["missing"]) == ["X_MISSING_TOKEN"]
         assert sorted(entries["beta"]["consumers"]) == [consumer, other] and not entries["beta"]["missing"]
+        assert entries["gamma"]["schema_violation"] is False
         assert first["name_conflicts"] == 0 and entries["alpha"]["auth"] == entries["alpha"]["refresh"] == "unknown"
         with open(out, encoding="utf-8") as handle:
             text = handle.read()
-        assert not any(value in text for value in ("x1", "x2", "x3"))
+        assert not any(value in text for value in ("x1", "x2", "x3", "x4"))
         assert re.search(r"^\s*[A-Z][A-Z0-9_]*=", text, re.M) is None
         text = text.replace("- service: alpha\n", "- service: alpha\n", 1).replace("  auth: unknown\n  refresh: unknown\n", "  auth: api_key\n  refresh: static\n", 1)
         with open(out, "w", encoding="utf-8") as handle:
@@ -207,7 +220,7 @@ def selftest():
         os.unlink(os.path.join(secrets, "beta.env"))
         second = build(secrets, out, [scan])
         entries = {entry["service"]: entry for entry in second["_entries"]}
-        assert second["entries_written"] == 1 and "beta" not in entries
+        assert second["entries_written"] == 2 and "beta" not in entries
         assert entries["alpha"]["auth"] == "api_key" and entries["alpha"]["refresh"] == "static"
         before = open(out, "rb").read()
         mtime = os.stat(out).st_mtime_ns
