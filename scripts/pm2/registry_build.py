@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 import argparse
+import contextlib
+import io
+import json
 import os
 import re
 import sys
@@ -133,11 +136,166 @@ def write_yaml(out, entries, files_scanned):
             pass
         raise
 
+def env_name(label, service, used=None):
+    if ENV_NAME.fullmatch(label):
+        name = label
+    else:
+        lowered = label.lower()
+        rules = (
+            ("_REFRESH_TOKEN", ("refresh",)),
+            ("_CLIENT_SECRET", ("client secret", "client_secret", "secret", "секрет")),
+            ("_CLIENT_ID", ("client id", "clientid", "client_id", "app id", "app_id")),
+            ("_API_KEY", ("api key", "apikey", "api_key", "key", "ключ")),
+            ("_PASSWORD", ("password", "pass", "пароль", "пасс")),
+            ("_LOGIN", ("login", "username", "user", "email", "e-mail", "логин", "почта", "пользователь")),
+            ("_WEBHOOK", ("webhook", "вебхук", "хук")),
+            ("_COOKIE", ("cookie", "куки")),
+            ("_SESSION", ("session", "сессия")),
+            ("_OTP_SEED", ("otp", "2fa", "seed", "totp")),
+            ("_TOKEN", ("personal access token", "token", "токен", "bearer", "pat", "access")),
+            ("_URL", ("url", "host", "endpoint", "адрес", "домен", "domain")),
+            ("_ID", ("id", "идентификатор")),
+        )
+        suffix, keywords = "_VALUE", ()
+        for candidate, words in rules:
+            if any(word in lowered for word in words):
+                suffix, keywords = candidate, words
+                break
+        words = re.findall(r"[a-z0-9]+", lowered)
+        keyword_words = {part for keyword in keywords for part in re.findall(r"[a-z0-9]+", keyword)}
+        middle = [word for word in words if word not in keyword_words]
+        prefix = service.upper().replace("-", "_")
+        name = prefix + ("_" + "_".join(middle).upper() if middle else "") + suffix
+    if used is None:
+        return name
+    candidate, number = name, 2
+    while candidate in used:
+        candidate = name + "_" + str(number)
+        number += 1
+    used.add(candidate)
+    return candidate
+
+def parse_raw(text, service):
+    values, used, unparsed = {}, set(), 0
+    try:
+        decoded = json.loads(text)
+    except (ValueError, TypeError):
+        decoded = None
+    if isinstance(decoded, dict):
+        def flatten(value, label=""):
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    flatten(child, (label + "_" if label else "") + str(key))
+            elif isinstance(value, (str, int, float)) and not isinstance(value, bool):
+                value = str(value).strip()
+                if value:
+                    values[env_name(label, service, used)] = value
+        flatten(decoded)
+        return values, unparsed
+    pending = None
+    def flush_pending():
+        nonlocal pending, unparsed
+        if pending is not None:
+            unparsed += 1
+            pending = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or line.startswith("//"):
+            continue
+        positions = [pos for pos in (line.find("="), line.find(":")) if pos >= 0]
+        if positions:
+            flush_pending()
+            pos = min(positions)
+            label, value = line[:pos].strip(), line[pos + 1:].strip().strip("\"'")
+            if not label or not value:
+                unparsed += 1
+            else:
+                values[env_name(label, service, used)] = value
+            continue
+        token = len(line) >= 16 and not any(char.isspace() for char in line)
+        if token:
+            label = pending if pending is not None else "token"
+            pending = None
+            values[env_name(label, service, used)] = line
+        else:
+            flush_pending()
+            pending = line if len(line) <= 40 else None
+            if pending is None:
+                unparsed += 1
+    flush_pending()
+    return values, unparsed
+
+def merge_env(path, values):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    lines = []
+    if os.path.exists(path):
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            lines = handle.read().splitlines()
+    remaining = dict(values)
+    merged = []
+    for line in lines:
+        match = re.match(r"^(?:export\s+)?([A-Z][A-Z0-9_]*)=", line)
+        if match and match.group(1) in remaining:
+            merged.append(match.group(1) + "=" + remaining.pop(match.group(1)))
+        else:
+            merged.append(line)
+    merged.extend(name + "=" + value for name, value in remaining.items())
+    fd, temp = tempfile.mkstemp(dir=os.path.dirname(path), text=True)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(merged) + "\n")
+            handle.flush()
+        os.replace(temp, path)
+        os.chmod(path, 0o600)
+    except BaseException:
+        try:
+            os.unlink(temp)
+        except OSError:
+            pass
+        raise
+
+def intake(secrets):
+    inbox = os.path.join(secrets, "inbox")
+    done = os.path.join(inbox, "done")
+    os.makedirs(inbox, mode=0o700, exist_ok=True)
+    os.makedirs(done, mode=0o700, exist_ok=True)
+    os.chmod(inbox, 0o700)
+    os.chmod(done, 0o700)
+    counters = {"intake_files": 0, "intake_names": 0, "intake_unparsed": 0,
+                "intake_skipped": 0, "intake_errors": 0}
+    for filename in sorted(os.listdir(inbox)):
+        path = os.path.join(inbox, filename)
+        if filename == "done" or not os.path.isfile(path) or os.path.islink(path):
+            continue
+        stem, extension = os.path.splitext(filename)
+        service = stem.lower().replace(" ", "-").replace("_", "-")
+        if not re.fullmatch(r"[a-z0-9-]+", service):
+            counters["intake_skipped"] += 1
+            continue
+        try:
+            with open(path, encoding="utf-8", errors="replace") as handle:
+                values, unparsed = parse_raw(handle.read(), service)
+            merge_env(os.path.join(secrets, "services", service + ".env"), values)
+            timestamp = datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+            destination = os.path.join(done, service + "-" + timestamp + extension)
+            os.replace(path, destination)
+            os.chmod(destination, 0o600)
+            counters["intake_files"] += 1
+            counters["intake_names"] += len(values)
+            counters["intake_unparsed"] += unparsed
+            print("intake service=" + service + " names=" + yaml_list(sorted(values)) + " unparsed=" + str(unparsed))
+        except Exception:
+            counters["intake_errors"] += 1
+            traceback.print_exc(file=sys.stderr)
+    return counters
+
 def build(secrets, out, scan_dirs):
     started = time.monotonic()
     manual = read_manual(out)
     if not os.path.isdir(secrets):
         raise FileNotFoundError(secrets)
+    intake_counters = intake(secrets)
     entries = []
     files_scanned = symlinks_skipped = schema_violation_files = schema_violation_lines = 0
     for root, dirs, files in os.walk(secrets, followlinks=False):
@@ -171,7 +329,8 @@ def build(secrets, out, scan_dirs):
                 "schema_violation_lines": schema_violation_lines, "consumers_found": consumers_found,
                 "missing_total": sum(len(entry["missing"]) for entry in entries),
                 "name_conflicts": sum(count > 1 for count in name_counts.values()),
-                "duration_s": time.monotonic() - started, "_entries": entries}
+                "duration_s": time.monotonic() - started, "_entries": entries,
+                **intake_counters}
     write_yaml(out, entries, files_scanned)
     return counters
 
@@ -185,6 +344,16 @@ def selftest():
         os.makedirs(services)
         os.makedirs(projects)
         os.makedirs(scan)
+        inbox = os.path.join(secrets, "inbox")
+        os.makedirs(inbox)
+        figma_token = "figd_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345"
+        figma_password = "p@ss word 1"
+        with open(os.path.join(inbox, "figma.txt"), "w", encoding="utf-8") as handle:
+            handle.write("Personal access token\n" + figma_token + "\nEmail: user@example.com\nПароль: " + figma_password + "\nwebhook = https://hooks.example.com/x\n# comment\n\njunk line here\n")
+        with open(os.path.join(inbox, "slack.json"), "w", encoding="utf-8") as handle:
+            handle.write('{"bot_token":"EXAMPLE-not-a-real-token-1","app":{"client_secret":"EXAMPLE-not-a-real-secret-2"}}')
+        with open(os.path.join(inbox, "Bad Name!.txt"), "w", encoding="utf-8") as handle:
+            handle.write("ignored")
         with open(os.path.join(services, "alpha.env"), "w", encoding="utf-8") as handle:
             handle.write("ALPHA_API_KEY=x1\nexport ALPHA_TOKEN=x2\n# comment\nbad line\nlower=1\n")
         with open(os.path.join(secrets, "beta.env"), "w", encoding="utf-8") as handle:
@@ -200,10 +369,22 @@ def selftest():
             handle.write("BETA_TOKEN")
         with open(os.path.join(scan, "note.md"), "w", encoding="utf-8") as handle:
             handle.write("ALPHA_API_KEY")
-        first = build(secrets, out, [scan])
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            first = build(secrets, out, [scan])
         entries = {entry["service"]: entry for entry in first["_entries"]}
-        assert first["files_scanned"] == 3 and first["symlinks_skipped"] == 1
+        assert first["files_scanned"] == 5 and first["symlinks_skipped"] == 1
         assert first["schema_violation_files"] == 1 and first["schema_violation_lines"] == 2
+        assert first["intake_files"] == 2 and first["intake_names"] == 6 and first["intake_unparsed"] == 1
+        assert first["intake_skipped"] == 1 and first["intake_errors"] == 0
+        assert entries["figma"]["variables"] == ["FIGMA_TOKEN", "FIGMA_LOGIN", "FIGMA_PASSWORD", "FIGMA_WEBHOOK"]
+        assert entries["slack"]["variables"] == ["SLACK_BOT_TOKEN", "SLACK_APP_CLIENT_SECRET"]
+        figma_env = os.path.join(services, "figma.env")
+        assert os.stat(figma_env).st_mode & 0o777 == 0o600
+        assert os.listdir(os.path.join(inbox, "done")) and not os.path.exists(os.path.join(inbox, "figma.txt"))
+        with open(figma_env, encoding="utf-8") as handle:
+            figma_text = handle.read()
+        assert figma_token in figma_text and figma_password in figma_text
         assert entries["alpha"]["variables"] == ["ALPHA_API_KEY", "ALPHA_TOKEN"]
         assert sorted(entries["alpha"]["consumers"]) == [consumer]
         assert sorted(entries["alpha"]["missing"]) == ["X_MISSING_TOKEN"]
@@ -212,7 +393,7 @@ def selftest():
         assert first["name_conflicts"] == 0 and entries["alpha"]["auth"] == entries["alpha"]["refresh"] == "unknown"
         with open(out, encoding="utf-8") as handle:
             text = handle.read()
-        assert not any(value in text for value in ("x1", "x2", "x3", "x4"))
+        assert not any(value in text or value in output.getvalue() for value in ("x1", "x2", "x3", "x4", figma_token, figma_password))
         assert re.search(r"^\s*[A-Z][A-Z0-9_]*=", text, re.M) is None
         text = text.replace("- service: alpha\n", "- service: alpha\n", 1).replace("  auth: unknown\n  refresh: unknown\n", "  auth: api_key\n  refresh: static\n", 1)
         with open(out, "w", encoding="utf-8") as handle:
@@ -220,8 +401,15 @@ def selftest():
         os.unlink(os.path.join(secrets, "beta.env"))
         second = build(secrets, out, [scan])
         entries = {entry["service"]: entry for entry in second["_entries"]}
-        assert second["entries_written"] == 2 and "beta" not in entries
+        assert second["entries_written"] == 4 and "beta" not in entries
         assert entries["alpha"]["auth"] == "api_key" and entries["alpha"]["refresh"] == "static"
+        with open(os.path.join(inbox, "figma.txt"), "w", encoding="utf-8") as handle:
+            handle.write("Personal access token\nfigd_NEWTOKEN0123456789012345\n")
+        third = build(secrets, out, [scan])
+        with open(figma_env, encoding="utf-8") as handle:
+            figma_text = handle.read()
+        assert "figd_NEWTOKEN0123456789012345" in figma_text and "FIGMA_LOGIN=user@example.com" in figma_text
+        assert {entry["service"] for entry in third["_entries"]} >= {"figma", "slack"}
         before = open(out, "rb").read()
         mtime = os.stat(out).st_mtime_ns
         try:

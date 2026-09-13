@@ -755,7 +755,7 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: false,
-      cron_restart: '0 * * * *',
+      cron_restart: '*/10 * * * *',
       error_file: '/root/.pm2/logs/secrets-registry-error.log',
       out_file: '/root/.pm2/logs/secrets-registry-out.log'
     },
