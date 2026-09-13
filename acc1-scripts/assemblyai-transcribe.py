@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/root/workspaces/tools/.venv/bin/python
 """Transcribe a local media file or URL with AssemblyAI."""
 
 import argparse
