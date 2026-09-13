@@ -16,6 +16,7 @@ function loadEnvFile(filePath) {
   return env;
 }
 const pm2ApiEnv = loadEnvFile('/root/workspaces/secrets/services/pm2-api.env');
+const kpiEventHandlerEnv = loadEnvFile('/root/workspaces/secrets/services/kpi-event-handler.env');
 
 module.exports = {
   apps: [
@@ -484,6 +485,7 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      env: kpiEventHandlerEnv,
       error_file: '/root/.pm2/logs/kpi-event-handler-error.log',
       out_file: '/root/.pm2/logs/kpi-event-handler-out.log'
     },
