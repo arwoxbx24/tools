@@ -29,6 +29,7 @@ STRAY_SCAN_DIRS = ["/root/workspaces/projects", "/root/workspaces/tools", "/root
 REGISTRY_MD = "/root/workspaces/REGISTRY.md"
 WORKSPACES = "/root/workspaces"
 ZONES = ("services", "projects", "system/services", "acc1-legacy/services")
+MIGRATED_PREFIXES = ("projects/", "system/", "sandbox/", "tools/")
 KNOWN_CONFLICTS = frozenset({"B24_WEBHOOK", "NPM_EMAIL", "OPENAI_API_KEY", "OPENROUTER_API_KEY"})
 
 def read_allowlist(registry_md):
@@ -224,6 +225,7 @@ def write_yaml(out, entries, files_scanned, strays=(), tools=()):
             "- service: " + entry["service"],
             "  file: " + entry["file"],
             "  schema_violation: " + str(entry["schema_violation"]).lower(),
+            *( ["  migrated: true"] if entry["migrated"] else [] ),
             "  variables: " + yaml_list(entry["variables"]),
             "  consumers: " + yaml_list(sorted(entry["consumers"])),
             "  missing: " + yaml_list(sorted(entry["missing"])),
@@ -454,11 +456,13 @@ def build(secrets, out, scan_dirs):
             service = name if not any(entry["service"] == name for entry in entries) else name + "@" + os.path.basename(root)
             variables, violations = parse_env_names(path)
             zone = os.path.relpath(root, secrets).replace(os.sep, "/")
-            bad_file = zone not in ZONES
+            migrated = zone not in ZONES and zone.startswith(MIGRATED_PREFIXES)
+            bad_file = zone not in ZONES and not migrated
             schema_violation_files += int(bad_file)
             schema_violation_lines += violations
             auth, refresh = manual.get(service, ("unknown", "unknown"))
             entries.append({"service": service, "file": os.path.abspath(path), "schema_violation": bad_file,
+                            "migrated": migrated,
                             "variables": variables, "consumers": set(), "missing": set(),
                             "auth": auth, "refresh": refresh})
     consumers_found = find_consumers(entries, scan_dirs, out)
@@ -468,6 +472,8 @@ def build(secrets, out, scan_dirs):
     tools = stray_tools()
     name_counts = {}
     for entry in entries:
+        if entry["migrated"]:
+            continue
         for name in entry["variables"]:
             name_counts[name] = name_counts.get(name, 0) + 1
     unknown_conflicts = sorted(name for name, count in name_counts.items()
@@ -476,6 +482,7 @@ def build(secrets, out, scan_dirs):
         print("unknown name conflict: " + unknown_conflicts[0], file=sys.stderr)
         sys.exit(2)
     counters = {"files_scanned": files_scanned, "entries_written": len(entries),
+                "migrated_entries": sum(entry["migrated"] for entry in entries),
                 "symlinks_skipped": symlinks_skipped, "schema_violation_files": schema_violation_files,
                 "schema_violation_lines": schema_violation_lines, "consumers_found": consumers_found,
                 "missing_total": sum(len(entry["missing"]) for entry in entries),
@@ -494,10 +501,12 @@ def selftest():
         secrets = os.path.join(base, "secrets")
         services = os.path.join(secrets, "services")
         projects = os.path.join(secrets, "projects")
+        migrated = os.path.join(projects, "foo", "bar")
         scan = os.path.join(base, "scan")
         out = os.path.join(base, "out", "registry.yaml")
         os.makedirs(services)
         os.makedirs(projects)
+        os.makedirs(migrated)
         os.makedirs(scan)
         os.makedirs(os.path.join(scan, ".worktrees", "copy"))
         stray_dir = os.path.join(base, "strays")
@@ -562,6 +571,8 @@ def selftest():
             handle.write("BETA_TOKEN=secretval3\n")
         with open(os.path.join(projects, "gamma.env"), "w", encoding="utf-8") as handle:
             handle.write("GAMMA_TOKEN=secretval4\n")
+        with open(os.path.join(migrated, ".env"), "w", encoding="utf-8") as handle:
+            handle.write("ALPHA_TOKEN=migrated-value\n")
         os.symlink(os.path.join(services, "alpha.env"), os.path.join(services, "link.env"))
         consumer = os.path.join(scan, "consumer.sh")
         other = os.path.join(scan, "other.py")
@@ -575,8 +586,9 @@ def selftest():
         with contextlib.redirect_stdout(output):
             first = build(secrets, out, [scan])
         entries = {entry["service"]: entry for entry in first["_entries"]}
-        assert first["files_scanned"] == 5 and first["symlinks_skipped"] == 1
+        assert first["files_scanned"] == 6 and first["symlinks_skipped"] == 1
         assert first["schema_violation_files"] == 1 and first["schema_violation_lines"] == 2
+        assert first["migrated_entries"] == 1
         assert first["intake_files"] == 2 and first["intake_names"] == 7 and first["intake_unparsed"] == 1
         assert first["intake_skipped"] == 1 and first["intake_errors"] == 0
         assert entries["figma"]["variables"] == ["FIGMA_TOKEN", "FIGMA_LOGIN", "FIGMA_PASSWORD", "FIGMA_WEBHOOK"]
@@ -598,20 +610,22 @@ def selftest():
         assert sorted(entries["alpha"]["missing"]) == ["X_CLIENT_ID", "X_MISSING_TOKEN"]
         assert sorted(entries["beta"]["consumers"]) == [consumer, other] and not entries["beta"]["missing"]
         assert entries["gamma"]["schema_violation"] is False
+        assert any(entry["migrated"] for entry in entries.values())
         assert first["name_conflicts"] == 0 and entries["alpha"]["auth"] == entries["alpha"]["refresh"] == "unknown"
         with open(out, encoding="utf-8") as handle:
             text = handle.read()
         assert "stray_secrets: [" in text and "stray_tools: [" in text
         assert not any(value in text or value in output.getvalue() for value in ("secretval1", "secretval2", "secretval3", "secretval4", figma_token, figma_password))
         assert re.search(r"^\s*[A-Z][A-Z0-9_]*=", text, re.M) is None
-        text = text.replace("- service: alpha\n", "- service: alpha\n", 1).replace("  auth: unknown\n  refresh: unknown\n", "  auth: api_key\n  refresh: static\n", 1)
+        text = re.sub(r"(- service: alpha\n(?:  .+\n)*?  auth: )unknown(\n  refresh: )unknown",
+                      r"\1api_key\2static", text, count=1)
         with open(out, "w", encoding="utf-8") as handle:
             handle.write(text)
         os.unlink(os.path.join(secrets, "beta.env"))
         with contextlib.redirect_stdout(io.StringIO()):
             second = build(secrets, out, [scan])
         entries = {entry["service"]: entry for entry in second["_entries"]}
-        assert second["entries_written"] == 4 and "beta" not in entries
+        assert second["entries_written"] == 5 and "beta" not in entries
         assert entries["alpha"]["auth"] == "api_key" and entries["alpha"]["refresh"] == "static"
         with open(os.path.join(inbox, "figma.txt"), "w", encoding="utf-8") as handle:
             handle.write("Personal access token\nEXAMPLE-NEW-FIGMA-VALUE\n")
