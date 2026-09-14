@@ -1,0 +1,2 @@
+#!/bin/bash
+jq -r '"\(.model.display_name // "?") | ctx \(.context_window.used_percentage // "?")% | 5h \(.rate_limits.five_hour.used_percentage // "?")% / 7d \(.rate_limits.seven_day.used_percentage // "?")% | cache \((.prompt_cache.hit_ratio // 0) * 100 | round)% \(if .prompt_cache.warm == true then "warm" elif .prompt_cache.warm == false then "cold" else "?" end) | $\((.cost.total_cost_usd // 0) * 100 | round / 100) | \(.cwd // "?" | split("/") | last)"'
