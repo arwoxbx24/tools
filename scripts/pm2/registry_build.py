@@ -22,8 +22,8 @@ MISSING_SUFFIXES = (
     "_CLIENT_SECRET", "_CLIENT_ID", "_VALUE",
 )
 SKIP_DIRS = {".git", "node_modules", ".venv", ".agent-work", "__pycache__", "specs", ".beads", ".dolt", ".repowise-workspace", ".repowise", ".worktrees"}
-STRAY_SKIP_DIRS = SKIP_DIRS | {"venv", "archives", "external-copies", ".pytest-tmp", ".snapshots"}
-STRAY_NAME = re.compile(r"^(?:\.env|\.env\..+|.*\.secrets\.env|\.secrets.*|\.netrc|.*\.pem|.*\.key|.*token.*\.json)$")
+STRAY_SKIP_DIRS = SKIP_DIRS | {"venv", "archives", "external-copies", ".pytest-tmp", ".snapshots", "letsencrypt", "ssl", "docker-data", "hiddify_data", "vendor", "site-packages", "testdata", "fastembed_cache", ".cc-home", ".venv-copier"}
+STRAY_NAME = re.compile(r"^(?:\.env|\.env\..+|.*\.secrets\.env|\.secrets.*|\.netrc|.*\.pem|.*\.key|.*tokens.*\.json)$")
 STRAY_EXAMPLE_SUFFIXES = (".example", ".template", ".sample", ".dist")
 STRAY_SCAN_DIRS = ["/root/workspaces/projects", "/root/workspaces/tools", "/root/workspaces/sandbox", "/root/workspaces/system"]
 REGISTRY_MD = "/root/workspaces/REGISTRY.md"
