@@ -16,12 +16,13 @@ function loadEnvFile(filePath) {
   return env;
 }
 const pm2ApiEnv = loadEnvFile('/root/workspaces/secrets/services/pm2-api.env');
+const kpiEventHandlerEnv = loadEnvFile('/root/workspaces/secrets/services/kpi-event-handler.env');
 
 module.exports = {
   apps: [
     {
       name: 'action-log-indexer',
-      script: '/root/workspaces/tools/acc1-scripts/schedulers/action-log-indexer.sh',
+      script: '/root/workspaces/tools/scripts/schedulers/action-log-indexer.sh',
       cwd: '/root/workspaces/projects',
       interpreter: 'bash',
       exec_mode: 'fork_mode',
@@ -53,19 +54,8 @@ module.exports = {
       out_file: '/root/.pm2/logs/arwox-landing-hub-out.log'
     },
     {
-      name: 'auto-commit',
-      script: '/root/workspaces/tools/acc1-scripts/auto-commit-daemon.sh',
-      cwd: '/root/workspaces/projects',
-      interpreter: 'bash',
-      exec_mode: 'fork_mode',
-      instances: 1,
-      autorestart: true,
-      error_file: '/root/.pm2/logs/auto-commit-error.log',
-      out_file: '/root/.pm2/logs/auto-commit-out.log'
-    },
-    {
       name: 'backup-rotation',
-      script: '/root/workspaces/tools/acc1-scripts/backup-rotation.sh',
+      script: '/root/workspaces/tools/scripts/pm2/backup-rotation.sh',
       cwd: '/root/workspaces/projects',
       interpreter: 'bash',
       exec_mode: 'fork_mode',
@@ -77,7 +67,7 @@ module.exports = {
     },
     {
       name: 'backup-watcher',
-      script: '/root/workspaces/tools/acc1-scripts/backup-watcher.sh',
+      script: '/root/workspaces/tools/scripts/pm2/backup-watcher.sh',
       cwd: '/root',
       interpreter: 'bash',
       exec_mode: 'fork_mode',
@@ -104,7 +94,7 @@ module.exports = {
     },
     {
       name: 'bitrix-sdk-updater',
-      script: '/root/workspaces/tools/acc1-scripts/pm2/jobs/bitrix-sdk-updater.sh',
+      script: '/root/workspaces/tools/scripts/schedulers/bitrix-sdk-updater.sh',
       cwd: '/root/workspaces/projects',
       interpreter: 'bash',
       exec_mode: 'fork_mode',
@@ -121,7 +111,7 @@ module.exports = {
         'run',
         'api'
       ],
-      cwd: '/root/workspaces/projects/bitrix-margin-cockpit',
+      cwd: '/root/workspaces/projects/bitrix/bitrix-margin-cockpit',
       interpreter: '/root/.nvm/versions/node/v20.19.4/bin/node',
       exec_mode: 'fork_mode',
       instances: 1,
@@ -136,7 +126,7 @@ module.exports = {
         'run',
         'dev'
       ],
-      cwd: '/root/workspaces/projects/bitrix-margin-cockpit',
+      cwd: '/root/workspaces/projects/bitrix/bitrix-margin-cockpit',
       interpreter: '/root/.nvm/versions/node/v20.19.4/bin/node',
       exec_mode: 'fork_mode',
       instances: 1,
@@ -146,7 +136,7 @@ module.exports = {
     },
     {
       name: 'context-gc',
-      script: '/root/workspaces/tools/acc1-scripts/schedulers/context-gc-once.sh',
+      script: '/root/workspaces/tools/scripts/schedulers/context-gc-once.sh',
       cwd: '/root/workspaces/projects',
       interpreter: 'bash',
       exec_mode: 'fork_mode',
@@ -158,7 +148,7 @@ module.exports = {
     },
     {
       name: 'context-heartbeat',
-      script: '/root/workspaces/tools/acc1-scripts/schedulers/context-heartbeat.sh',
+      script: '/root/workspaces/tools/scripts/schedulers/context-heartbeat.sh',
       cwd: '/root/workspaces/projects',
       interpreter: 'bash',
       exec_mode: 'fork_mode',
@@ -181,7 +171,7 @@ module.exports = {
     },
     {
       name: 'docker-backup',
-      script: '/root/workspaces/tools/acc1-scripts/docker-backup.sh',
+      script: '/root/workspaces/tools/scripts/pm2/docker-backup.sh',
       cwd: '/root/workspaces/projects',
       interpreter: 'bash',
       exec_mode: 'fork_mode',
@@ -193,7 +183,7 @@ module.exports = {
     },
     {
       name: 'docker-log-rotation',
-      script: '/root/workspaces/tools/acc1-scripts/schedulers/docker-log-rotation.sh',
+      script: '/root/workspaces/tools/scripts/schedulers/docker-log-rotation.sh',
       cwd: '/root/workspaces/projects',
       interpreter: 'bash',
       exec_mode: 'fork_mode',
@@ -204,7 +194,7 @@ module.exports = {
     },
     {
       name: 'file-cleanup',
-      script: '/root/workspaces/tools/acc1-scripts/schedulers/file-cleanup-daemon.sh',
+      script: '/root/workspaces/tools/scripts/schedulers/file-cleanup-daemon.sh',
       cwd: '/root/workspaces/projects',
       interpreter: 'bash',
       exec_mode: 'fork_mode',
@@ -215,7 +205,7 @@ module.exports = {
     },
     {
       name: 'gdrive-token-check',
-      script: '/root/workspaces/tools/acc1-scripts/gdrive-token-check.sh',
+      script: '/root/workspaces/tools/scripts/pm2/gdrive-token-check.sh',
       cwd: '/root/workspaces/projects',
       interpreter: 'bash',
       exec_mode: 'fork_mode',
@@ -227,7 +217,7 @@ module.exports = {
     },
     {
       name: 'git-maintenance',
-      script: '/root/workspaces/tools/acc1-scripts/git-maintenance-once.sh',
+      script: '/root/workspaces/tools/scripts/pm2/git-maintenance-once.sh',
       cwd: '/root/workspaces/projects',
       interpreter: 'bash',
       exec_mode: 'fork_mode',
@@ -239,7 +229,7 @@ module.exports = {
     },
     {
       name: 'google-token-refresh',
-      script: '/root/workspaces/tools/acc1-scripts/google-token-refresh.sh',
+      script: '/root/workspaces/tools/scripts/pm2/google-token-refresh.sh',
       cwd: '/root/workspaces/projects',
       interpreter: 'bash',
       exec_mode: 'fork_mode',
@@ -484,6 +474,7 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      env: kpiEventHandlerEnv,
       error_file: '/root/.pm2/logs/kpi-event-handler-error.log',
       out_file: '/root/.pm2/logs/kpi-event-handler-out.log'
     },
@@ -514,7 +505,7 @@ module.exports = {
     },
     {
       name: 'memory-updater',
-      script: '/root/workspaces/tools/acc1-scripts/schedulers/memory-updater-daemon.sh',
+      script: '/root/workspaces/tools/scripts/schedulers/memory-updater-daemon.sh',
       cwd: '/root/workspaces/projects',
       interpreter: 'bash',
       exec_mode: 'fork_mode',
@@ -561,7 +552,7 @@ module.exports = {
     },
     {
       name: 'plan-lifecycle-manager',
-      script: '/root/workspaces/tools/acc1-scripts/plan-lifecycle-manager.sh',
+      script: '/root/workspaces/tools/scripts/pm2/plan-lifecycle-manager.sh',
       cwd: '/root/workspaces/projects',
       interpreter: 'bash',
       exec_mode: 'fork_mode',
@@ -587,7 +578,7 @@ module.exports = {
     },
     {
       name: 'pm2-conductor',
-      script: '/root/workspaces/tools/acc1-scripts/pm2-conductor.sh',
+      script: '/root/workspaces/tools/scripts/pm2/pm2-conductor.sh',
       cwd: '/root/workspaces/projects',
       interpreter: 'bash',
       exec_mode: 'fork_mode',
@@ -598,7 +589,7 @@ module.exports = {
     },
     {
       name: 'pm2-extended-metrics',
-      script: '/root/workspaces/tools/acc1-scripts/pm2-extended-metrics.sh',
+      script: '/root/workspaces/tools/scripts/pm2/pm2-extended-metrics.sh',
       cwd: '/root/workspaces/projects',
       interpreter: 'bash',
       exec_mode: 'fork_mode',
@@ -642,7 +633,7 @@ module.exports = {
     },
     {
       name: 'profile-rotation',
-      script: '/root/workspaces/tools/acc1-scripts/profile-rotation.sh',
+      script: '/root/workspaces/tools/scripts/pm2/profile-rotation.sh',
       cwd: '/root/workspaces/projects',
       interpreter: 'bash',
       exec_mode: 'fork_mode',
@@ -670,8 +661,8 @@ module.exports = {
     },
     {
       name: 'redis-backup',
-      script: '/root/workspaces/tools/acc1-scripts/redis-backup-daemon.sh',
-      cwd: '/root/workspaces/tools/acc1-scripts',
+      script: '/root/workspaces/tools/scripts/pm2/redis-backup-daemon.sh',
+      cwd: '/root/workspaces/tools/scripts/pm2',
       interpreter: 'bash',
       exec_mode: 'fork_mode',
       instances: 1,
@@ -705,7 +696,7 @@ module.exports = {
     },
     {
       name: 'sched-healthcheck',
-      script: '/root/workspaces/tools/acc1-scripts/schedulers/healthcheck-scheduler.sh',
+      script: '/root/workspaces/tools/scripts/schedulers/healthcheck-scheduler.sh',
       cwd: '/root/workspaces/projects',
       interpreter: 'bash',
       exec_mode: 'fork_mode',
@@ -716,7 +707,7 @@ module.exports = {
     },
     {
       name: 'sched-validator',
-      script: '/root/workspaces/tools/acc1-scripts/sched-validator.sh',
+      script: '/root/workspaces/tools/scripts/pm2/sched-validator.sh',
       cwd: '/root/workspaces/projects',
       interpreter: 'bash',
       exec_mode: 'fork_mode',
@@ -727,7 +718,7 @@ module.exports = {
     },
     {
       name: 'search-quality-report',
-      script: '/root/workspaces/tools/acc1-scripts/schedulers/search-quality-report.sh',
+      script: '/root/workspaces/tools/scripts/schedulers/search-quality-report.sh',
       cwd: '/root/workspaces/projects',
       interpreter: 'bash',
       exec_mode: 'fork_mode',
@@ -748,8 +739,20 @@ module.exports = {
       out_file: '/root/.pm2/logs/security-scanner-out.log'
     },
     {
+      name: 'secrets-registry',
+      script: '/root/workspaces/tools/scripts/pm2/registry_build.py',
+      cwd: '/root/workspaces/tools',
+      interpreter: 'python3',
+      exec_mode: 'fork_mode',
+      instances: 1,
+      autorestart: false,
+      cron_restart: '*/10 * * * *',
+      error_file: '/root/.pm2/logs/secrets-registry-error.log',
+      out_file: '/root/.pm2/logs/secrets-registry-out.log'
+    },
+    {
       name: 'session-indexer',
-      script: '/root/workspaces/tools/acc1-scripts/schedulers/session-indexer-daemon.sh',
+      script: '/root/workspaces/tools/scripts/schedulers/session-indexer-daemon.sh',
       cwd: '/root/workspaces/projects',
       interpreter: 'bash',
       exec_mode: 'fork_mode',
@@ -760,7 +763,7 @@ module.exports = {
     },
     {
       name: 'session-merger',
-      script: '/root/workspaces/tools/acc1-scripts/schedulers/session-merger-daemon.sh',
+      script: '/root/workspaces/tools/scripts/schedulers/session-merger-daemon.sh',
       cwd: '/root/workspaces/projects',
       interpreter: 'bash',
       exec_mode: 'fork_mode',
@@ -793,7 +796,7 @@ module.exports = {
     },
     {
       name: 'tx-cleanup',
-      script: '/root/workspaces/tools/acc1-scripts/tx-cleanup.sh',
+      script: '/root/workspaces/tools/scripts/pm2/tx-cleanup.sh',
       cwd: '/root/workspaces/projects',
       interpreter: 'bash',
       exec_mode: 'fork_mode',
@@ -835,6 +838,18 @@ module.exports = {
       autorestart: false,
       error_file: '/root/.pm2/logs/yubikey-v2-error.log',
       out_file: '/root/.pm2/logs/yubikey-v2-out.log'
+    },
+    {
+      name: 'pm2-reconcile-guard',
+      script: '/root/workspaces/tools/scripts/pm2/pm2-reconcile-guard.sh',
+      cwd: '/root/workspaces/tools',
+      interpreter: 'bash',
+      exec_mode: 'fork_mode',
+      instances: 1,
+      autorestart: false,
+      cron_restart: '*/30 * * * *',
+      error_file: '/root/.pm2/logs/pm2-reconcile-guard-error.log',
+      out_file: '/root/.pm2/logs/pm2-reconcile-guard-out.log'
     }
   ]
 };

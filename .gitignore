@@ -15,4 +15,16 @@ plans/
 reports/
 usage.jsonl
 .env
+llm-providers/.env
+llm-providers/usage.jsonl
+llm-providers/.or-budget-level
+llm-providers/.kimi_quota.json
+notify/.notify-state/
+secure/*.env
 etc/tools-env
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/

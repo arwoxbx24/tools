@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "acc1-scripts"
+PM2_SCRIPTS = ROOT / "scripts" / "pm2"
 
 
 def load(name, path):
@@ -21,11 +22,11 @@ def load(name, path):
 
 class AgentToolsTest(unittest.TestCase):
     def test_download_backends_are_siblings(self):
-        text = (SCRIPTS / "agent-download.sh").read_text()
+        text = (PM2_SCRIPTS / "agent-download.sh").read_text()
         self.assertIn('$SCRIPT_DIR/gdrive-download.sh', text)
         self.assertIn('$SCRIPT_DIR/b244-fetch.sh', text)
         self.assertTrue((SCRIPTS / "gdrive-download.sh").is_file())
-        self.assertTrue((SCRIPTS / "b244-fetch.sh").is_file())
+        self.assertTrue((PM2_SCRIPTS / "b244-fetch.sh").is_file())
 
     def test_google_expiry_accepts_epoch_and_iso(self):
         module = load("gdrive_download", SCRIPTS / "gdrive-download.py")
@@ -53,8 +54,10 @@ class AgentToolsTest(unittest.TestCase):
                 os.environ["ASSEMBLYAI_API_KEY"] = old
 
     def test_shell_syntax(self):
-        for script in ("agent-download.sh", "gdrive-download.sh", "share-file.sh", "sched-validator.sh"):
+        for script in ("gdrive-download.sh", "share-file.sh", "sched-validator.sh"):
             subprocess.run(["bash", "-n", SCRIPTS / script], check=True)
+        for script in ("agent-download.sh", "b244-fetch.sh"):
+            subprocess.run(["bash", "-n", PM2_SCRIPTS / script], check=True)
 
     def test_validator_preserves_failed_exit_code(self):
         with tempfile.NamedTemporaryFile("w", delete=False) as check:

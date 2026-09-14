@@ -1,0 +1,60 @@
+# Human-readable mirror of model-policy.json. The JSON file is executable authority.
+# They must agree on IDs, order, roles, token limits, attempt limit, deadline,
+# and cost cap. Callers must read the route; they must not hardcode it.
+#
+# Provider mapping (documented; executable form lives in model-policy.json):
+#   - Every managed model is reached through the canonical OpenRouter endpoint.
+#   - Forbidden: Haiku, Qwen3.7, Anthropic, GLM, legacy direct Kimi
+#     endpoints, and the uncontrolled kimi-swarm bypass.
+#   - Owner override: OpenAI/GPT models are forbidden via OpenRouter.
+#
+# Pipeline boundaries: pipeline_events is event intake/scheduling only;
+# LangGraph is the sole decision orchestration, including confirm_call.
+version: 2
+attempt_limit: 2
+deadline_seconds: 90
+cost_cap_usd: 0.02
+reasoning_effort: none
+prompt_language: en
+adapters:
+  openrouter_direct:
+    kind: openrouter_direct
+    base_url_env: OPENROUTER_BASE_URL
+    default_base_url: https://openrouter.ai/api/v1
+    api_key_env: OPENROUTER_API_KEY
+    auth: required
+    endpoint: /chat/completions
+models:
+  deepseek/deepseek-v4-flash-0731: {provider: openrouter, adapter: openrouter_direct, model: deepseek/deepseek-v4-flash-0731}
+  qwen/qwen3.8-27b: {provider: openrouter, adapter: openrouter_direct, model: qwen/qwen3.8-27b}
+  mistralai/mistral-nemo: {provider: openrouter, adapter: openrouter_direct, model: mistralai/mistral-nemo}
+  qwen/qwen3-coder-30b-a3b-instruct: {provider: openrouter, adapter: openrouter_direct, model: qwen/qwen3-coder-30b-a3b-instruct}
+  qwen/qwen3-embedding-8b: {provider: openrouter, adapter: openrouter_direct, model: qwen/qwen3-embedding-8b}
+routes:
+  code: [qwen/qwen3.8-27b]
+  review: [deepseek/deepseek-v4-flash-0731, qwen/qwen3.8-27b]
+  validation: [mistralai/mistral-nemo, deepseek/deepseek-v4-flash-0731]
+  extract: []
+  code_draft: [qwen/qwen3-coder-30b-a3b-instruct]
+  embeddings: [qwen/qwen3-embedding-8b]
+role_map:
+  generate: code
+  review: review
+  second-opinion: review
+  analyze: review
+  architect-draft: review
+  hard-debug: review
+  classify: validation
+  moderate: validation
+  format-check: validation
+  extract: extract
+  draft: code_draft
+  embed: embeddings
+max_tokens:
+  code: 8000
+  review: 2048
+  validation: 512
+  extract: 2048
+  code_draft: 8000
+  embeddings: 512
+receipt_fields: [utc_time, request_id_hash, role, model, status, reason, finish_reason, prompt_tokens, completion_tokens, cost_usd, latency_ms]
