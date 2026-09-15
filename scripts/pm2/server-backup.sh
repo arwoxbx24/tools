@@ -8,7 +8,11 @@ PW_ENV=/root/workspaces/secrets/restic.env
 LOG=/root/workspaces/system/tools/scripts/logs/server-backup.log
 NOTIFY_ENV=/root/workspaces/projects/hh-scoring/data/notify.env
 STAGE=/root/workspaces/system/tools/scripts/data/server-backup-stage
+LAST_OK=/root/workspaces/system/tools/scripts/data/server-backup.last-ok
 
+if [ -f "$LOG" ] && [ "$(stat -c%s "$LOG")" -gt $((5 * 1024 * 1024)) ]; then
+  mv -f "$LOG" "$LOG.1"
+fi
 mkdir -p "$(dirname "$LOG")" "$STAGE"
 log() { echo "[$(date '+%F %T')] $*" >>"$LOG"; }
 
@@ -89,6 +93,8 @@ for path in "${paths[@]}"; do
   [ -e "$path" ] && backup_paths+=("$path")
 done
 
+run_step unlock "$RESTIC" unlock
+
 run_step backup "$RESTIC" backup --tag server --one-file-system \
   --exclude-caches --exclude node_modules --exclude .venv --exclude venv \
   --exclude __pycache__ --exclude .cache --exclude .worktrees --exclude .repowise \
@@ -97,6 +103,7 @@ run_step backup "$RESTIC" backup --tag server --one-file-system \
   --exclude /root/.claude/projects --exclude /root/.claude/jobs "${backup_paths[@]}"
 backup_rc=$?
 case "$backup_rc" in 0|3) ;; *) fail backup "$backup_rc" ;; esac
+date +%s >"$LAST_OK"
 
 run_step forget "$RESTIC" forget --tag server --keep-daily 7 --keep-weekly 4 --keep-monthly 3 --prune
 forget_rc=$?
@@ -107,6 +114,23 @@ if [ "$(date +%u)" = 7 ]; then
   run_step check "$RESTIC" check --read-data-subset=5%
   check_rc=$?
   case "$check_rc" in 0|3) ;; *) fail check "$check_rc" ;; esac
+
+  DRILL=/tmp/restic-drill
+  rm -rf "$DRILL"
+  run_step restore "$RESTIC" restore latest --target "$DRILL" \
+    --include /root/CLAUDE.md --include /root/workspaces/tools/ecosystem.config.js
+  restore_rc=$?
+  if [ "$restore_rc" -ne 0 ]; then
+    rm -rf "$DRILL"
+    fail restore "$restore_rc"
+  fi
+  if ! cmp -s "$DRILL/root/CLAUDE.md" /root/CLAUDE.md \
+    || ! cmp -s "$DRILL/root/workspaces/tools/ecosystem.config.js" /root/workspaces/tools/ecosystem.config.js; then
+    rm -rf "$DRILL"
+    fail restore 1
+  fi
+  log "restore-drill ok (2 files)"
+  rm -rf "$DRILL"
 else
   log "check rc=0 (не воскресенье)"
 fi
@@ -115,8 +139,11 @@ stats_output=$(timeout 3600 "$RESTIC" stats --mode raw-data latest 2>&1)
 stats_rc=$?
 printf '%s\n' "$stats_output" >>"$LOG"
 log "stats rc=$stats_rc"
-stats_size=$(printf '%s\n' "$stats_output" | awk -F': ' '/^Total Size:/ {print $2; exit}')
-log "SUMMARY backup_rc=$backup_rc forget_rc=$forget_rc check_rc=$check_rc stats=${stats_size:-unknown}"
+stats_size=$(printf '%s\n' "$stats_output" | awk -F': ' '/Total Size:/ {print $2; exit}')
 case "$stats_rc" in 0|3) ;; *) fail stats "$stats_rc" ;; esac
+log "SUMMARY backup_rc=$backup_rc forget_rc=$forget_rc check_rc=$check_rc stats=${stats_size:-unknown}"
+if [ "$(date +%u)" = 7 ]; then
+  send_telegram "✅ server-backup: неделя ок, snapshot latest, size ${stats_size:-unknown}, drill ok"
+fi
 
 exit 0

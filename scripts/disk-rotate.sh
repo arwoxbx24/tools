@@ -85,5 +85,14 @@ if [ "$pct" -ge "$DISK_ALERT_PCT" ]; then
   send_telegram "🚨 Диск ${pct}% после disk-rotate. Top: $top"
 fi
 
+F=/root/workspaces/system/tools/scripts/data/server-backup.last-ok
+now=$(date +%s)
+last_ok=0
+[ -f "$F" ] && last_ok=$(cat "$F")
+if [ ! -f "$F" ] || [ $((now - last_ok)) -gt 129600 ]; then
+  echo "server-backup dead-man: последний успешный прогон старше 36 ч (или не было)" >>"$LOG"
+  send_telegram "🚨 server-backup: последний успешный прогон старше 36 ч (или не было) — проверить pm2 server-backup"
+fi
+
 df -h / | tail -1 >>"$LOG"
 echo "=== $(date '+%F %T') END ===" >>"$LOG"
