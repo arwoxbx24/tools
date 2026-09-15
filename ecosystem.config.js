@@ -251,19 +251,6 @@ module.exports = {
       out_file: '/root/.pm2/logs/gpt-codex-out.log'
     },
     {
-      name: 'hh-booking-watch',
-      script: '/root/workspaces/projects/hh-scoring/.venv/bin/python',
-      args: [
-        'scripts/booking_watch.py'
-      ],
-      cwd: '/root/workspaces/projects/hh-scoring',
-      exec_mode: 'fork_mode',
-      instances: 1,
-      autorestart: true,
-      error_file: '/root/.pm2/logs/hh-booking-watch-error.log',
-      out_file: '/root/.pm2/logs/hh-booking-watch-out.log'
-    },
-    {
       name: 'hh-cabinet',
       script: '/root/workspaces/projects/hh-scoring/services/cabinet.py',
       cwd: '/root/workspaces/projects/hh-scoring',
