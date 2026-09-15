@@ -258,7 +258,6 @@ backup_bindmount() {
 
 # PostgreSQL Databases
 log "--- Starting PostgreSQL backups ---"
-backup_postgres "n8n-postgres-1" "n8n" "admin" "Superpassword1!"
 
 # Auto-detect kutt postgres credentials
 if is_container_running "kutt-postgres-1"; then
