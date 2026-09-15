@@ -131,7 +131,7 @@ backup_mysql() {
     fi
 
     # FMEA Mitigation: Timeout to prevent hangs (RPN 98)
-    timeout 300s docker exec "$container" sh -c "mysqldump -u $db_user -p'$db_password' $db_name" 2>>"$LOG_FILE" | gzip > "$output_file"
+    timeout 300s docker exec "$container" sh -c "command -v mariadb-dump >/dev/null && exec mariadb-dump -u $db_user -p'$db_password' $db_name || exec mysqldump -u $db_user -p'$db_password' $db_name" 2>>"$LOG_FILE" | gzip > "$output_file"
 
     local result=$?
     if [ $result -eq 0 ] && [ -f "$output_file" ]; then
@@ -151,6 +151,51 @@ backup_mysql() {
         return 1
     else
         log "ERROR: MySQL backup failed for $container/$db_name (exit code: $result)"
+        ((ERRORS++))
+        return 1
+    fi
+}
+
+# Function: Backup MongoDB database
+backup_mongo() {
+    local container=$1
+    local output_file="$BACKUP_DIR/${container}.archive.gz"
+    local db_user=$(get_container_env "$container" "MONGO_INITDB_ROOT_USERNAME")
+    local db_password=$(get_container_env "$container" "MONGO_INITDB_ROOT_PASSWORD")
+
+    log "Backing up MongoDB: $container"
+
+    if ! is_container_running "$container"; then
+        log "WARNING: Container $container is not running, skipping"
+        ((WARNINGS++))
+        return 1
+    fi
+
+    # FMEA Mitigation: Timeout to prevent hangs (RPN 98)
+    if [ -n "$db_user" ] && [ -n "$db_password" ]; then
+        timeout 300s docker exec "$container" mongodump --archive --gzip -u "$db_user" -p "$db_password" --authenticationDatabase admin > "$output_file" 2>>"$LOG_FILE"
+    else
+        timeout 300s docker exec "$container" mongodump --archive --gzip > "$output_file" 2>>"$LOG_FILE"
+    fi
+
+    local result=$?
+    if [ $result -eq 0 ] && [ -f "$output_file" ]; then
+        local size=$(stat -f%z "$output_file" 2>/dev/null || stat -c%s "$output_file" 2>/dev/null)
+        # FMEA Mitigation: Verify backup not empty (RPN 80)
+        if [ "$size" -gt 100 ]; then
+            log "SUCCESS: MongoDB backup completed: $output_file ($(numfmt --to=iec-i --suffix=B $size 2>/dev/null || echo ${size} bytes))"
+            return 0
+        else
+            log "ERROR: MongoDB backup file too small ($size bytes), likely corrupted"
+            ((ERRORS++))
+            return 1
+        fi
+    elif [ $result -eq 124 ]; then
+        log "ERROR: MongoDB backup timed out after 300s"
+        ((ERRORS++))
+        return 1
+    else
+        log "ERROR: MongoDB backup failed for $container (exit code: $result)"
         ((ERRORS++))
         return 1
     fi
@@ -275,33 +320,51 @@ fi
 
 # MySQL Database
 log "--- Starting MySQL backups ---"
-if is_container_running "mysql-container"; then
-    MYSQL_DB=$(get_container_env "mysql-container" "MYSQL_DATABASE")
-    MYSQL_USER=$(get_container_env "mysql-container" "MYSQL_USER")
-    MYSQL_PASSWORD=$(get_container_env "mysql-container" "MYSQL_PASSWORD")
+for container in stroy-mysql mariadb_container; do
+    if is_container_running "$container"; then
+        MYSQL_DB=$(get_container_env "$container" "MYSQL_DATABASE")
+        MYSQL_USER=$(get_container_env "$container" "MYSQL_USER")
+        MYSQL_PASSWORD=$(get_container_env "$container" "MYSQL_PASSWORD")
 
-    # Fallback to root if user not set
-    if [ -z "$MYSQL_USER" ]; then
-        MYSQL_USER="root"
-        MYSQL_PASSWORD=$(get_container_env "mysql-container" "MYSQL_ROOT_PASSWORD")
-    fi
+        if [ "$container" = "mariadb_container" ]; then
+            [ -n "$MYSQL_DB" ] || MYSQL_DB=$(get_container_env "$container" "MARIADB_DATABASE")
+            [ -n "$MYSQL_USER" ] || MYSQL_USER=$(get_container_env "$container" "MARIADB_USER")
+            [ -n "$MYSQL_PASSWORD" ] || MYSQL_PASSWORD=$(get_container_env "$container" "MARIADB_PASSWORD")
+        fi
 
-    if [ -n "$MYSQL_DB" ] && [ -n "$MYSQL_USER" ] && [ -n "$MYSQL_PASSWORD" ]; then
-        backup_mysql "mysql-container" "$MYSQL_DB" "$MYSQL_USER" "$MYSQL_PASSWORD"
-    else
-        log "WARNING: Could not auto-detect mysql credentials, skipping"
-        ((WARNINGS++))
+        # Fallback to root if user not set
+        if [ -z "$MYSQL_USER" ]; then
+            MYSQL_USER="root"
+            MYSQL_PASSWORD=$(get_container_env "$container" "MYSQL_ROOT_PASSWORD")
+            if [ "$container" = "mariadb_container" ] && [ -z "$MYSQL_PASSWORD" ]; then
+                MYSQL_PASSWORD=$(get_container_env "$container" "MARIADB_ROOT_PASSWORD")
+            fi
+        fi
+
+        if [ -n "$MYSQL_DB" ] && [ -n "$MYSQL_USER" ] && [ -n "$MYSQL_PASSWORD" ]; then
+            backup_mysql "$container" "$MYSQL_DB" "$MYSQL_USER" "$MYSQL_PASSWORD"
+        else
+            log "WARNING: Could not auto-detect mysql credentials for $container, skipping"
+            ((WARNINGS++))
+        fi
     fi
+done
+
+# MongoDB Database
+log "--- Starting MongoDB backups ---"
+if is_container_running "komodo-mongo-1"; then
+    backup_mongo "komodo-mongo-1"
 fi
 
 # Docker Volumes
 log "--- Starting Docker volume backups ---"
-backup_volume "portainer_data"
-backup_volume "3x-ui-db"
-backup_volume "3x-ui-cert"
-backup_volume "n8n_n8n_app_data"
-backup_volume "kutt_custom"
-backup_volume "kutt_redis_data"
+for v in $(docker volume ls -q); do
+    if [[ "$v" == *_cache ]]; then
+        log "Skipping cache volume: $v"
+    else
+        backup_volume "$v"
+    fi
+done
 
 # Bind Mounts
 log "--- Starting bind mount backups ---"
