@@ -182,6 +182,18 @@ module.exports = {
       out_file: '/root/.pm2/logs/docker-backup-out.log'
     },
     {
+      name: 'server-backup',
+      script: '/root/workspaces/tools/scripts/pm2/server-backup.sh',
+      cwd: '/root/workspaces/projects',
+      interpreter: 'bash',
+      exec_mode: 'fork_mode',
+      instances: 1,
+      autorestart: false,
+      cron_restart: '30 3 * * *',
+      error_file: '/root/.pm2/logs/server-backup-error.log',
+      out_file: '/root/.pm2/logs/server-backup-out.log'
+    },
+    {
       name: 'docker-log-rotation',
       script: '/root/workspaces/tools/scripts/schedulers/docker-log-rotation.sh',
       cwd: '/root/workspaces/projects',
