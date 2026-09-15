@@ -41,6 +41,58 @@ run_step() { # name command...
   return "$rc"
 }
 
+stage_manifests() {
+  mkdir -p "$STAGE/manifests"
+  dpkg --get-selections >"$STAGE/manifests/dpkg-selections.txt" 2>/dev/null || :
+  apt-mark showmanual >"$STAGE/manifests/apt-manual.txt" 2>/dev/null || :
+  pip3 freeze >"$STAGE/manifests/pip-freeze.txt" 2>/dev/null || :
+  pipx list --json >"$STAGE/manifests/pipx.json" 2>/dev/null || :
+  uv tool list >"$STAGE/manifests/uv-tools.txt" 2>/dev/null || :
+  NPM=$(ls -d /root/.nvm/versions/node/*/bin/npm 2>/dev/null | sort -V | tail -1)
+  "$NPM" ls -g --depth=0 >"$STAGE/manifests/npm-global.txt" 2>/dev/null || :
+  snap list >"$STAGE/manifests/snap.txt" 2>/dev/null || :
+  docker images --format '{{.Repository}}:{{.Tag}} {{.ID}}' >"$STAGE/manifests/docker-images.txt" 2>/dev/null || :
+  ls -la /usr/local/bin >"$STAGE/manifests/usr-local-bin.txt" 2>/dev/null || :
+  systemctl list-unit-files --state=enabled >"$STAGE/manifests/systemd-enabled.txt" 2>/dev/null || :
+  { uname -a; lsb_release -a; } >"$STAGE/manifests/os.txt" 2>/dev/null || :
+  log "manifests: $(ls "$STAGE/manifests" | wc -l) файлов"
+}
+
+stage_host_dumps() {
+  local pg=skip redis=skip grafana=skip integrity
+  mkdir -p "$STAGE/host-db"
+
+  if systemctl is-active --quiet 'postgresql@16-main'; then
+    su - postgres -c pg_dumpall 2>>"$LOG" | gzip >"$STAGE/host-db/pg_dumpall.sql.gz"
+    [ -f "$STAGE/host-db/pg_dumpall.sql.gz" ] && [ "$(stat -c%s "$STAGE/host-db/pg_dumpall.sql.gz")" -ge 100 ] && pg=ok
+  else
+    log "WARNING: postgresql@16-main не запущен"
+  fi
+  [ -f "$STAGE/host-db/pg_dumpall.sql.gz" ] && [ "$(stat -c%s "$STAGE/host-db/pg_dumpall.sql.gz")" -ge 100 ] || log "WARNING: host-db pg_dumpall.sql.gz пустой"
+
+  if systemctl is-active --quiet redis-server; then
+    redis-cli --rdb "$STAGE/host-db/redis-dump.rdb" >>"$LOG" 2>&1 || cp /var/lib/redis/dump.rdb "$STAGE/host-db/redis-dump.rdb"
+    [ -f "$STAGE/host-db/redis-dump.rdb" ] && [ "$(stat -c%s "$STAGE/host-db/redis-dump.rdb")" -ge 100 ] && redis=ok
+  else
+    log "WARNING: redis-server не запущен"
+  fi
+  [ -f "$STAGE/host-db/redis-dump.rdb" ] && [ "$(stat -c%s "$STAGE/host-db/redis-dump.rdb")" -ge 100 ] || log "WARNING: host-db redis-dump.rdb пустой"
+
+  if [ -f /var/lib/grafana/grafana.db ]; then
+    sqlite3 /var/lib/grafana/grafana.db ".backup '$STAGE/host-db/grafana.db'" >>"$LOG" 2>&1
+    integrity=$(sqlite3 "$STAGE/host-db/grafana.db" "PRAGMA integrity_check" 2>>"$LOG")
+    if [ "$integrity" = ok ]; then
+      [ -f "$STAGE/host-db/grafana.db" ] && [ "$(stat -c%s "$STAGE/host-db/grafana.db")" -ge 100 ] && grafana=ok
+    else
+      log "WARNING: grafana.db integrity_check=$integrity"
+    fi
+  else
+    log "WARNING: grafana.db отсутствует"
+  fi
+  [ -f "$STAGE/host-db/grafana.db" ] && [ "$(stat -c%s "$STAGE/host-db/grafana.db")" -ge 100 ] || log "WARNING: host-db grafana.db пустой"
+  log "host-db: pg=$pg redis=$redis grafana=$grafana"
+}
+
 fail() { # step rc [exit]
   local step="$1" rc="$2" code="${3:-1}"
   send_telegram "🚨 server-backup: ${step} rc=${rc}, лог ${LOG}"
@@ -64,6 +116,8 @@ set +a
 
 # Снимок cron и свежий docker-бэкап.
 crontab -l >"$STAGE/crontab-root.txt" 2>>"$LOG" || :
+stage_manifests
+stage_host_dumps
 LATEST_SNAP=$(ls -1 /root/backups/docker 2>/dev/null | sort | tail -1)
 
 timeout 3600 "$RESTIC" cat config >/dev/null 2>&1
@@ -85,7 +139,12 @@ paths=(
   /root/.pm2 /root/.codex/config.toml /root/.codex/AGENTS.md /root/.codex/hooks.json
   /root/CLAUDE.md /root/AGENTS.md /root/GEMINI.md /etc /data/minio
   /root/nginx-proxy-manager "$STAGE"
+  /root/.claude.json /root/.bashrc /root/.profile /root/.gitconfig /root/.gitignore_global
+  /root/.mc /root/.docker /root/.gnupg /root/.beads /root/.dolt /root/.opencode
+  /root/.agents /root/ecosystem.config.js /var/www /opt/actions-runner/.runner
+  /root/actions-runner-2/.runner /home/claude
 )
+paths+=(/root/.tmux*)
 [ -n "$LATEST_SNAP" ] && paths+=("/root/backups/docker/$LATEST_SNAP")
 
 backup_paths=()
