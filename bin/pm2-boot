@@ -6,6 +6,7 @@ PM2_BIN="${PM2_BIN:-/root/bin/pm2}"
 ECO="${PM2_BOOT_ECOSYSTEM:-/root/workspaces/tools/ecosystem.config.js}"
 PM2_ECO_LINT="${PM2_ECO_LINT:-/root/workspaces/tools/bin/pm2-eco-lint}"
 GUARD_NAME="${GUARD_NAME:-pm2-loop-guard}"
+GUARD_SCRIPT="${GUARD_SCRIPT:-/root/workspaces/tools/bin/pm2-loop-guard}"
 GUARD_NOTIFY_ENV="${GUARD_NOTIFY_ENV:-/root/workspaces/secrets/services/pm2-notify.env}"
 CURL_BIN="${CURL_BIN:-curl}"
 REPORT="$PM2_HOME/boot-preflight.json"
@@ -149,7 +150,7 @@ PY
     write_report declaration 0 false "$ERROR"; send_once "⚠️ PM2 boot: $ONLY: declaration $ERROR"; exit 2
   fi
   if [ -s "$PM2_HOME/dump.pm2" ]; then "$PM2_BIN" resurrect; FALLBACK=fallback-resurrect; else FALLBACK=fallback-empty; fi
-  if ! guard_online; then "$PM2_BIN" start /root/workspaces/tools/bin/pm2-loop-guard --name "$GUARD_NAME"; GUARD=поднят-напрямую; else GUARD=online; fi
+  if ! guard_online; then "$PM2_BIN" start "$GUARD_SCRIPT" --interpreter bash --cwd /root/workspaces/projects --name "$GUARD_NAME"; GUARD=поднят-напрямую; else GUARD=online; fi
   write_report "$FALLBACK" 0 false "$ERROR"
   send_once "⚠️ PM2 boot: декларация сломана ($ERROR), сторож: $GUARD"
   exit 0

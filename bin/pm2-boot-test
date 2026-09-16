@@ -121,13 +121,14 @@ LINT_MODE=fallback run_boot
 rc=$?
 assert_eq 'fallback boot exits zero' 0 "$rc"
 assert_true 'loaded:false resurrects a nonempty dump' grep -q '^pm2 resurrect$' "$CALL_LOG"
-assert_true 'fallback starts guard directly' grep -q 'pm2 start .*/pm2-loop-guard --name pm2-loop-guard' "$CALL_LOG"
+assert_true 'fallback starts guard directly' grep -q 'pm2 start .*/pm2-loop-guard' "$CALL_LOG"
 assert_true 'fallback result is recorded' grep -q 'fallback-resurrect' "$PM2_HOME_TEST/boot-preflight.json"
 
 reset_case
 LINT_MODE=fallback run_boot
 assert_true 'empty fallback does not resurrect' bash -c "! grep -q '^pm2 resurrect$' \"$CALL_LOG\""
-assert_true 'empty fallback starts guard directly' grep -q 'pm2 start .*/pm2-loop-guard --name pm2-loop-guard' "$CALL_LOG"
+assert_true 'empty fallback starts guard directly' grep -q 'pm2 start .*/pm2-loop-guard' "$CALL_LOG"
+assert_true 'empty fallback guard uses bash interpreter and guard name' grep -Eq 'pm2 start .*--interpreter bash .*--name pm2-loop-guard' "$CALL_LOG"
 assert_true 'empty fallback result is recorded' grep -q 'fallback-empty' "$PM2_HOME_TEST/boot-preflight.json"
 
 reset_case
