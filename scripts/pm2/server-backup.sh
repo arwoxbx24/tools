@@ -154,7 +154,7 @@ done
 
 run_step unlock "$RESTIC" unlock
 
-run_step backup "$RESTIC" backup --tag server --one-file-system \
+run_step backup "$RESTIC" backup --tag server --group-by host,tags --one-file-system \
   --exclude-caches --exclude node_modules --exclude .venv --exclude venv \
   --exclude __pycache__ --exclude .cache --exclude .worktrees --exclude .repowise \
   --exclude '*.pyc' --exclude /root/workspaces/system/archives --exclude /root/.pm2/logs \
@@ -164,7 +164,7 @@ backup_rc=$?
 case "$backup_rc" in 0|3) ;; *) fail backup "$backup_rc" ;; esac
 date +%s >"$LAST_OK"
 
-run_step forget "$RESTIC" forget --tag server --keep-daily 7 --keep-weekly 4 --keep-monthly 3 --prune
+run_step forget "$RESTIC" forget --tag server --group-by host,tags --keep-daily 7 --keep-weekly 4 --keep-monthly 3 --prune
 forget_rc=$?
 case "$forget_rc" in 0|3) ;; *) fail forget "$forget_rc" ;; esac
 
