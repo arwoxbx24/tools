@@ -776,7 +776,7 @@ module.exports = {
     },
     {
       name: 'pm2-loop-guard',
-      script: '/root/workspaces/system/tools/scripts/pm2-loop-guard/guard.sh',
+      script: '/root/workspaces/tools/bin/pm2-loop-guard',
       cwd: '/root',
       interpreter: 'bash',
       exec_mode: 'fork_mode',

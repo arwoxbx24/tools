@@ -1,0 +1,180 @@
+#!/usr/bin/env bash
+# pm2-loop-guard: crash-loop watchdog for PM2.
+# Evidence uses a JSON white list; never collect PM2's raw process detail output.
+set -uo pipefail
+
+PM2_HOME="${PM2_HOME:-/root/.pm2}"
+GUARD_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+STATE_DIR="${GUARD_STATE_DIR:-$PM2_HOME/loop-guard}"
+LOG_FILE="${GUARD_LOG:-$STATE_DIR/guard.log}"
+PM2_BIN="${PM2_BIN:-/root/bin/pm2}"
+CURL_BIN="${CURL_BIN:-curl}"
+INTERVAL="${GUARD_INTERVAL:-60}"
+RESTART_RATE_LIMIT="${GUARD_RATE_LIMIT:-20}"
+MIN_STORM_RESTARTS="${GUARD_MIN_STORM:-5}"
+COOLDOWN="${GUARD_COOLDOWN:-3600}"
+INCIDENT_ROOT="${GUARD_INCIDENT_ROOT:-$STATE_DIR/incidents}"
+NOTIFY_ENV="${GUARD_NOTIFY_ENV:-/root/workspaces/secrets/services/pm2-notify.env}"
+DEAD_HOURS="${GUARD_DEAD_HOURS:-6}"
+DUMP_MAX_AGE_H="${GUARD_DUMP_MAX_AGE_H:-24}"
+BOOT_STATE="${GUARD_BOOT_STATE:-$PM2_HOME/boot-preflight.json}"
+SELF_NAME="pm2-loop-guard"
+
+mkdir -p "$STATE_DIR"
+
+log() { echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') $*" >> "$LOG_FILE"; }
+
+rotate_log() {
+  [ -f "$LOG_FILE" ] || return 0
+  local n; n=$(wc -l < "$LOG_FILE")
+  if [ "$n" -gt 200 ]; then tail -200 "$LOG_FILE" > "$LOG_FILE.tmp" && mv "$LOG_FILE.tmp" "$LOG_FILE"; fi
+}
+
+# TSV: name status restart_time script_path out_log err_log autorestart cron_restart
+dump_processes() {
+  python3 - "$1" <<'PYEOF'
+import json, os, sys
+with open(sys.argv[1]) as f: procs = json.load(f)
+for p in procs:
+    env = p.get("pm2_env", {}) or {}
+    sp = env.get("script_path") or env.get("pm_exec_path") or ""
+    if not sp:
+        args, cwd = env.get("args") or [], env.get("pm_cwd") or ""
+        if args and cwd: sp = os.path.join(cwd, str(args[0]))
+    row = [p.get("name", ""), env.get("status", ""), str(env.get("restart_time", 0)), sp,
+           env.get("pm_out_log_path") or "", env.get("pm_err_log_path") or "",
+           str(env.get("autorestart", True)).lower(), str(env.get("cron_restart") or "")]
+    print("\t".join((str(x).replace("\t", " ") if x not in (None, "") else "-") for x in row))
+PYEOF
+}
+
+in_cooldown() {
+  local name="$1" now="$2" ts
+  ts=$(awk -F'\t' -v n="$name" '$1==n{t=$2} END{print t+0}' "$STATE_DIR/alerted.tsv" 2>/dev/null)
+  [ -n "$ts" ] && [ "$ts" != 0 ] && [ $((now - ts)) -lt "$COOLDOWN" ]
+}
+
+send_telegram() {
+  local text="$1" token="" chat=""
+  if [ ! -f "$NOTIFY_ENV" ]; then log "telegram skipped (no token/chat): $text"; return 0; fi
+  # shellcheck disable=SC1090
+  source "$NOTIFY_ENV"
+  token="${TG_BOT_TOKEN:-}"; chat="${TG_CHAT_ID:-}"
+  if [ -z "$token" ] || [ -z "$chat" ]; then log "telegram skipped (no token/chat): $text"; return 0; fi
+  "$CURL_BIN" -s --max-time 10 "https://api.telegram.org/bot${token}/sendMessage" -d "chat_id=${chat}" --data-urlencode "text=$text" >/dev/null 2>&1
+}
+
+queue_pending() {
+  local now="$1" text="$2" file="$STATE_DIR/pending-alerts.tsv" kept
+  kept="$file.new"; touch "$file"
+  awk -F'\t' -v n="$now" 'n-$1<=86400 {print}' "$file" > "$kept"
+  printf '%s\t%s\n' "$now" "$text" >> "$kept"
+  if [ "$(wc -l < "$kept")" -gt 50 ]; then tail -50 "$kept" > "$file"; log "pending dropped"; else mv "$kept" "$file"; fi
+}
+
+send_or_queue() { local now="$1" text="$2"; send_telegram "$text" || { log "telegram send failed"; queue_pending "$now" "$text"; }; }
+
+send_pending() {
+  local now="$1" file="$STATE_DIR/pending-alerts.tsv" tmp line ts text
+  [ -f "$file" ] || return 0; tmp="$file.new"; : > "$tmp"
+  while IFS=$'\t' read -r ts text; do
+    [ -n "$ts" ] && [ $((now - ts)) -le 86400 ] || continue
+    if ! send_telegram "$text"; then printf '%s\t%s\n' "$ts" "$text" >> "$tmp"; fi
+  done < "$file"
+  mv "$tmp" "$file"
+}
+
+archive_json() { # jlist name destination
+  python3 - "$1" "$2" "$3" <<'PYEOF'
+import json, sys
+src, name, dst = sys.argv[1:]
+with open(src) as f: rows = json.load(f)
+p = next((x for x in rows if x.get("name") == name), {})
+e = p.get("pm2_env", {}) or {}
+fields = {"name": p.get("name", ""), "pm_id": p.get("pm_id", e.get("pm_id")),
+ "status": e.get("status"), "restart_time": e.get("restart_time"), "unstable_restarts": e.get("unstable_restarts"),
+ "pm_uptime": e.get("pm_uptime"), "created_at": e.get("created_at"), "pm_exec_path": e.get("pm_exec_path") or e.get("script_path"),
+ "pm_cwd": e.get("pm_cwd"), "exec_interpreter": e.get("exec_interpreter"), "autorestart": e.get("autorestart"),
+ "cron_restart": e.get("cron_restart"), "version": e.get("version"), "node_version": e.get("node_version")}
+with open(dst, "w") as f: json.dump(fields, f, indent=2, ensure_ascii=False); f.write("\n")
+PYEOF
+}
+
+handle_trigger() { # name reason out_log err_log now jlist_file
+  local name="$1" reason="$2" out_log="$3" err_log="$4" now="$5" jlist="${6:-}" ts dir
+  if in_cooldown "$name" "$now"; then log "cooldown: skip alert for $name ($reason)"; return 0; fi
+  ts=$(date -u -d "@$now" '+%Y%m%dT%H%M%SZ' 2>/dev/null || date -u '+%Y%m%dT%H%M%SZ')
+  dir="$INCIDENT_ROOT/${name}-${ts}"; mkdir -p "$dir"
+  "$PM2_BIN" stop "$name" >>"$LOG_FILE" 2>&1
+  if [ -n "$jlist" ] && [ -f "$jlist" ]; then archive_json "$jlist" "$name" "$dir/describe.json"; cp "$dir/describe.json" "$dir/jlist-entry.json"; fi
+  [ -n "$out_log" ] && [ -f "$out_log" ] && tail -200 "$out_log" > "$dir/out-tail.log"
+  [ -n "$err_log" ] && [ -f "$err_log" ] && tail -200 "$err_log" > "$dir/err-tail.log"
+  printf '%s\n' "$reason" > "$dir/reason.txt"
+  printf '%s\t%s\n' "$name" "$now" >> "$STATE_DIR/alerted.tsv"
+  log "TRIGGER $name: $reason -> stopped, archive $dir"
+  send_or_queue "$now" "🚨 PM2 crash-loop: $name остановлен. Причина: $reason. Архив: $dir"
+}
+
+digest_once() { # key date text
+  local key="$1" date="$2" text="$3" seen
+  seen=$(awk -F'\t' -v k="$key" '$1==k{d=$2} END{print d}' "$STATE_DIR/digest-sent.tsv" 2>/dev/null)
+  [ "$seen" = "$date" ] && return 0
+  printf '%s\t%s\n' "$key" "$date" >> "$STATE_DIR/digest-sent.tsv"
+  DIGEST_ITEMS+=("$text")
+}
+
+prepare_generation() { # returns 0 when deltas may be used
+  local pid_file="$PM2_HOME/pm2.pid" gen_file="$STATE_DIR/generation" current old
+  [ -f "$pid_file" ] || return 0
+  current=$(tr -d '[:space:]' < "$pid_file"); old=$(tr -d '[:space:]' < "$gen_file" 2>/dev/null || true)
+  if [ -n "$old" ] && [ "$old" != "$current" ]; then : > "$STATE_DIR/restarts.tsv"; : > "$STATE_DIR/dead-since.tsv"; printf '%s\n' "$current" > "$gen_file"; return 1; fi
+  [ -n "$old" ] || printf '%s\n' "$current" > "$gen_file"
+  return 0
+}
+
+guard_tick() { # jlist_file now_ts
+  local jlist="$1" now="$2" restarts="$STATE_DIR/restarts.tsv" dead="$STATE_DIR/dead-since.tsv" date allow=1
+  local name status rt sp out_log err_log autorestart cron prev_rt prev_ts delta_r delta_t rate reason death
+  date=$(date -u -d "@$now" +%F 2>/dev/null || date -u +%F); DIGEST_ITEMS=()
+  send_pending "$now"; touch "$restarts" "$dead"
+  prepare_generation || allow=0
+  while IFS=$'\t' read -r name status rt sp out_log err_log autorestart cron; do
+    [ -z "$name" ] && continue
+    [ "$name" = "$SELF_NAME" ] && continue
+    [ "$sp" = - ] && sp=""; [ "$out_log" = - ] && out_log=""; [ "$err_log" = - ] && err_log=""; [ "$cron" = - ] && cron=""
+    prev_ts=$(awk -F'\t' -v n="$name" '$1==n{t=$2} END{print t}' "$restarts")
+    prev_rt=$(awk -F'\t' -v n="$name" '$1==n{r=$3} END{print r}' "$restarts")
+    printf '%s\t%s\t%s\n' "$name" "$now" "$rt" >> "$restarts.new"
+    delta_r=-1; delta_t=0
+    if [ "$allow" = 1 ] && [ -n "${prev_ts:-}" ] && [ -n "${prev_rt:-}" ] && [ "$rt" -ge "$prev_rt" ]; then delta_r=$((rt-prev_rt)); delta_t=$((now-prev_ts)); fi
+    reason=""
+    if [ -n "$sp" ] && [ ! -f "$sp" ] && [ "$delta_r" -gt 0 ]; then reason="script missing on disk: $sp (+${delta_r} restarts in ${delta_t}s)"; elif [ -n "$sp" ] && [ ! -f "$sp" ] && [ "$delta_r" -eq 0 ]; then log "WARN $name: script missing ($sp) but no restarts - left running"; fi
+    if [ -z "$reason" ] && [ "$status" = online ] && [ "$delta_r" -ge "$MIN_STORM_RESTARTS" ] && [ "$delta_t" -gt 0 ]; then rate=$((delta_r*3600/delta_t)); [ "$rate" -gt "$RESTART_RATE_LIMIT" ] && reason="restart rate ${rate}/h (limit ${RESTART_RATE_LIMIT}/h; +${delta_r} in ${delta_t}s)"; fi
+    if [ -z "$reason" ] && [ "$status" != online ] && [ -z "$cron" ] && [ "$delta_r" -ge "$MIN_STORM_RESTARTS" ] && [ "$delta_t" -gt 0 ]; then rate=$((delta_r*3600/delta_t)); [ "$rate" -gt "$RESTART_RATE_LIMIT" ] && reason="phantom loop: restart rate ${rate}/h (limit ${RESTART_RATE_LIMIT}/h; +${delta_r} in ${delta_t}s)"; fi
+    [ -n "$reason" ] && handle_trigger "$name" "$reason" "$out_log" "$err_log" "$now" "$jlist"
+    if { [ "$status" = errored ] || [ "$status" = stopped ]; } && [ "$autorestart" = true ] && [ -z "$cron" ]; then
+      death=$(awk -F'\t' -v n="$name" '$1==n{t=$2} END{print t}' "$dead")
+      [ -n "$death" ] || death="$now"; printf '%s\t%s\n' "$name" "$death" >> "$dead.new"
+      if [ $((now-death)) -ge $((DEAD_HOURS*3600)) ]; then digest_once "dead:$name" "$date" "тихие трупы: $name ($status, $(((now-death)/3600)) ч)"; fi
+    fi
+  done < <(dump_processes "$jlist")
+  [ -f "$restarts.new" ] && mv "$restarts.new" "$restarts"; [ -f "$dead.new" ] && mv "$dead.new" "$dead"
+  if [ -f "$BOOT_STATE" ]; then while IFS=$'\t' read -r n c s; do [ -n "$n" ] && digest_once "boot:$n:$c:$s" "$date" "отказы boot: $n: $c $s"; done < <(python3 - "$BOOT_STATE" <<'PYEOF'
+import json,sys
+try:
+ for x in json.load(open(sys.argv[1])).get('failed',[]): print('\t'.join(str(x.get(k,'')) for k in ('name','check','subject')))
+except Exception: pass
+PYEOF
+); fi
+  local dump="$PM2_HOME/dump.pm2" age
+  if [ -f "$dump" ]; then age=$(( (now-$(stat -c %Y "$dump")) / 3600 )); else age="отсутствует"; fi
+  if [ "$age" = "отсутствует" ] || [ "$age" -gt "$DUMP_MAX_AGE_H" ]; then digest_once "dump-cache" "$date" "кэш протух: $age"; fi
+  if [ "${#DIGEST_ITEMS[@]}" -gt 0 ]; then send_or_queue "$now" "📋 PM2 дайджест: $(IFS='; '; echo "${DIGEST_ITEMS[*]}")"; fi
+}
+
+main() {
+  log "pm2-loop-guard started (interval ${INTERVAL}s, limit ${RESTART_RATE_LIMIT}/h)"
+  while true; do rotate_log; local jf="$STATE_DIR/jlist.$$.json"; if "$PM2_BIN" jlist > "$jf" 2>>"$LOG_FILE" && [ -s "$jf" ]; then guard_tick "$jf" "$(date +%s)"; else log "pm2 jlist failed"; fi; rm -f "$jf"; sleep "$INTERVAL"; done
+}
+
+if [ "${GUARD_LIB_ONLY:-0}" != 1 ]; then main; fi
