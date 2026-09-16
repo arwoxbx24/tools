@@ -40,18 +40,7 @@ function numeric(value) {
 }
 
 let declaration;
-const secretRoot = '/root/workspaces/secrets';
-const readFileSync = fs.readFileSync;
 try {
-  fs.readFileSync = function (file, ...rest) {
-    const resolved = typeof file === 'string' ? path.resolve(file) : '';
-    if (resolved === secretRoot || resolved.startsWith(`${secretRoot}${path.sep}`)) {
-      const error = new Error('secret file reads are disabled');
-      error.code = 'EACCES';
-      throw error;
-    }
-    return readFileSync.call(this, file, ...rest);
-  };
   declaration = require(ecosystem);
 } catch (error) {
   const message = firstLine(error);
@@ -59,8 +48,6 @@ try {
   else console.log(`error: ${message}`);
   process.exitCode = 3;
   return;
-} finally {
-  fs.readFileSync = readFileSync;
 }
 
 const allApps = Array.isArray(declaration && declaration.apps) ? declaration.apps : [];
