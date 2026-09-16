@@ -1,0 +1,187 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+PM2_HOME="${PM2_HOME:-/root/.pm2}"
+PM2_BIN="${PM2_BIN:-/root/bin/pm2}"
+ECO="${PM2_BOOT_ECOSYSTEM:-/root/workspaces/tools/ecosystem.config.js}"
+PM2_ECO_LINT="${PM2_ECO_LINT:-/root/workspaces/tools/bin/pm2-eco-lint}"
+GUARD_NAME="${GUARD_NAME:-pm2-loop-guard}"
+GUARD_NOTIFY_ENV="${GUARD_NOTIFY_ENV:-/root/workspaces/secrets/services/pm2-notify.env}"
+CURL_BIN="${CURL_BIN:-curl}"
+REPORT="$PM2_HOME/boot-preflight.json"
+FAILED="$PM2_HOME/.boot-failed.$$"
+APPS="$PM2_HOME/.boot-apps.$$"
+trap 'rm -f "$FAILED" "$APPS"' EXIT
+mkdir -p "$PM2_HOME"
+: >"$FAILED"; : >"$APPS"
+
+log() { printf '%s\n' "$*" >&2; }
+
+alert() {
+  local text="$1" token="" chat=""
+  if [ -f "$GUARD_NOTIFY_ENV" ]; then
+    # shellcheck disable=SC1090
+    source "$GUARD_NOTIFY_ENV"
+    token="${TG_BOT_TOKEN:-}"; chat="${TG_CHAT_ID:-}"
+  fi
+  if [ -z "$token" ] || [ -z "$chat" ]; then log "telegram skipped"; return 0; fi
+  "$CURL_BIN" -s --max-time 10 "https://api.telegram.org/bot${token}/sendMessage" \
+    -d "chat_id=${chat}" --data-urlencode "text=$text" >/dev/null 2>&1 || log "telegram send failed"
+}
+
+write_report() { # mode started saved error
+  local tmp
+  tmp="$(mktemp "$PM2_HOME/.boot-preflight.XXXXXX")" || return 1
+  python3 - "$FAILED" "$1" "$2" "$3" "$4" >"$tmp" <<'PY'
+import datetime, json, sys
+failed = [json.loads(x) for x in open(sys.argv[1]) if x.strip()]
+d = {"ts": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+     "mode": sys.argv[2], "failed": failed, "started": int(sys.argv[3]),
+     "saved": sys.argv[4] == "true"}
+if sys.argv[5]: d["error"] = sys.argv[5]
+print(json.dumps(d, ensure_ascii=False))
+PY
+  mv "$tmp" "$REPORT"
+}
+
+load_apps() { # json [only]
+  python3 - "$1" "${2:-}" "$FAILED" "$APPS" <<'PY'
+import json, sys
+d = json.loads(sys.argv[1]); only, failed, apps = sys.argv[2:]
+for v in d.get("violations", []):
+    print("warning: %s: %s %s" % (v.get("name", ""), v.get("field", ""), v.get("reason", "")), file=sys.stderr)
+for app in d.get("apps", []):
+    if only and app.get("name") != only: continue
+    name = app.get("name", "")
+    pre = app.get("preflight") or {}
+    if pre.get("ok"):
+        open(apps, "a").write(name + "\n")
+    else:
+        for f in pre.get("failures") or [{"check":"preflight","subject":""}]:
+            open(failed, "a").write(json.dumps({"name":name, "check":f.get("check", "preflight"), "subject":f.get("subject", "")}) + "\n")
+PY
+}
+
+failed_text() {
+  python3 - "$FAILED" <<'PY'
+import json, sys
+for x in open(sys.argv[1]):
+    if x.strip():
+        d=json.loads(x); print("%s: %s %s" % (d["name"], d["check"], d["subject"]))
+PY
+}
+
+guard_online() {
+  "$PM2_BIN" jlist 2>/dev/null | python3 -c '
+import json, sys
+try: apps=json.load(sys.stdin)
+except Exception: sys.exit(1)
+for app in apps:
+    env=app.get("pm2_env") or {}
+    if app.get("name") == sys.argv[1] and env.get("status") == "online": sys.exit(0)
+sys.exit(1)
+' "$GUARD_NAME"
+}
+
+save_allowed() {
+  "$PM2_BIN" jlist 2>/dev/null | python3 -c '
+import json, sys
+try: apps=json.load(sys.stdin)
+except Exception: sys.exit(1)
+bad=[]
+for app in apps:
+    env=app.get("pm2_env") or {}
+    if env.get("status") == "online" and (app.get("errored", env.get("errored", 0)) or 0): bad.append(app.get("name", ""))
+print(", ".join(bad))
+sys.exit(bool(bad))
+'
+}
+
+send_once() { # text
+  local id marker
+  id="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo unknown)"
+  marker="$PM2_HOME/boot-alert.$id"
+  [ -e "$marker" ] && return 0
+  : >"$marker"
+  alert "$1"
+}
+
+status() { [ -f "$REPORT" ] && python3 -m json.tool "$REPORT" || { log "boot preflight unavailable"; return 1; }; }
+
+case "${1:-}" in
+  status) status; exit $? ;;
+  --only) ONLY="${2:-}"; [ -n "$ONLY" ] || exit 2; MODE=only ;;
+  --dry-run) ONLY=""; MODE=dry ;;
+  "") ONLY=""; MODE=boot ;;
+  *) log "usage: pm2-boot [--only name|--dry-run|status]"; exit 2 ;;
+esac
+
+if [ "$MODE" = boot ]; then "$PM2_BIN" ping >/dev/null 2>&1 || exit 1; fi
+LINT_ARGS=(--json --ecosystem "$ECO")
+[ "$MODE" = only ] && LINT_ARGS+=(--only "$ONLY")
+JSON="$("$PM2_ECO_LINT" "${LINT_ARGS[@]}" 2>/dev/null || true)"
+if ! python3 - "$JSON" <<'PY' >/dev/null 2>&1
+import json, sys
+sys.exit(not isinstance(json.loads(sys.argv[1]), dict))
+PY
+then JSON='{"loaded":false,"error":"resolver output invalid"}'; fi
+LOADED="$(python3 - "$JSON" <<'PY'
+import json, sys
+print(str(bool(json.loads(sys.argv[1]).get("loaded"))).lower())
+PY
+)"
+
+if [ "$MODE" = dry ]; then
+  load_apps "$JSON"
+  write_report declaration 0 false ""
+  status
+  exit 0
+fi
+
+if [ "$LOADED" != true ]; then
+  ERROR="$(python3 - "$JSON" <<'PY'
+import json, sys
+print(json.loads(sys.argv[1]).get("error", "declaration unavailable"))
+PY
+)"
+  if [ "$MODE" = only ]; then
+    printf '{"name":"%s","check":"declaration","subject":"%s"}\n' "$ONLY" "$ERROR" >>"$FAILED"
+    write_report declaration 0 false "$ERROR"; send_once "⚠️ PM2 boot: $ONLY: declaration $ERROR"; exit 2
+  fi
+  if [ -s "$PM2_HOME/dump.pm2" ]; then "$PM2_BIN" resurrect; FALLBACK=fallback-resurrect; else FALLBACK=fallback-empty; fi
+  if ! guard_online; then "$PM2_BIN" start /root/workspaces/tools/bin/pm2-loop-guard --name "$GUARD_NAME"; GUARD=поднят-напрямую; else GUARD=online; fi
+  write_report "$FALLBACK" 0 false "$ERROR"
+  send_once "⚠️ PM2 boot: декларация сломана ($ERROR), сторож: $GUARD"
+  exit 0
+fi
+
+load_apps "$JSON" "$ONLY"
+if [ "$MODE" = only ]; then
+  if [ -s "$FAILED" ] || [ ! -s "$APPS" ]; then
+    [ -s "$FAILED" ] || printf '{"name":"%s","check":"name","subject":"not found"}\n' "$ONLY" >>"$FAILED"
+    write_report declaration 0 false ""; send_once "⚠️ PM2 boot: $(failed_text)"; exit 2
+  fi
+  "$PM2_BIN" startOrReload "$ECO" --only "$ONLY"
+  write_report declaration 1 false ""
+  exit 0
+fi
+
+STARTED=0 GUARD_FAILED=false
+if grep -Fxq "$GUARD_NAME" "$APPS"; then
+  "$PM2_BIN" startOrReload "$ECO" --only "$GUARD_NAME"; STARTED=$((STARTED + 1))
+else GUARD_FAILED=true; fi
+while IFS= read -r name; do
+  [ -n "$name" ] && [ "$name" != "$GUARD_NAME" ] || continue
+  "$PM2_BIN" startOrReload "$ECO" --only "$name"; STARTED=$((STARTED + 1))
+done <"$APPS"
+
+SAVED=false
+ERRORS="$(save_allowed)"; save_rc=$?
+if [ "$save_rc" -eq 0 ]; then "$PM2_BIN" save && SAVED=true; else send_once "⚠️ PM2 boot: save пропущен, errored: $ERRORS"; fi
+for dump in "$PM2_HOME"/dump.pm2*; do [ -e "$dump" ] && chmod 600 "$dump"; done
+write_report declaration "$STARTED" "$SAVED" ""
+if [ -s "$FAILED" ]; then
+  prefix='⚠️ PM2 boot:'; [ "$GUARD_FAILED" = true ] && prefix='🚨 PM2 boot: сторож не поднят:'
+  send_once "$prefix $(failed_text)"
+fi
+exit 0

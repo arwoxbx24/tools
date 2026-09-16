@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+# Contract test for pm2-boot.  It uses only temporary binaries and PM2_HOME.
+set -u -o pipefail
+
+TARGET="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pm2-boot"
+PASS=0
+FAIL=0
+
+ok() { printf 'ok - %s\n' "$1"; PASS=$((PASS + 1)); }
+not_ok() { printf 'not ok - %s\n' "$1"; FAIL=$((FAIL + 1)); }
+assert_true() {
+  local message=$1
+  shift
+  if "$@"; then ok "$message"; else not_ok "$message"; fi
+}
+assert_eq() {
+  local message=$1 expected=$2 actual=$3
+  if [[ $actual == "$expected" ]]; then ok "$message"; else not_ok "$message (expected $expected, got $actual)"; fi
+}
+line_number() { grep -n -m1 -- "$1" "$CALL_LOG" | cut -d: -f1; }
+
+# This is deliberately the first runtime assertion: RED must identify the
+# missing implementation, rather than failing later in the test harness.
+if [[ ! -x $TARGET ]]; then
+  not_ok 'pm2-boot exists and is executable'
+  printf 'FAIL=%d PASS=%d (RED: implementation is absent)\n' "$FAIL" "$PASS"
+  exit 1
+fi
+
+TMPDIR_BOOT=$(mktemp -d /tmp/pm2-boot-test.XXXXXX)
+trap 'rm -rf -- "$TMPDIR_BOOT"' EXIT
+STUBS="$TMPDIR_BOOT/stubs"
+PM2_HOME_TEST="$TMPDIR_BOOT/pm2"
+CALL_LOG="$TMPDIR_BOOT/calls.log"
+CURL_TEXT="$TMPDIR_BOOT/curl-text.log"
+mkdir -p "$STUBS" "$PM2_HOME_TEST"
+REAL_CHMOD="$(command -v chmod)"
+: >"$CALL_LOG"
+: >"$CURL_TEXT"
+
+cat >"$STUBS/pm2" <<'EOF'
+#!/usr/bin/env bash
+printf 'pm2' >>"$CALL_LOG"
+printf ' %q' "$@" >>"$CALL_LOG"
+printf '\n' >>"$CALL_LOG"
+[[ ${1:-} == ping ]] && exit 0
+[[ ${1:-} == jlist ]] && printf '%s\n' "${PM2_JLIST:-[]}"
+if [[ ${1:-} == save ]]; then : >"$PM2_HOME/dump.pm2"; "$REAL_CHMOD" 644 "$PM2_HOME/dump.pm2"; fi
+exit 0
+EOF
+cat >"$STUBS/pm2-eco-lint" <<'EOF'
+#!/usr/bin/env bash
+printf 'lint' >>"$CALL_LOG"
+printf ' %q' "$@" >>"$CALL_LOG"
+printf '\n' >>"$CALL_LOG"
+case " ${*} " in
+  *' --only needs-secret '*)
+    printf '%s\n' '{"loaded":true,"apps":[{"name":"needs-secret","preflight":{"ok":false,"failures":[{"check":"env_key","subject":"API_TOKEN"}]}}],"violations":[]}' ;;
+  *) case ${LINT_MODE:-declaration} in
+       fallback) printf '%s\n' '{"loaded":false,"error":"fixture declaration error"}' ;;
+       *) printf '%s\n' '{"loaded":true,"apps":[{"name":"pm2-loop-guard","preflight":{"ok":true,"failures":[]}},{"name":"app-ok","preflight":{"ok":true,"failures":[]}},{"name":"app-failed","preflight":{"ok":false,"failures":[{"check":"script","subject":"/missing/app"}]}}],"violations":[{"name":"app-ok","field":"max_restarts","reason":"missing"}]}' ;;
+     esac ;;
+esac
+EOF
+cat >"$STUBS/curl" <<'EOF'
+#!/usr/bin/env bash
+printf 'curl' >>"$CALL_LOG"
+printf ' %q' "$@" >>"$CALL_LOG"
+printf '\n' >>"$CALL_LOG"
+for arg in "$@"; do
+  case $arg in text=*) printf '%s\n' "${arg#text=}" >>"$CURL_TEXT" ;; esac
+done
+EOF
+cat >"$STUBS/chmod" <<'EOF'
+#!/usr/bin/env bash
+printf 'chmod' >>"$CALL_LOG"
+printf ' %q' "$@" >>"$CALL_LOG"
+printf '\n' >>"$CALL_LOG"
+"$REAL_CHMOD" "$@"
+EOF
+chmod +x "$STUBS/pm2" "$STUBS/pm2-eco-lint" "$STUBS/curl" "$STUBS/chmod"
+
+run_boot() {
+  PATH="$STUBS:$PATH" CALL_LOG="$CALL_LOG" CURL_TEXT="$CURL_TEXT" \
+    PM2_HOME="$PM2_HOME_TEST" PM2_BIN="$STUBS/pm2" PM2_ECO_LINT="$STUBS/pm2-eco-lint" \
+  CURL_BIN="$STUBS/curl" GUARD_NOTIFY_ENV="$TMPDIR_BOOT/notify.env" REAL_CHMOD="$REAL_CHMOD" \
+    "$TARGET" "$@"
+}
+reset_case() { : >"$CALL_LOG"; : >"$CURL_TEXT"; rm -f -- "$PM2_HOME_TEST"/boot-preflight.json "$PM2_HOME_TEST"/dump.pm2 "$PM2_HOME_TEST"/boot-alert.*; }
+printf 'TG_BOT_TOKEN=t\nTG_CHAT_ID=1\n' >"$TMPDIR_BOOT/notify.env"
+
+reset_case
+run_boot
+rc=$?
+assert_eq 'full boot exits zero' 0 "$rc"
+ping_line=$(line_number '^pm2 ping$')
+lint_line=$(line_number '^lint ')
+guard_line=$(line_number 'startOrReload .*--only pm2-loop-guard')
+app_line=$(line_number 'startOrReload .*--only app-ok')
+assert_true 'ping is first PM2 call' test -n "$ping_line"
+assert_true 'lint follows ping' test -n "$lint_line" -a "$lint_line" -gt "$ping_line"
+assert_true 'guard reload follows lint' test -n "$guard_line" -a "$guard_line" -gt "$lint_line"
+assert_true 'app reload follows guard' test -n "$app_line" -a "$app_line" -gt "$guard_line"
+assert_true 'every startOrReload is scoped with --only' bash -c "! grep 'startOrReload' \"$CALL_LOG\" | grep -vq -- '--only'"
+assert_true 'failed pre-flight entry is saved in JSON' grep -q 'app-failed' "$PM2_HOME_TEST/boot-preflight.json"
+assert_true 'pre-flight check is saved in JSON' grep -q '"script"' "$PM2_HOME_TEST/boot-preflight.json"
+save_line=$(line_number '^pm2 save$')
+chmod_line=$(line_number '^chmod 600 ')
+assert_true 'save follows application reloads' test -n "$save_line" -a "$save_line" -gt "$app_line"
+assert_true 'chmod 600 follows save' test -n "$chmod_line" -a "$chmod_line" -gt "$save_line"
+assert_eq 'saved dump has mode 600' 600 "$(stat -c %a "$PM2_HOME_TEST/dump.pm2")"
+assert_true 'alerts do not include NAME=value text' bash -c "! grep -Eq '[A-Z_]+=[^[:space:]]+' \"$CURL_TEXT\""
+alerts_before=$(grep -c '^curl ' "$CALL_LOG" || true)
+run_boot
+alerts_after=$(grep -c '^curl ' "$CALL_LOG" || true)
+assert_eq 'same boot id sends one alert' "$alerts_before" "$alerts_after"
+
+reset_case
+printf 'cached dump\n' >"$PM2_HOME_TEST/dump.pm2"
+LINT_MODE=fallback run_boot
+rc=$?
+assert_eq 'fallback boot exits zero' 0 "$rc"
+assert_true 'loaded:false resurrects a nonempty dump' grep -q '^pm2 resurrect$' "$CALL_LOG"
+assert_true 'fallback starts guard directly' grep -q 'pm2 start .*/pm2-loop-guard --name pm2-loop-guard' "$CALL_LOG"
+assert_true 'fallback result is recorded' grep -q 'fallback-resurrect' "$PM2_HOME_TEST/boot-preflight.json"
+
+reset_case
+LINT_MODE=fallback run_boot
+assert_true 'empty fallback does not resurrect' bash -c "! grep -q '^pm2 resurrect$' \"$CALL_LOG\""
+assert_true 'empty fallback starts guard directly' grep -q 'pm2 start .*/pm2-loop-guard --name pm2-loop-guard' "$CALL_LOG"
+assert_true 'empty fallback result is recorded' grep -q 'fallback-empty' "$PM2_HOME_TEST/boot-preflight.json"
+
+reset_case
+PM2_JLIST='[{"name":"app-ok","pm2_env":{"status":"online","errored":1}}]' run_boot
+assert_true 'errored online target skips save' bash -c "! grep -q '^pm2 save$' \"$CALL_LOG\""
+
+reset_case
+run_boot --only needs-secret
+rc=$?
+assert_eq '--only pre-flight failure exits 2' 2 "$rc"
+assert_true '--only failure never invokes startOrReload' bash -c "! grep -q startOrReload \"$CALL_LOG\""
+assert_true '--only failure reports the failed name' grep -q 'needs-secret' "$PM2_HOME_TEST/boot-preflight.json"
+
+reset_case
+run_boot --dry-run
+assert_eq 'dry run exits zero' 0 "$?"
+assert_true 'dry run does not invoke pm2' bash -c "! grep -q '^pm2 ' \"$CALL_LOG\""
+
+printf 'PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
+(( FAIL == 0 ))
