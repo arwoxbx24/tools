@@ -1,0 +1,263 @@
+#!/usr/bin/env bash
+# Isolated contract harness for pm2-boot and pm2-loop-guard.  Never targets production.
+set -uo pipefail
+
+ROOT=/root/workspaces/tools
+PM2_BIN=/root/bin/pm2
+BOOT="$ROOT/bin/pm2-boot"
+GUARD="$ROOT/bin/pm2-loop-guard"
+LINT="$ROOT/bin/pm2-eco-lint"
+KEEP=0
+VERBOSE=0
+CHAOS_HOME=
+STUBDIR=
+CURL_LOG=
+CURL_RC_FILE=
+PROD_BEFORE=
+PROD_AFTER=
+PASS=0
+TOTAL=0
+SCENARIO_ERR=
+
+usage() { echo "usage: pm2-chaos [--keep] [--verbose] [S1 ... S13]" >&2; }
+
+if [ "${CHAOS_OUTER_TIMEOUT:-}" != 1 ]; then
+  exec timeout 600 env CHAOS_OUTER_TIMEOUT=1 "$0" "$@"
+fi
+
+cleanup() {
+  local pid=""
+  [ -n "${CHAOS_HOME:-}" ] || return 0
+  [[ "$CHAOS_HOME" == /tmp/pm2-chaos.* ]] || { echo 'unsafe chaos home' >&2; return 1; }
+  [ -f "$CHAOS_HOME/pm2.pid" ] && pid="$(tr -dc '0-9' <"$CHAOS_HOME/pm2.pid")"
+  PM2_DELETE_OK=1 PM2_HOME="$CHAOS_HOME" "$PM2_BIN" kill >/dev/null 2>&1 || true
+  [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && kill "$pid" 2>/dev/null || true
+  [ "$KEEP" = 1 ] || rm -rf -- "$CHAOS_HOME"
+  CHAOS_HOME=
+}
+cleanup_all() {
+  cleanup
+  rm -f -- "${PROD_BEFORE:-}" "${PROD_AFTER:-}"
+}
+trap cleanup_all EXIT TERM INT
+
+snapshot_production() { # jlist is the only production PM2 operation in this harness.
+  PM2_HOME=/root/.pm2 "$PM2_BIN" jlist 2>/dev/null | python3 -c '
+import json, sys
+for p in json.load(sys.stdin):
+ e=p.get("pm2_env") or {}; cron=e.get("cron_restart") or ""
+ print("cron\t%s" % p.get("name", "") if cron else "%s\t%s\t%s" %
+       (p.get("name", ""), e.get("status", ""), e.get("restart_time", 0)))
+'
+}
+
+setup() {
+  CHAOS_HOME="$(mktemp -d /tmp/pm2-chaos.XXXXXX)" || return 1
+  STUBDIR="$CHAOS_HOME/stubs"; mkdir -p "$STUBDIR" "$CHAOS_HOME/apps"
+  CURL_LOG="$CHAOS_HOME/curl-calls.log"
+  CURL_RC_FILE="$CHAOS_HOME/curl.rc"
+  cat >"$STUBDIR/curl" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"${CURL_LOG:?}"
+exit "$(cat "$(dirname "$0")/../curl.rc")"
+EOF
+  chmod 700 "$STUBDIR/curl"
+  export PM2_HOME="$CHAOS_HOME" PM2_BIN PM2_BOOT_ECOSYSTEM="$CHAOS_HOME/eco.config.js"
+  export PM2_ECO_LINT="$LINT" GUARD_STATE_DIR="$CHAOS_HOME/loop-guard"
+  export GUARD_INCIDENT_ROOT="$CHAOS_HOME/loop-guard/incidents" GUARD_BOOT_STATE="$CHAOS_HOME/boot-preflight.json"
+  export GUARD_NOTIFY_ENV="$CHAOS_HOME/notify.env" GUARD_INTERVAL=2 GUARD_RATE_LIMIT=20 GUARD_MIN_STORM=5
+  printf '0\n' >"$CURL_RC_FILE"
+  export CURL_BIN="$STUBDIR/curl" CURL_LOG CURL_STUB_RC_FILE PATH="$STUBDIR:$PATH"
+  command -v curl | grep -Fx "$STUBDIR/curl" >/dev/null || return 1
+  printf 'TG_BOT_TOKEN=t\nTG_CHAT_ID=c\n' >"$GUARD_NOTIFY_ENV"
+}
+
+write_script() { local name=$1 body=$2; printf '#!/usr/bin/env bash\n%s\n' "$body" >"$CHAOS_HOME/apps/$name"; chmod 700 "$CHAOS_HOME/apps/$name"; }
+guard_app() { cat <<EOF
+    { name: 'pm2-loop-guard', script: '$GUARD', cwd: '$ROOT', interpreter: 'bash', min_uptime: 1000, max_restarts: 3, exp_backoff_restart_delay: 100 },
+EOF
+}
+eco_begin() { printf 'module.exports = { apps: [\n'; guard_app; }
+eco_end() { printf '] };\n'; }
+app() { # name script extras
+  printf "    { name: '%s', script: '%s', cwd: '%s', interpreter: 'bash', min_uptime: 1000, max_restarts: 99, exp_backoff_restart_delay: 100%s },\n" "$1" "$2" "$CHAOS_HOME" "${3:-}"
+}
+write_eco_basic() { # name script extras
+  eco_begin >"$PM2_BOOT_ECOSYSTEM"; app "$1" "$2" "${3:-}" >>"$PM2_BOOT_ECOSYSTEM"; eco_end >>"$PM2_BOOT_ECOSYSTEM"
+}
+jlist() {
+  local end=$((SECONDS+8)) file="$CHAOS_HOME/.jlist.$$.json"
+  while [ "$SECONDS" -lt "$end" ]; do
+    if "$PM2_BIN" jlist >"$file" 2>>"${SCENARIO_ERR:-/dev/stderr}" && python3 -c 'import json,sys; json.load(sys.stdin)' <"$file" >/dev/null; then
+      cat "$file"; rm -f -- "$file"; return 0
+    fi
+    sleep 1
+  done
+  echo "jlist did not become valid JSON within 8s" >&2
+  [ -s "$file" ] && tail -30 "$file" >&2
+  rm -f -- "$file"
+  return 1
+}
+field() { # name pm2_env field; JSON arrives on stdin.
+  python3 -c 'import json,sys
+n,k=sys.argv[1:]; p=next((x for x in json.load(sys.stdin) if x.get("name")==n), {})
+print((p.get("pm2_env") or {}).get(k, ""))' "$1" "$2"
+}
+status() { jlist | field "$1" status; }
+restarts() { jlist | field "$1" restart_time; }
+count_name() { jlist | python3 -c 'import json,sys; print(sum(x.get("name")==sys.argv[1] for x in json.load(sys.stdin)))' "$1"; }
+online() { [ "$(status "$1")" = online ]; }
+stopped() { [ "$(status "$1")" = stopped ]; }
+wait_until() { local seconds=$1; shift; local end=$((SECONDS+seconds)); while [ "$SECONDS" -lt "$end" ]; do "$@" && return 0; sleep 1; done; return 1; }
+wait_stop() { wait_until 8 stopped "$1"; }
+json_assert() { # python expression, report file
+  python3 - "$1" "$2" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1])); assert eval(sys.argv[2], {}, {'d':d})
+PY
+}
+no_secret_output() { ! grep -r "$SECRET_MARKER" "$GUARD_INCIDENT_ROOT" "$CURL_LOG" 2>/dev/null; }
+start_only() { "$PM2_BIN" startOrReload "$PM2_BOOT_ECOSYSTEM" --only "$1" >/dev/null; }
+boot() {
+  local rc=0
+  "$BOOT" "$@" >/dev/null 2>>"${SCENARIO_ERR:-/dev/stderr}" || rc=$?
+  [ ! -f "$PM2_HOME/dump.pm2" ] || [ "$(stat -c %a "$PM2_HOME/dump.pm2")" = 600 ] || return 1
+  return "$rc"
+}
+start_guard() { start_only pm2-loop-guard; wait_until 5 online pm2-loop-guard; }
+storm_eco() {
+  local curlrc=${1:-0}
+  write_script ok 'sleep 3600'
+  eco_begin >"$PM2_BOOT_ECOSYSTEM"
+  printf "    { name: 'e', script: '/bin/bash', args: '-c \\\"exit 127\\\"', cwd: '%s', interpreter: 'none', autorestart: true, env: { CHAOS_SECRET: '%s' } },\\n" "$CHAOS_HOME" "$SECRET_MARKER" >>"$PM2_BOOT_ECOSYSTEM"
+  app ok "$CHAOS_HOME/apps/ok" >>"$PM2_BOOT_ECOSYSTEM"; eco_end >>"$PM2_BOOT_ECOSYSTEM"
+  printf '%s\n' "$curlrc" >"$CURL_RC_FILE"
+}
+
+s1() {
+  eco_begin >"$PM2_BOOT_ECOSYSTEM"; app a /nonexistent.sh >>"$PM2_BOOT_ECOSYSTEM"; eco_end >>"$PM2_BOOT_ECOSYSTEM"
+  boot; ! jlist | python3 -c "import json,sys; assert 'a' not in [x.get('name') for x in json.load(sys.stdin)]"
+  json_assert "$GUARD_BOOT_STATE" "d['failed'][0]['check']=='script'"
+  [ "$(grep -c 'a: script /nonexistent.sh' "$CURL_LOG")" = 1 ]
+}
+s2() {
+  eco_begin >"$PM2_BOOT_ECOSYSTEM"; app b "$GUARD" ", preflight_env_file: '$CHAOS_HOME/missing.env'" >>"$PM2_BOOT_ECOSYSTEM"; eco_end >>"$PM2_BOOT_ECOSYSTEM"
+  boot; json_assert "$GUARD_BOOT_STATE" "d['failed'][0]['check']=='env_file'"; [ "$(count_name b)" = 0 ]
+}
+s3() {
+  write_script c 'sleep 3600'; printf 'KEY=\n' >"$CHAOS_HOME/c.env"
+  eco_begin >"$PM2_BOOT_ECOSYSTEM"; app c "$CHAOS_HOME/apps/c" ", preflight_env_file: '$CHAOS_HOME/c.env', preflight_env_keys: ['KEY'], env: { KEY: '' }" >>"$PM2_BOOT_ECOSYSTEM"; eco_end >>"$PM2_BOOT_ECOSYSTEM"
+  boot; json_assert "$GUARD_BOOT_STATE" "d['failed'][0]['check']=='env_key' and d['failed'][0]['subject']=='KEY'"; ! grep -q 'KEY=' "$CURL_LOG"
+}
+s4() {
+  write_script d 'exit 1'; write_eco_basic d "$CHAOS_HOME/apps/d" ', exp_backoff_restart_delay: 0'; start_only d; "$PM2_BIN" save >/dev/null
+  python3 - "$CHAOS_HOME/dump.pm2" <<'PY'
+import json, sys
+rows = json.load(open(sys.argv[1]))
+assert isinstance(rows, list) and len(rows) == 1
+for key in ("name", "pm_exec_path", "pm_cwd", "exec_interpreter", "autorestart", "exec_mode", "instance_var", "env"):
+    assert key in rows[0], key
+PY
+  start_guard
+  PM2_DELETE_OK=1 "$PM2_BIN" delete d pm2-loop-guard >/dev/null
+  [ "$(count_name d)" = 0 ] && [ "$(count_name pm2-loop-guard)" = 0 ]
+  printf 'module.exports = { apps: [\n' >"$PM2_BOOT_ECOSYSTEM"; boot
+  json_assert "$GUARD_BOOT_STATE" "d['mode']=='fallback-resurrect'"
+  wait_until 5 online pm2-loop-guard; wait_stop d
+}
+s5() {
+  MARK=$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 13); SECRET_MARKER="$MARK"; storm_eco; start_only e; start_only ok; start_guard
+  wait_stop e; online ok; [ "$(restarts ok)" = 0 ]; local before; before=$(restarts e); sleep 3; [ "$(restarts e)" = "$before" ]
+  ! grep -r "$SECRET_MARKER" "$GUARD_INCIDENT_ROOT" 2>/dev/null; no_secret_output
+}
+s6() {
+  MARK=$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 13); SECRET_MARKER="$MARK"; storm_eco; start_only e; start_only ok; start_guard
+  local pid; pid=$(jlist | python3 -c "import json,sys; print(next((x.get('pid',0) for x in json.load(sys.stdin) if x.get('name')=='pm2-loop-guard'),0))")
+  [ "$pid" -gt 0 ] && kill -9 "$pid"; start_guard; wait_stop e; online ok; ! grep -q 'stop ok' "$GUARD_STATE_DIR/guard.log" 2>/dev/null
+}
+s7() {
+  MARK=$(head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 13); SECRET_MARKER="$MARK"; storm_eco 7; start_only e; start_only ok; start_guard; wait_stop e
+  [ -s "$GUARD_STATE_DIR/pending-alerts.tsv" ]; printf '0\n' >"$CURL_RC_FILE"; wait_until 6 test ! -s "$GUARD_STATE_DIR/pending-alerts.tsv"
+}
+s8() {
+  write_script ok 'sleep 3600'; write_eco_basic ok "$CHAOS_HOME/apps/ok"; start_only ok; "$PM2_BIN" save >/dev/null
+  printf 'module.exports = { apps: [\n' >"$PM2_BOOT_ECOSYSTEM"; boot; online ok; json_assert "$GUARD_BOOT_STATE" "d['mode']=='fallback-resurrect'"; grep -q 'декларация сломана' "$CURL_LOG"
+}
+s9() {
+  write_script f 'exit 1'; eco_begin >"$PM2_BOOT_ECOSYSTEM"; printf "    { name: 'f', script: '%s', cwd: '%s', interpreter: 'bash', min_uptime: 1000, max_restarts: 3, exp_backoff_restart_delay: 100 },\n" "$CHAOS_HOME/apps/f" "$CHAOS_HOME" >>"$PM2_BOOT_ECOSYSTEM"; eco_end >>"$PM2_BOOT_ECOSYSTEM"
+  start_only f; sleep 15; [ "$(status f)" = errored ]; [ "$(restarts f)" -le 4 ]; local r; r=$(restarts f); sleep 5; [ "$(restarts f)" = "$r" ]
+}
+s10() {
+  write_script g 'exit 0'; eco_begin >"$PM2_BOOT_ECOSYSTEM"; printf "    { name: 'g', script: '%s', cwd: '%s', interpreter: 'bash', min_uptime: 1000, max_restarts: 99, exp_backoff_restart_delay: 100, cron_restart: '* * * * *' },\n" "$CHAOS_HOME/apps/g" "$CHAOS_HOME" >>"$PM2_BOOT_ECOSYSTEM"; eco_end >>"$PM2_BOOT_ECOSYSTEM"
+  start_only g; start_guard; sleep 130; ! grep -q 'stop g' "$GUARD_STATE_DIR/guard.log" 2>/dev/null; [ "$(restarts g)" -ge 2 ]
+}
+s11() {
+  write_script h 'sleep 3600'; eco_begin >"$PM2_BOOT_ECOSYSTEM"; app h "$CHAOS_HOME/apps/h" ", preflight_env_file: '$CHAOS_HOME/h.env'" >>"$PM2_BOOT_ECOSYSTEM"; eco_end >>"$PM2_BOOT_ECOSYSTEM"
+  boot; json_assert "$GUARD_BOOT_STATE" "d['failed'][0]['name']=='h'"; printf 'KEY=x\n' >"$CHAOS_HOME/h.env"
+  boot --only h; online h
+  ! python3 - "$GUARD_BOOT_STATE" <<'PY'
+import json,sys
+assert any(x.get('name')=='h' for x in json.load(open(sys.argv[1])).get('failed',[]))
+PY
+  jlist | python3 -c 'import json,sys
+assert next((x.get("pm2_env") or {}).get("pm_exec_path") for x in json.load(sys.stdin) if x.get("name")=="h") == sys.argv[1]' "$CHAOS_HOME/apps/h"
+}
+s12() {
+  local i end count=0 starter
+  eco_begin >"$PM2_BOOT_ECOSYSTEM"
+  for i in 1 2 3 4 5 6; do
+    write_script "x$i" 'sleep 3600'; app "x$i" "$CHAOS_HOME/apps/x$i" >>"$PM2_BOOT_ECOSYSTEM"
+  done
+  eco_end >>"$PM2_BOOT_ECOSYSTEM"
+  "$BOOT" & starter=$!; end=$((SECONDS+20))
+  while [ "$SECONDS" -lt "$end" ]; do
+    count=$(jlist | python3 -c 'import json,sys; print(sum(x.get("name","").startswith("x") for x in json.load(sys.stdin)))')
+    [[ "$count" =~ ^[0-9]+$ ]] || { echo "invalid x process count: $count" >&2; return 1; }
+    [ "$count" -ge 2 ] && [ ! -e "$GUARD_BOOT_STATE" ] && break
+    kill -0 "$starter" 2>/dev/null || break
+    sleep 0.2
+  done
+  if [ "$count" -ge 2 ] && [ ! -e "$GUARD_BOOT_STATE" ] && kill -0 "$starter" 2>/dev/null; then kill -9 "$starter" 2>/dev/null || true; fi
+  wait "$starter" 2>/dev/null || true; boot
+  [ "$(jlist | python3 -c 'import json,sys; print(sum((x.get("pm2_env") or {}).get("status")=="online" and x.get("name","").startswith("x") for x in json.load(sys.stdin)))')" = 6 ]
+  python3 -m json.tool "$GUARD_BOOT_STATE" >/dev/null; [ "$(grep -c 'PM2 boot:' "$CURL_LOG")" -le 1 ]
+  for i in 1 2 3 4 5 6; do [ "$(restarts "x$i")" = 0 ] || return 1; done
+}
+s13() {
+  printf 'module.exports = { apps: [\n' >"$PM2_BOOT_ECOSYSTEM"; boot; json_assert "$GUARD_BOOT_STATE" "d['mode']=='fallback-empty'"; online pm2-loop-guard; grep -q 'кэш пуст' "$CURL_LOG"; [ "$(jlist | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')" = 1 ]
+}
+
+SCENARIOS=(S1 S2 S3 S4 S5 S6 S7 S8 S9 S10 S11 S12 S13)
+SELECTED=()
+for arg in "$@"; do
+  case "$arg" in --keep) KEEP=1 ;; --verbose) VERBOSE=1 ;; S[1-9]|S1[0-3]) SELECTED+=("$arg") ;; *) usage; exit 2 ;; esac
+done
+[ "${#SELECTED[@]}" -gt 0 ] || SELECTED=("${SCENARIOS[@]}")
+PROD_BEFORE="$(mktemp /tmp/pm2-chaos.XXXXXX)"; PROD_AFTER="$(mktemp /tmp/pm2-chaos.XXXXXX)"
+snapshot_production >"$PROD_BEFORE"
+printf 'Id | verdict | number\n'
+for id in "${SELECTED[@]}"; do
+  TOTAL=$((TOTAL+1)); SCENARIO_ERR="$(mktemp /tmp/pm2-chaos.XXXXXX)" || exit 1
+  rc=0
+  if setup; then
+    ( set -e; "${id,,}" ) 2>"$SCENARIO_ERR" || rc=$?
+  else
+    rc=$?
+  fi
+  if [ "$rc" = 0 ]; then PASS=$((PASS+1)); printf '%s | PASS | %s\n' "$id" "$PASS"; fi
+  if [ "$rc" != 0 ]; then
+    reason=$(tail -1 "$SCENARIO_ERR" | tr '\n' ' ')
+    [ -n "$reason" ] || reason="scenario exited $rc"
+    printf '%s | FAIL | %s | reason: %s\n' "$id" "$rc" "$reason"
+    [ "$VERBOSE" = 1 ] && { printf '%s stderr (last 30 lines):\n' "$id"; tail -30 "$SCENARIO_ERR"; }
+  fi
+  cleanup
+  rm -f -- "$SCENARIO_ERR"
+done
+snapshot_production >"$PROD_AFTER"
+PROD_DIFF=$(diff -u "$PROD_BEFORE" "$PROD_AFTER" || true)
+printf 'prod snapshot diff: %s lines\n' "$(printf '%s' "$PROD_DIFF" | sed '/^$/d' | wc -l)"
+if [ -n "$PROD_DIFF" ]; then printf '%s\n' "$PROD_DIFF" >&2; exit 1; fi
+rm -f -- "$PROD_BEFORE" "$PROD_AFTER"
+printf '%s/%s PASS\n' "$PASS" "$TOTAL"
+[ "$PASS" = "$TOTAL" ]
