@@ -194,6 +194,19 @@ module.exports = {
       out_file: '/root/.pm2/logs/server-backup-out.log'
     },
     {
+      // Догоняющий запуск после ребута/простоя: last-ok старше 26 ч → pm2 restart server-backup (16.09)
+      name: 'backup-catchup',
+      script: '/root/workspaces/tools/scripts/pm2/backup-catchup.sh',
+      cwd: '/root/workspaces/projects',
+      interpreter: 'bash',
+      exec_mode: 'fork_mode',
+      instances: 1,
+      autorestart: false,
+      cron_restart: '*/30 * * * *',
+      error_file: '/root/.pm2/logs/backup-catchup-error.log',
+      out_file: '/root/.pm2/logs/backup-catchup-out.log'
+    },
+    {
       name: 'docker-log-rotation',
       script: '/root/workspaces/tools/scripts/schedulers/docker-log-rotation.sh',
       cwd: '/root/workspaces/projects',
