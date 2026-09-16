@@ -60,7 +60,10 @@ for (const app of allApps) {
 const violations = [];
 const outputApps = apps.map(app => {
   const name = app && typeof app.name === 'string' ? app.name : '';
-  const envKeys = Array.isArray(app && app.env_keys) ? app.env_keys : [];
+  const envFile = app && (app.preflight_env_file || app.env_file);
+  const envKeys = Array.isArray(app && app.preflight_env_keys)
+    ? app.preflight_env_keys
+    : Array.isArray(app && app.env_keys) ? app.env_keys : [];
   const env = app && app.env && typeof app.env === 'object' ? app.env : {};
   const envPresent = Object.fromEntries(envKeys.map(key => [key, typeof env[key] === 'string' && env[key].length > 0]));
   const failures = [];
@@ -75,17 +78,18 @@ const outputApps = apps.map(app => {
   }
   if (typeof script !== 'string' || !path.isAbsolute(script)) violations.push({ name, field: 'script', reason: 'not_absolute' });
   if (names.get(name) > 1) violations.push({ name, field: 'name', reason: 'duplicate' });
+  if (app && ('env_file' in app || 'env_keys' in app)) violations.push({ field: 'env_file', reason: 'reserved pm2 prefix env_, rename to preflight_env_file' });
 
   if (!readable(scriptPath)) failures.push({ check: 'script', subject: scriptPath });
   if (typeof cwd !== 'string' || !directory(cwd)) failures.push({ check: 'cwd', subject: cwd || '' });
-  if (app && app.env_file && !readable(app.env_file)) failures.push({ check: 'env_file', subject: app.env_file });
+  if (envFile && !readable(envFile)) failures.push({ check: 'env_file', subject: envFile });
   for (const key of envKeys) if (!envPresent[key]) failures.push({ check: 'env_key', subject: key });
 
   return {
     name,
     script: script || null,
     cwd: cwd || null,
-    env_file: app && app.env_file || null,
+    env_file: envFile || null,
     env_keys: envKeys,
     env_present: envPresent,
     min_uptime: app && app.min_uptime,

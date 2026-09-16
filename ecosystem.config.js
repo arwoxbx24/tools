@@ -602,8 +602,8 @@ module.exports = {
       min_uptime: 10000,
       max_restarts: 10,
       exp_backoff_restart_delay: 1000,
-      env_file: '/root/workspaces/secrets/services/kpi-event-handler.env',
-      env_keys: ['KPI_AUTH_TOKEN'],
+      preflight_env_file: '/root/workspaces/secrets/services/kpi-event-handler.env',
+      preflight_env_keys: ['KPI_AUTH_TOKEN'],
       env: kpiEventHandlerEnv,
       error_file: '/root/.pm2/logs/kpi-event-handler-error.log',
       out_file: '/root/.pm2/logs/kpi-event-handler-out.log'
@@ -726,8 +726,8 @@ module.exports = {
       exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/pm2-api-error.log',
       out_file: '/root/.pm2/logs/pm2-api-out.log',
-      env_file: '/root/workspaces/secrets/services/pm2-api.env',
-      env_keys: ['PM2_API_PASS'],
+      preflight_env_file: '/root/workspaces/secrets/services/pm2-api.env',
+      preflight_env_keys: ['PM2_API_PASS'],
       env: {
         ...pm2ApiEnv
       }
