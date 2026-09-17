@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# устарел (17.09, spec:027) → используй: share <файл>  (/root/workspaces/tools/bin/share)
 # Публикует PNG/JPG-файл в MinIO (b244now/hh-qa) без раскрытия ключей агентам.
 #
 # Использование: bash tools/secure/publish_image.sh <файл.png> <имя-в-хранилище>

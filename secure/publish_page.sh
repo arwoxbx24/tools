@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# устарел (17.09, spec:027) → используй: share <файл>  (/root/workspaces/tools/bin/share)
 # Публикует HTML-файл в MinIO (b244now) без раскрытия ключей агентам.
 #
 # Агент видит ИМЯ действия, а не ключи. Credentials читает mc из ~/.mc/config.json
