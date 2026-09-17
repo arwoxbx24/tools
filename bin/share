@@ -3,9 +3,10 @@ set -euo pipefail
 
 [[ $# == 1 ]] || { echo 'usage: share <файл>' >&2; exit 2; }
 file=$1
+candidate=$(realpath -m -- "$file")
+[[ $file =~ /secrets/|/\.env|\.env$|\.env\.|\.secrets|id_rsa|id_ed25519|\.pem$|\.key$|/\.ssh/|auth\.json$|credentials|/\.codex/|/\.claude/ || $candidate =~ /secrets/|/\.env|\.env$|\.env\.|\.secrets|id_rsa|id_ed25519|\.pem$|\.key$|/\.ssh/|auth\.json$|credentials|/\.codex/|/\.claude/ ]] && { echo 'share: секреты не публикуются' >&2; exit 5; }
 [[ -f $file && -r $file ]] || { echo "share: нет файла: $file" >&2; exit 2; }
 file=$(realpath "$file")
-[[ $file =~ /secrets/|/\.env|\.env$|\.env\.|\.secrets|id_rsa|id_ed25519|\.pem$|\.key$|/\.ssh/|auth\.json$|credentials|/\.codex/|/\.claude/ ]] && { echo 'share: секреты не публикуются' >&2; exit 5; }
 name="$(date +%Y%m%d-%H%M%S)-$(basename "$file")"
 public="https://io.b244.ru/files/$name"
 ak=$(jq -r '.aliases.b244minio.accessKey // empty' ~/.mc/config.json 2>/dev/null || true)
