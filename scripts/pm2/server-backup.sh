@@ -9,6 +9,7 @@ LOG=/root/workspaces/system/tools/scripts/logs/server-backup.log
 NOTIFY_ENV=/root/workspaces/projects/hh-scoring/data/notify.env
 STAGE=/root/workspaces/system/tools/scripts/data/server-backup-stage
 LAST_OK=/root/workspaces/system/tools/scripts/data/server-backup.last-ok
+ALERT_PENDING=/root/workspaces/system/tools/scripts/data/server-backup.alert-pending
 
 if [ -f "$LOG" ] && [ "$(stat -c%s "$LOG")" -gt $((5 * 1024 * 1024)) ]; then
   mv -f "$LOG" "$LOG.1"
@@ -17,7 +18,7 @@ mkdir -p "$(dirname "$LOG")" "$STAGE"
 log() { echo "[$(date '+%F %T')] $*" >>"$LOG"; }
 
 send_telegram() { # text
-  local token="" chat=""
+  local token="" chat="" rc
   if [ -f "$NOTIFY_ENV" ]; then
     # shellcheck disable=SC1090
     source "$NOTIFY_ENV"
@@ -28,8 +29,10 @@ send_telegram() { # text
     return 0
   fi
   curl -s --max-time 10 "https://api.telegram.org/bot${token}/sendMessage" \
-    -d "chat_id=${chat}" --data-urlencode "text=$1" >/dev/null 2>&1 \
-    || log "telegram send failed"
+    -d "chat_id=${chat}" --data-urlencode "text=$1" >/dev/null 2>&1
+  rc=$?
+  [ "$rc" -eq 0 ] || log "telegram send failed"
+  return "$rc"
 }
 
 run_step() { # name command...
@@ -95,7 +98,11 @@ stage_host_dumps() {
 
 fail() { # step rc [exit]
   local step="$1" rc="$2" code="${3:-1}"
-  send_telegram "🚨 server-backup: ${step} rc=${rc}, лог ${LOG}"
+  local alert="🚨 server-backup: ${step} rc=${rc}, лог ${LOG}"
+  if ! send_telegram "$alert"; then
+    printf '%s\n' "$alert" >"$ALERT_PENDING"
+    log "alert queued"
+  fi
   exit "$code"
 }
 
@@ -119,6 +126,13 @@ crontab -l >"$STAGE/crontab-root.txt" 2>>"$LOG" || :
 stage_manifests
 stage_host_dumps
 LATEST_SNAP=$(ls -1 /root/backups/docker 2>/dev/null | sort | tail -1)
+
+curl -s --max-time 10 -o /dev/null https://storage.yandexcloud.net
+preflight_rc=$?
+if [ "$preflight_rc" -ne 0 ]; then
+  log "preflight: S3 недоступен rc=$preflight_rc"
+  fail preflight "$preflight_rc" 3
+fi
 
 timeout 3600 "$RESTIC" cat config >/dev/null 2>&1
 config_rc=$?
