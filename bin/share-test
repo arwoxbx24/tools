@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -u
+
+PATH="$(cd -- "$(dirname -- "$0")" && pwd):$PATH"
+f="/tmp/share-test-$$.html"; e="/tmp/share-test-$$.err"; all="/tmp/share-test-$$.all"
+trap 'rm -f "$f" "$e" "$all"' EXIT
+printf '<h1>share-test</h1>\n' >"$f"
+ok=0
+
+out=$(share "$f" 2>"$e"); rc=$?; cat "$e" >>"$all"
+if [[ $rc == 0 && $out =~ ^https://b244\.ru/[A-Za-z0-9]+$ && $(wc -l <<<"$out") == 1 ]]; then
+  h=$(/usr/bin/curl -sI -o /dev/null -w '%{http_code} %{redirect_url}' "$out")
+  code=${h%% *}; url=${h#* }
+  h=$(/usr/bin/curl -s -o /dev/null -w "%{http_code} %{size_download}" "$url")
+  download_code=${h%% *}; download_size=${h#* }
+  key=$(cat "${SHARE_KUTT_KEY_FILE:-/root/workspaces/system/services/short-links/secret}" 2>/dev/null || true)
+  sk=$(jq -r '.aliases.b244minio.secretKey // empty' ~/.mc/config.json 2>/dev/null || true)
+  leak=0; [[ -n $key ]] && grep -Fq -- "$key" "$all" && leak=1
+  [[ -n $sk ]] && grep -Fq -- "$sk" "$all" && leak=1
+  if [[ $code =~ ^30[1278]$ && $url == https://io.b244.ru/files/* && $download_code == 200 && $download_size == $(stat -c %s "$f") && $leak == 0 ]]; then
+    echo 'PASS 1'; ((ok++))
+  else echo 'FAIL 1: link check'; fi
+else echo "FAIL 1: exit $rc"; fi
+
+out=$(share /nonexistent/x.html 2>"$e"); rc=$?
+if [[ $rc == 2 && -z $out ]]; then echo 'PASS 2'; ((ok++)); else echo "FAIL 2: exit $rc"; fi
+
+out=$(SHARE_KUTT_KEY_FILE=/nonexistent share "$f" 2>"$e"); rc=$?; cat "$e" >>"$all"
+if [[ $rc == 3 && -z $out && $(<"$e") == *'fallback: https://io.b244.ru/files/'* ]]; then echo 'PASS 3'; ((ok++)); else echo "FAIL 3: exit $rc"; fi
+
+[[ $ok == 3 ]]

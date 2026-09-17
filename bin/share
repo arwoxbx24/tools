@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+[[ $# == 1 ]] || { echo 'usage: share <файл>' >&2; exit 2; }
+file=$1
+[[ -f $file && -r $file ]] || { echo "share: нет файла: $file" >&2; exit 2; }
+file=$(realpath "$file")
+[[ $file =~ /secrets/|/\.env|\.env$|\.env\.|\.secrets|id_rsa|id_ed25519|\.pem$|\.key$|/\.ssh/|auth\.json$|credentials|/\.codex/|/\.claude/ ]] && { echo 'share: секреты не публикуются' >&2; exit 5; }
+name="$(date +%Y%m%d-%H%M%S)-$(basename "$file")"
+public="https://io.b244.ru/files/$name"
+ak=$(jq -r '.aliases.b244minio.accessKey // empty' ~/.mc/config.json 2>/dev/null || true)
+sk=$(jq -r '.aliases.b244minio.secretKey // empty' ~/.mc/config.json 2>/dev/null || true)
+[[ -n $ak && -n $sk ]] || { echo 'share: minio credentials unavailable' >&2; exit 4; }
+ip=$(timeout 5 docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' minio 2>/dev/null || true)
+host=${ip:+http://$ip:9000}; host=${host:-https://io.b244.ru}
+export MC_HOST_share="${host%%://*}://$ak:$sk@${host#*://}"
+case $file in
+  *.html) ct='text/html; charset=utf-8' ;; *.md|*.txt|*.log|*.csv) ct='text/plain; charset=utf-8' ;;
+  *.json) ct=application/json ;; *) ct=$(file --mime-type -b "$file") ;;
+esac
+# ponytail: mc's native env alias avoids a mutable alias and credential argv.
+timeout "${SHARE_TIMEOUT:-120}" mc cp --attr "Content-Type=$ct;Cache-Control=no-store" "$file" "share/files/$name" >/dev/null 2>&1 || { echo 'share: minio upload failed' >&2; exit 4; }
+hdr=$(mktemp); payload=$(mktemp); chmod 600 "$hdr" "$payload"; trap 'rm -f "$hdr" "$payload"' EXIT
+keyfile=${SHARE_KUTT_KEY_FILE:-/root/workspaces/system/services/short-links/secret}
+if [[ ! -s $keyfile ]]; then
+  echo "share: kutt key file missing: $keyfile" >&2; echo "fallback: $public" >&2; exit 3
+fi
+printf 'X-API-Key: %s\n' "$(cat "$keyfile")" >"$hdr"
+alphabet=abcdefghkmnpqrstuvwxyzABCDEFGHKLMNPQRSTUVWXYZ23456789
+reserved='|login|signup|logout|settings|stats|report|banned|terms|privacy|api|url-password|url-info|confirm-email|subscriptions|reset-password|verify-email|'
+len=$(cat /root/workspaces/tools/.kutt-link-counter 2>/dev/null || echo 3)
+[[ $len =~ ^[0-9]+$ && $len -ge 3 ]] || len=3
+last='request failed'
+for ((try=1; try<=100; try++)); do
+  slug=; for ((n=0; n<len; n++)); do slug+=${alphabet:RANDOM%${#alphabet}:1}; done
+  [[ $reserved == *"|$slug|"* ]] && continue
+  jq -n --arg target "$public" --arg customurl "$slug" --arg expire_in "${SHARE_EXPIRE:-30 days}" \
+    '{target:$target,domain:"b244.ru",customurl:$customurl,expire_in:$expire_in}' >"$payload"
+  if response=$(curl -s -m 20 -w '\n%{http_code}' -X POST http://localhost:3000/api/v2/links -H @"$hdr" -H 'Content-Type: application/json' -d @"$payload"); then
+    last=${response##*$'\n'}; link=$(jq -r '.link // empty' <<<"${response%$'\n'*}")
+    [[ $last =~ ^2[0-9][0-9]$ && -n $link ]] && { printf '%s\n' "$link"; exit 0; }
+  fi
+  if (( try % 50 == 0 )); then len=$((len+1)); printf '%s\n' "$len" >/root/workspaces/tools/.kutt-link-counter; fi
+done
+echo "share: kutt $last" >&2; echo "fallback: $public" >&2; exit 3
