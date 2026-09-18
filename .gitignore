@@ -1,5 +1,7 @@
 node_modules/
 __pycache__/
+# vendor/ — готовые решения (git clone, без правок); версия фиксируется хэшем в docs/csb-updates (spec:038)
+vendor/
 # bin/ — инструменты агентов (конституция 10.09: плоско tools/bin/), под git; игнорируются только бинарники
 bin/restic
 *.log
