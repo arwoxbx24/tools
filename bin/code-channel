@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+set +x
+set -uo pipefail
+# spec:035: only this invocation's temporary files are cleaned; no stale-file sweep.
+fail() { printf 'code-channel: %s\n' "$*" >&2; }
+[[ $# == 3 || $# == 5 ]] || { fail 'usage: form project tz [--model provider/model]'; exit 3; }
+form=$1; project=$2; tz=$3; override=${5:-}
+[[ $form =~ ^(1|2|3|auto)$ && $project == /* && ( $# == 3 || $4 == --model ) ]] || exit 3
+[[ -r $tz ]] || { fail 'нет файла ТЗ'; exit 3; }
+prompt=$(cat -- "$tz") || exit 3
+cd -- "$project" || exit 3
+run_form() (
+    n=$1; start=$SECONDS; pre=-; run=-; hdr=; tmpjson=
+    case $n in
+        1) provider=bitrixgpt; name=VIBECODE_API_KEY; secret=vibecode; base=https://vibecode.bitrix24.tech/v1; model=bitrixgpt/bitrix/bitrixgpt-5.6-agent;;
+        2) provider=codex;;
+        3) provider=openrouter; name=OPENROUTER_API_KEY; secret=openrouter; base=https://openrouter.ai/api/v1; model=openrouter/qwen/qwen3-coder-next;;
+    esac
+    finish() {
+        rc=$?
+        [[ -z $hdr ]] || unlink -- "$hdr"
+        [[ -z $tmpjson ]] || unlink -- "$tmpjson"
+        printf 'code-channel: form=%s provider=%s precheck=%s run=%s t=%s\n' "$n" "$provider" "$pre" "$run" "$((SECONDS-start))" >&2
+        trap - EXIT; exit "$rc"
+    }
+    trap finish EXIT
+    for tool in curl jq; do command -v "$tool" >/dev/null || { fail "нет инструмента $tool"; exit 3; }; done
+    tool=opencode; [[ $n != 2 ]] || tool=codex
+    command -v "$tool" >/dev/null || { fail "нет инструмента $tool"; exit 3; }
+    if [[ $n == 2 ]]; then
+        started=$SECONDS
+        timeout 590 codex exec -p quota-terra -s workspace-write "$prompt"; run=$?
+        [[ $run == 0 || $run == 124 || $((SECONDS-started)) -gt 30 ]] || exit 21
+        exit "$run"
+    fi
+    f=${CODE_CHANNEL_SECRET_OVERRIDE:-/root/workspaces/secrets/projects/$secret.env}
+    [[ -r $f ]] || { fail "нет секрета $name"; exit 5; }
+    val=$(sed -n "s/^\(export \)\{0,1\}${name}=//p" "$f" | head -1 | tr -d "\"'")
+    [[ -n $val && $val != *$'\r'* && $val != *$'\n'* ]] || { fail "нет секрета $name"; exit 5; }
+    export "$name=$val"
+    umask 077
+    hdr=$(mktemp "${TMPDIR:-/tmp}/code-channel-hdr-XXXXXX") || exit 3
+    tmpjson=$(mktemp "${TMPDIR:-/tmp}/code-channel-json-XXXXXX") || exit 3
+    printf 'Authorization: Bearer %s\n' "$val" > "$hdr" || exit 3
+    unset val
+    pre=$(curl -sS -m 5 -o "$tmpjson" -w '%{http_code}' -H @"$hdr" "${CODE_CHANNEL_BASEURL_OVERRIDE:-$base}/models")
+    rc=$?
+    [[ $rc == 0 ]] || exit 14
+    case $pre in 200) ;; 401|403) exit 11;; 429) exit 12;; 402) exit 13;; 5??) exit 14;; 4??) exit 11;; *) exit 14;; esac
+    model=${override:-$model}
+    [[ $model == "$provider/"* ]] || exit 15
+    id=${model#*/}
+    if ! jq -e --arg id "$id" '.data | any(.id == $id)' "$tmpjson" >/dev/null 2>&1; then
+        if [[ $n == 1 ]]; then
+            id=$(jq -r '[.data[].id | select(startswith("bitrix/"))][0] // empty' "$tmpjson" 2>/dev/null)
+        else
+            config=${XDG_CONFIG_HOME:-$HOME/.config}/opencode/opencode.jsonc
+            ids=$(jq -Rs 'gsub("(?m)^\\s*//[^\\n]*"; "") | gsub(",\\s*(?<end>[}\\]])"; .end) | fromjson | .provider.openrouter.models | keys' "$config" 2>/dev/null) || exit 15
+            id=$(jq -r --argjson ids "$ids" '[.data[].id | select(. as $id | $ids | index($id))][0] // empty' "$tmpjson" 2>/dev/null)
+        fi
+        [[ -n $id ]] || exit 15
+        model=$provider/$id
+    fi
+    timeout 590 opencode run -m "$model" "$prompt"; run=$?
+    exit "$run"
+)
+if [[ $form != auto ]]; then run_form "$form"; exit $?; fi
+for n in 1 2 3; do
+    run_form "$n"; rc=$?
+    [[ $rc != 0 && $rc != 124 && $n != 3 ]] || exit "$rc"
+    diff=$(git diff --stat 2>/dev/null | tail -1)
+    printf 'code-channel: switch %s→%s rc=%s diff=%s\n' "$n" "$((n+1))" "$rc" "$diff" >&2
+done
