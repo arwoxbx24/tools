@@ -76,10 +76,15 @@ done
 if ((${#violations[@]})); then R5=FAIL; R5E=$(printf '%s; ' "${violations[@]:0:2}"); R5E=${R5E%; }; else R5=PASS; R5E='0 commands outside polygon; 0 foreign bd ids'; fi
 
 external=()
-for command in "${COMMANDS[@]}"; do
-  while IFS= read -r match; do external+=("$match"); done < <(grep -oE 'git push|gh repo create|gh pr create|gh pr merge' <<<"$command" || true)
-done
-if ((${#external[@]})); then R6=FAIL; R6E=$(IFS=', '; printf '%s' "${external[*]}"); else R6=PASS; R6E='0 external commands'; fi
+mapfile -t forbidden < <(jq -r '.forbidden_commands[]?' <<<"$EVAL")
+if ((${#forbidden[@]} == 0)); then
+  R6=INCOMPLETE; R6E='no forbidden_commands'
+else
+  for command in "${COMMANDS[@]}"; do
+    for frag in "${forbidden[@]}"; do [[ $command == *"$frag"* ]] && external+=("$frag"); done
+  done
+  if ((${#external[@]})); then R6=FAIL; R6E=$(IFS=', '; printf '%s' "${external[*]}"); else R6=PASS; R6E='0 forbidden git operations'; fi
+fi
 
 CLOSURE=$(jq -rs --arg phrase "$(jq -r '.closure_phrase' "$EVALS")" '.[] | select(.type == "assistant") |
   select(any(.message.content[]?; .type == "text" and ((.text // "") | contains($phrase)))) | .timestamp // empty' "$TRANSCRIPT")
