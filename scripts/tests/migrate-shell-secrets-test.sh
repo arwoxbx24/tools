@@ -137,6 +137,25 @@ else
   report "env-файл уже имеет запись: заменена ровно одна (rc=$rc cnt=$CNT)" FAIL
 fi
 
+# 9. env-файл содержит две строки с одним именем → после прогона остаётся ровно одна
+PROFILE4="$TMP/profile-4.sh"
+ENVFILE4="$TMP/secrets-d/mysvcd.env"
+cat > "$PROFILE4" <<EOF
+DUP_API_KEY=$FAKE
+[ -z "\$PS1" ] && return
+EOF
+mkdir -p "$(dirname "$ENVFILE4")"
+printf 'DUP_API_KEY=%s\nDUP_API_KEY=%s\n' "$OLD" "$OLD" > "$ENVFILE4"
+bash "$SCRIPT" --profile "$PROFILE4" --env-file "$ENVFILE4" >/dev/null 2>&1
+rc=$?
+CNT="$(grep -c '^DUP_API_KEY=' "$ENVFILE4")"
+if [ "$rc" -eq 0 ] && [ "$CNT" -eq 1 ] \
+  && grep -q "^DUP_API_KEY=$FAKE\$" "$ENVFILE4"; then
+  report "env-файл с дублями имени: остаётся ровно одна" PASS
+else
+  report "env-файл с дублями имени: остаётся ровно одна (rc=$rc cnt=$CNT)" FAIL
+fi
+
 if [ "$FAILS" -eq 0 ]; then
   echo "ALL PASS"
   exit 0
