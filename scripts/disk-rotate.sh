@@ -15,15 +15,15 @@
 # Ledger: /var/log/disk-rotate-ledger.tsv
 set -u
 LOG=/var/log/disk-rotate.log
-LEDGER=/var/log/disk-rotate-ledger.tsv
+LEDGER=${LEDGER:-/var/log/disk-rotate-ledger.tsv}
 ALERT_STATE_FILE=/var/log/disk-rotate-alert-state.tsv
 LOCK=/var/run/disk-rotate.lock
 NOTIFY_ENV=${NOTIFY_ENV:-/root/workspaces/secrets/services/pm2-notify.env}
 ECOSYSTEM="${0%/*}/../ecosystem.config.js"
 
-SOFT_PCT=80
-HARD_PCT=90
-TRASH_AGE_DAYS=14
+SOFT_PCT=${SOFT_PCT:-80}
+HARD_PCT=${HARD_PCT:-90}
+TRASH_AGE_DAYS=${TRASH_AGE_DAYS:-14}
 EXHAUSTED_PCT=88
 
 # Коды возврата (spec:054)
@@ -329,7 +329,7 @@ cleanup_cache() { # работает при soft и выше
 cleanup_trash() { # работает только при hard
   find /root/workspaces/projects/.agent-work -maxdepth 1 -type d -name 'trash-*' \
     -mtime "+$TRASH_AGE_DAYS" -print0 2>/dev/null | handle trash
-  find /root/workspaces/system/archives -maxdepth 1 -type f -name '*.tar.gz' \
+  find /root/workspaces/system/archives -maxdepth 2 -type f -name '*.tar.gz' \
     -mtime "+$TRASH_AGE_DAYS" -print0 2>/dev/null | handle trash
 
   # --- snap: только `snap remove <имя>`; файлы .snap и каталоги snapd не трогаем ---
