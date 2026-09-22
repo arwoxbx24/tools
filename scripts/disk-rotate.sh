@@ -47,6 +47,7 @@ RC_ALERT_FAILED=1
 RC_USAGE=2
 RC_EXHAUSTED=3   # классы исчерпаны, занятость после уборки выше 88%
 RC_LOCKED=4
+RC_GATE_CLOSED=5 # предусловие гейта не выполнено: last-ok стар, репозиторий недоступен
 
 # Пять каталогов для top5 и алертов (spec:054).
 TOP5_DIRS=(/root/workspaces /var/lib/docker /root/backups /root/.local /tmp)
@@ -85,13 +86,15 @@ case "${1:-}" in
   --dry-run)        MODE=dry-run ;;
   --report)         MODE=report ;;
   --check-declared) MODE=check ;;
+  --restore-drill)  MODE=drill ;;
   --help)
     cat <<'EOF'
-Usage: disk-rotate.sh [--dry-run|--report|--check-declared|--help]
+Usage: disk-rotate.sh [--dry-run|--report|--check-declared|--restore-drill|--help]
   (нет аргументов)  обычный прогон из cron: уборка по классам + алерт при необходимости
   --dry-run         ничего не удаляет; печатает перечень кандидатов и прогноз
   --report          только измерение и строка в ledger; без уборки и алерта
   --check-declared  сверяет пути скриптов из crontab и ecosystem.config.js
+  --restore-drill   репетиция восстановления: сверяет последний снимок predelete с живыми файлами
   --help            этот перечень
 EOF
     exit 0
@@ -282,27 +285,109 @@ restic_env() { # задать RESTIC_REPOSITORY/RESTIC_PASSWORD_FILE из DR_RES
   fi
 }
 
+gate_open() { # -> 0 если предусловие гейта выполнено; иначе печатает причину в GATE_REASON и 1
+  GATE_REASON=
+  local last_ok now_s
+  if [ ! -f "$DR_LAST_OK" ]; then
+    GATE_REASON=no-last-ok
+    return 1
+  fi
+  last_ok=$(cat "$DR_LAST_OK" 2>/dev/null)
+  now_s=$(date +%s)
+  if [ $(( now_s - last_ok )) -gt 129600 ]; then
+    GATE_REASON=last-ok-stale
+    return 1
+  fi
+  if ! "$RESTIC" cat config >/dev/null 2>&1; then
+    GATE_REASON=restic-unreachable
+    return 1
+  fi
+  return 0
+}
+
+irrep_candidates() { # -> незаменимые кандидаты (не в state, не в DENY_LIST) на stdout
+  if [ -n "$DR_TEST_IRREPLACEABLE_DIR" ] && [ -d "$DR_TEST_IRREPLACEABLE_DIR" ]; then
+    while IFS= read -r -d '' p; do
+      denied "$p" && continue
+      grep -qxF "$p" <(awk -F'\t' '{print $1}' "$DR_STATE_FILE" 2>/dev/null) && continue
+      printf '%s\n' "$p"
+    done < <(find "$DR_TEST_IRREPLACEABLE_DIR" -maxdepth 1 -type f -print0 2>/dev/null)
+  fi
+  for p in "${REFIX_PATHS[@]:-}"; do
+    printf '%s\n' "$p"
+  done
+}
+
+# --restore-drill (spec:055): репетиция восстановления; без уборки и без ledger.
+if [ "$MODE" = drill ]; then
+  restic_env
+  drill_id=$("$RESTIC" snapshots --tag predelete --latest 1 --json 2>/dev/null \
+    | jq -r '.[0].short_id' 2>/dev/null)
+  if [ -z "$drill_id" ] || [ "$drill_id" = null ]; then
+    echo "drill: 0 files"
+    exit 1
+  fi
+  drill_d=$(mktemp -d /tmp/restore-drill-XXXX) || exit 1
+  "$RESTIC" restore "$drill_id" --target "$drill_d" >/dev/null 2>&1
+  drill_n=0; drill_m=0; drill_k=0
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    real="${f#"$drill_d"}"
+    [ -f "$real" ] || continue
+    drill_n=$((drill_n + 1))
+    if cmp -s -- "$f" "$real"; then
+      drill_m=$((drill_m + 1))
+    else
+      drill_k=$((drill_k + 1))
+    fi
+  done < <(find "$drill_d" -type f 2>/dev/null)
+  rm -rf -- "$drill_d"
+  echo "drill: $drill_n files, $drill_m match, $drill_k mismatch"
+  if [ "$drill_k" -eq 0 ] && [ "$drill_n" -gt 0 ]; then
+    exit 0
+  fi
+  exit 1
+fi
+
 fix_candidates() { # class listfile -> 0/1; фиксирует незаменимые в restic predelete и пишет state/journal
   local class=$1 listfile=$2
-  local -a paths=()
+  local -a paths=() fix_paths=()
   local -A sha1_map=()
-  local p sha1 sha2 size mtime snapshot_id dump rc
+  local p sha1 sha2 size mtime snapshot_id dump rc total quota
+  local quota=${DR_FIX_QUOTA_BYTES:-10737418240}
+  total=0
   while IFS= read -r p; do
     [ -n "$p" ] || continue
     paths+=("$p")
     sha1_map["$p"]=$(sha256sum < "$p" | cut -c1-64)
   done <"$listfile"
-  dump=$("$RESTIC" backup --files-from-verbatim "$listfile" --tag predelete --host "$(hostname)" --json)
+  # Квота (spec:055): при превышении бюджета оставшиеся пути не фиксируем, а откладываем.
+  for p in "${paths[@]}"; do
+    size=$(stat -c %s "$p" 2>/dev/null || echo 0)
+    if [ "$total" -gt 0 ] && [ $((total + size)) -gt "$quota" ]; then
+      journal_row "$class" deferred "$p" "$size" - - quota
+      continue
+    fi
+    fix_paths+=("$p")
+    total=$((total + size))
+  done
+  if [ "${#fix_paths[@]}" -eq 0 ]; then
+    return 1
+  fi
+  fix_list=$(mktemp)
+  printf '%s\n' "${fix_paths[@]}" >"$fix_list"
+  dump=$("$RESTIC" backup --files-from-verbatim "$fix_list" --tag predelete --host "$(hostname)" --json)
   rc=$?
   if [ "$rc" -ne 0 ]; then
-    for p in "${paths[@]}"; do
+    for p in "${fix_paths[@]}"; do
       size=$(stat -c %s "$p" 2>/dev/null || echo -)
       journal_row "$class" deferred "$p" "$size" - - restic-backup-failed
     done
+    rm -f -- "$fix_list"
     return 1
   fi
   snapshot_id=$(printf '%s' "$dump" | jq -r 'select(.message_type=="summary") | .snapshot_id')
-  for p in "${paths[@]}"; do
+  for p in "${fix_paths[@]}"; do
     sha2=$(sha256sum < "$p" | cut -c1-64)
     if [ "${sha1_map["$p"]}" = "$sha2" ]; then
       size=$(stat -c %s "$p" 2>/dev/null || echo -)
@@ -315,6 +400,7 @@ fix_candidates() { # class listfile -> 0/1; фиксирует незамени�
       journal_row "$class" deferred "$p" "$size" - - changed-during-snapshot
     fi
   done
+  rm -f -- "$fix_list"
 }
 
 verify_and_delete() { # class -> удаление по гейту: проверка копии в restic; заполняет REFIX_PATHS
@@ -508,21 +594,32 @@ cleanup_images() { # работает только при hard
 if [ "$DR_TEST_ONLY" = 1 ]; then
   restic_env
   REFIX_PATHS=()
+  # Предусловие гейта (spec:055): свежий last-ok и доступный restic.
+  if ! gate_open; then
+    # незаменимые: не фиксируем и не удаляем — только журнал с причиной закрытия
+    while IFS= read -r p; do
+      [ -n "$p" ] || continue
+      size=$(stat -c %s "$p" 2>/dev/null || echo -)
+      journal_row test-irreplaceable deferred "$p" "$size" - - "gate-closed:$GATE_REASON"
+    done < <(irrep_candidates)
+    # заменимые: удаляются как обычно даже при закрытом гейте
+    if [ -n "$DR_TEST_REPLACEABLE_DIR" ] && [ -d "$DR_TEST_REPLACEABLE_DIR" ]; then
+      find "$DR_TEST_REPLACEABLE_DIR" -maxdepth 1 -type f -delete 2>/dev/null
+    fi
+    maybe_alert gate "disk-rotate: гейт закрыт — $GATE_REASON"
+    exit $RC_GATE_CLOSED
+  fi
   verify_and_delete test-irreplaceable
   # незаменимые: фиксация в restic predelete (удаление добавит гейт ниже)
-  if [ -n "$DR_TEST_IRREPLACEABLE_DIR" ] && [ -d "$DR_TEST_IRREPLACEABLE_DIR" ]; then
-    irrep_tmp=$(mktemp)
-    while IFS= read -r -d '' p; do
-      denied "$p" && continue
-      grep -qxF "$p" <(awk -F'\t' '{print $1}' "$DR_STATE_FILE" 2>/dev/null) && continue
-      printf '%s\n' "$p" >>"$irrep_tmp"
-    done < <(find "$DR_TEST_IRREPLACEABLE_DIR" -maxdepth 1 -type f -print0 2>/dev/null)
-    for p in "${REFIX_PATHS[@]:-}"; do
-      grep -qxF "$p" "$irrep_tmp" && continue
-      printf '%s\n' "$p" >>"$irrep_tmp"
-    done
+  irrep_tmp=$(mktemp)
+  irrep_candidates >"$irrep_tmp"
+  if [ -s "$irrep_tmp" ]; then
     fix_candidates test-irreplaceable "$irrep_tmp"
-    rm -f -- "$irrep_tmp"
+  fi
+  rm -f -- "$irrep_tmp"
+  # срок хранения снимков predelete: 31 день (spec:055); неудача не блокирует прогон
+  if ! "$RESTIC" forget --tag predelete --group-by host,tags --keep-within 31d >>"$DR_LOG" 2>&1; then
+    journal_row gate forget-skipped - 0 - - forget-locked
   fi
   # при занятости >=95% свежие снимки проходят правило 24 ч сразу
   if [ "$(use_pct)" -ge 95 ]; then
