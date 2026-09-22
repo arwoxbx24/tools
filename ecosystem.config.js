@@ -19,6 +19,7 @@ function loadEnvFile(filePath) {
 }
 const pm2ApiEnv = loadEnvFile('/root/workspaces/secrets/services/pm2-api.env');
 const kpiEventHandlerEnv = loadEnvFile('/root/workspaces/secrets/services/kpi-event-handler.env');
+const formsGwGuardEnv = loadEnvFile('/root/workspaces/secrets/services/pm2-notify.env');
 
 module.exports = {
   apps: [
@@ -192,6 +193,24 @@ module.exports = {
       cron_restart: '3,18,33,48 * * * *',
       error_file: '/root/.pm2/logs/context-heartbeat-error.log',
       out_file: '/root/.pm2/logs/context-heartbeat-out.log'
+    },
+    {
+      name: 'forms-gw-guard',
+      script: '/root/workspaces/tools/scripts/schedulers/forms-gw-guard.sh',
+      cwd: '/root',
+      interpreter: 'bash',
+      exec_mode: 'fork_mode',
+      instances: 1,
+      autorestart: false,
+      min_uptime: 1000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
+      cron_restart: '*/15 * * * *',
+      preflight_env_file: '/root/workspaces/secrets/services/pm2-notify.env',
+      preflight_env_keys: ['TG_BOT_TOKEN', 'TG_CHAT_ID'],
+      env: formsGwGuardEnv,
+      error_file: '/root/.pm2/logs/forms-gw-guard-error.log',
+      out_file: '/root/.pm2/logs/forms-gw-guard-out.log'
     },
     {
       name: 'db-replicator',
