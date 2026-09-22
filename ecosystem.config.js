@@ -20,6 +20,7 @@ function loadEnvFile(filePath) {
 const pm2ApiEnv = loadEnvFile('/root/workspaces/secrets/services/pm2-api.env');
 const kpiEventHandlerEnv = loadEnvFile('/root/workspaces/secrets/services/kpi-event-handler.env');
 const formsGwGuardEnv = loadEnvFile('/root/workspaces/secrets/services/pm2-notify.env');
+const hhBotEnv = loadEnvFile('/root/workspaces/secrets/projects/arwox-biz/hr/bot/.env');
 
 module.exports = {
   apps: [
@@ -446,6 +447,9 @@ module.exports = {
       min_uptime: 10000,
       max_restarts: 10,
       exp_backoff_restart_delay: 1000,
+      env: formsGwGuardEnv,
+      preflight_env_file: '/root/workspaces/secrets/services/pm2-notify.env',
+      preflight_env_keys: ['TG_BOT_TOKEN', 'TG_CHAT_ID'],
       error_file: '/root/.pm2/logs/hh-import-error.log',
       out_file: '/root/.pm2/logs/hh-import-out.log'
     },
@@ -511,6 +515,9 @@ module.exports = {
       min_uptime: 10000,
       max_restarts: 10,
       exp_backoff_restart_delay: 1000,
+      env: formsGwGuardEnv,
+      preflight_env_file: '/root/workspaces/secrets/services/pm2-notify.env',
+      preflight_env_keys: ['TG_BOT_TOKEN', 'TG_CHAT_ID'],
       error_file: '/root/.pm2/logs/hh-refetch-error.log',
       out_file: '/root/.pm2/logs/hh-refetch-out.log'
     },
@@ -542,6 +549,9 @@ module.exports = {
       min_uptime: 10000,
       max_restarts: 10,
       exp_backoff_restart_delay: 1000,
+      env: { ...formsGwGuardEnv, ...hhBotEnv },
+      preflight_env_file: '/root/workspaces/secrets/projects/arwox-biz/hr/bot/.env',
+      preflight_env_keys: ['HH_CLIENT_ID', 'HH_CLIENT_SECRET', 'TG_BOT_TOKEN', 'TG_CHAT_ID'],
       error_file: '/root/.pm2/logs/hh-token-refresh-error.log',
       out_file: '/root/.pm2/logs/hh-token-refresh-out.log'
     },
