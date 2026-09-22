@@ -1,0 +1,110 @@
+#!/usr/bin/env node
+
+const fs = require('fs');
+const path = require('path');
+
+const args = process.argv.slice(2);
+let ecosystem = path.resolve(__dirname, '..', 'ecosystem.config.js');
+let json = false;
+let only = null;
+
+for (let i = 0; i < args.length; i += 1) {
+  if (args[i] === '--json') json = true;
+  else if (args[i] === '--ecosystem') ecosystem = path.resolve(args[++i] || '');
+  else if (args[i] === '--only') only = args[++i] || '';
+}
+
+function firstLine(error) {
+  return String(error && error.message || error).split(/\r?\n/, 1)[0];
+}
+
+function readable(file) {
+  try {
+    fs.accessSync(file, fs.constants.R_OK);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function directory(dir) {
+  try {
+    return fs.statSync(dir).isDirectory();
+  } catch (_) {
+    return false;
+  }
+}
+
+function numeric(value) {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+let declaration;
+try {
+  declaration = require(ecosystem);
+} catch (error) {
+  const message = firstLine(error);
+  if (json) console.log(JSON.stringify({ ecosystem, loaded: false, error: message }));
+  else console.log(`error: ${message}`);
+  process.exitCode = 3;
+  return;
+}
+
+const allApps = Array.isArray(declaration && declaration.apps) ? declaration.apps : [];
+const apps = only === null ? allApps : allApps.filter(app => app && app.name === only);
+const names = new Map();
+for (const app of allApps) {
+  if (app && typeof app.name === 'string') names.set(app.name, (names.get(app.name) || 0) + 1);
+}
+
+const violations = [];
+const outputApps = apps.map(app => {
+  const name = app && typeof app.name === 'string' ? app.name : '';
+  const envFile = app && (app.preflight_env_file || app.env_file);
+  const envKeys = Array.isArray(app && app.preflight_env_keys)
+    ? app.preflight_env_keys
+    : Array.isArray(app && app.env_keys) ? app.env_keys : [];
+  const env = app && app.env && typeof app.env === 'object' ? app.env : {};
+  const envPresent = Object.fromEntries(envKeys.map(key => [key, typeof env[key] === 'string' && env[key].length > 0]));
+  const failures = [];
+  const cwd = app && app.cwd;
+  const script = app && app.script;
+  const scriptPath = typeof script === 'string' && path.isAbsolute(script)
+    ? script
+    : path.resolve(typeof cwd === 'string' ? cwd : process.cwd(), typeof script === 'string' ? script : '');
+
+  for (const field of ['min_uptime', 'max_restarts', 'exp_backoff_restart_delay']) {
+    if (!numeric(app && app[field])) violations.push({ name, field, reason: app && app[field] === undefined ? 'missing' : 'not_numeric' });
+  }
+  if (typeof script !== 'string' || !path.isAbsolute(script)) violations.push({ name, field: 'script', reason: 'not_absolute' });
+  if (names.get(name) > 1) violations.push({ name, field: 'name', reason: 'duplicate' });
+  if (app && ('env_file' in app || 'env_keys' in app)) violations.push({ field: 'env_file', reason: 'reserved pm2 prefix env_, rename to preflight_env_file' });
+
+  if (!readable(scriptPath)) failures.push({ check: 'script', subject: scriptPath });
+  if (typeof cwd !== 'string' || !directory(cwd)) failures.push({ check: 'cwd', subject: cwd || '' });
+  if (envFile && !readable(envFile)) failures.push({ check: 'env_file', subject: envFile });
+  for (const key of envKeys) if (!envPresent[key]) failures.push({ check: 'env_key', subject: key });
+
+  return {
+    name,
+    script: script || null,
+    cwd: cwd || null,
+    env_file: envFile || null,
+    env_keys: envKeys,
+    env_present: envPresent,
+    min_uptime: app && app.min_uptime,
+    max_restarts: app && app.max_restarts,
+    exp_backoff_restart_delay: app && app.exp_backoff_restart_delay,
+    autorestart: app && typeof app.autorestart === 'boolean' ? app.autorestart : true,
+    cron_restart: app && app.cron_restart || null,
+    preflight: { ok: failures.length === 0, failures }
+  };
+});
+
+if (json) {
+  console.log(JSON.stringify({ ecosystem, loaded: true, apps: outputApps, violations }));
+} else {
+  for (const violation of violations) console.log(`${violation.name}: ${violation.field} missing`);
+  for (const app of outputApps) for (const failure of app.preflight.failures) console.log(`${app.name}: ${failure.check} ${failure.subject}`);
+  process.exitCode = violations.length || outputApps.some(app => !app.preflight.ok) ? 1 : 0;
+}

@@ -1,5 +1,7 @@
 node_modules/
 __pycache__/
+# bin/ — инструменты агентов (конституция 10.09: плоско tools/bin/), под git; игнорируются только бинарники
+bin/restic
 *.log
 logs/
 data/

@@ -54,7 +54,7 @@ def _load_env(path):
 # WEBHOOK: env B24_WEBHOOK wins, else load from B24_ENV_PATH, else fail-closed
 WEBHOOK = os.environ.get("B24_WEBHOOK")
 if not WEBHOOK:
-    env_path = os.environ.get("B24_ENV_PATH", "/root/workspaces/projects/secrets/services/b24.env")
+    env_path = os.environ.get("B24_ENV_PATH", "/root/workspaces/secrets/services/b24.env")
     env = _load_env(env_path)
     WEBHOOK = env.get("B24_WEBHOOK")
 

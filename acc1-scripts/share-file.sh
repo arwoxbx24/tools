@@ -1,4 +1,5 @@
 #!/bin/bash
+# устарел (17.09, spec:027) → используй: share <файл>  (/root/workspaces/tools/bin/share)
 # share-file.sh - Upload file to MinIO and generate short link via Kutt
 # Usage: share-file.sh <file_path>
 # Output: Short URL (e.g., https://b244.ru/abc123)

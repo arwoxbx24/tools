@@ -12,11 +12,14 @@ function loadEnvFile(filePath) {
         env[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
       }
     });
-  } catch (e) {}
+  } catch (e) {
+    console.error('ecosystem: env file unreadable: ' + filePath);
+  }
   return env;
 }
 const pm2ApiEnv = loadEnvFile('/root/workspaces/secrets/services/pm2-api.env');
 const kpiEventHandlerEnv = loadEnvFile('/root/workspaces/secrets/services/kpi-event-handler.env');
+const formsGwGuardEnv = loadEnvFile('/root/workspaces/secrets/services/pm2-notify.env');
 
 module.exports = {
   apps: [
@@ -28,6 +31,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/action-log-indexer-error.log',
       out_file: '/root/.pm2/logs/action-log-indexer-out.log'
     },
@@ -39,6 +45,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/amc-mvp-api-error.log',
       out_file: '/root/.pm2/logs/amc-mvp-api-out.log'
     },
@@ -50,6 +59,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/arwox-landing-hub-error.log',
       out_file: '/root/.pm2/logs/arwox-landing-hub-out.log'
     },
@@ -61,6 +73,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: false,
+      min_uptime: 1000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       cron_restart: '0 */6 * * *',
       error_file: '/root/.pm2/logs/backup-rotation-error.log',
       out_file: '/root/.pm2/logs/backup-rotation-out.log'
@@ -73,6 +88,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/backup-watcher-error.log',
       out_file: '/root/.pm2/logs/backup-watcher-out.log'
     },
@@ -89,6 +107,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/bitrix-sdk-php-server-error.log',
       out_file: '/root/.pm2/logs/bitrix-sdk-php-server-out.log'
     },
@@ -100,6 +121,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: false,
+      min_uptime: 1000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       cron_restart: '0 3 * * 1',
       error_file: '/root/.pm2/logs/bitrix-sdk-updater-error.log',
       out_file: '/root/.pm2/logs/bitrix-sdk-updater-out.log'
@@ -116,6 +140,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/bmc-api-error.log',
       out_file: '/root/.pm2/logs/bmc-api-out.log'
     },
@@ -131,6 +158,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/bmc-ui-error.log',
       out_file: '/root/.pm2/logs/bmc-ui-out.log'
     },
@@ -142,6 +172,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: false,
+      min_uptime: 1000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       cron_restart: '8,38 * * * *',
       error_file: '/root/.pm2/logs/context-gc-error.log',
       out_file: '/root/.pm2/logs/context-gc-out.log'
@@ -154,9 +187,30 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: false,
+      min_uptime: 1000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       cron_restart: '3,18,33,48 * * * *',
       error_file: '/root/.pm2/logs/context-heartbeat-error.log',
       out_file: '/root/.pm2/logs/context-heartbeat-out.log'
+    },
+    {
+      name: 'forms-gw-guard',
+      script: '/root/workspaces/tools/scripts/schedulers/forms-gw-guard.sh',
+      cwd: '/root',
+      interpreter: 'bash',
+      exec_mode: 'fork_mode',
+      instances: 1,
+      autorestart: false,
+      min_uptime: 1000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
+      cron_restart: '*/15 * * * *',
+      preflight_env_file: '/root/workspaces/secrets/services/pm2-notify.env',
+      preflight_env_keys: ['TG_BOT_TOKEN', 'TG_CHAT_ID'],
+      env: formsGwGuardEnv,
+      error_file: '/root/.pm2/logs/forms-gw-guard-error.log',
+      out_file: '/root/.pm2/logs/forms-gw-guard-out.log'
     },
     {
       name: 'db-replicator',
@@ -166,6 +220,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/db-replicator-error.log',
       out_file: '/root/.pm2/logs/db-replicator-out.log'
     },
@@ -177,9 +234,43 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: false,
+      min_uptime: 1000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       cron_restart: '0 */6 * * *',
       error_file: '/root/.pm2/logs/docker-backup-error.log',
       out_file: '/root/.pm2/logs/docker-backup-out.log'
+    },
+    {
+      name: 'server-backup',
+      script: '/root/workspaces/tools/scripts/pm2/server-backup.sh',
+      cwd: '/root/workspaces/projects',
+      interpreter: 'bash',
+      exec_mode: 'fork_mode',
+      instances: 1,
+      autorestart: false,
+      min_uptime: 1000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
+      cron_restart: '30 3 * * *',
+      error_file: '/root/.pm2/logs/server-backup-error.log',
+      out_file: '/root/.pm2/logs/server-backup-out.log'
+    },
+    {
+      // Догоняющий запуск после ребута/простоя: last-ok старше 26 ч → pm2 restart server-backup (16.09)
+      name: 'backup-catchup',
+      script: '/root/workspaces/tools/scripts/pm2/backup-catchup.sh',
+      cwd: '/root/workspaces/projects',
+      interpreter: 'bash',
+      exec_mode: 'fork_mode',
+      instances: 1,
+      autorestart: false,
+      min_uptime: 1000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
+      cron_restart: '*/30 * * * *',
+      error_file: '/root/.pm2/logs/backup-catchup-error.log',
+      out_file: '/root/.pm2/logs/backup-catchup-out.log'
     },
     {
       name: 'docker-log-rotation',
@@ -189,6 +280,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/docker-log-rotation-error.log',
       out_file: '/root/.pm2/logs/docker-log-rotation-out.log'
     },
@@ -200,6 +294,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/file-cleanup-error.log',
       out_file: '/root/.pm2/logs/file-cleanup-out.log'
     },
@@ -211,6 +308,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: false,
+      min_uptime: 1000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       cron_restart: '0 */12 * * *',
       error_file: '/root/.pm2/logs/gdrive-token-check-error.log',
       out_file: '/root/.pm2/logs/gdrive-token-check-out.log'
@@ -223,6 +323,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: false,
+      min_uptime: 1000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       cron_restart: '13 */2 * * *',
       error_file: '/root/.pm2/logs/git-maintenance-error.log',
       out_file: '/root/.pm2/logs/git-maintenance-out.log'
@@ -235,6 +338,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: false,
+      min_uptime: 1000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       cron_restart: '0 3 */5 * *',
       error_file: '/root/.pm2/logs/google-token-refresh-error.log',
       out_file: '/root/.pm2/logs/google-token-refresh-out.log'
@@ -247,21 +353,11 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/gpt-codex-error.log',
       out_file: '/root/.pm2/logs/gpt-codex-out.log'
-    },
-    {
-      name: 'hh-booking-watch',
-      script: '/root/workspaces/projects/hh-scoring/.venv/bin/python',
-      args: [
-        'scripts/booking_watch.py'
-      ],
-      cwd: '/root/workspaces/projects/hh-scoring',
-      exec_mode: 'fork_mode',
-      instances: 1,
-      autorestart: true,
-      error_file: '/root/.pm2/logs/hh-booking-watch-error.log',
-      out_file: '/root/.pm2/logs/hh-booking-watch-out.log'
     },
     {
       name: 'hh-cabinet',
@@ -271,6 +367,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/hh-cabinet-error.log',
       out_file: '/root/.pm2/logs/hh-cabinet-out.log'
     },
@@ -285,6 +384,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/hh-cabinet-bridge-error.log',
       out_file: '/root/.pm2/logs/hh-cabinet-bridge-out.log'
     },
@@ -296,6 +398,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/hh-cabinet-staging-error.log',
       out_file: '/root/.pm2/logs/hh-cabinet-staging-out.log'
     },
@@ -307,6 +412,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/hh-dashboard-fastloop-error.log',
       out_file: '/root/.pm2/logs/hh-dashboard-fastloop-out.log'
     },
@@ -318,6 +426,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/hh-hub-api-error.log',
       out_file: '/root/.pm2/logs/hh-hub-api-out.log'
     },
@@ -332,6 +443,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/hh-import-error.log',
       out_file: '/root/.pm2/logs/hh-import-out.log'
     },
@@ -343,6 +457,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/hh-litestream-error.log',
       out_file: '/root/.pm2/logs/hh-litestream-out.log'
     },
@@ -357,6 +474,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: false,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/hh-pipeline-error.log',
       out_file: '/root/.pm2/logs/hh-pipeline-out.log'
     },
@@ -371,6 +491,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/hh-pipeline-prod-error.log',
       out_file: '/root/.pm2/logs/hh-pipeline-prod-out.log'
     },
@@ -385,6 +508,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/hh-refetch-error.log',
       out_file: '/root/.pm2/logs/hh-refetch-out.log'
     },
@@ -396,6 +522,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/hh-screening-monitor-error.log',
       out_file: '/root/.pm2/logs/hh-screening-monitor-out.log'
     },
@@ -410,6 +539,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/hh-token-refresh-error.log',
       out_file: '/root/.pm2/logs/hh-token-refresh-out.log'
     },
@@ -421,6 +553,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: false,
+      min_uptime: 1000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       cron_restart: '*/10 * * * *',
       error_file: '/root/.pm2/logs/hh-wal-checkpoint-error.log',
       out_file: '/root/.pm2/logs/hh-wal-checkpoint-out.log'
@@ -433,6 +568,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/hr-bot-v2-error.log',
       out_file: '/root/.pm2/logs/hr-bot-v2-out.log'
     },
@@ -452,6 +590,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/kp-landing-serve-error.log',
       out_file: '/root/.pm2/logs/kp-landing-serve-out.log'
     },
@@ -463,6 +604,9 @@ module.exports = {
       exec_mode: 'cluster_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/kpd-proxy-error-67.log',
       out_file: '/root/.pm2/logs/kpd-proxy-out-67.log'
     },
@@ -474,6 +618,11 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
+      preflight_env_file: '/root/workspaces/secrets/services/kpi-event-handler.env',
+      preflight_env_keys: ['KPI_AUTH_TOKEN'],
       env: kpiEventHandlerEnv,
       error_file: '/root/.pm2/logs/kpi-event-handler-error.log',
       out_file: '/root/.pm2/logs/kpi-event-handler-out.log'
@@ -486,6 +635,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/load-governor-error.log',
       out_file: '/root/.pm2/logs/load-governor-out.log'
     },
@@ -500,6 +652,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/margin-calc-error.log',
       out_file: '/root/.pm2/logs/margin-calc-out.log'
     },
@@ -511,6 +666,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/memory-updater-error.log',
       out_file: '/root/.pm2/logs/memory-updater-out.log'
     },
@@ -522,6 +680,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/minio-sync-worker-error.log',
       out_file: '/root/.pm2/logs/minio-sync-worker-out.log'
     },
@@ -536,6 +697,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/node-exporter-error.log',
       out_file: '/root/.pm2/logs/node-exporter-out.log'
     },
@@ -547,6 +711,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/pdf-decoder-error.log',
       out_file: '/root/.pm2/logs/pdf-decoder-out.log'
     },
@@ -558,6 +725,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: false,
+      min_uptime: 1000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       cron_restart: '*/15 * * * *',
       error_file: '/root/.pm2/logs/plan-lifecycle-manager-error.log',
       out_file: '/root/.pm2/logs/plan-lifecycle-manager-out.log'
@@ -570,8 +740,13 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/pm2-api-error.log',
       out_file: '/root/.pm2/logs/pm2-api-out.log',
+      preflight_env_file: '/root/workspaces/secrets/services/pm2-api.env',
+      preflight_env_keys: ['PM2_API_PASS'],
       env: {
         ...pm2ApiEnv
       }
@@ -584,6 +759,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/pm2-conductor-error.log',
       out_file: '/root/.pm2/logs/pm2-conductor-out.log'
     },
@@ -595,6 +773,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/pm2-extended-metrics-error.log',
       out_file: '/root/.pm2/logs/pm2-extended-metrics-out.log'
     },
@@ -606,17 +787,23 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/pm2-logrotate-error.log',
       out_file: '/root/.pm2/logs/pm2-logrotate-out.log'
     },
     {
       name: 'pm2-loop-guard',
-      script: '/root/workspaces/system/tools/scripts/pm2-loop-guard/guard.sh',
+      script: '/root/workspaces/tools/bin/pm2-loop-guard',
       cwd: '/root',
       interpreter: 'bash',
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/pm2-loop-guard-error.log',
       out_file: '/root/.pm2/logs/pm2-loop-guard-out.log'
     },
@@ -628,6 +815,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/pm2-prometheus-exporter-error.log',
       out_file: '/root/.pm2/logs/pm2-prometheus-exporter-out.log'
     },
@@ -639,6 +829,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: false,
+      min_uptime: 1000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       cron_restart: '0 4 * * *',
       error_file: '/root/.pm2/logs/profile-rotation-error.log',
       out_file: '/root/.pm2/logs/profile-rotation-out.log'
@@ -656,6 +849,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/prometheus-error.log',
       out_file: '/root/.pm2/logs/prometheus-out.log'
     },
@@ -667,6 +863,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/redis-backup-error.log',
       out_file: '/root/.pm2/logs/redis-backup-out.log'
     },
@@ -680,6 +879,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/redis-exporter-error.log',
       out_file: '/root/.pm2/logs/redis-exporter-out.log'
     },
@@ -691,6 +893,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/redis-watchdog-error.log',
       out_file: '/root/.pm2/logs/redis-watchdog-out.log'
     },
@@ -702,6 +907,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/sched-healthcheck-error.log',
       out_file: '/root/.pm2/logs/sched-healthcheck-out.log'
     },
@@ -713,6 +921,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/sched-validator-error.log',
       out_file: '/root/.pm2/logs/sched-validator-out.log'
     },
@@ -724,6 +935,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/search-quality-report-error.log',
       out_file: '/root/.pm2/logs/search-quality-report-out.log'
     },
@@ -735,6 +949,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: false,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/security-scanner-error.log',
       out_file: '/root/.pm2/logs/security-scanner-out.log'
     },
@@ -746,6 +963,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: false,
+      min_uptime: 1000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       cron_restart: '*/10 * * * *',
       error_file: '/root/.pm2/logs/secrets-registry-error.log',
       out_file: '/root/.pm2/logs/secrets-registry-out.log'
@@ -758,6 +978,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/session-indexer-error.log',
       out_file: '/root/.pm2/logs/session-indexer-out.log'
     },
@@ -769,6 +992,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/session-merger-error.log',
       out_file: '/root/.pm2/logs/session-merger-out.log'
     },
@@ -780,6 +1006,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/transcription-panel-error.log',
       out_file: '/root/.pm2/logs/transcription-panel-out.log'
     },
@@ -791,6 +1020,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/transcription-panel-dev-error.log',
       out_file: '/root/.pm2/logs/transcription-panel-dev-out.log'
     },
@@ -802,6 +1034,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: false,
+      min_uptime: 1000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       cron_restart: '0 3 * * *',
       error_file: '/root/.pm2/logs/tx-cleanup-error.log',
       out_file: '/root/.pm2/logs/tx-cleanup-out.log'
@@ -814,6 +1049,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/yandex-mvp-backend-error.log',
       out_file: '/root/.pm2/logs/yandex-mvp-backend-out.log'
     },
@@ -825,6 +1063,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/yubikey-v1-error.log',
       out_file: '/root/.pm2/logs/yubikey-v1-out.log'
     },
@@ -836,6 +1077,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: false,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/yubikey-v2-error.log',
       out_file: '/root/.pm2/logs/yubikey-v2-out.log'
     },
@@ -847,6 +1091,9 @@ module.exports = {
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: false,
+      min_uptime: 1000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
       cron_restart: '*/30 * * * *',
       error_file: '/root/.pm2/logs/pm2-reconcile-guard-error.log',
       out_file: '/root/.pm2/logs/pm2-reconcile-guard-out.log'

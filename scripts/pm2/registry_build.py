@@ -7,6 +7,7 @@ import json
 import os
 import re
 import stat
+import subprocess
 import sys
 import tempfile
 import time
@@ -21,8 +22,109 @@ MISSING_SUFFIXES = (
     "_CLIENT_SECRET", "_CLIENT_ID", "_VALUE",
 )
 SKIP_DIRS = {".git", "node_modules", ".venv", ".agent-work", "__pycache__", "specs", ".beads", ".dolt", ".repowise-workspace", ".repowise", ".worktrees"}
+STRAY_SKIP_DIRS = SKIP_DIRS | {"venv", "archives", "external-copies", ".pytest-tmp", ".snapshots", "letsencrypt", "ssl", "docker-data", "hiddify_data", "vendor", "site-packages", "testdata", "fastembed_cache", ".cc-home", ".venv-copier"}
+STRAY_NAME = re.compile(r"^(?:\.env|\.env\..+|.*\.secrets\.env|\.secrets.*|\.netrc|.*\.pem|.*\.key|.*tokens.*\.json)$")
+STRAY_EXAMPLE_SUFFIXES = (".example", ".template", ".sample", ".dist")
+STRAY_SCAN_DIRS = ["/root/workspaces/projects", "/root/workspaces/tools", "/root/workspaces/sandbox", "/root/workspaces/system"]
+REGISTRY_MD = "/root/workspaces/REGISTRY.md"
+WORKSPACES = "/root/workspaces"
 ZONES = ("services", "projects", "system/services", "acc1-legacy/services")
+MIGRATED_PREFIXES = ("projects/", "system/", "sandbox/", "tools/")
 KNOWN_CONFLICTS = frozenset({"B24_WEBHOOK", "NPM_EMAIL", "OPENAI_API_KEY", "OPENROUTER_API_KEY"})
+
+def read_allowlist(registry_md):
+    try:
+        with open(registry_md, encoding="utf-8", errors="replace") as handle:
+            paths = re.findall(r"^\|\s*`([^`]+)`\s*\|", handle.read(), re.M)
+    except FileNotFoundError:
+        return set()
+    return {os.path.abspath(path if os.path.isabs(path) else os.path.join(WORKSPACES, path))
+            for path in paths}
+
+def stray_scan(secrets, scan_dirs, allowlist):
+    secrets = os.path.abspath(secrets)
+    found = []
+    for scan_dir in scan_dirs:
+        if not os.path.isdir(scan_dir):
+            continue
+        for root, dirs, files in os.walk(scan_dir, followlinks=False):
+            dirs[:] = [name for name in dirs if name not in STRAY_SKIP_DIRS]
+            for filename in files:
+                if not STRAY_NAME.fullmatch(filename) or filename.endswith(STRAY_EXAMPLE_SUFFIXES):
+                    continue
+                path = os.path.abspath(os.path.join(root, filename))
+                if path in allowlist or path == secrets or path.startswith(secrets + os.sep):
+                    continue
+                if os.path.islink(path) and os.path.realpath(path).startswith(secrets + os.sep):
+                    continue
+                found.append(path)
+    return sorted(found)
+
+def quarantine(secrets, strays, enabled):
+    marker = os.path.join(secrets, "quarantine", "ENABLED")
+    counters = {"stray_secrets": len(strays), "quarantined": 0}
+    if not enabled or not os.path.exists(marker):
+        return counters
+    quarantine_dir = os.path.dirname(marker)
+    os.makedirs(quarantine_dir, mode=0o700, exist_ok=True)
+    seen_path = os.path.join(quarantine_dir, "seen.json")
+    try:
+        with open(seen_path, encoding="utf-8") as handle:
+            seen = json.load(handle)
+    except (FileNotFoundError, ValueError):
+        seen = {}
+    for path in strays:
+        try:
+            metadata = os.lstat(path)
+            if stat.S_ISLNK(metadata.st_mode):
+                print("quarantine symlink skipped: " + path, file=sys.stderr)
+                continue
+            if not stat.S_ISREG(metadata.st_mode):
+                continue
+            timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            relative = path.removeprefix(WORKSPACES + os.sep).lstrip(os.sep)
+            dest = os.path.join(quarantine_dir, timestamp, relative)
+            os.makedirs(os.path.dirname(dest), mode=0o700, exist_ok=True)
+            os.replace(path, dest)
+            os.chmod(dest, 0o600)
+            open(path, "w").close()
+            os.chmod(path, 0o600)
+            with open(os.path.join(quarantine_dir, "log.jsonl"), "a", encoding="utf-8") as handle:
+                handle.write(json.dumps({"ts": timestamp, "from": path, "to": dest}) + "\n")
+            os.chmod(os.path.join(quarantine_dir, "log.jsonl"), 0o600)
+            if path not in seen:
+                seen[path] = timestamp
+                with open(seen_path, "w", encoding="utf-8") as handle:
+                    json.dump(seen, handle, sort_keys=True)
+                os.chmod(seen_path, 0o600)
+                # ponytail: без inotify — cron */10 достаточно, upgrade path: watchdog если понадобится минутная реакция.
+                if not os.environ.get("REGISTRY_SELFTEST"):
+                    subprocess.run(["bd", "create", "[CLAUDE] [STRAY-SECRET] " + path + " → карантин " + dest,
+                                    "-p", "1"], cwd="/root/workspaces/projects", check=False,
+                                   capture_output=True, timeout=30)
+            counters["quarantined"] += 1
+        except Exception:
+            traceback.print_exc(file=sys.stderr)
+    return counters
+
+def stray_tools():
+    config_paths = ["/root/.claude/settings.json", "/etc/claude-code/managed-settings.json",
+                    "/root/.codex/hooks.json", "/root/workspaces/projects/.codex/hooks.json"]
+    for directory in ("/root/workspaces/projects/.claude", "/root/.claude/skills"):
+        if os.path.isdir(directory):
+            for root, _, files in os.walk(directory, followlinks=False):
+                config_paths.extend(os.path.join(root, name) for name in files
+                                    if name.endswith((".json", ".md", ".sh")))
+    found = set()
+    pattern = re.compile(r"(/root/[A-Za-z0-9_./-]+\.(?:sh|py|js|mjs|cjs))")
+    for path in config_paths:
+        try:
+            with open(path, encoding="utf-8", errors="replace") as handle:
+                found.update(match for match in pattern.findall(handle.read())
+                             if os.path.exists(match) and not match.startswith(("/root/workspaces/tools/", "/root/.claude/", "/root/.codex/")))
+        except OSError:
+            continue
+    return sorted(found)
 
 def parse_env_names(path):
     names = []
@@ -112,7 +214,7 @@ def find_consumers(entries, scan_dirs, out):
 def yaml_list(items):
     return "[" + ", ".join(items) + "]"
 
-def write_yaml(out, entries, files_scanned):
+def write_yaml(out, entries, files_scanned, strays=(), tools=()):
     os.makedirs(os.path.dirname(os.path.abspath(out)) or ".", exist_ok=True)
     lines = [
         "# generated by /root/workspaces/tools/scripts/pm2/registry_build.py — values never here",
@@ -123,12 +225,15 @@ def write_yaml(out, entries, files_scanned):
             "- service: " + entry["service"],
             "  file: " + entry["file"],
             "  schema_violation: " + str(entry["schema_violation"]).lower(),
+            *( ["  migrated: true"] if entry["migrated"] else [] ),
             "  variables: " + yaml_list(entry["variables"]),
             "  consumers: " + yaml_list(sorted(entry["consumers"])),
             "  missing: " + yaml_list(sorted(entry["missing"])),
             "  auth: " + entry["auth"],
             "  refresh: " + entry["refresh"],
         ])
+    lines.extend(["stray_secrets: " + yaml_list(strays),
+                  "stray_tools: " + yaml_list(tools)])
     text = "\n".join(lines) + "\n"
     # ponytail: без изменений не пишем — git не видит грязь.
     if os.path.exists(out) and open(out, encoding="utf-8").read() == text:
@@ -351,16 +456,24 @@ def build(secrets, out, scan_dirs):
             service = name if not any(entry["service"] == name for entry in entries) else name + "@" + os.path.basename(root)
             variables, violations = parse_env_names(path)
             zone = os.path.relpath(root, secrets).replace(os.sep, "/")
-            bad_file = zone not in ZONES
+            migrated = zone not in ZONES and zone.startswith(MIGRATED_PREFIXES)
+            bad_file = zone not in ZONES and not migrated
             schema_violation_files += int(bad_file)
             schema_violation_lines += violations
             auth, refresh = manual.get(service, ("unknown", "unknown"))
             entries.append({"service": service, "file": os.path.abspath(path), "schema_violation": bad_file,
+                            "migrated": migrated,
                             "variables": variables, "consumers": set(), "missing": set(),
                             "auth": auth, "refresh": refresh})
     consumers_found = find_consumers(entries, scan_dirs, out)
+    allowlist = read_allowlist(REGISTRY_MD)
+    strays = stray_scan(secrets, STRAY_SCAN_DIRS, allowlist)
+    quarantine_counters = quarantine(secrets, strays, True)
+    tools = stray_tools()
     name_counts = {}
     for entry in entries:
+        if entry["migrated"]:
+            continue
         for name in entry["variables"]:
             name_counts[name] = name_counts.get(name, 0) + 1
     unknown_conflicts = sorted(name for name, count in name_counts.items()
@@ -369,27 +482,73 @@ def build(secrets, out, scan_dirs):
         print("unknown name conflict: " + unknown_conflicts[0], file=sys.stderr)
         sys.exit(2)
     counters = {"files_scanned": files_scanned, "entries_written": len(entries),
+                "migrated_entries": sum(entry["migrated"] for entry in entries),
                 "symlinks_skipped": symlinks_skipped, "schema_violation_files": schema_violation_files,
                 "schema_violation_lines": schema_violation_lines, "consumers_found": consumers_found,
                 "missing_total": sum(len(entry["missing"]) for entry in entries),
                 "name_conflicts": sum(count > 1 for count in name_counts.values()),
+                "stray_tools": len(tools),
                 "duration_s": time.monotonic() - started, "_entries": entries,
-                **intake_counters}
-    write_yaml(out, entries, files_scanned)
+                **intake_counters, **quarantine_counters}
+    write_yaml(out, entries, files_scanned, strays, tools)
     return counters
 
 def selftest():
     assert shell_quote("back\\slash and ' quote") == "'back\\slash and '\"'\"' quote'"
+    original_stray_dirs = STRAY_SCAN_DIRS[:]
+    STRAY_SCAN_DIRS[:] = []
     with tempfile.TemporaryDirectory() as base:
         secrets = os.path.join(base, "secrets")
         services = os.path.join(secrets, "services")
         projects = os.path.join(secrets, "projects")
+        migrated = os.path.join(projects, "foo", "bar")
         scan = os.path.join(base, "scan")
         out = os.path.join(base, "out", "registry.yaml")
         os.makedirs(services)
         os.makedirs(projects)
+        os.makedirs(migrated)
         os.makedirs(scan)
         os.makedirs(os.path.join(scan, ".worktrees", "copy"))
+        stray_dir = os.path.join(base, "strays")
+        os.makedirs(stray_dir)
+        stray = os.path.join(stray_dir, ".env")
+        example = os.path.join(stray_dir, ".env.example")
+        allowed = os.path.join(stray_dir, "allowed.secrets.env")
+        with open(stray, "w", encoding="utf-8") as handle:
+            handle.write("test")
+        open(example, "w").close()
+        open(allowed, "w").close()
+        linked_secret = os.path.join(secrets, "linked-secret")
+        open(linked_secret, "w").close()
+        os.symlink(linked_secret, os.path.join(stray_dir, ".env.link"))
+        found_strays = stray_scan(secrets, [stray_dir], {allowed})
+        assert found_strays == [stray]
+        assert quarantine(secrets, found_strays, True) == {"stray_secrets": 1, "quarantined": 0}
+        assert os.path.exists(stray)
+        quarantine_dir = os.path.join(secrets, "quarantine")
+        os.makedirs(quarantine_dir)
+        open(os.path.join(quarantine_dir, "ENABLED"), "w").close()
+        previous_selftest = os.environ.get("REGISTRY_SELFTEST")
+        os.environ["REGISTRY_SELFTEST"] = "1"
+        try:
+            quarantined = quarantine(secrets, found_strays, True)
+        finally:
+            if previous_selftest is None:
+                del os.environ["REGISTRY_SELFTEST"]
+            else:
+                os.environ["REGISTRY_SELFTEST"] = previous_selftest
+        assert quarantined == {"stray_secrets": 1, "quarantined": 1} and os.path.getsize(stray) == 0
+        dated_dirs = [name for name in os.listdir(quarantine_dir) if name != "ENABLED"]
+        assert any(os.path.isfile(os.path.join(quarantine_dir, name, stray.lstrip(os.sep))) for name in dated_dirs)
+        with open(os.path.join(quarantine_dir, "log.jsonl"), encoding="utf-8") as handle:
+            assert len(handle.readlines()) == 1
+        with open(os.path.join(quarantine_dir, "seen.json"), encoding="utf-8") as handle:
+            assert stray in json.load(handle)
+        for name in dated_dirs:
+            moved = os.path.join(quarantine_dir, name, stray.lstrip(os.sep))
+            if os.path.isfile(moved):
+                os.unlink(moved)
+                break
         inbox = os.path.join(secrets, "inbox")
         os.makedirs(inbox)
         figma_token = "EXAMPLE-FIGMA-ACCESS-VALUE"
@@ -412,6 +571,8 @@ def selftest():
             handle.write("BETA_TOKEN=secretval3\n")
         with open(os.path.join(projects, "gamma.env"), "w", encoding="utf-8") as handle:
             handle.write("GAMMA_TOKEN=secretval4\n")
+        with open(os.path.join(migrated, ".env"), "w", encoding="utf-8") as handle:
+            handle.write("ALPHA_TOKEN=migrated-value\n")
         os.symlink(os.path.join(services, "alpha.env"), os.path.join(services, "link.env"))
         consumer = os.path.join(scan, "consumer.sh")
         other = os.path.join(scan, "other.py")
@@ -425,8 +586,9 @@ def selftest():
         with contextlib.redirect_stdout(output):
             first = build(secrets, out, [scan])
         entries = {entry["service"]: entry for entry in first["_entries"]}
-        assert first["files_scanned"] == 5 and first["symlinks_skipped"] == 1
+        assert first["files_scanned"] == 6 and first["symlinks_skipped"] == 1
         assert first["schema_violation_files"] == 1 and first["schema_violation_lines"] == 2
+        assert first["migrated_entries"] == 1
         assert first["intake_files"] == 2 and first["intake_names"] == 7 and first["intake_unparsed"] == 1
         assert first["intake_skipped"] == 1 and first["intake_errors"] == 0
         assert entries["figma"]["variables"] == ["FIGMA_TOKEN", "FIGMA_LOGIN", "FIGMA_PASSWORD", "FIGMA_WEBHOOK"]
@@ -448,19 +610,22 @@ def selftest():
         assert sorted(entries["alpha"]["missing"]) == ["X_CLIENT_ID", "X_MISSING_TOKEN"]
         assert sorted(entries["beta"]["consumers"]) == [consumer, other] and not entries["beta"]["missing"]
         assert entries["gamma"]["schema_violation"] is False
+        assert any(entry["migrated"] for entry in entries.values())
         assert first["name_conflicts"] == 0 and entries["alpha"]["auth"] == entries["alpha"]["refresh"] == "unknown"
         with open(out, encoding="utf-8") as handle:
             text = handle.read()
+        assert "stray_secrets: [" in text and "stray_tools: [" in text
         assert not any(value in text or value in output.getvalue() for value in ("secretval1", "secretval2", "secretval3", "secretval4", figma_token, figma_password))
         assert re.search(r"^\s*[A-Z][A-Z0-9_]*=", text, re.M) is None
-        text = text.replace("- service: alpha\n", "- service: alpha\n", 1).replace("  auth: unknown\n  refresh: unknown\n", "  auth: api_key\n  refresh: static\n", 1)
+        text = re.sub(r"(- service: alpha\n(?:  .+\n)*?  auth: )unknown(\n  refresh: )unknown",
+                      r"\1api_key\2static", text, count=1)
         with open(out, "w", encoding="utf-8") as handle:
             handle.write(text)
         os.unlink(os.path.join(secrets, "beta.env"))
         with contextlib.redirect_stdout(io.StringIO()):
             second = build(secrets, out, [scan])
         entries = {entry["service"]: entry for entry in second["_entries"]}
-        assert second["entries_written"] == 4 and "beta" not in entries
+        assert second["entries_written"] == 5 and "beta" not in entries
         assert entries["alpha"]["auth"] == "api_key" and entries["alpha"]["refresh"] == "static"
         with open(os.path.join(inbox, "figma.txt"), "w", encoding="utf-8") as handle:
             handle.write("Personal access token\nEXAMPLE-NEW-FIGMA-VALUE\n")
@@ -507,6 +672,7 @@ def selftest():
         except FileNotFoundError:
             pass
         assert open(out, "rb").read() == before and os.stat(out).st_mtime_ns == mtime
+    STRAY_SCAN_DIRS[:] = original_stray_dirs
     print("selftest ok")
 
 def main():
