@@ -82,6 +82,7 @@ denied_top() { # dir -> 0 если сам каталог напрямую вхо
 }
 
 MODE=run
+DRY_RUN_ONLY_GATEROSS=0
 case "${1:-}" in
   '')               MODE=run ;;
   --dry-run)        MODE=dry-run ;;
@@ -558,6 +559,7 @@ gate_process() { # class listfile -> 0, либо RC_GATE_CLOSED при закр�
   local -A known=()
   restic_env
   GATE_REASON=
+  GATE_RC=0
   if ! gate_open; then
     # незаменимые не фиксируем и не удаляем — только журнал с причиной закрытия
     while IFS= read -r p; do
@@ -565,6 +567,7 @@ gate_process() { # class listfile -> 0, либо RC_GATE_CLOSED при закр�
       size=$(stat -c %s "$p" 2>/dev/null || echo -)
       journal_row "$class" deferred "$p" "$size" - - "gate-closed:$GATE_REASON"
     done <"$listfile"
+    GATE_RC=$RC_GATE_CLOSED
     return $RC_GATE_CLOSED
   fi
   verify_and_delete "$class"
@@ -572,12 +575,14 @@ gate_process() { # class listfile -> 0, либо RC_GATE_CLOSED при закр�
   # добавляем пути из списка повторной фиксации (stale/changed в verify_and_delete).
   local tmp
   tmp=$(mktemp)
-  while IFS=$'\t' read -ra rec; do
-    [ "${#rec[@]}" -eq 6 ] || continue
-    path="${rec[0]}"
-    [ -n "$path" ] || continue
-    known["$path"]=1
-  done <"$DR_STATE_FILE"
+  if [ -f "$DR_STATE_FILE" ]; then
+    while IFS=$'\t' read -ra rec; do
+      [ "${#rec[@]}" -eq 6 ] || continue
+      path="${rec[0]}"
+      [ -n "$path" ] || continue
+      known["$path"]=1
+    done <"$DR_STATE_FILE"
+  fi
   while IFS= read -r p; do
     [ -n "$p" ] || continue
     [ -n "${known[$p]:-}" ] && continue
@@ -588,7 +593,7 @@ gate_process() { # class listfile -> 0, либо RC_GATE_CLOSED при закр�
     printf '%s\n' "$p"
   done >>"$tmp"
   if [ -s "$tmp" ]; then
-    fix_candidates "$class" "$tmp"
+    fix_candidates "$class" "$tmp" || GATE_RC=$?
   fi
   rm -f "$tmp"
   # срок хранения снимков predelete: 31 день (spec:055); неудача не блокирует прогон
@@ -599,7 +604,7 @@ gate_process() { # class listfile -> 0, либо RC_GATE_CLOSED при закр�
   if [ "$(use_pct)" -ge 95 ]; then
     verify_and_delete "$class"
   fi
-  return 0
+  return $GATE_RC
 }
 
 handle() { # class [irr]; пути из stdin (NUL). irr — незаменимые: не удалять, копить в IRR_LIST
@@ -791,11 +796,33 @@ if [ "$DR_TEST_ONLY" = 1 ]; then
   if [ -n "$DR_TEST_IRREPLACEABLE_DIR" ] && [ -d "$DR_TEST_IRREPLACEABLE_DIR" ]; then
     find "$DR_TEST_IRREPLACEABLE_DIR" -maxdepth 1 -type f -print 2>/dev/null >>"$irrep_tmp"
   fi
-  gate_process test-irreplaceable "$irrep_tmp"
+  if [ "$MODE" = run ]; then
+    gate_process test-irreplaceable "$irrep_tmp"
+  else
+    while IFS= read -r p; do
+      [ -n "$p" ] || continue
+      local kb size age
+      kb=$(du -sk "$p" 2>/dev/null | awk '{print $1}'); kb="${kb:-0}"
+      size=$(stat -c %s "$p" 2>/dev/null || echo -)
+      age=$(( (now - $(stat -c %Y "$p" 2>/dev/null)) / 86400 ))
+      printf '%s\t%sk\t%sd\tirreplaceable\n' "$p" "$kb" "$age"
+    done <"$irrep_tmp"
+  fi
   rm -f -- "$irrep_tmp"
   # заменимые: просто удаляются
   if [ -n "$DR_TEST_REPLACEABLE_DIR" ] && [ -d "$DR_TEST_REPLACEABLE_DIR" ]; then
-    find "$DR_TEST_REPLACEABLE_DIR" -maxdepth 1 -type f -delete 2>/dev/null
+    if [ "$MODE" = run ]; then
+      find "$DR_TEST_REPLACEABLE_DIR" -maxdepth 1 -type f -delete 2>/dev/null
+    else
+      while IFS= read -r -d '' p; do
+        [ -n "$p" ] || continue
+        local kb size age
+        kb=$(du -sk "$p" 2>/dev/null | awk '{print $1}'); kb="${kb:-0}"
+        size=$(stat -c %s "$p" 2>/dev/null || echo -)
+        age=$(( (now - $(stat -c %Y "$p" 2>/dev/null)) / 86400 ))
+        printf '%s\t%sk\t%sd\treplaceable\n' "$p" "$kb" "$age"
+      done < <(find "$DR_TEST_REPLACEABLE_DIR" -maxdepth 1 -type f -print0 2>/dev/null)
+    fi
   fi
 elif [ "$MODE" != report ]; then
   cleanup_always
@@ -898,6 +925,9 @@ fi
 
 echo "=== $(date '+%F %T') END ===" >>"$DR_LOG"
 
+if [ "$GATE_RC" = "$RC_GATE_CLOSED" ]; then
+  exit $RC_GATE_CLOSED
+fi
 if [ "$state_ledger" = exhausted ]; then
   exit $RC_EXHAUSTED
 fi
