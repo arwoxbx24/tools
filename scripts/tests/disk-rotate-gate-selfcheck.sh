@@ -22,7 +22,8 @@ A= B= C= D= E= F= SP=
 O_A= O_B= O_C= O_D= O_E= O_F=
 
 fixture() { # имя -> новая фикстура в $TMP/$имя (свой restic, state, journal, lastok)
-  local name=$1 d="$TMP/$name"
+  local name=$1
+  local d="$TMP/$name"
   S="$d"
   I="$d/irreplaceable"
   R="$d/replaceable"
