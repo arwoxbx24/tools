@@ -5,6 +5,7 @@
 set -u
 
 SCRIPT="$(cd "$(dirname "$0")/.." && pwd -P)/disk-rotate.sh"
+LEDGER=/var/log/disk-rotate-ledger.tsv
 TMP="$(mktemp -d)"
 trap 'rm -rf -- "$TMP"' EXIT
 
@@ -60,6 +61,36 @@ else
   else
     report "удерживаемая блокировка -> код 4 (rc=$rc4, out=$([ -s "$TMP/locked.out" ] && echo non-empty || echo empty))" FAIL
   fi
+fi
+
+# 5. Строка ledger содержит ровно 9 колонок, разделённых табуляцией
+if [ -s "$LEDGER" ]; then
+  ncols=$(tail -1 "$LEDGER" | awk -F'\t' '{print NF}')
+  if [ "$ncols" -eq 9 ]; then
+    report "ledger: ровно 9 колонок ($ncols)" PASS
+  else
+    report "ledger: ровно 9 колонок (got $ncols)" FAIL
+  fi
+else
+  report "ledger: ровно 9 колонок (нет ledger)" FAIL
+fi
+
+# 6. Удерживаемая блокировка -> код 4 и ledger не растёт
+l1=$(wc -l <"$LEDGER" 2>/dev/null || echo 0)
+exec 9<>/var/run/disk-rotate.lock
+if flock -n 9; then
+  "$SCRIPT" --dry-run >"$TMP/locked2.out" 2>"$TMP/locked2.err"
+  rc6=$?
+  flock -u 9
+  exec 9>&-
+  l2=$(wc -l <"$LEDGER" 2>/dev/null || echo 0)
+  if [ "$rc6" -eq 4 ] && [ "$l1" = "$l2" ]; then
+    report "блокировка: код 4 и ledger не растёт ($l1 -> $l2)" PASS
+  else
+    report "блокировка: код 4 и ledger не растёт (rc=$rc6, $l1 -> $l2)" FAIL
+  fi
+else
+  report "блокировка: код 4 и ledger не растёт (не удалось захватить)" FAIL
 fi
 
 if [ "$FAILS" -eq 0 ]; then
