@@ -3,14 +3,13 @@
 # Skip directories where .tx-meta.json has "promoted":true
 # Usage: tx-cleanup.sh [--dry]
 # PM2: cron_restart "0 3 * * *", autorestart false
+# Удаление передано стадии уборки с гейтом restic (US3, spec:055); здесь остаётся отметка tx:cleanup:last в redis.
 
 set -uo pipefail
 
 # ── Config ──────────────────────────────────────────────────────────────
-PROJECTS_ROOT="/root/workspaces/projects"
 LOG_FILE="/var/log/tx-cleanup.log"
 LOG_MAX_LINES=1000
-AGE_DAYS=2          # find -mtime +2 = older than 48h (>2 full days = 72h boundary)
 DRY_RUN=false
 
 # ── Argument parsing ─────────────────────────────────────────────────────
@@ -49,57 +48,9 @@ redis_set_last() {
 rotate_log
 
 if [[ "$DRY_RUN" == true ]]; then
-    log "=== tx-cleanup DRY-RUN started (no deletions) ==="
+    log "=== tx-cleanup DRY-RUN (удаление передано стадии) ==="
 else
-    log "=== tx-cleanup started ==="
-fi
-
-count_deleted=0
-count_promoted=0
-count_checked=0
-
-# Safety: only .t-* pattern, maxdepth 1, must be directory
-while IFS= read -r dir; do
-    [[ -z "$dir" ]] && continue
-    count_checked=$(( count_checked + 1 ))
-    name=$(basename "$dir")
-
-    # Guard: never touch non-.t-* names (belt-and-suspenders)
-    if [[ "$name" != .t-* ]]; then
-        log "SKIP (pattern mismatch): $dir"
-        continue
-    fi
-
-    # Check for promoted flag
-    meta_file="${dir}/.tx-meta.json"
-    if [[ -f "$meta_file" ]]; then
-        # Extract "promoted":true using grep (no jq dependency)
-        if grep -q '"promoted"\s*:\s*true' "$meta_file" 2>/dev/null; then
-            count_promoted=$(( count_promoted + 1 ))
-            log "KEEP (promoted=true): $dir"
-            continue
-        fi
-    fi
-
-    # Delete or dry-report
-    if [[ "$DRY_RUN" == true ]]; then
-        log "DRY: would delete → $dir"
-    else
-        if rm -rf "$dir" 2>/dev/null; then
-            count_deleted=$(( count_deleted + 1 ))
-            log "DELETED: $dir"
-        else
-            log "ERROR: failed to delete $dir"
-        fi
-    fi
-
-done < <(find "$PROJECTS_ROOT" -maxdepth 1 -type d -name '.t-*' -mtime +"$AGE_DAYS" 2>/dev/null)
-
-# ── Summary ──────────────────────────────────────────────────────────────
-if [[ "$DRY_RUN" == true ]]; then
-    log "=== DRY-RUN complete | checked=$count_checked promoted=$count_promoted would_delete=$count_deleted ==="
-else
-    log "=== Complete | checked=$count_checked deleted=$count_deleted promoted(kept)=$count_promoted ==="
+    log "=== tx-cleanup started (удаление передано стадии, отметка tx:cleanup:last) ==="
     redis_set_last
 fi
 

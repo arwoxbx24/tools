@@ -1,14 +1,13 @@
 #!/bin/bash
 # backup-watcher.sh — Watches profile tree and key project dirs for backup files
 # Catches: *.backup, *.bak, *.backup.*, *.bak-*
-# Rotation: deletes files older than 5 days
 # Runs as PM2 daemon, uses inotifywait -r for RECURSIVE monitoring
 # v2: scoped dirs only, heavy project dirs excluded, timeout watchdog (1h max)
+# Удаление копий старше 5 суток передано стадии уборки с гейтом restic (US3, spec:055); сбор *.bak* остаётся.
 set +e
 
 PROFILE_DIR="/root/workspaces/system/tools/scripts"
 BACKUP_DIR="${PROFILE_DIR}/backups"
-RETENTION_DAYS=5
 LOG_FILE="/tmp/backup-watcher.log"
 # Watchdog: auto-restart after 1h to prevent inotify fd accumulation
 WATCHDOG_TIMEOUT=3600
@@ -42,12 +41,6 @@ move_all_backups() {
     [ $moved -gt 0 ] && log "Sweep: moved $moved backup files"
 }
 
-rotate_old() {
-    local deleted
-    deleted=$(find "$BACKUP_DIR" -maxdepth 1 -type f -mtime +${RETENTION_DAYS} -delete -print 2>/dev/null | wc -l)
-    [ "$deleted" -gt 0 ] && log "Rotated: deleted $deleted files older than ${RETENTION_DAYS} days"
-}
-
 # Active project dirs to watch (lightweight, no large binary dirs)
 # Excludes: bitrix(1.3G), stroyremont(434M), financial-model(231M), pdf-decoder(203M),
 #           hiddify-manager(165M), minio-b244(158M), photo_downloader_dist(79M), games, kinopoisk
@@ -60,9 +53,8 @@ WATCH_DIRS=(
     "/root/workspaces/projects/arwoxbx24-github"
 )
 
-# Initial full sweep + rotation
+# Initial full sweep
 move_all_backups
-rotate_old
 log "Watcher started. Monitoring ${#WATCH_DIRS[@]} scoped dirs (inotify watchdog: ${WATCHDOG_TIMEOUT}s)"
 
 # Recursive watch on scoped dirs only — avoids 7000+ inotify watches on full /root/workspaces/projects/
