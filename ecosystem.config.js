@@ -19,7 +19,7 @@ function loadEnvFile(filePath) {
 }
 const pm2ApiEnv = loadEnvFile('/root/workspaces/secrets/services/pm2-api.env');
 const kpiEventHandlerEnv = loadEnvFile('/root/workspaces/secrets/services/kpi-event-handler.env');
-const formsGwGuardEnv = loadEnvFile('/root/workspaces/secrets/projects/backups/.env');
+const formsGwGuardEnv = loadEnvFile('/root/workspaces/secrets/services/pm2-notify.env');
 
 module.exports = {
   apps: [
@@ -206,7 +206,7 @@ module.exports = {
       max_restarts: 10,
       exp_backoff_restart_delay: 1000,
       cron_restart: '*/15 * * * *',
-      preflight_env_file: '/root/workspaces/secrets/projects/backups/.env',
+      preflight_env_file: '/root/workspaces/secrets/services/pm2-notify.env',
       preflight_env_keys: ['TG_BOT_TOKEN', 'TG_CHAT_ID'],
       env: formsGwGuardEnv,
       error_file: '/root/.pm2/logs/forms-gw-guard-error.log',
