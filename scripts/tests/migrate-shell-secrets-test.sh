@@ -156,6 +156,32 @@ else
   report "env-файл с дублями имени: остаётся ровно одна (rc=$rc cnt=$CNT)" FAIL
 fi
 
+# 10. --remove удаляет все строки ^NAME= (в т.ч. середину), прочие в прежнем
+#     порядке, права 600 не меняются; повторный вызов печатает "nothing to remove"
+ENVFILE5="$TMP/secrets-e/mysvce.env"
+mkdir -p "$(dirname "$ENVFILE5")"
+printf 'AAA=1\nMID_SK=x\nBBB=2\n' > "$ENVFILE5"
+chmod 600 "$ENVFILE5"
+OUT10="$(bash "$SCRIPT" --remove MID_SK --env-file "$ENVFILE5")"
+rc=$?
+CONTENT="$(cat "$ENVFILE5")"
+MODE="$(stat -c %a "$ENVFILE5")"
+if [ "$rc" -eq 0 ] \
+  && [ "$CONTENT" = $'AAA=1\nBBB=2' ] \
+  && [ "$MODE" = 600 ] \
+  && grep -q "^removed 1 line(s) for MID_SK\$" <<<"$OUT10"; then
+  report "--remove: удалены все строки, прочие в прежнем порядке, права 600" PASS
+else
+  report "--remove: удалены все строки, прочие в прежнем порядке (rc=$rc)" FAIL
+fi
+OUT11="$(bash "$SCRIPT" --remove MID_SK --env-file "$ENVFILE5")"
+rc=$?
+if [ "$rc" -eq 0 ] && grep -q "^nothing to remove\$" <<<"$OUT11"; then
+  report "--remove повторно: nothing to remove" PASS
+else
+  report "--remove повторно: nothing to remove (rc=$rc)" FAIL
+fi
+
 if [ "$FAILS" -eq 0 ]; then
   echo "ALL PASS"
   exit 0

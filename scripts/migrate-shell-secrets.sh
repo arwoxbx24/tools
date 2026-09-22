@@ -17,10 +17,12 @@ set -u
 PROFILE=
 ENV_FILE=
 DRY_RUN=0
+REMOVE=
 
 usage() {
   cat <<'EOF'
 Usage: migrate-shell-secrets.sh --profile <path> --env-file <path> [--dry-run]
+       migrate-shell-secrets.sh --remove <name> --env-file <path>
 EOF
 }
 
@@ -28,11 +30,54 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --profile) PROFILE="${2:-}"; shift 2 ;;
     --env-file) ENV_FILE="${2:-}"; shift 2 ;;
+    --remove) REMOVE="${2:-}"; shift 2 ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; exit 2 ;;
   esac
 done
+
+# Режимы миграции (--profile) и удаления (--remove) взаимоисключающие.
+if [ -n "$PROFILE" ] && [ -n "$REMOVE" ]; then
+  usage >&2
+  exit 2
+fi
+
+if [ -n "$REMOVE" ]; then
+  if [ -z "$ENV_FILE" ]; then
+    usage >&2
+    exit 2
+  fi
+
+  mapfile -t OLDLINES < "$ENV_FILE" 2>/dev/null || OLDLINES=()
+  KEPT=()
+  REMOVED=0
+  for idx in "${!OLDLINES[@]}"; do
+    if [[ "${OLDLINES[$idx]}" == "$REMOVE="* ]]; then
+      REMOVED=$((REMOVED + 1))
+    else
+      KEPT+=("${OLDLINES[$idx]}")
+    fi
+  done
+
+  if [ "$REMOVED" -eq 0 ]; then
+    echo "nothing to remove"
+    exit 0
+  fi
+
+  ENVDIR="$(dirname "$ENV_FILE")"
+  TMPE="$(mktemp -- "$ENVDIR/.env.XXXXXX")" || exit 1
+  trap 'rm -f -- "$TMPE"' EXIT
+  if [ "${#KEPT[@]}" -gt 0 ]; then
+    printf '%s\n' "${KEPT[@]}" > "$TMPE"
+  else
+    : > "$TMPE"
+  fi
+  chmod 600 "$TMPE"
+  mv -f "$TMPE" "$ENV_FILE"
+  echo "removed $REMOVED line(s) for $REMOVE"
+  exit 0
+fi
 
 if [ -z "$PROFILE" ] || [ -z "$ENV_FILE" ]; then
   usage >&2
