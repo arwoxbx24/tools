@@ -87,6 +87,34 @@ else
   report "bash -n фикстуры после миграции = 0" FAIL
 fi
 
+# 6. (a) строка с подстановкой команды внутри if...fi не мигрируется и остаётся
+PROFILE2="$TMP/profile-2.sh"
+ENVFILE2="$TMP/secrets-b/mysvcb.env"
+cat > "$PROFILE2" <<EOF
+# comment
+if [ -f "\$HOME/creds" ]; then
+  export X_TOKEN="\$(cat /tmp/fixture)"
+  VOYAGE_API_KEY=$FAKE
+fi
+[ -z "\$PS1" ] && return
+EOF
+bash "$SCRIPT" --profile "$PROFILE2" --env-file "$ENVFILE2" >/dev/null 2>&1
+rc=$?
+if [ "$rc" -eq 0 ] \
+  && grep -qF 'export X_TOKEN="$(cat /tmp/fixture)"' "$PROFILE2" \
+  && ! grep -q '^VOYAGE_API_KEY=' "$PROFILE2"; then
+  report "командная подстановка не мигрируется и остаётся" PASS
+else
+  report "командная подстановка не мигрируется и остаётся (rc=$rc)" FAIL
+fi
+
+# 7. (b) после миграции литерала внутри if...fi файл проходит bash -n
+if bash -n "$PROFILE2"; then
+  report "после миграции литерала внутри if...fi bash -n = 0" PASS
+else
+  report "после миграции литерала внутри if...fi bash -n = 0" FAIL
+fi
+
 if [ "$FAILS" -eq 0 ]; then
   echo "ALL PASS"
   exit 0

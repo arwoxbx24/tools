@@ -63,7 +63,12 @@ discover() {
     name="${work%%=*}"
     val="${work#*=}"
     [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
-    if [ -z "$val" ] || [ "${val:0:1}" = '$' ]; then
+    # Секретом считается только литерал: значение без подстановки команды
+    # ($(...) или обратных кавычек) и без ссылки на другую переменную ($…).
+    if [ -z "$val" ] \
+      || [[ "$val" == *'$('* ]] \
+      || [[ "$val" == *'`'* ]] \
+      || [ "${val:0:1}" = '$' ]; then
       continue
     fi
     issecret=0
@@ -140,11 +145,13 @@ TMP1="$(mktemp -- "$(dirname "$PROFILE")/.mig.XXXXXX")" || exit 1
 TMP2=
 trap 'rm -f -- "$TMP1" "$TMP2"' EXIT
 
-DELSED=
+SEDARGS=()
 for n in "${LNO[@]}"; do
-  DELSED+="${n}d;"
+  # Заменяем строку комментарием-заглушкой, а не вырезаем: так структура
+  # блоков if/then/fi, case и циклов остаётся корректной в любом случае.
+  SEDARGS+=(-e "${n}c\\"$'\n'"  :  # moved to secrets store")
 done
-sed "$DELSED" "$PROFILE" > "$TMP1"
+sed "${SEDARGS[@]}" "$PROFILE" > "$TMP1"
 
 # (e) если блока подключения к env-файлу нет — вставить выше первой строки
 #     раннего выхода.
