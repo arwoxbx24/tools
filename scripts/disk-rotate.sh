@@ -26,6 +26,7 @@ DR_NOTIFY_CMD=${DR_NOTIFY_CMD:-}
 DR_TEST_ONLY=${DR_TEST_ONLY:-}
 DR_TEST_IRREPLACEABLE_DIR=${DR_TEST_IRREPLACEABLE_DIR:-}
 DR_TEST_REPLACEABLE_DIR=${DR_TEST_REPLACEABLE_DIR:-}
+DR_JOURNAL_COPY=${DR_JOURNAL_COPY:-/root/workspaces/system/tools/scripts/data/disk-rotate-deletions.tsv}
 NOTIFY_ENV=${NOTIFY_ENV:-/root/workspaces/secrets/services/pm2-notify.env}
 ECOSYSTEM="${0%/*}/../ecosystem.config.js"
 RUN_ID=$(date +%Y%m%d-%H%M%S)
@@ -121,6 +122,9 @@ TOTAL_KB=0
 ALERT_SENT=0
 ALERT_FAIL=0
 ALERT_RESULT=none
+FIXED_COUNT=0
+FIXED_MB=0
+DEFERRED_COUNT=0
 
 # Общий список незаменимых файлов прогона (копится во время классов, фиксируется
 # через гейт после них). Создаётся в начале каждого прогона.
@@ -244,6 +248,51 @@ if [ "$MODE" = check ]; then
   exit 0
 fi
 
+# --report: только отчёт о росте; без уборки, без алерта, без ledger.
+if [ "$MODE" = report ]; then
+  echo "growth:"
+  awk -F'\t' '
+    BEGIN { one_day = 86400; seven_days = 7 * 86400; now = systime() }
+    $2 == "live" && $1 != "ts" {
+      ts = $1
+      ts = substr(ts, 1, 19)
+      gsub(/[-T:]/, " ", ts)
+      ts_sec = mktime(ts)
+      if (ts_sec >= now - one_day) {
+        top5 = $8
+        n = split(top5, segs, ";")
+        for (i = 1; i <= n; i++) {
+          if (segs[i] != "") {
+            split(segs[i], kv, "=")
+            name = kv[1]
+            split(kv[2], vw, ":")
+            delta = vw[2] + 0
+            d1[name] += delta
+          }
+        }
+      }
+      if (ts_sec >= now - seven_days) {
+        top5 = $8
+        n = split(top5, segs, ";")
+        for (i = 1; i <= n; i++) {
+          if (segs[i] != "") {
+            split(segs[i], kv, "=")
+            name = kv[1]
+            split(kv[2], vw, ":")
+            delta = vw[2] + 0
+            d7[name] += delta
+          }
+        }
+      }
+    }
+    END {
+      for (name in d1) print "1d " name " +" d1[name]
+      for (name in d7) print "7d " name " +" d7[name]
+    }
+  ' "$DR_LEDGER" 2>/dev/null | sort -t' ' -k2,2 -k3,3rn
+  exit 0
+fi
+
 # Измерение до уборки и состояние.
 pct_before=$(use_pct)
 used_before=$(used_kb)
@@ -271,6 +320,13 @@ fi
 
 # Кандидаты ходят сюда: в dry-run печатаются, иначе удаляются. Все проверены по DENY_LIST.
 journal_row() { # class action path size snapshot restore reason -> 10-колоночная строка в $DR_JOURNAL
+  local class=$1 action=$2 path=$3 size=$4
+  if [ "$action" = fixed ] && [[ "$size" =~ ^[0-9]+$ ]]; then
+    FIXED_COUNT=$((FIXED_COUNT + 1))
+    FIXED_MB=$((FIXED_MB + size / 1024 / 1024))
+  elif [ "$action" = deferred ]; then
+    DEFERRED_COUNT=$((DEFERRED_COUNT + 1))
+  fi
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$(date -Iseconds)" "$RUN_ID" "$JOURNAL_MODE" "$@" >>"$DR_JOURNAL"
 }
@@ -721,13 +777,8 @@ if [ "$MODE" = run ] && [ "$pct_after" -gt "$EXHAUSTED_PCT" ]; then
   maybe_alert exhausted "disk-rotate: занятость ${pct_after}% после уборки — требуют решения владельца:${owner_list:- (нет в запретном списке)}"
 fi
 
-# Алерты о заполнении диска (soft/hard) — только обычный прогон.
+# Алерты о заполнении диска — только обычный прогон.
 if [ "$MODE" = run ]; then
-  if [ "$state" = soft ] || [ "$state" = hard ]; then
-    top=$(du -xsh "${TOP5_DIRS[@]}" 2>/dev/null | sort -rh | head -5)
-    maybe_alert "$state" "Диск ${pct_after}% после disk-rotate. Top: $top"
-  fi
-
   # dead-man server-backup: последний успешный прогон старше 36 ч (или не было)
   F=$DR_LAST_OK
   last_ok=0
@@ -735,6 +786,21 @@ if [ "$MODE" = run ]; then
   if [ ! -f "$F" ] || [ $((now - last_ok)) -gt 129600 ]; then
     echo "server-backup dead-man: последний успешный прогон старше 36 ч (или не было)" >>"$DR_LOG"
     maybe_alert backup "server-backup: последний успешный прогон старше 36 ч (или не было) — проверить pm2 server-backup"
+  fi
+fi
+
+# Проверка закрытого гейта — только обычный прогон.
+if [ "$MODE" = run ] && [ "$state" = soft ] && [ "$DR_TEST_ONLY" != 1 ]; then
+  gate_open
+  if [ $? -ne 0 ]; then
+    maybe_alert gate "disk-rotate: гейт закрыт ($GATE_REASON)"
+  fi
+fi
+
+GATE_STATUS=open
+if [ "$MODE" = run ] || [ "$MODE" = dry-run ]; then
+  if ! gate_open 2>/dev/null; then
+    GATE_STATUS="closed:$GATE_REASON"
   fi
 fi
 
@@ -758,6 +824,14 @@ ledger_init
 printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
   "$ts" "$mode_ledger" "$pct_before" "$pct_after" "$freed_mb" \
   "$state_ledger" "$ALERT_RESULT" "$top5" "$DECLARED_MISSING" >>"$DR_LEDGER"
+
+# Копия журнала в конце прогона.
+cp -f "$DR_JOURNAL" "$DR_JOURNAL_COPY" 2>/dev/null || true
+
+# Сводка за прогон — только обычный прогон (один вызов на run).
+if [ "$MODE" = run ]; then
+  maybe_alert summary "disk-rotate: ${pct_before}% → ${pct_after}%, освобождено ${freed_mb} МБ, зафиксировано ${FIXED_COUNT} (${FIXED_MB} МБ), отложено ${DEFERRED_COUNT}, гейт ${GATE_STATUS}, режим ${GATE_MODE}"
+fi
 
 echo "=== $(date '+%F %T') END ===" >>"$DR_LOG"
 
