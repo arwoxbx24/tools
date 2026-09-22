@@ -288,20 +288,6 @@ module.exports = {
       out_file: '/root/.pm2/logs/docker-log-rotation-out.log'
     },
     {
-      name: 'file-cleanup',
-      script: '/root/workspaces/tools/scripts/schedulers/file-cleanup-daemon.sh',
-      cwd: '/root/workspaces/projects',
-      interpreter: 'bash',
-      exec_mode: 'fork_mode',
-      instances: 1,
-      autorestart: true,
-      min_uptime: 10000,
-      max_restarts: 10,
-      exp_backoff_restart_delay: 1000,
-      error_file: '/root/.pm2/logs/file-cleanup-error.log',
-      out_file: '/root/.pm2/logs/file-cleanup-out.log'
-    },
-    {
       name: 'gdrive-token-check',
       script: '/root/workspaces/tools/scripts/pm2/gdrive-token-check.sh',
       cwd: '/root/workspaces/projects',
@@ -830,21 +816,6 @@ module.exports = {
       exp_backoff_restart_delay: 1000,
       error_file: '/root/.pm2/logs/pm2-prometheus-exporter-error.log',
       out_file: '/root/.pm2/logs/pm2-prometheus-exporter-out.log'
-    },
-    {
-      name: 'profile-rotation',
-      script: '/root/workspaces/tools/scripts/pm2/profile-rotation.sh',
-      cwd: '/root/workspaces/projects',
-      interpreter: 'bash',
-      exec_mode: 'fork_mode',
-      instances: 1,
-      autorestart: false,
-      min_uptime: 1000,
-      max_restarts: 10,
-      exp_backoff_restart_delay: 1000,
-      cron_restart: '0 4 * * *',
-      error_file: '/root/.pm2/logs/profile-rotation-error.log',
-      out_file: '/root/.pm2/logs/profile-rotation-out.log'
     },
     {
       name: 'prometheus',
