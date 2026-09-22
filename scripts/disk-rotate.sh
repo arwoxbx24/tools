@@ -160,6 +160,34 @@ check_declared() { # -> stdout: строки «источник | путь»; gl
   DECLARED_MISSING=$missing
 }
 
+mechanism_status() { # удаляющий скрипт по имени файла -> статус из встроенного списка | UNDECLARED
+  local p=$1 b
+  b=$(basename "$p")
+  case "$b" in
+    disk-rotate.sh)                          printf 'stage\n' ;;
+    docker-backup.sh|backup-rotation.sh|redis-backup-daemon.sh) printf 'local-copies\n' ;;
+    runtime-cache-janitor*)                  printf 'codex-zone\n' ;;
+    docker-log-rotation.sh)                  printf 'container-logs\n' ;;
+    server-backup.sh)                        printf 'own-drill-dir\n' ;;
+    *)                                       printf 'UNDECLARED\n' ;;
+  esac
+}
+
+print_mechanisms() { # -> таблица удаляющих механизмов: источник | путь | статус; undeclared: N
+  local src p status undeclared=0
+  for src in crontab ecosystem; do
+    while IFS= read -r p; do
+      [ -n "$p" ] || continue
+      [ -f "$p" ] || continue
+      grep -Eq 'rm[[:space:]]+-rf|-delete|truncate' "$p" 2>/dev/null || continue
+      status=$(mechanism_status "$p")
+      [ "$status" = UNDECLARED ] && undeclared=$((undeclared + 1))
+      printf '%s | %s | %s\n' "$src" "$p" "$status"
+    done <<<"$(declared_paths "$src")"
+  done
+  printf 'undeclared: %s\n' "$undeclared"
+}
+
 # --- ledger (spec:054 п.3) ---
 ledger_init() {
   [ -s "$DR_LEDGER" ] && return
@@ -240,6 +268,7 @@ if [ "$MODE" = check ]; then
   if [ "$DECLARED_MISSING" -gt 0 ]; then
     maybe_alert declared "disk-rotate: $DECLARED_MISSING объявленных скриптов отсутствуют (нужно проверить crontab/ecosystem)"
   fi
+  print_mechanisms
   echo "=== $(date '+%F %T') END ===" >>"$DR_LOG"
   exit 0
 fi
@@ -450,13 +479,13 @@ verify_and_delete() { # class -> удаление по гейту: провер�
     if [ "$snap_size" = "$(stat -c %s "$path" 2>/dev/null)" ] \
        && [ "$snap_mtime" = "$(stat -c %Y "$path" 2>/dev/null)" ] \
        && [ "$(sha256sum < "$path" | cut -c1-64)" = "$sha256" ]; then
-      if [ "$GATE_MODE" = enforce ]; then
-        rm -f -- "$path"
-        journal_row "$class" deleted "$path" "$size" "$snapshot_id" \
-          "$RESTIC restore $snapshot_id --target /var/lib/disk-rotate/restore/$RUN_ID --include '$path'" -
-      else
-        journal_row "$class" would-delete "$path" "$size" "$snapshot_id" - -
-        printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+    if [ "$GATE_MODE" = enforce ]; then
+      rm -f -- "$path"
+      journal_row "$class" deleted "$path" "$size" "$snapshot_id" \
+          "$RESTIC restore $snapshot_id --repo '$RESTIC_REPOSITORY' --target /var/lib/disk-rotate/restore/$RUN_ID --include '$path'" -
+    else
+      journal_row "$class" would-delete "$path" "$size" "$snapshot_id" - -
+      printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
           "$path" "$size" "$mtime" "$sha256" "$snapshot_id" "$fixed_ts" >>"$tmp"
       fi
       continue
@@ -666,6 +695,38 @@ cleanup_images() { # работает только при hard
     !($0 in used) { print }')
 }
 
+# Уровень always (spec:055): кандидаты незаменимые, собираются в IRR_LIST вне
+# зависимости от занятости, ДО классов по порогам. Ничего не удаляется напрямую.
+cleanup_always() { # вызывается в каждом run/dry-run; логи и кандидаты -> IRR_LIST
+  local lr=/root/workspaces/tools/etc/disk-rotate-logrotate.conf
+  if [ -f "$lr" ]; then
+    if [ "$MODE" = dry-run ]; then
+      logrotate -d -s /var/lib/disk-rotate/logrotate.state "$lr" >>"$DR_LOG" 2>&1
+    else
+      logrotate -s /var/lib/disk-rotate/logrotate.state "$lr" >>"$DR_LOG" 2>&1
+    fi
+  else
+    echo "logrotate: нет $lr (пропускаю)" >>"$DR_LOG"
+  fi
+
+  # reports: старые отчёты и сжатые логи
+  find -P /root/workspaces/system/tools/scripts/context       -type f -mtime +7  -print0 2>/dev/null | handle reports irr
+  find -P /root/workspaces/system/tools/scripts/agent-reports -type f -mtime +14 -print0 2>/dev/null | handle reports irr
+  find -P /root/workspaces/system/tools/scripts/logs -maxdepth 1 -type f -name '*.gz' -mtime +14 -print0 2>/dev/null | handle reports irr
+
+  # txdirs: рабочие каталоги проектов старше 2 суток, кроме помеченных promoted
+  while IFS= read -r -d '' d; do
+    [ -n "$d" ] || continue
+    denied "$d" && continue
+    grep -q '"promoted"[[:space:]]*:[[:space:]]*true' "$d/.tx-meta.json" 2>/dev/null && continue
+    find -P "$d" -type f -print0 2>/dev/null | handle txdirs irr
+  done < <(find -P /root/workspaces/projects -maxdepth 1 -type d -name '.t-*' -mtime +2 -print0 2>/dev/null)
+
+  # profile: история и бэкапы Claude старше 14 суток
+  find -P /root/.claude/file-history -type f -mtime +14 -print0 2>/dev/null | handle profile irr
+  find -P /root/.claude/backups      -type f -mtime +14 -print0 2>/dev/null | handle profile irr
+}
+
 # Тестовый режим (DR_TEST_ONLY=1): только тестовые классы, реальная уборка не выполняется.
 if [ "$DR_TEST_ONLY" = 1 ]; then
   REFIX_PATHS=()
@@ -681,6 +742,7 @@ if [ "$DR_TEST_ONLY" = 1 ]; then
     find "$DR_TEST_REPLACEABLE_DIR" -maxdepth 1 -type f -delete 2>/dev/null
   fi
 elif [ "$MODE" != report ]; then
+  cleanup_always
   if [ "$state" = soft ] || [ "$state" = hard ]; then
     cleanup_cache
   fi
@@ -693,7 +755,8 @@ fi
 # После классов по порогам — фиксация незаменимых и системная чистка (только run).
 if [ "$MODE" = run ] && [ "$DR_TEST_ONLY" != 1 ]; then
   [ -s "$IRR_LIST" ] && gate_process irreplaceable "$IRR_LIST"
-  for r in /root/workspaces/projects/.agent-work /root/workspaces/system/archives /root/workspaces/projects/.claude/worktrees /root/.claude/projects /root/.claude/jobs /root/.claude/paste-cache /root/.claude/file-history; do
+  for r in /root/workspaces/projects/.agent-work /root/workspaces/system/archives /root/workspaces/projects/.claude/worktrees /root/.claude/projects /root/.claude/jobs /root/.claude/paste-cache /root/.claude/file-history \
+           /root/workspaces/projects/.t-* /root/workspaces/system/tools/scripts/context /root/workspaces/system/tools/scripts/agent-reports /root/workspaces/system/tools/scripts/logs; do
     [ -d "$r" ] && find "$r" -mindepth 1 -type d -empty -delete 2>/dev/null
   done
   git -C /root/workspaces/projects worktree prune >>"$DR_LOG" 2>&1
