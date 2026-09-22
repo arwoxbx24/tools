@@ -14,10 +14,17 @@
 # Лог: /var/log/disk-rotate.log
 # Ledger: /var/log/disk-rotate-ledger.tsv
 set -u
-LOG=/var/log/disk-rotate.log
-LEDGER=${LEDGER:-/var/log/disk-rotate-ledger.tsv}
-ALERT_STATE_FILE=/var/log/disk-rotate-alert-state.tsv
-LOCK=/var/run/disk-rotate.lock
+DR_LOG=${DR_LOG:-/var/log/disk-rotate.log}
+DR_LEDGER=${DR_LEDGER:-${LEDGER:-/var/log/disk-rotate-ledger.tsv}}
+DR_STATE_FILE=${DR_STATE_FILE:-/var/lib/disk-rotate/fixed.tsv}
+DR_LOCK_FILE=${DR_LOCK_FILE:-/var/run/disk-rotate.lock}
+DR_LAST_OK=${DR_LAST_OK:-/root/workspaces/system/tools/scripts/data/server-backup.last-ok}
+DR_JOURNAL=${DR_JOURNAL:-/var/log/disk-rotate-deletions.tsv}
+DR_USAGE_PCT=${DR_USAGE_PCT:-}
+DR_NOTIFY_CMD=${DR_NOTIFY_CMD:-}
+DR_TEST_ONLY=${DR_TEST_ONLY:-}
+DR_TEST_IRREPLACEABLE_DIR=${DR_TEST_IRREPLACEABLE_DIR:-}
+DR_TEST_REPLACEABLE_DIR=${DR_TEST_REPLACEABLE_DIR:-}
 NOTIFY_ENV=${NOTIFY_ENV:-/root/workspaces/secrets/services/pm2-notify.env}
 ECOSYSTEM="${0%/*}/../ecosystem.config.js"
 
@@ -87,14 +94,14 @@ EOF
 esac
 
 # Взаимное исключение прогонов: неблокирующий flock во всех режимах, кроме help.
-exec 9>"$LOCK" || exit $RC_USAGE
+exec 9>"$DR_LOCK_FILE" || exit $RC_USAGE
 if ! flock -n 9; then
-  echo "LOCKED другой прогон идёт" >>"$LOG"
+  echo "LOCKED другой прогон идёт" >>"$DR_LOG"
   exit $RC_LOCKED
 fi
 
-echo "=== $(date '+%F %T') ${MODE^^} START ===" >>"$LOG"
-df -h / | tail -1 >>"$LOG"
+echo "=== $(date '+%F %T') ${MODE^^} START ===" >>"$DR_LOG"
+df -h / | tail -1 >>"$DR_LOG"
 
 now=$(date +%s)
 ts=$(date '+%Y-%m-%dT%H:%M:%S')
@@ -103,7 +110,13 @@ ALERT_SENT=0
 ALERT_FAIL=0
 ALERT_RESULT=none
 
-use_pct() { df -P / | awk 'NR==2 {gsub(/%/, "", $5); print $5}'; }
+use_pct() {
+  if [ -n "$DR_USAGE_PCT" ]; then
+    echo "$DR_USAGE_PCT"
+  else
+    df -P / | awk 'NR==2 {gsub(/%/, "", $5); print $5}'
+  fi
+}
 used_kb() { df -P / | awk 'NR==2 {print $3}'; }
 
 # --- счётчик «объявленное существует» (spec:054 п.4) ---
@@ -133,13 +146,13 @@ check_declared() { # -> stdout: строки «источник | путь»; gl
 
 # --- ledger (spec:054 п.3) ---
 ledger_init() {
-  [ -s "$LEDGER" ] && return
-  printf 'ts\tmode\tpct_before\tpct_after\tfreed_mb\tstate\talert\ttop5\tdeclared_missing\n' >"$LEDGER"
+  [ -s "$DR_LEDGER" ] && return
+  printf 'ts\tmode\tpct_before\tpct_after\tfreed_mb\tstate\talert\ttop5\tdeclared_missing\n' >"$DR_LEDGER"
 }
 
 ledger_top5() { # имя=вес:дельта; разделитель ';'; дельта к последней строке live
   local i n w lastw delta out="" base seg
-  base=$(awk -F'\t' '$2=="live"{last=$8} END{if (last!="") print last}' "$LEDGER" 2>/dev/null)
+  base=$(awk -F'\t' '$2=="live"{last=$8} END{if (last!="") print last}' "$DR_LEDGER" 2>/dev/null)
   for i in "${!TOP5_DIRS[@]}"; do
     n="${TOP5_NAMES[$i]}"
     w=$(du -sm "${TOP5_DIRS[$i]}" 2>/dev/null | awk '{print $1}'); w="${w:-0}"
@@ -161,14 +174,19 @@ ledger_top5() { # имя=вес:дельта; разделитель ';'; дел
 
 # --- алерт (не больше одного на состояние в сутки) ---
 send_alert() { # text -> 0/1
-  local token="" chat="" code
+  local code
+  if [ -n "$DR_NOTIFY_CMD" ]; then
+    "$DR_NOTIFY_CMD" "$1"
+    return $?
+  fi
+  local token="" chat=""
   if [ -f "$NOTIFY_ENV" ]; then
     # shellcheck disable=SC1090
     source "$NOTIFY_ENV"
     token="${TG_BOT_TOKEN:-}"; chat="${TG_CHAT_ID:-}"
   fi
   if [ -z "$token" ] || [ -z "$chat" ]; then
-    echo "ALERT-FAILED no token/chat" >>"$LOG"
+    echo "ALERT-FAILED no token/chat" >>"$DR_LOG"
     return 1
   fi
   code=$(curl -s --max-time 10 -o /dev/null -w '%{http_code}' \
@@ -178,18 +196,18 @@ send_alert() { # text -> 0/1
 }
 
 alert_sent_today() { # состояние
-  grep -qF "$1=$(date '+%F')" "$ALERT_STATE_FILE" 2>/dev/null
+  grep -qF "$1=$(date '+%F')" "$DR_STATE_FILE" 2>/dev/null
 }
 
 mark_alert() { # состояние
-  sed -i "/^$1=/d" "$ALERT_STATE_FILE" 2>/dev/null || true
-  echo "$1=$(date '+%F')" >>"$ALERT_STATE_FILE"
+  sed -i "/^$1=/d" "$DR_STATE_FILE" 2>/dev/null || true
+  echo "$1=$(date '+%F')" >>"$DR_STATE_FILE"
 }
 
 maybe_alert() { # состояние текст
   local st=$1 txt=$2
   if alert_sent_today "$st"; then
-    echo "ALERT-SKIP $st уже сегодня" >>"$LOG"
+    echo "ALERT-SKIP $st уже сегодня" >>"$DR_LOG"
     return 0
   fi
   if send_alert "$txt"; then
@@ -206,7 +224,7 @@ if [ "$MODE" = check ]; then
   if [ "$DECLARED_MISSING" -gt 0 ]; then
     maybe_alert declared "disk-rotate: $DECLARED_MISSING объявленных скриптов отсутствуют (нужно проверить crontab/ecosystem)"
   fi
-  echo "=== $(date '+%F %T') END ===" >>"$LOG"
+  echo "=== $(date '+%F %T') END ===" >>"$DR_LOG"
   exit 0
 fi
 
@@ -227,10 +245,10 @@ mode_ledger=live
 
 # «Объявленное существует» — при обычном прогоне (spec:054 п.4).
 DECLARED_MISSING=0
-if [ "$MODE" = run ]; then
+if [ "$MODE" = run ] && [ "$DR_TEST_ONLY" != 1 ]; then
   check_declared
   if [ "$DECLARED_MISSING" -gt 0 ]; then
-    echo "DECLARED-MISSING $DECLARED_MISSING" >>"$LOG"
+    echo "DECLARED-MISSING $DECLARED_MISSING" >>"$DR_LOG"
     maybe_alert declared "disk-rotate: $DECLARED_MISSING объявленных скриптов отсутствуют (см. ledger)"
   fi
 fi
@@ -312,17 +330,17 @@ cleanup_cache() { # работает при soft и выше
       TOTAL_KB=$((TOTAL_KB + kb))
       printf '%s\t%sk\t%sd\t%s\n' "$d" "$kb" "$age" cache
     else
-      git -C /root/workspaces/projects worktree remove --force "$d" >>"$LOG" 2>&1
+      git -C /root/workspaces/projects worktree remove --force "$d" >>"$DR_LOG" 2>&1
     fi
   done
-  git -C /root/workspaces/projects worktree prune >>"$LOG" 2>&1
+  git -C /root/workspaces/projects worktree prune >>"$DR_LOG" 2>&1
 
   # --- системные очистки кэша (только боевой режим) ---
   if [ "$MODE" = run ]; then
-    apt-get clean >>"$LOG" 2>&1
-    docker builder prune -a -f >>"$LOG" 2>&1
-    docker image prune -f >>"$LOG" 2>&1
-    journalctl --vacuum-size=200M >>"$LOG" 2>&1
+    apt-get clean >>"$DR_LOG" 2>&1
+    docker builder prune -a -f >>"$DR_LOG" 2>&1
+    docker image prune -f >>"$DR_LOG" 2>&1
+    journalctl --vacuum-size=200M >>"$DR_LOG" 2>&1
   fi
 }
 
@@ -338,7 +356,7 @@ cleanup_trash() { # работает только при hard
     if [ "$MODE" = dry-run ]; then
       printf '%s\t-\t-\ttrash\n' "$name"
     else
-      snap remove "$name" >>"$LOG" 2>&1
+      snap remove "$name" >>"$DR_LOG" 2>&1
     fi
   done < <(snap list --all 2>/dev/null | awk '
     NR>1 { n=$1; notes=$NF; if (notes ~ /disabled/) d[n]=1; else a[n]=1 }
@@ -356,15 +374,27 @@ cleanup_images() { # работает только при hard
       TOTAL_KB=$((TOTAL_KB + kb))
       printf '%s\t%sk\t-\timages\n' "$img" "$kb"
     else
-      docker rmi "$img" >>"$LOG" 2>&1
+      docker rmi "$img" >>"$DR_LOG" 2>&1
     fi
   done < <(docker images --no-trunc -q 2>/dev/null | awk -v refs="$(printf '%s' "$refs")" '
     BEGIN { n=split(refs, a, "\n"); for (i=1; i<=n; i++) used[a[i]]=1 }
     !($0 in used) { print }')
 }
 
-# Классы по состоянию диска.
-if [ "$MODE" != report ]; then
+# Тестовый режим (DR_TEST_ONLY=1): только тестовые классы, реальная уборка не выполняется.
+if [ "$DR_TEST_ONLY" = 1 ]; then
+  # незаменимые: только перечень кандидатов (удаление добавит гейт в следующем атоме)
+  if [ -n "$DR_TEST_IRREPLACEABLE_DIR" ] && [ -d "$DR_TEST_IRREPLACEABLE_DIR" ]; then
+    while IFS= read -r -d '' p; do
+      denied "$p" && continue
+      echo "candidate irreplaceable $p"
+    done < <(find "$DR_TEST_IRREPLACEABLE_DIR" -maxdepth 1 -type f -print0 2>/dev/null)
+  fi
+  # заменимые: в этом шаге просто удаляются
+  if [ -n "$DR_TEST_REPLACEABLE_DIR" ] && [ -d "$DR_TEST_REPLACEABLE_DIR" ]; then
+    find "$DR_TEST_REPLACEABLE_DIR" -maxdepth 1 -type f -delete 2>/dev/null
+  fi
+elif [ "$MODE" != report ]; then
   if [ "$state" = soft ] || [ "$state" = hard ]; then
     cleanup_cache
   fi
@@ -404,11 +434,11 @@ if [ "$MODE" = run ]; then
   fi
 
   # dead-man server-backup: последний успешный прогон старше 36 ч (или не было)
-  F=/root/workspaces/system/tools/scripts/data/server-backup.last-ok
+  F=$DR_LAST_OK
   last_ok=0
   [ -f "$F" ] && last_ok=$(cat "$F")
   if [ ! -f "$F" ] || [ $((now - last_ok)) -gt 129600 ]; then
-    echo "server-backup dead-man: последний успешный прогон старше 36 ч (или не было)" >>"$LOG"
+    echo "server-backup dead-man: последний успешный прогон старше 36 ч (или не было)" >>"$DR_LOG"
     maybe_alert backup "server-backup: последний успешный прогон старше 36 ч (или не было) — проверить pm2 server-backup"
   fi
 fi
@@ -416,7 +446,7 @@ fi
 [ "$ALERT_SENT" -gt 0 ] && ALERT_RESULT=sent
 [ "$ALERT_FAIL" -gt 0 ] && ALERT_RESULT=failed
 
-df -h / | tail -1 >>"$LOG"
+df -h / | tail -1 >>"$DR_LOG"
 
 # Итог dry-run: суммарный объём и прогноз занятости (диск при этом не меняется).
 if [ "$MODE" = dry-run ]; then
@@ -432,9 +462,9 @@ top5=$(ledger_top5)
 ledger_init
 printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
   "$ts" "$mode_ledger" "$pct_before" "$pct_after" "$freed_mb" \
-  "$state_ledger" "$ALERT_RESULT" "$top5" "$DECLARED_MISSING" >>"$LEDGER"
+  "$state_ledger" "$ALERT_RESULT" "$top5" "$DECLARED_MISSING" >>"$DR_LEDGER"
 
-echo "=== $(date '+%F %T') END ===" >>"$LOG"
+echo "=== $(date '+%F %T') END ===" >>"$DR_LOG"
 
 if [ "$state_ledger" = exhausted ]; then
   exit $RC_EXHAUSTED
