@@ -1,0 +1,95 @@
+#!/bin/bash
+# Self-check скрипта migrate-shell-secrets.sh (spec:054). Запуск:
+#   bash scripts/tests/migrate-shell-secrets-test.sh
+# Использует временную фикстуру на mktemp -d и убирает её за собой.
+set -u
+
+SCRIPT="$(cd "$(dirname "$0")/.." && pwd -P)/migrate-shell-secrets.sh"
+TMP="$(mktemp -d)"
+trap 'rm -rf -- "$TMP"' EXIT
+
+FAILS=0
+report() { # name status
+  if [ "$2" = PASS ]; then
+    echo "PASS $1"
+  else
+    echo "FAIL $1"
+    FAILS=$((FAILS + 1))
+  fi
+}
+
+PROFILE="$TMP/profile.sh"
+ENVFILE="$TMP/secrets/mysvc.env"
+FAKE="sk-TESTTESTTESTTEST01"
+
+cat > "$PROFILE" <<EOF
+# comment
+export NORMAL=hello
+[ -z "\$PS1" ] && return
+VOYAGE_API_KEY=$FAKE
+JINA_API_KEY=$FAKE
+EOF
+cp -f "$PROFILE" "$TMP/profile.orig"
+
+# 1. --dry-run не меняет фикстуру и не печатает значения
+OUT="$(bash "$SCRIPT" --profile "$PROFILE" --env-file "$ENVFILE" --dry-run)"
+rc=$?
+if [ "$rc" -eq 0 ] && ! grep -qF "$FAKE" <<<"$OUT" && ! grep -q '^VOYAGE_API_KEY=' <<<"$OUT"; then
+  report "dry-run: имена без значений, rc=0" PASS
+else
+  report "dry-run: имена без значений, rc=0 (rc=$rc)" FAIL
+fi
+if cmp -s "$PROFILE" "$TMP/profile.orig"; then
+  report "dry-run: фикстура не изменена" PASS
+else
+  report "dry-run: фикстура не изменена" FAIL
+fi
+
+# 2. боевой запуск создаёт env-файл 600 и убирает строки из профиля
+bash "$SCRIPT" --profile "$PROFILE" --env-file "$ENVFILE"
+rc=$?
+if [ "$rc" -eq 0 ] && [ -f "$ENVFILE" ] && [ "$(stat -c %a "$ENVFILE")" = 600 ]; then
+  report "боевой запуск создаёт env-файл 600" PASS
+else
+  report "боевой запуск создаёт env-файл 600 (rc=$rc)" FAIL
+fi
+if ! grep -q '^VOYAGE_API_KEY=' "$PROFILE" && ! grep -q '^JINA_API_KEY=' "$PROFILE"; then
+  report "секретные строки удалены из профиля" PASS
+else
+  report "секретные строки удалены из профиля" FAIL
+fi
+
+# 3. блок подключения выше строки раннего выхода
+LINE_EE="$(grep -n -- '\[ -z "\$PS1" \] && return' "$PROFILE" | cut -d: -f1 | head -1)"
+LINE_BLOCK="$(grep -nF -- "$ENVFILE" "$PROFILE" | cut -d: -f1 | head -1)"
+if [ -n "$LINE_EE" ] && [ -n "$LINE_BLOCK" ] && [ "$LINE_BLOCK" -lt "$LINE_EE" ]; then
+  report "блок подключения выше строки раннего выхода ($LINE_BLOCK < $LINE_EE)" PASS
+else
+  report "блок подключения выше строки раннего выхода (block=$LINE_BLOCK, ee=$LINE_EE)" FAIL
+fi
+
+# 4. повторный запуск: nothing to migrate, файлы не изменены
+cp -f "$PROFILE" "$TMP/profile2"
+cp -f "$ENVFILE" "$TMP/env2"
+OUT2="$(bash "$SCRIPT" --profile "$PROFILE" --env-file "$ENVFILE")"
+rc=$?
+if [ "$rc" -eq 0 ] && grep -q "nothing to migrate" <<<"$OUT2" \
+  && cmp -s "$PROFILE" "$TMP/profile2" && cmp -s "$ENVFILE" "$TMP/env2"; then
+  report "повторный запуск: nothing to migrate, файлы не изменены" PASS
+else
+  report "повторный запуск: nothing to migrate, файлы не изменены (rc=$rc)" FAIL
+fi
+
+# 5. bash -n фикстуры после миграции = 0
+if bash -n "$PROFILE"; then
+  report "bash -n фикстуры после миграции = 0" PASS
+else
+  report "bash -n фикстуры после миграции = 0" FAIL
+fi
+
+if [ "$FAILS" -eq 0 ]; then
+  echo "ALL PASS"
+  exit 0
+fi
+echo "$FAILS check(s) FAILED"
+exit 1
