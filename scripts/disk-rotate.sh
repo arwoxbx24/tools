@@ -27,6 +27,14 @@ DR_TEST_IRREPLACEABLE_DIR=${DR_TEST_IRREPLACEABLE_DIR:-}
 DR_TEST_REPLACEABLE_DIR=${DR_TEST_REPLACEABLE_DIR:-}
 NOTIFY_ENV=${NOTIFY_ENV:-/root/workspaces/secrets/services/pm2-notify.env}
 ECOSYSTEM="${0%/*}/../ecosystem.config.js"
+RUN_ID=$(date +%Y%m%d-%H%M%S)
+GATE_MODE=${GATE_MODE:-shadow}
+if [ "$GATE_MODE" = enforce ]; then
+  JOURNAL_MODE=enforce
+else
+  JOURNAL_MODE=shadow
+fi
+RESTIC=${RESTIC:-/root/workspaces/tools/bin/restic}
 
 SOFT_PCT=${SOFT_PCT:-80}
 HARD_PCT=${HARD_PCT:-90}
@@ -254,6 +262,60 @@ if [ "$MODE" = run ] && [ "$DR_TEST_ONLY" != 1 ]; then
 fi
 
 # Кандидаты ходят сюда: в dry-run печатаются, иначе удаляются. Все проверены по DENY_LIST.
+journal_row() { # class action path size snapshot restore reason -> 10-колоночная строка в $DR_JOURNAL
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$(date -Iseconds)" "$RUN_ID" "$JOURNAL_MODE" "$@" >>"$DR_JOURNAL"
+}
+
+restic_env() { # задать RESTIC_REPOSITORY/RESTIC_PASSWORD_FILE из DR_RESTIC_REPO или env-файлов
+  RESTIC=${RESTIC:-/root/workspaces/tools/bin/restic}
+  if [ -n "${DR_RESTIC_REPO:-}" ]; then
+    export RESTIC_REPOSITORY="$DR_RESTIC_REPO" RESTIC_PASSWORD_FILE="$DR_RESTIC_PASSWORD_FILE"
+  else
+    set -a
+    # shellcheck disable=SC1090
+    source "/root/workspaces/secrets/yandex-s3.env"
+    # shellcheck disable=SC1090
+    source "/root/workspaces/secrets/restic.env"
+    set +a
+  fi
+}
+
+fix_candidates() { # class listfile -> 0/1; фиксирует незаменимые в restic predelete и пишет state/journal
+  local class=$1 listfile=$2
+  local -a paths=()
+  local -A sha1_map=()
+  local p sha1 sha2 size mtime snapshot_id dump rc
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    paths+=("$p")
+    sha1_map["$p"]=$(sha256sum < "$p" | cut -c1-64)
+  done <"$listfile"
+  dump=$("$RESTIC" backup --files-from-verbatim "$listfile" --tag predelete --host "$(hostname)" --json)
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    for p in "${paths[@]}"; do
+      size=$(stat -c %s "$p" 2>/dev/null || echo -)
+      journal_row "$class" deferred "$p" "$size" - - restic-backup-failed
+    done
+    return 1
+  fi
+  snapshot_id=$(printf '%s' "$dump" | jq -r 'select(.message_type=="summary") | .snapshot_id')
+  for p in "${paths[@]}"; do
+    sha2=$(sha256sum < "$p" | cut -c1-64)
+    if [ "${sha1_map["$p"]}" = "$sha2" ]; then
+      size=$(stat -c %s "$p" 2>/dev/null || echo -)
+      mtime=$(stat -c %Y "$p" 2>/dev/null || echo -)
+      printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$p" "$size" "$mtime" "$sha2" "$snapshot_id" "$(date +%s)" >>"$DR_STATE_FILE"
+      journal_row "$class" fixed "$p" "$size" "$snapshot_id" - -
+    else
+      size=$(stat -c %s "$p" 2>/dev/null || echo -)
+      journal_row "$class" deferred "$p" "$size" - - changed-during-snapshot
+    fi
+  done
+}
+
 handle() { # class; пути из stdin (NUL)
   local cls=$1 p kb age
   while IFS= read -r -d '' p; do
@@ -383,12 +445,16 @@ cleanup_images() { # работает только при hard
 
 # Тестовый режим (DR_TEST_ONLY=1): только тестовые классы, реальная уборка не выполняется.
 if [ "$DR_TEST_ONLY" = 1 ]; then
-  # незаменимые: только перечень кандидатов (удаление добавит гейт в следующем атоме)
+  # незаменимые: фиксация в restic predelete (удаление добавит гейт в следующем атоме)
   if [ -n "$DR_TEST_IRREPLACEABLE_DIR" ] && [ -d "$DR_TEST_IRREPLACEABLE_DIR" ]; then
+    irrep_tmp=$(mktemp)
     while IFS= read -r -d '' p; do
       denied "$p" && continue
-      echo "candidate irreplaceable $p"
+      printf '%s\n' "$p" >>"$irrep_tmp"
     done < <(find "$DR_TEST_IRREPLACEABLE_DIR" -maxdepth 1 -type f -print0 2>/dev/null)
+    restic_env
+    fix_candidates test-irreplaceable "$irrep_tmp"
+    rm -f -- "$irrep_tmp"
   fi
   # заменимые: в этом шаге просто удаляются
   if [ -n "$DR_TEST_REPLACEABLE_DIR" ] && [ -d "$DR_TEST_REPLACEABLE_DIR" ]; then
