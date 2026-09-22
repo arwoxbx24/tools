@@ -4,7 +4,7 @@
 # TG_BOT_TOKEN/TG_CHAT_ID injected by pm2 from pm2-notify.env.
 set -uo pipefail
 
-export PATH=/root/yandex-cloud/bin:$PATH
+export PATH="$PATH:/root/yandex-cloud/bin"
 
 GUARD_GW_ID="${GUARD_GW_ID:-d5dn462s09a9dpofvl2d}"
 GUARD_FORMS_URL="${GUARD_FORMS_URL:-https://forms.arwox.ru/}"
