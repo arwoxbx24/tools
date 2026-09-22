@@ -17,6 +17,7 @@ set -u
 DR_LOG=${DR_LOG:-/var/log/disk-rotate.log}
 DR_LEDGER=${DR_LEDGER:-${LEDGER:-/var/log/disk-rotate-ledger.tsv}}
 DR_STATE_FILE=${DR_STATE_FILE:-/var/lib/disk-rotate/fixed.tsv}
+DR_ALERT_STATE_FILE=${DR_ALERT_STATE_FILE:-/var/log/disk-rotate-alert-state.tsv}
 DR_LOCK_FILE=${DR_LOCK_FILE:-/var/run/disk-rotate.lock}
 DR_LAST_OK=${DR_LAST_OK:-/root/workspaces/system/tools/scripts/data/server-backup.last-ok}
 DR_JOURNAL=${DR_JOURNAL:-/var/log/disk-rotate-deletions.tsv}
@@ -204,12 +205,12 @@ send_alert() { # text -> 0/1
 }
 
 alert_sent_today() { # состояние
-  grep -qF "$1=$(date '+%F')" "$DR_STATE_FILE" 2>/dev/null
+  grep -qF "$1=$(date '+%F')" "$DR_ALERT_STATE_FILE" 2>/dev/null
 }
 
 mark_alert() { # состояние
-  sed -i "/^$1=/d" "$DR_STATE_FILE" 2>/dev/null || true
-  echo "$1=$(date '+%F')" >>"$DR_STATE_FILE"
+  sed -i "/^$1=/d" "$DR_ALERT_STATE_FILE" 2>/dev/null || true
+  echo "$1=$(date '+%F')" >>"$DR_ALERT_STATE_FILE"
 }
 
 maybe_alert() { # состояние текст
@@ -314,6 +315,66 @@ fix_candidates() { # class listfile -> 0/1; фиксирует незамени�
       journal_row "$class" deferred "$p" "$size" - - changed-during-snapshot
     fi
   done
+}
+
+verify_and_delete() { # class -> удаление по гейту: проверка копии в restic; заполняет REFIX_PATHS
+  local class=$1
+  [ -f "$DR_STATE_FILE" ] || return 0
+  local tmp now_s path size mtime sha256 snapshot_id fixed_ts sid_path
+  local -a rec
+  local -A snap_path=() snap_done=()
+  local p s m ms meta snap_size snap_mtime
+  tmp=$(mktemp)
+  now_s=$(date +%s)
+  while IFS=$'\t' read -ra rec; do
+    [ "${#rec[@]}" -eq 6 ] || continue   # мусор (напр. строки тревог) пропускаем
+    path="${rec[0]}"; size="${rec[1]}"; mtime="${rec[2]}"
+    sha256="${rec[3]}"; snapshot_id="${rec[4]}"; fixed_ts="${rec[5]}"
+    [ -n "$path" ] || continue
+    if [ ! -e "$path" ]; then
+      journal_row "$class" vanished "$path" "$size" "$snapshot_id" - -
+      continue
+    fi
+    if [ $((now_s - fixed_ts)) -gt 86400 ]; then
+      journal_row "$class" snapshot-stale "$path" "$size" "$snapshot_id" - -
+      REFIX_PATHS+=("$path")
+      continue
+    fi
+    if [ -z "${snap_done[$snapshot_id]:-}" ]; then
+      snap_done[$snapshot_id]=1
+      while IFS=$'\t' read -r p s m; do
+        [ -n "$p" ] || continue
+        ms=$(date -d "$m" +%s 2>/dev/null || echo 0)
+        snap_path["$snapshot_id"$'\x1f'"$p"]="$s"$'\t'"$ms"
+      done < <("$RESTIC" ls --json "$snapshot_id" 2>/dev/null \
+        | jq -r 'select(.struct_type=="node" and .type=="file") | [.path, (.size|tostring), .mtime] | @tsv')
+    fi
+    sid_path="$snapshot_id"$'\x1f'"$path"
+    if [ -z "${snap_path[$sid_path]+set}" ]; then
+      journal_row "$class" changed-after-snapshot "$path" "$size" "$snapshot_id" - -
+      REFIX_PATHS+=("$path")
+      continue
+    fi
+    meta="${snap_path[$sid_path]}"
+    snap_size="${meta%%$'\t'*}"; snap_mtime="${meta#*$'\t'}"
+    if [ "$snap_size" = "$(stat -c %s "$path" 2>/dev/null)" ] \
+       && [ "$snap_mtime" = "$(stat -c %Y "$path" 2>/dev/null)" ] \
+       && [ "$(sha256sum < "$path" | cut -c1-64)" = "$sha256" ]; then
+      if [ "$GATE_MODE" = enforce ]; then
+        rm -f -- "$path"
+        journal_row "$class" deleted "$path" "$size" "$snapshot_id" \
+          "restic restore $snapshot_id --target /var/lib/disk-rotate/restore/$RUN_ID --include '$path'" -
+      else
+        journal_row "$class" would-delete "$path" "$size" "$snapshot_id" - -
+        printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+          "$path" "$size" "$mtime" "$sha256" "$snapshot_id" "$fixed_ts" >>"$tmp"
+      fi
+      continue
+    fi
+    journal_row "$class" changed-after-snapshot "$path" "$size" "$snapshot_id" - -
+    REFIX_PATHS+=("$path")
+  done <"$DR_STATE_FILE"
+  mv -f "$tmp" "$DR_STATE_FILE"
 }
 
 handle() { # class; пути из stdin (NUL)
@@ -445,16 +506,27 @@ cleanup_images() { # работает только при hard
 
 # Тестовый режим (DR_TEST_ONLY=1): только тестовые классы, реальная уборка не выполняется.
 if [ "$DR_TEST_ONLY" = 1 ]; then
-  # незаменимые: фиксация в restic predelete (удаление добавит гейт в следующем атоме)
+  restic_env
+  REFIX_PATHS=()
+  verify_and_delete test-irreplaceable
+  # незаменимые: фиксация в restic predelete (удаление добавит гейт ниже)
   if [ -n "$DR_TEST_IRREPLACEABLE_DIR" ] && [ -d "$DR_TEST_IRREPLACEABLE_DIR" ]; then
     irrep_tmp=$(mktemp)
     while IFS= read -r -d '' p; do
       denied "$p" && continue
+      grep -qxF "$p" <(awk -F'\t' '{print $1}' "$DR_STATE_FILE" 2>/dev/null) && continue
       printf '%s\n' "$p" >>"$irrep_tmp"
     done < <(find "$DR_TEST_IRREPLACEABLE_DIR" -maxdepth 1 -type f -print0 2>/dev/null)
-    restic_env
+    for p in "${REFIX_PATHS[@]:-}"; do
+      grep -qxF "$p" "$irrep_tmp" && continue
+      printf '%s\n' "$p" >>"$irrep_tmp"
+    done
     fix_candidates test-irreplaceable "$irrep_tmp"
     rm -f -- "$irrep_tmp"
+  fi
+  # при занятости >=95% свежие снимки проходят правило 24 ч сразу
+  if [ "$(use_pct)" -ge 95 ]; then
+    verify_and_delete test-irreplaceable
   fi
   # заменимые: в этом шаге просто удаляются
   if [ -n "$DR_TEST_REPLACEABLE_DIR" ] && [ -d "$DR_TEST_REPLACEABLE_DIR" ]; then
