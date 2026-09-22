@@ -122,6 +122,10 @@ ALERT_SENT=0
 ALERT_FAIL=0
 ALERT_RESULT=none
 
+# Общий список незаменимых файлов прогона (копится во время классов, фиксируется
+# через гейт после них). Создаётся в начале каждого прогона.
+IRR_LIST=$(mktemp /tmp/disk-rotate-irr-XXXX) || exit 1
+
 use_pct() {
   if [ -n "$DR_USAGE_PCT" ]; then
     echo "$DR_USAGE_PCT"
@@ -449,7 +453,7 @@ verify_and_delete() { # class -> удаление по гейту: провер�
       if [ "$GATE_MODE" = enforce ]; then
         rm -f -- "$path"
         journal_row "$class" deleted "$path" "$size" "$snapshot_id" \
-          "restic restore $snapshot_id --target /var/lib/disk-rotate/restore/$RUN_ID --include '$path'" -
+          "$RESTIC restore $snapshot_id --target /var/lib/disk-rotate/restore/$RUN_ID --include '$path'" -
       else
         journal_row "$class" would-delete "$path" "$size" "$snapshot_id" - -
         printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
@@ -463,8 +467,59 @@ verify_and_delete() { # class -> удаление по гейту: провер�
   mv -f "$tmp" "$DR_STATE_FILE"
 }
 
-handle() { # class; пути из stdin (NUL)
-  local cls=$1 p kb age
+gate_process() { # class listfile -> 0, либо RC_GATE_CLOSED при закрытом гейте
+  local class=$1 listfile=$2
+  local p path size rec
+  local -A known=()
+  restic_env
+  GATE_REASON=
+  if ! gate_open; then
+    # незаменимые не фиксируем и не удаляем — только журнал с причиной закрытия
+    while IFS= read -r p; do
+      [ -n "$p" ] || continue
+      size=$(stat -c %s "$p" 2>/dev/null || echo -)
+      journal_row "$class" deferred "$p" "$size" - - "gate-closed:$GATE_REASON"
+    done <"$listfile"
+    return $RC_GATE_CLOSED
+  fi
+  verify_and_delete "$class"
+  # Уже зафиксированные (в state) при повторной фиксации пропускаем; к оставшимся
+  # добавляем пути из списка повторной фиксации (stale/changed в verify_and_delete).
+  local tmp
+  tmp=$(mktemp)
+  while IFS=$'\t' read -ra rec; do
+    [ "${#rec[@]}" -eq 6 ] || continue
+    path="${rec[0]}"
+    [ -n "$path" ] || continue
+    known["$path"]=1
+  done <"$DR_STATE_FILE"
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    [ -n "${known[$p]:-}" ] && continue
+    printf '%s\n' "$p"
+  done <"$listfile" >"$tmp"
+  for p in "${REFIX_PATHS[@]:-}"; do
+    [ -n "$p" ] || continue
+    printf '%s\n' "$p"
+  done >>"$tmp"
+  if [ -s "$tmp" ]; then
+    fix_candidates "$class" "$tmp"
+  fi
+  rm -f "$tmp"
+  # срок хранения снимков predelete: 31 день (spec:055); неудача не блокирует прогон
+  if ! "$RESTIC" forget --tag predelete --group-by host,tags --keep-within 31d >>"$DR_LOG" 2>&1; then
+    journal_row gate forget-skipped - 0 - - forget-locked
+  fi
+  # при занятости >=95% свежие снимки проходят правило 24 ч сразу
+  if [ "$(use_pct)" -ge 95 ]; then
+    verify_and_delete "$class"
+  fi
+  return 0
+}
+
+handle() { # class [irr]; пути из stdin (NUL). irr — незаменимые: не удалять, копить в IRR_LIST
+  local cls=$1 irr=${2:-} p kb age size label=$cls
+  [ "$irr" = irr ] && label=irreplaceable
   while IFS= read -r -d '' p; do
     [ -n "$p" ] || continue
     denied "$p" && continue
@@ -472,21 +527,36 @@ handle() { # class; пути из stdin (NUL)
       kb=$(du -sk "$p" 2>/dev/null | awk '{print $1}'); kb="${kb:-0}"
       age=$(( (now - $(stat -c %Y "$p" 2>/dev/null)) / 86400 ))
       TOTAL_KB=$((TOTAL_KB + kb))
-      printf '%s\t%sk\t%sd\t%s\n' "$p" "$kb" "$age" "$cls"
+      printf '%s\t%sk\t%sd\t%s\n' "$p" "$kb" "$age" "$label"
+    elif [ "$irr" = irr ]; then
+      printf '%s\n' "$p" >>"$IRR_LIST"
     else
+      size=$(stat -c %s "$p" 2>/dev/null || echo -)
       rm -rf -- "$p" 2>/dev/null
+      journal_row "$cls" deleted "$p" "$size" replaceable - -
     fi
   done
 }
 
 # find-правки на каталогах-кэшах: в run — fast -delete, в dry-run — список кандидатов.
-clean_dir() { # base mtime class [extra find args...]
+clean_dir() { # base mtime class [irr|--] [extra find args...]; irr — собрать файлы в IRR_LIST
   local base=$1 mtime=$2 cls=$3; shift 3
+  local irr=0
+  [ "${1:-}" = irr ] && { irr=1; shift; }
   denied "$base" && return
+  if [ "$MODE" = run ] && [ "$irr" = 1 ]; then
+    find "$base" -mindepth 1 -mtime "+$mtime" -type f "$@" -print0 2>/dev/null | handle "$cls" irr
+    return
+  fi
   if [ "$MODE" = dry-run ]; then
-    find "$base" -mindepth 1 -mtime "+$mtime" "$@" -print0 2>/dev/null | handle "$cls"
+    if [ "$irr" = 1 ]; then
+      find "$base" -mindepth 1 -mtime "+$mtime" -type f "$@" -print0 2>/dev/null | handle "$cls" irr
+    else
+      find "$base" -mindepth 1 -mtime "+$mtime" "$@" -print0 2>/dev/null | handle "$cls"
+    fi
   else
     find "$base" -mindepth 1 -mtime "+$mtime" "$@" -delete 2>/dev/null
+    journal_row "$cls" deleted - - replaceable - "clean_dir $base"
   fi
 }
 
@@ -499,10 +569,10 @@ cleanup_cache() { # работает при soft и выше
   clean_dir /var/lib/snapd/cache 1 cache
 
   # --- артефакты сессий агента старше 3 суток ---
-  clean_dir /root/.claude/projects     3 cache -name '*.jsonl'
-  clean_dir /root/.claude/jobs         3 cache -type f
-  clean_dir /root/.claude/paste-cache  3 cache -type f
-  clean_dir /root/.claude/file-history 3 cache -type f
+  clean_dir /root/.claude/projects     3 cache irr -name '*.jsonl'
+  clean_dir /root/.claude/jobs         3 cache irr -type f
+  clean_dir /root/.claude/paste-cache  3 cache irr -type f
+  clean_dir /root/.claude/file-history 3 cache irr -type f
 
   # --- __pycache__ старше суток в рабочих каталогах (запретный список сильнее класса) ---
   while IFS= read -r -d '' p; do
@@ -513,7 +583,9 @@ cleanup_cache() { # работает при soft и выше
       TOTAL_KB=$((TOTAL_KB + kb))
       printf '%s\t%sk\t%sd\t%s\n' "$p" "$kb" "$age" cache
     else
+      size=$(stat -c %s "$p" 2>/dev/null || echo -)
       rm -rf -- "$p"
+      journal_row cache deleted "$p" "$size" replaceable - -
     fi
   done < <(find /root/workspaces /root/.local /opt /usr/local -type d -name __pycache__ -mtime +1 -print0 2>/dev/null)
 
@@ -522,6 +594,7 @@ cleanup_cache() { # работает при soft и выше
     find /tmp -mindepth 1 -maxdepth 1 -mtime +2 -print0 2>/dev/null | handle cache
   else
     find /tmp -mindepth 1 -maxdepth 1 -mtime +2 -exec rm -rf {} + 2>/dev/null
+    journal_row cache deleted - - replaceable - "find /tmp"
   fi
 
   # --- осиротевшие рабочие копии git: (а) не занята процессом И (б) не менялась >48ч ---
@@ -533,31 +606,33 @@ cleanup_cache() { # работает при soft и выше
     m=$(stat -c %Y "$d" 2>/dev/null)
     [ -n "$m" ] || continue
     [ $(( now - m )) -lt 172800 ] && continue                 # (б) менялась <48ч
-    if [ "$MODE" = dry-run ]; then
-      kb=$(du -sk "$d" 2>/dev/null | awk '{print $1}'); kb="${kb:-0}"
-      age=$(( (now - m) / 86400 ))
-      TOTAL_KB=$((TOTAL_KB + kb))
-      printf '%s\t%sk\t%sd\t%s\n' "$d" "$kb" "$age" cache
-    else
-      git -C /root/workspaces/projects worktree remove --force "$d" >>"$DR_LOG" 2>&1
-    fi
+    # осиротевшая копия: файлы считаем незаменимыми (удаление — через гейт)
+    find "$d" -type f -print0 2>/dev/null | handle cache irr
   done
-  git -C /root/workspaces/projects worktree prune >>"$DR_LOG" 2>&1
 
   # --- системные очистки кэша (только боевой режим) ---
   if [ "$MODE" = run ]; then
     apt-get clean >>"$DR_LOG" 2>&1
+    journal_row gate deleted - - replaceable - "apt-get clean"
     docker builder prune -a -f >>"$DR_LOG" 2>&1
+    journal_row gate deleted - - replaceable - "docker builder prune"
     docker image prune -f >>"$DR_LOG" 2>&1
+    journal_row gate deleted - - replaceable - "docker image prune"
     journalctl --vacuum-size=200M >>"$DR_LOG" 2>&1
+    journal_row gate deleted - - replaceable - "journalctl --vacuum-size"
   fi
 }
 
 cleanup_trash() { # работает только при hard
+  # --- незаменимые: файлы копим в IRR_LIST (удаление — через гейт после классов) ---
   find /root/workspaces/projects/.agent-work -maxdepth 1 -type d -name 'trash-*' \
-    -mtime "+$TRASH_AGE_DAYS" -print0 2>/dev/null | handle trash
+    -mtime "+$TRASH_AGE_DAYS" -print0 2>/dev/null | while IFS= read -r -d '' d; do
+      [ -n "$d" ] || continue
+      denied "$d" && continue
+      find "$d" -type f -print0 2>/dev/null | handle trash irr
+    done
   find /root/workspaces/system/archives -maxdepth 2 -type f -name '*.tar.gz' \
-    -mtime "+$TRASH_AGE_DAYS" -print0 2>/dev/null | handle trash
+    -mtime "+$TRASH_AGE_DAYS" -print0 2>/dev/null | handle trash irr
 
   # --- snap: только `snap remove <имя>`; файлы .snap и каталоги snapd не трогаем ---
   while read -r name; do
@@ -566,6 +641,7 @@ cleanup_trash() { # работает только при hard
       printf '%s\t-\t-\ttrash\n' "$name"
     else
       snap remove "$name" >>"$DR_LOG" 2>&1
+      journal_row trash deleted - - replaceable - "snap remove $name"
     fi
   done < <(snap list --all 2>/dev/null | awk '
     NR>1 { n=$1; notes=$NF; if (notes ~ /disabled/) d[n]=1; else a[n]=1 }
@@ -592,40 +668,15 @@ cleanup_images() { # работает только при hard
 
 # Тестовый режим (DR_TEST_ONLY=1): только тестовые классы, реальная уборка не выполняется.
 if [ "$DR_TEST_ONLY" = 1 ]; then
-  restic_env
   REFIX_PATHS=()
-  # Предусловие гейта (spec:055): свежий last-ok и доступный restic.
-  if ! gate_open; then
-    # незаменимые: не фиксируем и не удаляем — только журнал с причиной закрытия
-    while IFS= read -r p; do
-      [ -n "$p" ] || continue
-      size=$(stat -c %s "$p" 2>/dev/null || echo -)
-      journal_row test-irreplaceable deferred "$p" "$size" - - "gate-closed:$GATE_REASON"
-    done < <(irrep_candidates)
-    # заменимые: удаляются как обычно даже при закрытом гейте
-    if [ -n "$DR_TEST_REPLACEABLE_DIR" ] && [ -d "$DR_TEST_REPLACEABLE_DIR" ]; then
-      find "$DR_TEST_REPLACEABLE_DIR" -maxdepth 1 -type f -delete 2>/dev/null
-    fi
-    maybe_alert gate "disk-rotate: гейт закрыт — $GATE_REASON"
-    exit $RC_GATE_CLOSED
-  fi
-  verify_and_delete test-irreplaceable
-  # незаменимые: фиксация в restic predelete (удаление добавит гейт ниже)
+  # незаменимые: собрать обычные файлы тестового каталога и отдать гейту
   irrep_tmp=$(mktemp)
-  irrep_candidates >"$irrep_tmp"
-  if [ -s "$irrep_tmp" ]; then
-    fix_candidates test-irreplaceable "$irrep_tmp"
+  if [ -n "$DR_TEST_IRREPLACEABLE_DIR" ] && [ -d "$DR_TEST_IRREPLACEABLE_DIR" ]; then
+    find "$DR_TEST_IRREPLACEABLE_DIR" -maxdepth 1 -type f -print 2>/dev/null >>"$irrep_tmp"
   fi
+  gate_process test-irreplaceable "$irrep_tmp"
   rm -f -- "$irrep_tmp"
-  # срок хранения снимков predelete: 31 день (spec:055); неудача не блокирует прогон
-  if ! "$RESTIC" forget --tag predelete --group-by host,tags --keep-within 31d >>"$DR_LOG" 2>&1; then
-    journal_row gate forget-skipped - 0 - - forget-locked
-  fi
-  # при занятости >=95% свежие снимки проходят правило 24 ч сразу
-  if [ "$(use_pct)" -ge 95 ]; then
-    verify_and_delete test-irreplaceable
-  fi
-  # заменимые: в этом шаге просто удаляются
+  # заменимые: просто удаляются
   if [ -n "$DR_TEST_REPLACEABLE_DIR" ] && [ -d "$DR_TEST_REPLACEABLE_DIR" ]; then
     find "$DR_TEST_REPLACEABLE_DIR" -maxdepth 1 -type f -delete 2>/dev/null
   fi
@@ -637,6 +688,15 @@ elif [ "$MODE" != report ]; then
     cleanup_trash
     cleanup_images
   fi
+fi
+
+# После классов по порогам — фиксация незаменимых и системная чистка (только run).
+if [ "$MODE" = run ] && [ "$DR_TEST_ONLY" != 1 ]; then
+  [ -s "$IRR_LIST" ] && gate_process irreplaceable "$IRR_LIST"
+  for r in /root/workspaces/projects/.agent-work /root/workspaces/system/archives /root/workspaces/projects/.claude/worktrees /root/.claude/projects /root/.claude/jobs /root/.claude/paste-cache /root/.claude/file-history; do
+    [ -d "$r" ] && find "$r" -mindepth 1 -type d -empty -delete 2>/dev/null
+  done
+  git -C /root/workspaces/projects worktree prune >>"$DR_LOG" 2>&1
 fi
 
 pct_after=$(use_pct)
