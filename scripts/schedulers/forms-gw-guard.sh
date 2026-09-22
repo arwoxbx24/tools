@@ -21,6 +21,7 @@ log() { printf '%s %s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%S')" "$1" "${2:-}" ; }
 
 notify() { # type text
   local type="$1" text="$2" now ts state json out msg
+  text=$(printf '%s' "$text" | tr -d '"\r\n' | head -c 400)
   now=$(date +%s)
   case "$type" in
     gw_resumed) msg="✅ forms.arwox.ru: шлюз форм был остановлен (реапер YC) — поднят сторожем, форма отвечает <$2>." ;;
@@ -59,10 +60,10 @@ notify() { # type text
 }
 
 check_form() { # sets code, ssl, stopped
-  local out extra
-  out=$(curl -s --max-time 10 -o "$BODY_FILE" -w '%{http_code} %{ssl_verify_result}' "$GUARD_FORMS_URL" 2>&1) || true
-  set -- $out
-  code="${1:-000}"; ssl="${2:-0}"
+  local out extra rc
+  out=$(curl -s --max-time 10 -o "$BODY_FILE" -w '%{http_code} %{ssl_verify_result}' "$GUARD_FORMS_URL" 2>/dev/null); rc=$?
+  case "$out" in [0-9][0-9][0-9]\ *) read -r code ssl <<<"$out" ;; *) code=000; ssl=0 ;; esac
+  [ "$rc" -ne 0 ] && [ "$code" = "000" ] && ssl=0
   stopped=0
   if grep -q "is stopped and cannot be used" "$BODY_FILE" 2>/dev/null; then stopped=1; fi
   if [ "$code" = "000" ]; then
@@ -138,8 +139,8 @@ IAM=$(yc iam create-token 2>/dev/null)
 if [ -z "$IAM" ]; then
   log "balance skipped"
 else
-  if resp=$(curl -s --max-time 10 -H "Authorization: Bearer $IAM" \
-      https://billing.api.cloud.yandex.net/billing/v1/billingAccounts 2>&1); then
+  if resp=$(printf 'url = "https://billing.api.cloud.yandex.net/billing/v1/billingAccounts"\nheader = "Authorization: Bearer %s"\n' \
+      "$IAM" | curl -s --max-time 10 -K - 2>/dev/null); then
     active=$(printf '%s' "$resp" | jq -r '.billingAccounts[0].active' 2>/dev/null)
     balance=$(printf '%s' "$resp" | jq -r '.billingAccounts[0].balance' 2>/dev/null)
     log "balance $balance active=$active"
