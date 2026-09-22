@@ -115,6 +115,28 @@ else
   report "после миграции литерала внутри if...fi bash -n = 0" FAIL
 fi
 
+# 8. env-файл уже содержит запись с тем же именем и другим значением: после
+#    прогона запись ровно одна и значение из профиля (сравнение по фальшивке).
+PROFILE3="$TMP/profile-3.sh"
+ENVFILE3="$TMP/secrets-c/mysvcc.env"
+OLD="sk-OLDOLDOLDOLDOLD01"
+cat > "$PROFILE3" <<EOF
+MY_API_KEY=$FAKE
+[ -z "\$PS1" ] && return
+EOF
+mkdir -p "$(dirname "$ENVFILE3")"
+printf 'MY_API_KEY=%s\n' "$OLD" > "$ENVFILE3"
+bash "$SCRIPT" --profile "$PROFILE3" --env-file "$ENVFILE3" >/dev/null 2>&1
+rc=$?
+CNT="$(grep -c '^MY_API_KEY=' "$ENVFILE3")"
+if [ "$rc" -eq 0 ] && [ "$CNT" -eq 1 ] \
+  && grep -q "^MY_API_KEY=$FAKE\$" "$ENVFILE3" \
+  && ! grep -q "^MY_API_KEY=$OLD\$" "$ENVFILE3"; then
+  report "env-файл уже имеет запись: заменена ровно одна, значение из профиля" PASS
+else
+  report "env-файл уже имеет запись: заменена ровно одна (rc=$rc cnt=$CNT)" FAIL
+fi
+
 if [ "$FAILS" -eq 0 ]; then
   echo "ALL PASS"
   exit 0

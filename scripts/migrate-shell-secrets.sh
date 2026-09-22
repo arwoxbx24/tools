@@ -104,7 +104,7 @@ if ! bash -n "$PROFILE"; then
   exit 1
 fi
 
-# (a) окружение env-файла: каталог 700, файл 600.
+# (a) окружение env-файла: каталог 700.
 ENVDIR="$(dirname "$ENV_FILE")"
 if ! mkdir -p "$ENVDIR"; then
   echo "error: cannot create directory $ENVDIR" >&2
@@ -112,38 +112,56 @@ if ! mkdir -p "$ENVDIR"; then
 fi
 chmod 700 "$ENVDIR"
 
-if [ ! -f "$ENV_FILE" ]; then
-  if ! : > "$ENV_FILE"; then
-    echo "error: cannot create $ENV_FILE" >&2
-    exit 1
-  fi
-  chmod 600 "$ENV_FILE"
-fi
+# Временные файлы и единый обработчик очистки на выходе.
+TMPE=; TMP1=; TMP2=
+trap 'rm -f -- "$TMPE" "$TMP1" "$TMP2"' EXIT
 
-# (b) дописать NAME=значение (без export) в том же порядке.
+# (b) запись по ключу, а не дописыванием: для каждой переменной заменить строку
+#     с тем же именем в env-файле или дописать её в конец. Порядок уже
+#     присутствующих строк не меняем — повторный запуск после частичного
+#     отказа сходится, а не плодит дубликаты.
+mapfile -t OLDLINES < "$ENV_FILE" 2>/dev/null || OLDLINES=()
 for i in "${!NAME[@]}"; do
-  printf '%s=%s\n' "${NAME[$i]}" "${VAL[$i]}" >> "$ENV_FILE" || {
-    echo "error: cannot write $ENV_FILE" >&2
-    exit 1
-  }
+  n="${NAME[$i]}"; v="${VAL[$i]}"
+  found=0
+  for idx in "${!OLDLINES[@]}"; do
+    [[ "${OLDLINES[$idx]}" == "$n="* ]] || continue
+    OLDLINES[$idx]="$n=$v"
+    found=1
+    break
+  done
+  if [ "$found" -eq 0 ]; then
+    OLDLINES+=("$n=$v")
+  fi
 done
+
+# Пишем во временный файл рядом с env-файлом (600) и подменяем атомарно.
+TMPE="$(mktemp -- "$ENVDIR/.env.XXXXXX")" || exit 1
+if [ "${#OLDLINES[@]}" -gt 0 ]; then
+  printf '%s\n' "${OLDLINES[@]}" > "$TMPE"
+else
+  : > "$TMPE"
+fi
+chmod 600 "$TMPE"
+mv -f "$TMPE" "$ENV_FILE"
 chmod 600 "$ENV_FILE"
 
-# (c) проверить читаемость и число строк env-файла.
+# (c) проверить читаемость и присутствие каждого из перенесённых имён
+#     (лишние записи от прошлых прогонов — не ошибка).
 if [ ! -r "$ENV_FILE" ]; then
   echo "error: $ENV_FILE is not readable" >&2
   exit 1
 fi
-COUNT="$(awk 'END { print NR }' "$ENV_FILE")"
-if [ "$COUNT" != "${#NAME[@]}" ]; then
-  echo "error: $ENV_FILE has $COUNT lines, expected ${#NAME[@]}" >&2
-  exit 1
-fi
+for i in "${!NAME[@]}"; do
+  CNT="$(grep -c "^${NAME[$i]}=" "$ENV_FILE")"
+  if [ "$CNT" -ne 1 ]; then
+    echo "error: $ENV_FILE entry for ${NAME[$i]} missing or duplicated" >&2
+    exit 1
+  fi
+done
 
-# (d) удалить исходные секретные строки из профиля (в память/во временный файл).
+# (d) удалить исходные секретные строки из профиля (во временный файл).
 TMP1="$(mktemp -- "$(dirname "$PROFILE")/.mig.XXXXXX")" || exit 1
-TMP2=
-trap 'rm -f -- "$TMP1" "$TMP2"' EXIT
 
 SEDARGS=()
 for n in "${LNO[@]}"; do
