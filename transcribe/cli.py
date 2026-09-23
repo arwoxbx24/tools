@@ -43,7 +43,7 @@ def _transcribe(src, lang, engine, speakers, subtitles=None):
         # авто: сбой AssemblyAI → Groq по частям с пометкой fallback.
         result, num_parts = _transcribe_groq(flac, lang, tmp)
         result["fallback"] = True
-        result["reasons"] = [reason]
+        result["reasons"] = reason
         return result, num_parts
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

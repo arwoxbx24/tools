@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from transcribe import cli, engines, media, pipeline
@@ -176,6 +178,28 @@ def test_auto_assemblyai_fails_groq_parts(monkeypatch, tmp_path, capsys):
     err = capsys.readouterr().err
     assert "fallback:" in err
     assert "assemblyai" in err
+
+
+def test_auto_fallback_reason_is_string(monkeypatch, tmp_path, capsys):
+    src = _tmp_src(tmp_path)
+    _install_media(monkeypatch, tmp_path)
+
+    def fake_run(paths, lang, engine, speakers=False, offsets=None, subtitles=None):
+        if engine == "assemblyai":
+            raise EngineError("assemblyai", 401, None, "bad key")
+        return _result(engines=[{"engine": "groq", "model": "m", "parts": 1}])
+
+    monkeypatch.setattr(pipeline, "run", fake_run)
+    rc = main([src])
+    assert rc == 0
+
+    err = capsys.readouterr().err
+    assert "transcribe: fallback: assemblyai:" in err
+    assert "['" not in err
+
+    row = json.loads((tmp_path / "runs.jsonl").read_text().splitlines()[0])
+    assert isinstance(row["fallback"], str)
+    assert row["fallback"].startswith("assemblyai: bad key")
 
 
 def test_engine_assemblyai_fails_no_groq(monkeypatch, tmp_path):
