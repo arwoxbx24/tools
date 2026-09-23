@@ -245,7 +245,14 @@ def test_format_vtt_saves_vtt_file(monkeypatch, tmp_path, capsys):
 def test_banned_engine(capsys, engine):
     rc = main(["src.ogg", "--engine", engine])
     assert rc == 2
-    assert "разрешены: groq, assemblyai" in capsys.readouterr().err
+    assert "разрешены: assemblyai, groq" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("engine", ["speechkit", "whisper-1", "google", "bitrix", "local"])
+def test_new_banned_engines(capsys, engine):
+    rc = main(["src.ogg", "--engine", engine])
+    assert rc == 2
+    assert "разрешены: assemblyai, groq" in capsys.readouterr().err
 
 
 def test_unknown_engine(capsys):
@@ -253,7 +260,7 @@ def test_unknown_engine(capsys):
     assert rc == 2
     err = capsys.readouterr().err
     assert "nosuch" in err
-    assert "разрешены: groq, assemblyai" in err
+    assert "разрешены: assemblyai, groq" in err
 
 
 def test_speakers_with_groq(tmp_path, capsys):
