@@ -2,7 +2,7 @@ from transcribe.keys import load_key, redact
 
 
 class EngineError(Exception):
-    def __init__(self, *, engine, status, retry_after, message):
+    def __init__(self, engine, status, retry_after, message):
         self.engine = engine
         self.status = status
         self.retry_after = retry_after
