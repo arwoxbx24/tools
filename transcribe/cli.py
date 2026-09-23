@@ -6,7 +6,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from transcribe import engines, formats, media, pipeline
+from transcribe import engines, formats, journal, media, pipeline
 from transcribe.engines import AllEnginesFailed, EngineError
 from transcribe.keys import ArgError, redact
 
@@ -73,6 +73,14 @@ def _get_stem(args, stem):
     return Path(args.src).stem
 
 
+def _probe_duration(path):
+    """Длительность записи из probe, или None, если она неизвестна."""
+    try:
+        return media.probe(path)
+    except Exception:
+        return None
+
+
 def _save(args, text, fmt="txt", stem=None):
     """Сохранить расшифровку в файл, вернуть путь."""
     if args.out:
@@ -103,7 +111,7 @@ def _save(args, text, fmt="txt", stem=None):
     return path
 
 
-def _run(argv):
+def _run(argv, meta):
     parser = argparse.ArgumentParser(
         prog="transcribe",
         description="Транскрибация аудио через облачные движки.",
@@ -202,12 +210,14 @@ def _run(argv):
                 else:
                     src_item, page_id = media.fetch_page(args.src, tmp)
                     stem = media.clean_stem(page_id)
+                meta["duration_s"] = _probe_duration(src_item)
                 result, num_parts = _transcribe(
                     src_item, args.lang, args.engine, args.speakers, subtitles
                 )
             finally:
                 shutil.rmtree(tmp, ignore_errors=True)
         else:
+            meta["duration_s"] = _probe_duration(args.src)
             result, num_parts = _transcribe(
                 args.src, args.lang, args.engine, args.speakers, subtitles
             )
@@ -221,6 +231,12 @@ def _run(argv):
         print(redact(str(exc)), file=sys.stderr)
         return 3
 
+    eng = result["engines"]
+    if eng:
+        meta["engine"] = "+".join(e["engine"] for e in eng)
+        meta["model"] = "+".join(str(e.get("model")) for e in eng)
+    if result["fallback"]:
+        meta["fallback"] = result.get("reasons") or None
     text = formats.render(result, fmt)
     print(text)
     print(f"transcribe: parts={num_parts}", file=sys.stderr)
@@ -246,7 +262,16 @@ def _run(argv):
 
 def main(argv=None) -> int:
     signal.signal(signal.SIGTERM, lambda *a: sys.exit(143))
+    meta = {}
     try:
-        return _run(argv)
+        rc = _run(argv, meta)
     except SystemExit as exc:
-        return exc.code if exc.code is not None else 0
+        rc = exc.code if exc.code is not None else 0
+    journal.write(
+        meta.get("engine"),
+        meta.get("model"),
+        meta.get("fallback"),
+        rc,
+        meta.get("duration_s"),
+    )
+    return rc

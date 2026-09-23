@@ -6,6 +6,11 @@ from transcribe.engines import EngineError
 from transcribe.keys import load_key
 
 
+@pytest.fixture(autouse=True)
+def _journal_state(tmp_path, monkeypatch):
+    monkeypatch.setenv("TRANSCRIBE_STATE", str(tmp_path))
+
+
 def _tmp_src(tmp_path, content=b"audio"):
     p = tmp_path / "src.ogg"
     p.write_bytes(content)
