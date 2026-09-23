@@ -11,20 +11,41 @@ from transcribe.engines import AllEnginesFailed, EngineError
 from transcribe.keys import ArgError, redact
 
 
+def _fmt_clock(sec):
+    sec = int(sec)
+    hours, rem = divmod(sec, 3600)
+    minutes, seconds = divmod(rem, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
 def _transcribe(src, lang, engine, speakers):
     """Расшифровать локальный файл через пайплайн движков."""
     tmp = tempfile.mkdtemp()
     try:
         media.probe(src)
         flac = media.to_flac(src, tmp)
-        if os.path.getsize(flac) > 24 * 1024 * 1024:
-            raise ArgError("запись длиннее одной части — нарезка в следующей версии")
-        return pipeline.run([flac], lang, engine, speakers)
+        if speakers:
+            parts = [media.Part(0, flac, 0.0, 0.0, "pause")]
+        else:
+            parts = media.split(flac, tmp)
+        result = pipeline.run(
+            [p.path for p in parts],
+            lang,
+            engine,
+            speakers,
+            offsets=[p.offset_sec for p in parts],
+        )
+        for part in parts:
+            if part.cut == "hard":
+                result["warnings"].append(
+                    f"жёсткий рез на {_fmt_clock(part.offset_sec)}"
+                )
+        return result, len(parts)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def _save(args, text):
+def _save(args, text, fmt="txt"):
     """Сохранить расшифровку в файл, вернуть путь."""
     if args.out:
         if os.path.islink(args.out):
@@ -33,9 +54,10 @@ def _save(args, text):
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         os.chmod(path, 0o600)
     else:
-        path = Path(args.src).with_suffix(".txt")
+        suffix = f".{fmt}"
+        path = Path(args.src).with_suffix(suffix)
         if not os.access(path.parent, os.W_OK):
-            path = Path.cwd() / (Path(args.src).stem + ".txt")
+            path = Path.cwd() / (Path(args.src).stem + suffix)
         n = 1
         while os.path.exists(path):
             path = path.with_name(f"{path.stem}.{n}{path.suffix}")
@@ -87,6 +109,17 @@ def _run(argv):
         default=None,
         help="путь для сохранения расшифровки",
     )
+    parser.add_argument(
+        "--format",
+        default="txt",
+        choices=["txt", "srt", "json"],
+        help="формат вывода (txt, srt, json)",
+    )
+    parser.add_argument(
+        "--timestamps",
+        action="store_true",
+        help="выводить субтитры srt (= --format srt)",
+    )
     args = parser.parse_args(argv)
 
     if args.engine in engines.BANNED:
@@ -122,7 +155,9 @@ def _run(argv):
                 retry_after=None,
                 message=f"движок {args.engine} не реализован",
             )
-        result = _transcribe(args.src, args.lang, args.engine, args.speakers)
+        result, num_parts = _transcribe(
+            args.src, args.lang, args.engine, args.speakers
+        )
     except ArgError as exc:
         print(f"transcribe: error: {exc}", file=sys.stderr)
         return 2
@@ -133,8 +168,10 @@ def _run(argv):
         print(redact(str(exc)), file=sys.stderr)
         return 3
 
-    text = formats.render(result, "txt")
+    fmt = "srt" if args.timestamps else args.format
+    text = formats.render(result, fmt)
     print(text)
+    print(f"transcribe: parts={num_parts}", file=sys.stderr)
     records = "; ".join(
         f"engine={r['engine']} model={r['model']} parts={r['parts']}"
         for r in result["engines"]
@@ -147,7 +184,7 @@ def _run(argv):
 
     if not args.no_save:
         try:
-            path = _save(args, text)
+            path = _save(args, text, fmt)
         except ArgError as exc:
             print(f"transcribe: error: {exc}", file=sys.stderr)
             return 2
