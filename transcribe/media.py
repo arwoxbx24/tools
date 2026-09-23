@@ -84,7 +84,7 @@ def fetch_direct(url, tmpdir, max_bytes=2 * 1024**3):
                 continue
             if 400 <= resp.status_code < 600:
                 raise ArgError(f"HTTP {resp.status_code}")
-            out = Path(tmpdir) / f"fetch{url_ext(current)}"
+            out = Path(tmpdir) / f"fetch.{url_ext(current) or 'bin'}"
             total = 0
             with out.open("wb") as f:
                 for chunk in resp.iter_content(chunk_size=64 * 1024):

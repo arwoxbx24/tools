@@ -64,13 +64,18 @@ def test_fetch_direct_downloads_not_page(monkeypatch, tmp_path):
     monkeypatch.setattr(
         media.requests, "get", lambda *a, **k: FakeResp(chunks=[b"a", b"b"])
     )
-    page_called = []
-    monkeypatch.setattr(
-        media.yt_dlp, "YoutubeDL", lambda *a, **k: page_called.append(1) or object()
-    )
     path = media.fetch_direct("https://example.com/a.mp3", tmp_path)
     assert path.read_bytes() == b"ab"
-    assert page_called == []
+    assert path.name == "fetch.mp3"
+
+
+def test_fetch_direct_filename_without_ext(monkeypatch, tmp_path):
+    _install_getaddrinfo(monkeypatch)
+    monkeypatch.setattr(
+        media.requests, "get", lambda *a, **k: FakeResp(chunks=[b"a"])
+    )
+    path = media.fetch_direct("https://example.com/download?id=1", tmp_path)
+    assert path.name == "fetch.bin"
 
 
 def test_fetch_direct_redirect_to_private_rejected(monkeypatch, tmp_path):
