@@ -15,3 +15,7 @@ ENGINES = {
 }
 ORDER = [groq.name, assemblyai.name]
 BANNED = ("openai", "yandex", "gemini", "openrouter")
+
+from .groq_engine import GroqEngine, EngineError  # noqa: E402
+
+ENGINES["groq"] = GroqEngine
