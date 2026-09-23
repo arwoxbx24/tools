@@ -18,7 +18,7 @@ def _fmt_clock(sec):
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
-def _transcribe(src, lang, engine, speakers):
+def _transcribe(src, lang, engine, speakers, subtitles=None):
     """Расшифровать локальный файл через пайплайн движков."""
     tmp = tempfile.mkdtemp()
     try:
@@ -30,7 +30,9 @@ def _transcribe(src, lang, engine, speakers):
         # assemblyai / auto: один вызов на весь файл, без нарезки.
         reason = None
         try:
-            result = pipeline.run([flac], lang, "assemblyai", speakers)
+            result = pipeline.run(
+                [flac], lang, "assemblyai", speakers, subtitles=subtitles
+            )
         except Exception as exc:
             if engine == "assemblyai" or speakers:
                 raise
@@ -131,8 +133,8 @@ def _run(argv):
     parser.add_argument(
         "--format",
         default="txt",
-        choices=["txt", "srt", "json"],
-        help="формат вывода (txt, srt, json)",
+        choices=["txt", "srt", "json", "vtt"],
+        help="формат вывода (txt, srt, json, vtt)",
     )
     parser.add_argument(
         "--timestamps",
@@ -166,6 +168,9 @@ def _run(argv):
         print("transcribe: error: ссылки — в следующей версии", file=sys.stderr)
         return 2
 
+    fmt = "srt" if args.timestamps else args.format
+    subtitles = fmt if fmt in ("srt", "vtt") else None
+
     try:
         if args.engine not in ("auto", "groq", "assemblyai"):
             raise EngineError(
@@ -175,7 +180,7 @@ def _run(argv):
                 message=f"движок {args.engine} не реализован",
             )
         result, num_parts = _transcribe(
-            args.src, args.lang, args.engine, args.speakers
+            args.src, args.lang, args.engine, args.speakers, subtitles
         )
     except ArgError as exc:
         print(f"transcribe: error: {exc}", file=sys.stderr)
@@ -187,7 +192,6 @@ def _run(argv):
         print(redact(str(exc)), file=sys.stderr)
         return 3
 
-    fmt = "srt" if args.timestamps else args.format
     text = formats.render(result, fmt)
     print(text)
     print(f"transcribe: parts={num_parts}", file=sys.stderr)

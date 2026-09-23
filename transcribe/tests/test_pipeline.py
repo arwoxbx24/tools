@@ -59,3 +59,37 @@ def test_speakers_only_calls_assemblyai_with_speakers_true(monkeypatch):
     assert assemblyai.calls == 1
     assert assemblyai.speakers_used == [True]
     assert result["text"] == ASSEMBLYAI_TEXT
+
+
+def test_subtitles_passed_to_assemblyai_and_carried_out(monkeypatch):
+    class AssemblyaiWithSubtitles:
+        name = "assemblyai"
+        model = "m"
+        received = []
+
+        def __init__(self):
+            pass
+
+        def transcribe(self, path, lang, speakers=False, subtitles=None):
+            AssemblyaiWithSubtitles.received.append(
+                (path, lang, speakers, subtitles)
+            )
+            return {
+                "text": "x",
+                "segments": [],
+                "warnings": [],
+                "subtitles": "WEBVTT\n\nготовые",
+            }
+
+    monkeypatch.setitem(
+        ENGINES, "assemblyai", AssemblyaiWithSubtitles
+    )
+
+    result = pipeline.run(
+        ["part.flac"], "en", engine="assemblyai", subtitles="vtt"
+    )
+
+    assert AssemblyaiWithSubtitles.received == [
+        ("part.flac", "en", False, "vtt")
+    ]
+    assert result["subtitles"] == "WEBVTT\n\nготовые"

@@ -46,7 +46,7 @@ def test_auto_assemblyai_whole_file(monkeypatch, tmp_path, capsys):
     flac, split_calls = _install_media(monkeypatch, tmp_path)
     calls = []
 
-    def fake_run(paths, lang, engine, speakers=False, offsets=None):
+    def fake_run(paths, lang, engine, speakers=False, offsets=None, subtitles=None):
         calls.append((list(paths), lang, engine, speakers, offsets))
         return _result(
             engines=[{"engine": "assemblyai", "model": "best", "parts": 1}]
@@ -64,7 +64,7 @@ def test_auto_assemblyai_fails_groq_parts(monkeypatch, tmp_path, capsys):
     src = _tmp_src(tmp_path)
     flac, split_calls = _install_media(monkeypatch, tmp_path)
 
-    def fake_run(paths, lang, engine, speakers=False, offsets=None):
+    def fake_run(paths, lang, engine, speakers=False, offsets=None, subtitles=None):
         if engine == "assemblyai":
             raise EngineError("assemblyai", 401, None, "bad key")
         return _result(
@@ -85,7 +85,7 @@ def test_engine_assemblyai_fails_no_groq(monkeypatch, tmp_path):
     _install_media(monkeypatch, tmp_path)
     calls = []
 
-    def fake_run(paths, lang, engine, speakers=False, offsets=None):
+    def fake_run(paths, lang, engine, speakers=False, offsets=None, subtitles=None):
         calls.append(engine)
         if engine == "assemblyai":
             raise EngineError("assemblyai", 401, None, "bad key")
@@ -102,7 +102,7 @@ def test_speakers_assemblyai_fails_no_groq(monkeypatch, tmp_path):
     _install_media(monkeypatch, tmp_path)
     calls = []
 
-    def fake_run(paths, lang, engine, speakers=False, offsets=None):
+    def fake_run(paths, lang, engine, speakers=False, offsets=None, subtitles=None):
         calls.append((engine, speakers))
         if engine == "assemblyai":
             raise EngineError("assemblyai", 401, None, "bad key")
@@ -119,7 +119,7 @@ def test_engine_groq_uses_split_no_assemblyai(monkeypatch, tmp_path):
     _install_media(monkeypatch, tmp_path)
     calls = []
 
-    def fake_run(paths, lang, engine, speakers=False, offsets=None):
+    def fake_run(paths, lang, engine, speakers=False, offsets=None, subtitles=None):
         calls.append((engine, speakers))
         return _result(
             engines=[{"engine": "groq", "model": "m", "parts": 1}]
@@ -129,6 +129,23 @@ def test_engine_groq_uses_split_no_assemblyai(monkeypatch, tmp_path):
     rc = main([src, "--engine", "groq"])
     assert rc == 0
     assert calls == [("groq", False)]
+
+
+def test_format_vtt_saves_vtt_file(monkeypatch, tmp_path, capsys):
+    src = _tmp_src(tmp_path)
+    _install_media(monkeypatch, tmp_path)
+    received = []
+
+    def fake_run(paths, lang, engine, speakers=False, offsets=None, subtitles=None):
+        received.append((engine, speakers, subtitles))
+        return _result()
+
+    monkeypatch.setattr(pipeline, "run", fake_run)
+    rc = main([src, "--format", "vtt"])
+
+    assert rc == 0
+    assert received == [("assemblyai", False, "vtt")]
+    assert (tmp_path / "src.vtt").exists()
 
 
 @pytest.mark.parametrize("engine", ["openai", "yandex", "gemini", "openrouter"])
