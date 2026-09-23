@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import requests
-import yt_dlp
 
 from transcribe.keys import ArgError, redact
 
@@ -102,6 +101,8 @@ def fetch_direct(url, tmpdir, max_bytes=2 * 1024**3):
 
 def fetch_page(url, tmpdir):
     """Скачать страницу-видео через yt-dlp. Возвращает (путь, id)."""
+    import yt_dlp
+
     check_host(url)
     opts = {
         "format": "bestaudio/best",

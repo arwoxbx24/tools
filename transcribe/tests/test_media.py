@@ -1,3 +1,6 @@
+import sys
+import types
+
 import pytest
 
 from transcribe import media
@@ -11,6 +14,18 @@ def _install_getaddrinfo(monkeypatch):
         return [(2, 1, 6, "", (host, port))]
 
     monkeypatch.setattr(media.socket, "getaddrinfo", fake)
+
+
+@pytest.fixture
+def fake_yt_dlp(monkeypatch):
+    """Фейковый yt_dlp модуль для ленивого импорта в fetch_page."""
+    module = types.ModuleType("yt_dlp")
+    module.utils = types.SimpleNamespace(
+        DownloadError=type("DownloadError", (Exception,), {})
+    )
+    module.YoutubeDL = None
+    monkeypatch.setitem(sys.modules, "yt_dlp", module)
+    return module
 
 
 def test_check_host_rejects_private_loopback(monkeypatch):
@@ -40,7 +55,6 @@ def test_cli_private_loopback_not_downloaded(monkeypatch):
     _install_getaddrinfo(monkeypatch)
     called = []
     monkeypatch.setattr(media.requests, "get", lambda *a, **k: called.append(1))
-    monkeypatch.setattr(media.yt_dlp, "YoutubeDL", lambda *a, **k: called.append(1))
     with pytest.raises(ArgError):
         media.check_host("http://127.0.0.1/a.mp3")
     assert called == []
@@ -109,7 +123,15 @@ def test_fetch_direct_http_error(monkeypatch, tmp_path):
         media.fetch_direct("https://example.com/a.mp3", tmp_path)
 
 
-def test_fetch_page_ytdl_options(monkeypatch, tmp_path):
+def test_yt_dlp_lazy_import(monkeypatch):
+    monkeypatch.delitem(sys.modules, "yt_dlp", raising=False)
+    import transcribe.media
+
+    assert "yt_dlp" not in sys.modules
+    assert not hasattr(transcribe.media, "yt_dlp")
+
+
+def test_fetch_page_ytdl_options(monkeypatch, tmp_path, fake_yt_dlp):
     _install_getaddrinfo(monkeypatch)
     captured = {}
 
@@ -129,7 +151,7 @@ def test_fetch_page_ytdl_options(monkeypatch, tmp_path):
         def prepare_filename(self, info):
             return f"{tmp_path}/page.mp3"
 
-    monkeypatch.setattr(media.yt_dlp, "YoutubeDL", FakeYDL)
+    fake_yt_dlp.YoutubeDL = FakeYDL
     path, pid = media.fetch_page("https://www.youtube.com/watch?v=abc", tmp_path)
     assert pid == "abc"
     assert str(path) == f"{tmp_path}/page.mp3"
@@ -140,7 +162,7 @@ def test_fetch_page_ytdl_options(monkeypatch, tmp_path):
     assert opts["js_runtimes"] == {"node": {}}
 
 
-def test_fetch_page_download_error(monkeypatch, tmp_path):
+def test_fetch_page_download_error(monkeypatch, tmp_path, fake_yt_dlp):
     _install_getaddrinfo(monkeypatch)
 
     class FakeYDL:
@@ -154,12 +176,12 @@ def test_fetch_page_download_error(monkeypatch, tmp_path):
             return False
 
         def extract_info(self, url, download=True):
-            raise media.yt_dlp.utils.DownloadError("что-то сломалось")
+            raise fake_yt_dlp.utils.DownloadError("что-то сломалось")
 
         def prepare_filename(self, info):
             return f"{tmp_path}/page.mp3"
 
-    monkeypatch.setattr(media.yt_dlp, "YoutubeDL", FakeYDL)
+    fake_yt_dlp.YoutubeDL = FakeYDL
     with pytest.raises(ArgError) as exc:
         media.fetch_page("https://www.youtube.com/watch?v=abc", tmp_path)
     assert "обновить загрузчик" in str(exc.value)

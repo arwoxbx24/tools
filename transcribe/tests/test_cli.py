@@ -1,4 +1,6 @@
 import json
+import sys
+import types
 
 import pytest
 
@@ -55,6 +57,18 @@ def _install_getaddrinfo(monkeypatch):
     monkeypatch.setattr(media.socket, "getaddrinfo", fake)
 
 
+@pytest.fixture
+def fake_yt_dlp(monkeypatch):
+    """Фейковый yt_dlp модуль для ленивого импорта в fetch_page."""
+    module = types.ModuleType("yt_dlp")
+    module.utils = types.SimpleNamespace(
+        DownloadError=type("DownloadError", (Exception,), {})
+    )
+    module.YoutubeDL = None
+    monkeypatch.setitem(sys.modules, "yt_dlp", module)
+    return module
+
+
 def test_link_loopback_rejected_no_network(monkeypatch):
     _install_getaddrinfo(monkeypatch)
     calls = []
@@ -91,7 +105,7 @@ def test_link_direct_uses_fetch_direct_saves_stem(monkeypatch, tmp_path):
     assert (tmp_path / "a.txt").exists()
 
 
-def test_link_page_youtube_ytdl_opts(monkeypatch, tmp_path):
+def test_link_page_youtube_ytdl_opts(monkeypatch, tmp_path, fake_yt_dlp):
     _install_getaddrinfo(monkeypatch)
     flac, _ = _install_media(monkeypatch, tmp_path)
     monkeypatch.setattr(media, "check_host", lambda url: None)
@@ -113,7 +127,7 @@ def test_link_page_youtube_ytdl_opts(monkeypatch, tmp_path):
         def prepare_filename(self, info):
             return f"{tmp_path}/whatever.mp3"
 
-    monkeypatch.setattr(media.yt_dlp, "YoutubeDL", FakeYDL)
+    fake_yt_dlp.YoutubeDL = FakeYDL
     monkeypatch.setattr(
         pipeline, "run",
         lambda *a, **k: _result(engines=[{"engine": "assemblyai", "model": "m", "parts": 1}]),
