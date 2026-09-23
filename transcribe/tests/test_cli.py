@@ -41,6 +41,99 @@ def _install_media(monkeypatch, tmp_path):
     return flac, split_calls
 
 
+def _install_getaddrinfo(monkeypatch):
+    def fake(host, port, *a, **k):
+        return [(2, 1, 6, "", (host, port))]
+
+    monkeypatch.setattr(media.socket, "getaddrinfo", fake)
+
+
+def test_link_loopback_rejected_no_network(monkeypatch):
+    _install_getaddrinfo(monkeypatch)
+    calls = []
+    monkeypatch.setattr(media, "fetch_direct", lambda *a, **k: calls.append("d") or 0)
+    monkeypatch.setattr(media, "fetch_page", lambda *a, **k: calls.append("p") or (0, ""))
+    rc = main(["http://127.0.0.1/a.mp3"])
+    assert rc == 2
+    assert calls == []
+
+
+def test_link_other_scheme_rejected_no_network(monkeypatch):
+    calls = []
+    monkeypatch.setattr(media, "fetch_direct", lambda *a, **k: calls.append(1))
+    rc = main(["ftp://x/a.mp3"])
+    assert rc == 2
+    assert calls == []
+
+
+def test_link_direct_uses_fetch_direct_saves_stem(monkeypatch, tmp_path):
+    _install_getaddrinfo(monkeypatch)
+    flac, _ = _install_media(monkeypatch, tmp_path)
+    monkeypatch.setattr(media, "check_host", lambda url: None)
+    calls = {"d": 0, "p": 0}
+    monkeypatch.setattr(media, "fetch_direct", lambda u, tmp: calls.__setitem__("d", calls["d"] + 1) or flac)
+    monkeypatch.setattr(media, "fetch_page", lambda u, tmp: calls.__setitem__("p", calls["p"] + 1) or (flac, "abc"))
+    monkeypatch.setattr(
+        pipeline, "run",
+        lambda *a, **k: _result(engines=[{"engine": "assemblyai", "model": "m", "parts": 1}]),
+    )
+    monkeypatch.chdir(tmp_path)
+    rc = main(["https://example.com/a.mp3"])
+    assert rc == 0
+    assert calls == {"d": 1, "p": 0}
+    assert (tmp_path / "a.txt").exists()
+
+
+def test_link_page_youtube_ytdl_opts(monkeypatch, tmp_path):
+    _install_getaddrinfo(monkeypatch)
+    flac, _ = _install_media(monkeypatch, tmp_path)
+    monkeypatch.setattr(media, "check_host", lambda url: None)
+    captured = {}
+
+    class FakeYDL:
+        def __init__(self, opts):
+            captured["opts"] = opts
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def extract_info(self, url, download=True):
+            return {"id": "abc"}
+
+        def prepare_filename(self, info):
+            return f"{tmp_path}/whatever.mp3"
+
+    monkeypatch.setattr(media.yt_dlp, "YoutubeDL", FakeYDL)
+    monkeypatch.setattr(
+        pipeline, "run",
+        lambda *a, **k: _result(engines=[{"engine": "assemblyai", "model": "m", "parts": 1}]),
+    )
+    monkeypatch.chdir(tmp_path)
+    rc = main(["https://www.youtube.com/watch?v=abc"])
+    assert rc == 0
+    opts = captured["opts"]
+    assert opts["format"] == "bestaudio/best"
+    assert opts["noplaylist"] is True
+    assert opts["max_filesize"] == 2 * 1024**3
+    assert opts["js_runtimes"] == {"node": {}}
+    assert (tmp_path / "abc.txt").exists()
+
+
+def test_link_fetch_error_returns_2(monkeypatch, tmp_path):
+    _install_getaddrinfo(monkeypatch)
+    _install_media(monkeypatch, tmp_path)
+    from transcribe.keys import ArgError
+
+    monkeypatch.setattr(
+        media, "fetch_direct", lambda u, tmp: (_ for _ in ()).throw(ArgError("файл больше лимита"))
+    )
+    rc = main(["https://example.com/a.mp3"])
+    assert rc == 2
+
+
 def test_auto_assemblyai_whole_file(monkeypatch, tmp_path, capsys):
     src = _tmp_src(tmp_path)
     flac, split_calls = _install_media(monkeypatch, tmp_path)

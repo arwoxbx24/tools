@@ -66,7 +66,14 @@ def _transcribe_groq(flac, lang, tmp):
     return result, len(parts)
 
 
-def _save(args, text, fmt="txt"):
+def _get_stem(args, stem):
+    """Имя без расширения для файла результата. Ссылка — переданный stem."""
+    if stem is not None:
+        return stem
+    return Path(args.src).stem
+
+
+def _save(args, text, fmt="txt", stem=None):
     """Сохранить расшифровку в файл, вернуть путь."""
     if args.out:
         if os.path.islink(args.out):
@@ -76,9 +83,14 @@ def _save(args, text, fmt="txt"):
         os.chmod(path, 0o600)
     else:
         suffix = f".{fmt}"
-        path = Path(args.src).with_suffix(suffix)
+        name = _get_stem(args, stem)
+        path = (
+            Path(name + suffix)
+            if stem is not None
+            else Path(args.src).with_suffix(suffix)
+        )
         if not os.access(path.parent, os.W_OK):
-            path = Path.cwd() / (Path(args.src).stem + suffix)
+            path = Path.cwd() / (name + suffix)
         n = 1
         while os.path.exists(path):
             path = path.with_name(f"{path.stem}.{n}{path.suffix}")
@@ -143,6 +155,8 @@ def _run(argv):
     )
     args = parser.parse_args(argv)
 
+    is_link = args.src.startswith(("http://", "https://"))
+
     if args.engine in engines.BANNED:
         print(
             f"движок {args.engine} запрещён; разрешены: {', '.join(engines.ORDER)}",
@@ -158,15 +172,13 @@ def _run(argv):
     if args.speakers and args.engine == "groq":
         print("--speakers не поддерживается для двига groq", file=sys.stderr)
         return 2
-    if not os.path.isfile(args.src):
-        print(f"файл не найден: {args.src}", file=sys.stderr)
-        return 2
-    if os.path.getsize(args.src) == 0:
-        print(f"пустой файл: {args.src}", file=sys.stderr)
-        return 2
-    if args.src.startswith(("http://", "https://")):
-        print("transcribe: error: ссылки — в следующей версии", file=sys.stderr)
-        return 2
+    if not is_link:
+        if not os.path.isfile(args.src):
+            print(f"файл не найден: {args.src}", file=sys.stderr)
+            return 2
+        if os.path.getsize(args.src) == 0:
+            print(f"пустой файл: {args.src}", file=sys.stderr)
+            return 2
 
     fmt = "srt" if args.timestamps else args.format
     subtitles = fmt if fmt in ("srt", "vtt") else None
@@ -179,9 +191,26 @@ def _run(argv):
                 retry_after=None,
                 message=f"движок {args.engine} не реализован",
             )
-        result, num_parts = _transcribe(
-            args.src, args.lang, args.engine, args.speakers, subtitles
-        )
+        stem = None
+        if is_link:
+            media.check_host(args.src)
+            tmp = tempfile.mkdtemp()
+            try:
+                if media.is_direct(args.src):
+                    src_item = media.fetch_direct(args.src, tmp)
+                    stem = media.url_stem(args.src)
+                else:
+                    src_item, page_id = media.fetch_page(args.src, tmp)
+                    stem = media.clean_stem(page_id)
+                result, num_parts = _transcribe(
+                    src_item, args.lang, args.engine, args.speakers, subtitles
+                )
+            finally:
+                shutil.rmtree(tmp, ignore_errors=True)
+        else:
+            result, num_parts = _transcribe(
+                args.src, args.lang, args.engine, args.speakers, subtitles
+            )
     except ArgError as exc:
         print(f"transcribe: error: {exc}", file=sys.stderr)
         return 2
@@ -207,7 +236,7 @@ def _run(argv):
 
     if not args.no_save:
         try:
-            path = _save(args, text, fmt)
+            path = _save(args, text, fmt, stem=stem)
         except ArgError as exc:
             print(f"transcribe: error: {exc}", file=sys.stderr)
             return 2

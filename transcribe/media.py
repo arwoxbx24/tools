@@ -1,13 +1,126 @@
 import json
+import ipaddress
 import os
 import re
+import socket
 import subprocess
+import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 
-from transcribe.keys import ArgError
+import requests
+import yt_dlp
+
+from transcribe.keys import ArgError, redact
 
 MAX_SECONDS = 36000
+
+_DIRECT_EXTS = {
+    "mp3", "wav", "ogg", "oga", "opus", "m4a", "flac", "aac", "amr",
+    "webm", "mp4", "mkv", "mov", "avi", "3gp",
+}
+
+
+def url_ext(url):
+    """Расширение пути URL без точки и в нижнем регистре ("" — если нет)."""
+    return os.path.splitext(urllib.parse.urlparse(url).path)[1].lower().lstrip(".")
+
+
+def is_direct(url):
+    return url_ext(url) in _DIRECT_EXTS
+
+
+def clean_stem(value):
+    return re.sub(r"[^A-Za-z0-9._-]", "", value) or "transcript"
+
+
+def url_stem(url):
+    base = os.path.basename(urllib.parse.urlparse(url).path)
+    return clean_stem(os.path.splitext(base)[0])
+
+
+def check_host(url):
+    """Проверить схему и публичность адреса. Ошибка — ArgError."""
+    parts = urllib.parse.urlparse(url)
+    scheme = parts.scheme.lower()
+    if scheme not in ("http", "https"):
+        raise ArgError(f"недопустимая схема ссылки: {scheme}")
+    host = parts.hostname
+    if not host:
+        raise ArgError("в ссылке нет хоста")
+    port = parts.port or (80 if scheme == "http" else 443)
+    try:
+        infos = socket.getaddrinfo(host, port)
+    except OSError:
+        raise ArgError("не удалось резолвить хост ссылки")
+    for info in infos:
+        addr = info[4][0]
+        try:
+            ip = ipaddress.ip_address(addr)
+        except ValueError:
+            continue
+        if (
+            ip.is_private or ip.is_loopback or ip.is_link_local
+            or ip.is_unspecified or ip.is_reserved or ip.is_multicast
+        ):
+            raise ArgError("ссылка ведёт на непубличный адрес")
+
+
+def fetch_direct(url, tmpdir, max_bytes=2 * 1024**3):
+    """Скачать прямой файл по ссылке с проверкой редиректов и лимита размера."""
+    check_host(url)
+    current = url
+    for _ in range(6):
+        check_host(current)
+        resp = requests.get(
+            current, stream=True, allow_redirects=False, timeout=300
+        )
+        try:
+            if resp.status_code in (301, 302, 303, 307, 308):
+                location = resp.headers.get("Location")
+                if not location:
+                    raise ArgError("редирект без Location")
+                current = urllib.parse.urljoin(current, location)
+                continue
+            if 400 <= resp.status_code < 600:
+                raise ArgError(f"HTTP {resp.status_code}")
+            out = Path(tmpdir) / f"fetch{url_ext(current)}"
+            total = 0
+            with out.open("wb") as f:
+                for chunk in resp.iter_content(chunk_size=64 * 1024):
+                    if not chunk:
+                        continue
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise ArgError("файл больше лимита размера")
+                    f.write(chunk)
+            return out
+        finally:
+            resp.close()
+    raise ArgError("слишком много редиректов")
+
+
+def fetch_page(url, tmpdir):
+    """Скачать страницу-видео через yt-dlp. Возвращает (путь, id)."""
+    check_host(url)
+    opts = {
+        "format": "bestaudio/best",
+        "noplaylist": True,
+        "max_filesize": 2 * 1024**3,
+        "outtmpl": f"{tmpdir}/page.%(ext)s",
+        "quiet": True,
+        "no_warnings": True,
+        "js_runtimes": {"node": {}},
+    }
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            path = Path(ydl.prepare_filename(info))
+    except yt_dlp.utils.DownloadError as exc:
+        raise ArgError(
+            f"загрузчик: {redact(str(exc))}; обновить загрузчик yt-dlp"
+        )
+    return path, info["id"]
 
 
 @dataclass
