@@ -26,8 +26,8 @@
 | `jq`, `grep`, `wc`, `ls`, `git`, `gh` | чтение, замеры, git-слой (I11) | одна команда на вызов | все | штатно |
 | `python3 <файл из tools/ или проекта>` | штатные скрипты (`layout_check.py`, `deploy_manifest.py`, тесты проектов) | путь к файлу, без `-c` | все | штатно |
 | `Workflow name=audit|verify|bd-slice|code-atom` | делегирование (csb стадия 7) | по имени, args `{atom,path,tz}` | Claude | штатно |
-| `transcribe` (`tools/bin/transcribe`) | ЕДИНСТВЕННАЯ транскрибация аудио/видео (spec:056, 23.09): Groq `whisper-large-v3`, запасной AssemblyAI; из любой папки | `transcribe <файл\|ссылка> [--format srt] [--speakers] [--lang ru]`; навык `.claude/skills/transcribe` | все | штатно |
-| `transcribe-test` | самотест транскрибации, итог `PASS 7/7` | `transcribe-test` | все | штатно |
+| `transcribe` (`tools/bin/transcribe`) | ЕДИНСТВЕННАЯ транскрибация аудио/видео (spec:056 → spec:059, 23.09): AssemblyAI первым (целиком до 10 ч, спикеры, SRT/VTT), запасной Groq `whisper-large-v3`; файл, прямая ссылка, страница YouTube и др. (`yt-dlp` в `.venv`); журнал `state/transcribe/runs.jsonl`; из любой папки | `transcribe <файл\|ссылка> [--format txt\|srt\|vtt\|json] [--speakers] [--engine auto\|assemblyai\|groq] [--lang ru]`; навык `.claude/skills/transcribe` | все | штатно |
+| `transcribe-test` | живой самотест транскрибации, итог `PASS 9/9` | `transcribe-test` | все | штатно |
 
 ## 3. ЗАПРЕЩЕНО (машинно: Claude — managed deny; opencode — `permission.bash "*": deny`; Codex — его hooks.json по вердикту)
 | Форма | Почему | Замена |
