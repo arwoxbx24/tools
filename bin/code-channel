@@ -59,7 +59,13 @@ run_form() (
         [[ $run == 0 || $run == 124 || $((SECONDS-started)) -gt 30 ]] || exit 21
         exit "$run"
     fi
-    f=${CODE_CHANNEL_SECRET_OVERRIDE:-/root/workspaces/secrets/projects/$secret.env}
+    secrets_root=${CODE_CHANNEL_SECRETS_ROOT:-/root/workspaces/secrets}
+    f=${CODE_CHANNEL_SECRET_OVERRIDE:-}
+    if [[ -z $f ]]; then
+        for cand in "$secrets_root/projects/$secret.env" "$secrets_root/services/$secret.env"; do
+            [[ -r $cand ]] && { f=$cand; break; }
+        done
+    fi
     [[ -r $f ]] || { fail "нет секрета $name"; exit 5; }
     val=$(sed -n "s/^\(export \)\{0,1\}${name}=//p" "$f" | head -1 | tr -d "\"'")
     [[ -n $val && $val != *$'\r'* && $val != *$'\n'* ]] || { fail "нет секрета $name"; exit 5; }
