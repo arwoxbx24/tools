@@ -1,0 +1,7 @@
+sample-ru.ogg
+
+Source: https://commons.wikimedia.org/wiki/File:Ru-audio_template-Wikipedia.ogg
+Author: AKA MBG (Wikimedia Commons)
+License: Public domain — "This work has been released into the public domain by its author, AKA MBG."
+Content: Russian speech, audio template for spoken Russian Wikipedia articles ("Русская Википедия — свободная энциклопедия, которую может редактировать каждый"), with background music (incorporates Image:PianoFlanger.ogg).
+Length: 22 s, Ogg Vorbis. Downloaded 2026-09-23 for spec:056 transcribe self-test. Not a client recording.
