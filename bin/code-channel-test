@@ -2,8 +2,7 @@
 set -u
 
 root=$(cd -- "$(dirname -- "$0")/.." && pwd)
-tmp=$(mktemp -d "$root/.code-channel-test.XXXXXX")
-trap 'rm -rf -- "$tmp"' EXIT
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/code-channel-test.XXXXXX")
 bin=$tmp/bin project=$tmp/project secret=$tmp/secret.env log=$tmp/args.log runs=$tmp/runs.jsonl
 mkdir -p "$bin" "$project" "$tmp/state"
 printf 'VIBECODE_API_KEY=x\nOPENROUTER_API_KEY=x\n' >"$secret"
@@ -21,15 +20,18 @@ printf '%s\n' '{"provider":{"bitrixgpt":{"models":{"bitrix/bitrixgpt-5.6-agent":
 printf '%s\n' '{"provider":{"bitrixgpt":{"models":{"bitrix/bitrixgpt-5.6-agent":{}}},"openrouter":{"whitelist":["deepseek/deepseek-v4-flash"]}}}' >"$tmp/config-allow/opencode/opencode.jsonc"
 
 printf '%s\n' '#!/usr/bin/env bash' 'printf "curl %s\\n" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'out=' 'url=${!#}' 'while [[ $# -gt 0 ]]; do' '  [[ $1 == -o ]] && { out=$2; shift 2; continue; }' '  shift' 'done' 'if [[ $url == */key ]]; then' '  printf "%s\n" "{\"data\":{\"limit_remaining\":${CURL_LIMIT_REMAINING:-1}}}" >"$out"' '  printf "%s" "${CURL_KEY_CODE:-${CURL_CODE:-200}}"' 'elif [[ $url == */chat/completions ]]; then' '  printf "%s\n" "insecure api_key=secret token=x authorization=y cookie=z" >"$out"' '  printf "%s" "${CURL_CHAT_CODE:-200}"' 'else' '  printf "%s\n" "{\"data\":[{\"id\":\"bitrix/bitrixgpt-5.6-agent\"},{\"id\":\"deepseek/deepseek-v4-flash\"}]}" >"$out"' '  printf "%s" "${CURL_CODE:-200}"' 'fi' >"$bin/curl"
-printf '%s\n' '#!/usr/bin/env bash' 'printf "opencode %s\\n" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "REPORT\\n"' '[[ ${OPENCODE_TOUCH:-} ]] && printf x >"$CODE_CHANNEL_TEST_PROJECT/$OPENCODE_TOUCH"' 'exit "${OPENCODE_RC:-0}"' >"$bin/opencode"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "opencode %s\\n" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "REPORT\\n"' '[[ ${OPENCODE_TOUCH:-} ]] && printf x >"$CODE_CHANNEL_TEST_PROJECT/$OPENCODE_TOUCH"' 'if [[ ${OPENCODE_COMMIT:-} ]]; then printf "auto %s\\n" "$OPENCODE_COMMIT" >"$CODE_CHANNEL_TEST_PROJECT/code-channel-new"; git -C "$CODE_CHANNEL_TEST_PROJECT" add code-channel-new; git -C "$CODE_CHANNEL_TEST_PROJECT" commit -qm "auto $OPENCODE_COMMIT"; fi' '[[ ${OPENCODE_CACHE_BRANCH:-} ]] && git -C "$CODE_CHANNEL_TEST_PROJECT" update-ref "refs/remotes/origin/$OPENCODE_CACHE_BRANCH" HEAD' '[[ ${OPENCODE_PUSH:-} ]] && git -C "$CODE_CHANNEL_TEST_PROJECT" push -q origin "HEAD:refs/heads/$OPENCODE_PUSH"' 'exit "${OPENCODE_RC:-0}"' >"$bin/opencode"
 printf '%s\n' '#!/usr/bin/env bash' 'printf "codex %s\\n" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "REPORT\\n"' '[[ ${CODEX_SWITCH_BRANCH:-} ]] && git -C "$CODE_CHANNEL_TEST_PROJECT" switch -c "codex/x-branch"' 'exit "${CODEX_RC:-0}"' >"$bin/codex"
 printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "${SQLITE_RESULT:-bitrixgpt|bitrix/bitrixgpt-5.6-agent}"' >"$bin/sqlite3"
 chmod +x "$bin/curl" "$bin/opencode" "$bin/codex" "$bin/sqlite3"
 
-ok=0
+ok=0 total=0
 check() {
   local n=$1 want=$2 out err rc ov
-  local -a env_args=("TMPDIR=$tmp" "PATH=$bin:$PATH" "XDG_CONFIG_HOME=$tmp/config-allow" "CODE_CHANNEL_TEST_LOG=$log" "CODE_CHANNEL_TEST_PROJECT=$project" "CODE_CHANNEL_STATE=$tmp/state" "CODE_CHANNEL_RUNS_LOG=$runs")
+  ((total++))
+  local proj=${CC_TEST_PROJECT:-$project}
+  local st=${CC_TEST_STATE:-$tmp/state}
+  local -a env_args=("TMPDIR=$tmp" "PATH=$bin:$PATH" "XDG_CONFIG_HOME=$tmp/config-allow" "CODE_CHANNEL_TEST_LOG=$log" "CODE_CHANNEL_TEST_PROJECT=$proj" "CODE_CHANNEL_STATE=$st" "CODE_CHANNEL_RUNS_LOG=$runs")
   shift 2
   : >"$log"
   : >"$runs"
@@ -46,7 +48,7 @@ check 1 '[[ $rc == 0 && $out == *REPORT* ]] && grep -Fq -- "--agent audit" "$log
 check 2 '[[ $rc == 22 ]]' env OPENCODE_TOUCH=audit-change "$root/bin/code-channel" audit "$project" "$root/AGENTS.md"
 check 3 '[[ $rc == 0 && $(grep -c -- /models "$log") == 1 ]] && grep -Fq -- /key "$log" && grep -Fq -- "-s read-only" "$log"' \
   env CURL_CODE=401 "$root/bin/code-channel" audit "$project" "$root/AGENTS.md"
-check 4 '[[ $rc == 0 ]] && ! grep -Fq -- "--agent" "$log"' \
+check 4 '[[ $rc == 24 ]] && ! grep -Fq -- "--agent" "$log"' \
   env OPENCODE_TOUCH=auto-change "$root/bin/code-channel" auto "$project" "$root/AGENTS.md"
 check 5 '[[ $err == *mode=audit* ]]' "$root/bin/code-channel" audit "$project" "$root/AGENTS.md"
 check 6 'bash -n "$root/bin/code-channel"' bash -c 'bash -n "$1"' _ "$root/bin/code-channel"
@@ -69,4 +71,42 @@ orig=$(git -C "$project" rev-parse --abbrev-ref HEAD)
 check 14 '[[ $rc == 0 ]] && [[ $(git -C "$project" rev-parse --abbrev-ref HEAD) == "$orig" ]] && grep -Fq -- "форма 2 сменила ветку, возвращено" "$tmp/err" && grep -q '"'"'provider_actual":"codex"'"'"' "$runs"' \
   env CODEX_SWITCH_BRANCH=1 CODEX_RC=0 "$root/bin/code-channel" 2 "$project" "$root/AGENTS.md"
 
-[[ $ok == 14 ]] && echo 'PASS 14/14'
+# --- auto code mode: push verification against a local bare origin ---
+mkgit() {
+  local p=$1 b=$2 br=$3
+  mkdir -p "$p"
+  git init -q "$p"
+  git -C "$p" config user.email test@example.invalid
+  git -C "$p" config user.name test
+  printf 'base\n' >"$p/base"
+  git -C "$p" add base
+  git -C "$p" commit -qm init
+  git -C "$p" checkout -b "$br"
+  git -C "$p" branch main
+  git init -q --bare "$b"
+  git -C "$p" remote add origin "$b"
+  git -C "$p" push -q origin main
+  git -C "$p" push -q origin "$br"
+}
+mkdir -p "$tmp/state-auto"
+
+mkgit "$tmp/p1" "$tmp/o1.git" codex/c1
+CC_TEST_PROJECT="$tmp/p1" CC_TEST_STATE="$tmp/state-auto" check 15 '[[ $rc == 24 ]] && ! grep -q "^codex " "$log" && [[ $(grep -c "^opencode " "$log") == 1 ]]' \
+  env OPENCODE_COMMIT=1 "$root/bin/code-channel" auto "$tmp/p1" "$root/AGENTS.md"
+
+mkgit "$tmp/p2" "$tmp/o2.git" codex/c2
+CC_TEST_PROJECT="$tmp/p2" CC_TEST_STATE="$tmp/state-auto" check 16 '[[ $rc == 24 ]] && ! grep -q "^codex " "$log" && [[ $(grep -c "^opencode " "$log") == 1 ]]' \
+  env OPENCODE_COMMIT=2 OPENCODE_CACHE_BRANCH=codex/c2 "$root/bin/code-channel" auto "$tmp/p2" "$root/AGENTS.md"
+
+mkgit "$tmp/p3" "$tmp/o3.git" codex/c3
+CC_TEST_PROJECT="$tmp/p3" CC_TEST_STATE="$tmp/state-auto" check 17 '[[ $rc == 0 ]] && ! grep -q "^codex " "$log" && [[ $(grep -c "^opencode " "$log") == 1 ]]' \
+  env OPENCODE_COMMIT=3 OPENCODE_PUSH=codex/c3 "$root/bin/code-channel" auto "$tmp/p3" "$root/AGENTS.md"
+
+mkgit "$tmp/p4" "$tmp/o4.git" codex/c4
+CC_TEST_PROJECT="$tmp/p4" CC_TEST_STATE="$tmp/state-auto" check 18 '[[ $rc == 24 ]] && ! grep -q "^codex " "$log" && [[ $(grep -c "^opencode " "$log") == 1 ]]' \
+  env OPENCODE_TOUCH=stray "$root/bin/code-channel" auto "$tmp/p4" "$root/AGENTS.md"
+
+printf 'code-channel-test: %s/%s passed (RED expected for auto 15,16,18)\n' "$ok" "$total"
+printf 'code-channel-test temp retained: %s\n' "$tmp"
+[[ $ok -eq $total ]] && exit 0
+exit 1
