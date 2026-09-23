@@ -52,7 +52,20 @@ def _result(texts, segments, warnings, parts, fallback, reasons):
     }
 
 
-def _run_fixed(name, paths, lang, speakers):
+def _shift(segments, offset):
+    """Сместить таймкоды сегментов на offset_sec части."""
+    if not offset:
+        return segments
+    shifted = []
+    for seg in segments:
+        s = dict(seg)
+        s["start"] = seg["start"] + offset
+        s["end"] = seg["end"] + offset
+        shifted.append(s)
+    return shifted
+
+
+def _run_fixed(name, paths, lang, speakers, offsets):
     """Транскрибировать все части строго одним движком."""
     engine_obj = engines.ENGINES[name]
     texts = []
@@ -60,10 +73,10 @@ def _run_fixed(name, paths, lang, speakers):
     warnings = []
     parts = {"groq": 0, "assemblyai": 0}
     try:
-        for path in paths:
+        for path, offset in zip(paths, offsets):
             res = _invoke(engine_obj, path, lang, speakers)
             texts.append(res["text"])
-            segments.extend(res.get("segments", []))
+            segments.extend(_shift(res.get("segments", []), offset))
             warnings.extend(res.get("warnings", []))
             parts[name] += 1
     except EngineError as exc:
@@ -71,7 +84,7 @@ def _run_fixed(name, paths, lang, speakers):
     return _result(texts, segments, warnings, parts, False, [])
 
 
-def _run_auto(paths, lang):
+def _run_auto(paths, lang, offsets):
     """Groq по частям, при сбое — переход на AssemblyAI до конца."""
     texts = []
     segments = []
@@ -80,7 +93,7 @@ def _run_auto(paths, lang):
     fallback = False
     reasons = []
 
-    for path in paths:
+    for path, offset in zip(paths, offsets):
         if not fallback:
             try:
                 res = _try_groq(path, lang)
@@ -95,15 +108,17 @@ def _run_auto(paths, lang):
             except EngineError as exc:
                 raise AllEnginesFailed("; ".join(reasons)) from exc
         texts.append(res["text"])
-        segments.extend(res.get("segments", []))
+        segments.extend(_shift(res.get("segments", []), offset))
         warnings.extend(res.get("warnings", []))
 
     return _result(texts, segments, warnings, parts, fallback, reasons)
 
 
-def run(flac_paths, lang, engine="auto", speakers=False):
+def run(flac_paths, lang, engine="auto", speakers=False, offsets=None):
+    if offsets is None:
+        offsets = [0.0] * len(flac_paths)
     if speakers:
-        return _run_fixed("assemblyai", flac_paths[:1], lang, True)
+        return _run_fixed("assemblyai", flac_paths[:1], lang, True, offsets[:1])
     if engine in ("groq", "assemblyai"):
-        return _run_fixed(engine, flac_paths, lang, False)
-    return _run_auto(flac_paths, lang)
+        return _run_fixed(engine, flac_paths, lang, False, offsets)
+    return _run_auto(flac_paths, lang, offsets)
