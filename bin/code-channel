@@ -175,6 +175,43 @@ run_form() (
 )
 if [[ $form =~ ^[123]$ ]]; then run_form "$form"; exit $?; fi
 form_snap() { local s; s=$( { git rev-parse HEAD 2>/dev/null; git status --porcelain 2>/dev/null; git diff HEAD 2>/dev/null; } ); [[ -z $s ]] && return 0; printf '%s\n' "$s" | cksum; }
+delivery_proof() {
+    local prev_head=$1 prev_branch=$2 cur_head cur_branch porcelain lsout nlines r_hash r_ref
+    cur_head=$(git rev-parse HEAD 2>/dev/null || true)
+    cur_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+    if [[ -z $prev_head || -z $cur_head || $prev_head == "$cur_head" ]]; then
+        printf 'code-channel: form=%s rc=0 но HEAD не продвинулся (%s→%s)\n' "$n" "${prev_head:--}" "${cur_head:--}" >&2
+        return 24
+    fi
+    if ! porcelain=$(git status --porcelain 2>/dev/null); then
+        printf 'code-channel: form=%s rc=0 но git status не выполнен\n' "$n" >&2
+        return 24
+    fi
+    if [[ -n $porcelain ]]; then
+        printf 'code-channel: form=%s rc=0 но рабочее дерево нечисто\n' "$n" >&2
+        return 24
+    fi
+    if [[ -z $prev_branch || $cur_branch != "$prev_branch" ]]; then
+        printf 'code-channel: form=%s rc=0 но ветка сменилась (%s→%s)\n' "$n" "${prev_branch:--}" "${cur_branch:--}" >&2
+        return 24
+    fi
+    if [[ $cur_branch != codex/* && $cur_branch != claude/* ]]; then
+        printf 'code-channel: form=%s rc=0 но ветка не codex/* или claude/* (%s)\n' "$n" "$cur_branch" >&2
+        return 24
+    fi
+    lsout=$(git ls-remote --exit-code origin "refs/heads/$cur_branch" 2>/dev/null) || {
+        printf 'code-channel: form=%s rc=0 но удалённая ветка не достижима\n' "$n" >&2
+        return 24
+    }
+    nlines=$(printf '%s\n' "$lsout" | grep -c -- .)
+    r_ref=${lsout#*$'\t'}
+    r_hash=${lsout%%$'\t'*}
+    if [[ $nlines != 1 || $r_ref == "$lsout" || $r_hash != "$cur_head" || $r_ref != "refs/heads/$cur_branch" ]]; then
+        printf 'code-channel: form=%s rc=0 но удалённая ветка не подтверждает HEAD точно\n' "$n" >&2
+        return 24
+    fi
+    return 0
+}
 for n in 1 3 2; do
     if [[ $n == 1 && -f $S/bitrixgpt.block ]]; then
         read -r blk_until _ blk_code < "$S/bitrixgpt.block"
@@ -185,6 +222,8 @@ for n in 1 3 2; do
         fi
     fi
     before=$(form_snap)
+    before_head=$(git rev-parse HEAD 2>/dev/null || true)
+    before_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)
     run_form "$n"; rc=$?
     case $rc in 3|5|15) exit "$rc";; esac
     if [[ $rc == 0 ]]; then
@@ -200,6 +239,8 @@ for n in 1 3 2; do
             [[ $n == 2 ]] && exit 16
             rc=1
         else
+            delivery_proof "$before_head" "$before_branch"; prc=$?
+            [[ $prc == 0 ]] || exit "$prc"
             exit "$rc"
         fi
     fi
