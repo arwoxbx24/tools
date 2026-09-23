@@ -48,6 +48,28 @@ def test_fixed_groq_engine_failure_no_fallback(monkeypatch):
     assert assemblyai.calls == 0
 
 
+def test_groq_429_short_retry_once(monkeypatch):
+    groq = FakeEngine("groq", behaviors=[("err", 429, 0), ("ok", GROQ_TEXT)])
+    _install(monkeypatch, groq=groq)
+    monkeypatch.setattr(pipeline.time, "sleep", lambda sec: None)
+
+    result = pipeline.run(["part.flac"], "en", engine="groq")
+
+    assert groq.calls == 2
+    assert result["text"] == GROQ_TEXT
+
+
+def test_groq_429_long_retry_fails(monkeypatch):
+    groq = FakeEngine("groq", behaviors=[("err", 429, 120)])
+    _install(monkeypatch, groq=groq)
+    monkeypatch.setattr(pipeline.time, "sleep", lambda sec: None)
+
+    with pytest.raises(AllEnginesFailed):
+        pipeline.run(["part.flac"], "en", engine="groq")
+
+    assert groq.calls == 1
+
+
 def test_speakers_only_calls_assemblyai_with_speakers_true(monkeypatch):
     groq = FakeEngine("groq", behaviors=[("ok", GROQ_TEXT)])
     assemblyai = FakeEngine("assemblyai", behaviors=[("ok", ASSEMBLYAI_TEXT)])

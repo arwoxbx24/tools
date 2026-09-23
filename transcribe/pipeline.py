@@ -1,5 +1,7 @@
 """Транскрибация списка частей фиксированным движком."""
 
+import time
+
 from transcribe import engines
 from transcribe.engines import AllEnginesFailed, EngineError
 
@@ -58,9 +60,24 @@ def _run_fixed(name, paths, lang, speakers, offsets, subtitles=None):
     warnings = []
     subtitles_out = []
     parts = {"groq": 0, "assemblyai": 0}
+
+    def invoke(path, offset):
+        try:
+            return _invoke(engine_obj, path, lang, speakers, subtitles)
+        except EngineError as exc:
+            if (
+                name == "groq"
+                and exc.status == 429
+                and exc.retry_after is not None
+                and exc.retry_after <= 60
+            ):
+                time.sleep(exc.retry_after)
+                return _invoke(engine_obj, path, lang, speakers, subtitles)
+            raise
+
     try:
         for path, offset in zip(paths, offsets):
-            res = _invoke(engine_obj, path, lang, speakers, subtitles)
+            res = invoke(path, offset)
             texts.append(res["text"])
             segments.extend(_shift(res.get("segments", []), offset))
             warnings.extend(res.get("warnings", []))
