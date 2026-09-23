@@ -14,7 +14,7 @@ printf 'base\n' >"$project/base"
 git -C "$project" add base
 git -C "$project" commit -qm init
 
-printf '%s\n' '#!/usr/bin/env bash' 'out=' 'while [[ $# -gt 0 ]]; do' '  [[ $1 == -o ]] && { out=$2; shift 2; continue; }' '  shift' 'done' 'printf "%s\n" "{\"data\":[{\"id\":\"bitrix/bitrixgpt-5.6-agent\"},{\"id\":\"deepseek/deepseek-v4-flash\"}]}" >"$out"' 'printf "%s" "${CURL_CODE:-200}"' >"$bin/curl"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\\n" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'out=' 'while [[ $# -gt 0 ]]; do' '  [[ $1 == -o ]] && { out=$2; shift 2; continue; }' '  shift' 'done' 'printf "%s\n" "{\"data\":[{\"id\":\"bitrix/bitrixgpt-5.6-agent\"},{\"id\":\"deepseek/deepseek-v4-flash\"}]}" >"$out"' 'printf "%s" "${CURL_CODE:-200}"' >"$bin/curl"
 printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\\n" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "REPORT\\n"' '[[ ${OPENCODE_TOUCH:-} ]] && printf x >"$CODE_CHANNEL_TEST_PROJECT/$OPENCODE_TOUCH"' 'exit "${OPENCODE_RC:-0}"' >"$bin/opencode"
 printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\\n" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "REPORT\\n"' 'exit "${CODEX_RC:-0}"' >"$bin/codex"
 chmod +x "$bin/curl" "$bin/opencode" "$bin/codex"
@@ -32,7 +32,7 @@ check() {
 check 1 '[[ $rc == 0 && $out == *REPORT* ]] && grep -Fq -- "--agent audit" "$log"' \
   "$root/bin/code-channel" audit "$project" "$root/AGENTS.md"
 check 2 '[[ $rc == 22 ]]' env OPENCODE_TOUCH=audit-change "$root/bin/code-channel" audit "$project" "$root/AGENTS.md"
-check 3 '[[ $rc == 0 ]] && grep -Fq -- "-s read-only" "$log"' \
+check 3 '[[ $rc == 0 && $(grep -c -- /models "$log") == 2 ]] && grep -Fq -- "-s read-only" "$log"' \
   env CURL_CODE=401 "$root/bin/code-channel" audit "$project" "$root/AGENTS.md"
 check 4 '[[ $rc == 0 ]] && ! grep -Fq -- "--agent" "$log"' \
   env OPENCODE_TOUCH=auto-change "$root/bin/code-channel" auto "$project" "$root/AGENTS.md"
