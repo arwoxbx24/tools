@@ -6,20 +6,20 @@ import sys
 import tempfile
 from pathlib import Path
 
-from transcribe import engines, formats, media
-from transcribe.engines import EngineError
+from transcribe import engines, formats, media, pipeline
+from transcribe.engines import AllEnginesFailed, EngineError
 from transcribe.keys import ArgError, redact
 
 
-def _transcribe(src, lang):
-    """Расшифровать локальный файл через двига groq."""
+def _transcribe(src, lang, engine, speakers):
+    """Расшифровать локальный файл через пайплайн движков."""
     tmp = tempfile.mkdtemp()
     try:
         media.probe(src)
         flac = media.to_flac(src, tmp)
         if os.path.getsize(flac) > 24 * 1024 * 1024:
             raise ArgError("запись длиннее одной части — нарезка в следующей версии")
-        return engines.ENGINES["groq"]().transcribe(flac, lang)
+        return pipeline.run([flac], lang, engine, speakers)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -115,14 +115,14 @@ def _run(argv):
         return 2
 
     try:
-        if args.engine not in ("auto", "groq"):
+        if args.engine not in ("auto", "groq", "assemblyai"):
             raise EngineError(
                 engine=args.engine,
                 status=None,
                 retry_after=None,
                 message=f"движок {args.engine} не реализован",
             )
-        result = _transcribe(args.src, args.lang)
+        result = _transcribe(args.src, args.lang, args.engine, args.speakers)
     except ArgError as exc:
         print(f"transcribe: error: {exc}", file=sys.stderr)
         return 2
@@ -135,7 +135,15 @@ def _run(argv):
 
     text = formats.render(result, "txt")
     print(text)
-    print("transcribe: engine=groq model=whisper-large-v3 parts=1", file=sys.stderr)
+    records = "; ".join(
+        f"engine={r['engine']} model={r['model']} parts={r['parts']}"
+        for r in result["engines"]
+    )
+    print(f"transcribe: {records}", file=sys.stderr)
+    if result["fallback"]:
+        print(f"transcribe: fallback: {result['reasons']}", file=sys.stderr)
+    for warning in result["warnings"]:
+        print(f"transcribe: warning: {warning}", file=sys.stderr)
 
     if not args.no_save:
         try:

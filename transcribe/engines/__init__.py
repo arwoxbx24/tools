@@ -6,6 +6,10 @@ class _Engine:
         self.key_file = key_file
 
 
+class AllEnginesFailed(Exception):
+    """Все подключённые движки транскрибации отказали."""
+
+
 groq = _Engine("groq", "whisper-large-v3", "GROQ_API_KEY", "groq.env")
 assemblyai = _Engine("assemblyai", "best", "ASSEMBLYAI_API_KEY", "assemblyai.env")
 
