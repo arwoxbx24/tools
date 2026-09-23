@@ -15,16 +15,20 @@ git -C "$project" add base
 git -C "$project" commit -qm init
 mkdir -p "$tmp/secrets/services"
 printf 'OPENROUTER_API_KEY=x\n' >"$tmp/secrets/services/openrouter.env"
+mkdir -p "$tmp/bitrix-secrets/services" "$tmp/config/opencode" "$tmp/config-allow/opencode"
+printf 'VIBECODE_API_KEY=x\n' >"$tmp/bitrix-secrets/services/vibecode.env"
+printf '%s\n' '{"provider":{"bitrixgpt":{"models":{"bitrix/bitrixgpt-5.6-agent":{}}},"openrouter":{"whitelist":["other/model"]}}}' >"$tmp/config/opencode/opencode.jsonc"
+printf '%s\n' '{"provider":{"bitrixgpt":{"models":{"bitrix/bitrixgpt-5.6-agent":{}}},"openrouter":{"whitelist":["deepseek/deepseek-v4-flash"]}}}' >"$tmp/config-allow/opencode/opencode.jsonc"
 
-printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\\n" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'out=' 'while [[ $# -gt 0 ]]; do' '  [[ $1 == -o ]] && { out=$2; shift 2; continue; }' '  shift' 'done' 'printf "%s\n" "{\"data\":[{\"id\":\"bitrix/bitrixgpt-5.6-agent\"},{\"id\":\"deepseek/deepseek-v4-flash\"}]}" >"$out"' 'printf "%s" "${CURL_CODE:-200}"' >"$bin/curl"
-printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\\n" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "REPORT\\n"' '[[ ${OPENCODE_TOUCH:-} ]] && printf x >"$CODE_CHANNEL_TEST_PROJECT/$OPENCODE_TOUCH"' 'exit "${OPENCODE_RC:-0}"' >"$bin/opencode"
-printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\\n" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "REPORT\\n"' 'exit "${CODEX_RC:-0}"' >"$bin/codex"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "curl %s\\n" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'out=' 'url=${!#}' 'while [[ $# -gt 0 ]]; do' '  [[ $1 == -o ]] && { out=$2; shift 2; continue; }' '  shift' 'done' 'if [[ $url == */key ]]; then' '  printf "%s\n" "{\"data\":{\"limit_remaining\":${CURL_LIMIT_REMAINING:-1}}}" >"$out"' 'else' '  printf "%s\n" "{\"data\":[{\"id\":\"bitrix/bitrixgpt-5.6-agent\"},{\"id\":\"deepseek/deepseek-v4-flash\"}]}" >"$out"' 'fi' 'printf "%s" "${CURL_CODE:-200}"' >"$bin/curl"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "opencode %s\\n" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "REPORT\\n"' '[[ ${OPENCODE_TOUCH:-} ]] && printf x >"$CODE_CHANNEL_TEST_PROJECT/$OPENCODE_TOUCH"' 'exit "${OPENCODE_RC:-0}"' >"$bin/opencode"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "codex %s\\n" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "REPORT\\n"' 'exit "${CODEX_RC:-0}"' >"$bin/codex"
 chmod +x "$bin/curl" "$bin/opencode" "$bin/codex"
 
 ok=0
 check() {
   local n=$1 want=$2 out err rc ov
-  local -a env_args=("TMPDIR=$tmp" "PATH=$bin:$PATH" "CODE_CHANNEL_TEST_LOG=$log" "CODE_CHANNEL_TEST_PROJECT=$project")
+  local -a env_args=("TMPDIR=$tmp" "PATH=$bin:$PATH" "XDG_CONFIG_HOME=$tmp/config-allow" "CODE_CHANNEL_TEST_LOG=$log" "CODE_CHANNEL_TEST_PROJECT=$project")
   shift 2
   : >"$log"
   ov=${CC_OVERRIDE-$secret}
@@ -38,13 +42,19 @@ check() {
 check 1 '[[ $rc == 0 && $out == *REPORT* ]] && grep -Fq -- "--agent audit" "$log"' \
   "$root/bin/code-channel" audit "$project" "$root/AGENTS.md"
 check 2 '[[ $rc == 22 ]]' env OPENCODE_TOUCH=audit-change "$root/bin/code-channel" audit "$project" "$root/AGENTS.md"
-check 3 '[[ $rc == 0 && $(grep -c -- /models "$log") == 2 ]] && grep -Fq -- "-s read-only" "$log"' \
+check 3 '[[ $rc == 0 && $(grep -c -- /models "$log") == 1 ]] && grep -Fq -- /key "$log" && grep -Fq -- "-s read-only" "$log"' \
   env CURL_CODE=401 "$root/bin/code-channel" audit "$project" "$root/AGENTS.md"
 check 4 '[[ $rc == 0 ]] && ! grep -Fq -- "--agent" "$log"' \
   env OPENCODE_TOUCH=auto-change "$root/bin/code-channel" auto "$project" "$root/AGENTS.md"
 check 5 '[[ $err == *mode=audit* ]]' "$root/bin/code-channel" audit "$project" "$root/AGENTS.md"
 check 6 'bash -n "$root/bin/code-channel"' bash -c 'bash -n "$1"' _ "$root/bin/code-channel"
-CC_OVERRIDE='' CC_ROOT="$tmp/secrets" check 7 '[[ $rc == 0 && $out == *REPORT* ]] && ! grep -Fq -- "нет секрета" "$tmp/err" && grep -Fq -- /models "$log"' \
-  "$root/bin/code-channel" 3 "$project" "$root/AGENTS.md"
+CC_OVERRIDE='' CC_ROOT="$tmp/secrets" check 7 '[[ $rc == 0 && $out == *REPORT* ]] && ! grep -Fq -- "нет секрета" "$tmp/err" && grep -Fq -- /key "$log"' \
+  env XDG_CONFIG_HOME="$tmp/config-allow" "$root/bin/code-channel" 3 "$project" "$root/AGENTS.md"
+CC_OVERRIDE='' CC_ROOT="$tmp/bitrix-secrets" check 8 '[[ $rc == 5 ]] && ! grep -q "^codex " "$log"' \
+  env CURL_CODE=401 "$root/bin/code-channel" auto "$project" "$root/AGENTS.md"
+CC_OVERRIDE='' CC_ROOT="$tmp/secrets" check 9 '[[ $rc == 11 ]] && grep -Fq -- /key "$log"' \
+  env CURL_CODE=401 XDG_CONFIG_HOME="$tmp/config-allow" "$root/bin/code-channel" 3 "$project" "$root/AGENTS.md"
+CC_OVERRIDE='' CC_ROOT="$tmp/secrets" check 10 '[[ $rc == 15 ]]' \
+  env XDG_CONFIG_HOME="$tmp/config" "$root/bin/code-channel" 3 "$project" "$root/AGENTS.md" --model openrouter/deepseek/deepseek-v4-flash
 
-[[ $ok == 7 ]] && echo 'PASS 7/7'
+[[ $ok == 10 ]] && echo 'PASS 10/10'
