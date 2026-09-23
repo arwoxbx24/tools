@@ -17,8 +17,18 @@ ENGINES = {
     groq.name: groq,
     assemblyai.name: assemblyai,
 }
-ORDER = [groq.name, assemblyai.name]
-BANNED = ("openai", "yandex", "gemini", "openrouter")
+ORDER = [assemblyai.name, groq.name]
+BANNED = (
+    "openai",
+    "yandex",
+    "gemini",
+    "openrouter",
+    "speechkit",
+    "whisper-1",
+    "google",
+    "bitrix",
+    "local",
+)
 
 from .groq_engine import GroqEngine, EngineError  # noqa: E402
 from .assemblyai_engine import AssemblyAIEngine  # noqa: E402

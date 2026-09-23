@@ -9,7 +9,7 @@ class AssemblyAIEngine:
     key_name = "ASSEMBLYAI_API_KEY"
     key_file = "/root/workspaces/secrets/services/assemblyai.env"
 
-    def transcribe(self, path, lang, speakers=False):
+    def transcribe(self, path, lang, speakers=False, subtitles=None):
         import assemblyai as aai
 
         try:
@@ -54,12 +54,28 @@ class AssemblyAIEngine:
                 text = t.text
 
             warnings = []
+            subtitles_text = None
+            if subtitles == "srt":
+                try:
+                    subtitles_text = t.export_subtitles_srt()
+                except Exception:
+                    warnings.append("субтитры srt не экспортированы")
+            elif subtitles == "vtt":
+                try:
+                    subtitles_text = t.export_subtitles_vtt()
+                except Exception:
+                    warnings.append("субтитры vtt не экспортированы")
             try:
                 aai.Transcript.delete_by_id(t.id)
             except Exception:
                 warnings.append(f"транскрипт {t.id} у AssemblyAI не удалён")
 
-            return {"text": text, "segments": segments, "warnings": warnings}
+            return {
+                "text": text,
+                "segments": segments,
+                "warnings": warnings,
+                "subtitles": subtitles_text,
+            }
         except Exception as e:
             if isinstance(e, EngineError):
                 raise e

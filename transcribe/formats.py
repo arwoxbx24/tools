@@ -1,12 +1,12 @@
 import json
 
 
-def _fmt_time(sec):
+def _fmt_time(sec, sep=","):
     ms = round(sec * 1000)
     hours, ms = divmod(ms, 3600000)
     minutes, ms = divmod(ms, 60000)
     seconds, ms = divmod(ms, 1000)
-    return f"{hours:02d}:{minutes:02d}:{seconds:02d},{ms:03d}"
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}{sep}{ms:03d}"
 
 
 def _render_srt(result):
@@ -26,6 +26,17 @@ def _render_srt(result):
     return "\n".join(lines) + "\n"
 
 
+def _render_vtt(result):
+    lines = ["WEBVTT", ""]
+    for seg in result["segments"]:
+        lines.append(
+            f"{_fmt_time(seg['start'], '.')} --> {_fmt_time(seg['end'], '.')}"
+        )
+        lines.append(seg["text"])
+        lines.append("")
+    return "\n".join(lines) + "\n"
+
+
 def _render_json(result):
     keys = ["text", "segments", "engines", "fallback", "warnings"]
     payload = {k: result[k] for k in keys}
@@ -33,8 +44,12 @@ def _render_json(result):
 
 
 def render(result, fmt="txt"):
+    if result.get("subtitles") and fmt in ("srt", "vtt"):
+        return result["subtitles"]
     if fmt == "srt":
         return _render_srt(result)
+    if fmt == "vtt":
+        return _render_vtt(result)
     if fmt == "json":
         return _render_json(result)
     return result["text"]

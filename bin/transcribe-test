@@ -1,0 +1,168 @@
+#!/usr/bin/env bash
+# Self-test для bin/transcribe: живой прогон по сети (кроме ssrf/говорящих).
+# Каждая проверка печатает одну строку PASS <имя> / FAIL <имя>: <причина>,
+# в конце — PASS N/N или FAIL k/N; rc 0 только при N/N.
+set -u
+
+d="$(dirname "$(readlink -f "$0")")"
+bin="$d/transcribe"
+sample="$d/../transcribe/tests/fixtures/sample-ru.ogg"
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+export TRANSCRIBE_STATE="$tmp/state"
+
+# fallback: неверный ключ AssemblyAI, revocable только в temp-каталоге.
+printf 'ASSEMBLYAI_API_KEY=invalid\n' > "$tmp/bad.env"
+
+pass=0
+fail=0
+# Весь собранный stderr всех проверок — для no-keys.
+all_err=""
+
+# Количество строк журнала до auto (для journal).
+j_before=0
+[ -s "$TRANSCRIBE_STATE/runs.jsonl" ] && j_before=$(wc -l < "$TRANSCRIBE_STATE/runs.jsonl")
+
+ok()  { printf 'PASS %s\n' "$1"; pass=$((pass + 1)); }
+bad() { printf 'FAIL %s: %s\n' "$1" "$2"; fail=$((fail + 1)); }
+
+# auto: AssemblyAI без нарезки.
+"$bin" "$sample" --no-save >"$tmp/auto.out" 2>"$tmp/auto.err"
+rc=$?
+all_err+="$(<"$tmp/auto.err")"
+if [ "$rc" -ne 0 ]; then
+    bad auto "rc=$rc"
+elif [ ! -s "$tmp/auto.out" ]; then
+    bad auto "пустой stdout"
+elif ! grep -q 'engine=assemblyai' "$tmp/auto.err"; then
+    bad auto "в stderr нет engine=assemblyai"
+else
+    ok auto
+fi
+
+# Строка журнала, добавленная вызовом auto (для проверки journal).
+j_line=""
+j_now=$(wc -l < "$TRANSCRIBE_STATE/runs.jsonl" 2>/dev/null || echo 0)
+if [ "$j_now" -gt "$j_before" ]; then
+    j_line=$(sed -n "$((j_before + 1))p" "$TRANSCRIBE_STATE/runs.jsonl")
+fi
+
+# fallback: сбой AssemblyAI -> Groq по частям.
+TRANSCRIBE_ASSEMBLYAI_ENV="$tmp/bad.env" "$bin" "$sample" --no-save \
+    >"$tmp/fb.out" 2>"$tmp/fb.err"
+rc=$?
+all_err+="$(<"$tmp/fb.err")"
+if [ "$rc" -ne 0 ]; then
+    bad fallback "rc=$rc"
+elif ! grep -q 'fallback:' "$tmp/fb.err"; then
+    bad fallback "в stderr нет fallback:"
+elif ! grep -q 'engine=groq' "$tmp/fb.err"; then
+    bad fallback "в stderr нет engine=groq"
+else
+    ok fallback
+fi
+
+# speakers-groq: не поддерживается.
+"$bin" "$sample" --speakers --engine groq --no-save >"$tmp/sg.out" 2>"$tmp/sg.err"
+rc=$?
+all_err+="$(<"$tmp/sg.err")"
+if [ "$rc" -ne 2 ]; then
+    bad speakers-groq "rc=$rc (ожидался 2)"
+else
+    ok speakers-groq
+fi
+
+# page: транскрибация по URL с сохранением.
+"$bin" "https://www.youtube.com/watch?v=jNQXAC9IVRw" --lang en --out "$tmp/page.txt" \
+    >"$tmp/pg.out" 2>"$tmp/pg.err"
+rc=$?
+all_err+="$(<"$tmp/pg.err")"
+if [ "$rc" -ne 0 ]; then
+    bad page "rc=$rc"
+elif [ ! -s "$tmp/page.txt" ]; then
+    bad page "файл пуст"
+else
+    ok page
+fi
+
+# ssrf: локальный адрес запрещён.
+"$bin" "http://127.0.0.1/a.mp3" --no-save >"$tmp/ssrf.out" 2>"$tmp/ssrf.err"
+rc=$?
+all_err+="$(<"$tmp/ssrf.err")"
+if [ "$rc" -ne 2 ]; then
+    bad ssrf "rc=$rc (ожидался 2)"
+else
+    ok ssrf
+fi
+
+# vtt: субтитры WebVTT.
+"$bin" "$sample" --format vtt --out "$tmp/s.vtt" >"$tmp/vtt.out" 2>"$tmp/vtt.err"
+rc=$?
+all_err+="$(<"$tmp/vtt.err")"
+first=""
+if [ -s "$tmp/s.vtt" ]; then
+    IFS= read -r first < "$tmp/s.vtt"
+fi
+if [ "$rc" -ne 0 ]; then
+    bad vtt "rc=$rc"
+elif [ "$first" != "WEBVTT" ]; then
+    bad vtt "первая строка != WEBVTT"
+else
+    ok vtt
+fi
+
+# banned: запрещённый движок.
+"$bin" "$sample" --engine yandex --no-save >"$tmp/bn.out" 2>"$tmp/bn.err"
+rc=$?
+all_err+="$(<"$tmp/bn.err")"
+if [ "$rc" -ne 2 ]; then
+    bad banned "rc=$rc (ожидался 2)"
+elif ! grep -q 'assemblyai, groq' "$tmp/bn.err"; then
+    bad banned "в stderr нет 'assemblyai, groq'"
+else
+    ok banned
+fi
+
+# journal: запись прогона в TRANSCRIBE_STATE (проверяем строку от auto).
+if [ -z "$j_line" ]; then
+    bad journal "нет строки от auto"
+elif ! printf '%s' "$j_line" | grep -q '"engine"'; then
+    bad journal "нет \"engine\""
+elif ! printf '%s' "$j_line" | grep -q '"rc": 0'; then
+    bad journal "нет \"rc\": 0"
+else
+    ok journal
+fi
+
+# no-keys: в собранном stderr нет секретов.
+badvals=""
+while IFS='=' read -r _k v; do
+    if [ -n "$v" ] && [ "$v" != "invalid" ]; then
+        badvals="$badvals $v"
+    fi
+done < "$tmp/bad.env"
+
+leak=""
+if printf '%s' "$all_err" | grep -q 'gsk_'; then
+    leak="содержит gsk_"
+fi
+for v in $badvals; do
+    if printf '%s' "$all_err" | grep -qF "$v"; then
+        leak="$leak [утечка $v]"
+    fi
+done
+if [ -n "$leak" ]; then
+    bad no-keys "$leak"
+else
+    ok no-keys
+fi
+
+total=$((pass + fail))
+if [ "$fail" -eq 0 ]; then
+    printf 'PASS %d/%d\n' "$pass" "$total"
+    exit 0
+else
+    printf 'FAIL %d/%d\n' "$fail" "$total"
+    exit 1
+fi

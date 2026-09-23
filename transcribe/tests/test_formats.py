@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 from transcribe import formats
 
 
@@ -46,3 +48,23 @@ def test_json_keys():
     data = json.loads(out)
     assert set(data) == {"text", "segments", "engines", "fallback", "warnings"}
     assert data["segments"] == segments
+
+
+def test_vtt_from_segments():
+    segments = [
+        {"start": 1.0, "end": 2.5, "text": "привет"},
+        {"start": 3.0, "end": 3.75, "text": "мир"},
+    ]
+    out = formats.render(_result(segments), "vtt")
+    lines = out.splitlines()
+    assert lines[0] == "WEBVTT"
+    assert lines[1] == ""
+    assert "00:00:01.000 --> 00:00:02.500" in out
+    assert "00:00:03.000 --> 00:00:03.750" in out
+
+
+@pytest.mark.parametrize("fmt", ["srt", "vtt"])
+def test_render_subtitles_passthrough(fmt):
+    r = _result([])
+    r["subtitles"] = f"готовые субтитры для {fmt}"
+    assert formats.render(r, fmt) == r["subtitles"]
