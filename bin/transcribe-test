@@ -20,6 +20,10 @@ fail=0
 # Весь собранный stderr всех проверок — для no-keys.
 all_err=""
 
+# Количество строк журнала до auto (для journal).
+j_before=0
+[ -s "$TRANSCRIBE_STATE/runs.jsonl" ] && j_before=$(wc -l < "$TRANSCRIBE_STATE/runs.jsonl")
+
 ok()  { printf 'PASS %s\n' "$1"; pass=$((pass + 1)); }
 bad() { printf 'FAIL %s: %s\n' "$1" "$2"; fail=$((fail + 1)); }
 
@@ -35,6 +39,13 @@ elif ! grep -q 'engine=assemblyai' "$tmp/auto.err"; then
     bad auto "в stderr нет engine=assemblyai"
 else
     ok auto
+fi
+
+# Строка журнала, добавленная вызовом auto (для проверки journal).
+j_line=""
+j_now=$(wc -l < "$TRANSCRIBE_STATE/runs.jsonl" 2>/dev/null || echo 0)
+if [ "$j_now" -gt "$j_before" ]; then
+    j_line=$(sed -n "$((j_before + 1))p" "$TRANSCRIBE_STATE/runs.jsonl")
 fi
 
 # fallback: сбой AssemblyAI -> Groq по частям.
@@ -63,7 +74,7 @@ else
 fi
 
 # page: транскрибация по URL с сохранением.
-"$bin" "https://www.youtube.com/watch?v=aqz-KE-bpKQ" --out "$tmp/page.txt" \
+"$bin" "https://www.youtube.com/watch?v=jNQXAC9IVRw" --lang en --out "$tmp/page.txt" \
     >"$tmp/pg.out" 2>"$tmp/pg.err"
 rc=$?
 all_err+="$(<"$tmp/pg.err")"
@@ -113,16 +124,12 @@ else
     ok banned
 fi
 
-# journal: запись прогона в TRANSCRIBE_STATE.
-last=""
-if [ -s "$TRANSCRIBE_STATE/runs.jsonl" ]; then
-    last="$(tail -n 1 "$TRANSCRIBE_STATE/runs.jsonl")"
-fi
-if [ -z "$last" ]; then
-    bad journal "нет runs.jsonl"
-elif ! printf '%s' "$last" | grep -q '"engine"'; then
+# journal: запись прогона в TRANSCRIBE_STATE (проверяем строку от auto).
+if [ -z "$j_line" ]; then
+    bad journal "нет строки от auto"
+elif ! printf '%s' "$j_line" | grep -q '"engine"'; then
     bad journal "нет \"engine\""
-elif ! printf '%s' "$last" | grep -q '"rc": 0'; then
+elif ! printf '%s' "$j_line" | grep -q '"rc": 0'; then
     bad journal "нет \"rc\": 0"
 else
     ok journal

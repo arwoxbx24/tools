@@ -159,6 +159,7 @@ def test_fetch_page_ytdl_options(monkeypatch, tmp_path, fake_yt_dlp):
     assert opts["format"] == "bestaudio/best"
     assert opts["noplaylist"] is True
     assert opts["max_filesize"] == 2 * 1024**3
+    assert opts["noprogress"] is True
     assert opts["js_runtimes"] == {"node": {}}
 
 

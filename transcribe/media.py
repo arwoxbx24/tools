@@ -111,6 +111,7 @@ def fetch_page(url, tmpdir):
         "outtmpl": f"{tmpdir}/page.%(ext)s",
         "quiet": True,
         "no_warnings": True,
+        "noprogress": True,
         "js_runtimes": {"node": {}},
     }
     try:
