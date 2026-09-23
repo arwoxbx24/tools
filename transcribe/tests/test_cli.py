@@ -1,6 +1,6 @@
 import pytest
 
-from transcribe import cli, engines
+from transcribe import cli, engines, media
 from transcribe.cli import main
 from transcribe.keys import load_key
 
@@ -64,17 +64,19 @@ def test_fr009_fake_engine_one_line(tmp_path, monkeypatch, capsys):
 
 
 def test_unhandled_exception_redacted_no_traceback(tmp_path, monkeypatch, capsys):
-    src = _tmp_src(tmp_path)
+    rec = tmp_path / "rec.ogg"
+    rec.write_bytes(b"x")
     secret = "SUPERSECRETR15"
     monkeypatch.setenv("FAKE_KEY", secret)
     load_key("FAKE_KEY", "unused.env", "fake")
 
-    def boom(request):
+    def boom(path):
         raise RuntimeError(f"взрыв {secret}")
 
-    monkeypatch.setattr(cli, "pipeline_stub", boom)
-    rc = main([src])
+    monkeypatch.setattr(media, "probe", boom)
+    rc = main([str(rec)])
     assert rc == 3
     err = capsys.readouterr().err
     assert "***" in err
+    assert secret not in err
     assert "Traceback" not in err
