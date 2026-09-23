@@ -6,7 +6,7 @@ set +e
 # FMEA-driven design with comprehensive error handling
 
 BACKUP_ROOT="/root/backups/docker"
-KEEP_SNAPSHOTS=12
+KEEP_SNAPSHOTS=4
 LOG_FILE="/root/workspaces/system/tools/scripts/logs/docker-backup.log"
 ALERT_FILE="/root/workspaces/system/tools/scripts/data/backup-alert.txt"
 MIN_FREE_SPACE_GB=1
