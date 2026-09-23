@@ -124,14 +124,14 @@ run_form() (
     [[ $n != 3 ]] || jq -e '.data.limit_remaining == null or ((.data.limit_remaining | type) == "number" and .data.limit_remaining > 0)' "$tmpjson" >/dev/null 2>&1 || exit 13
     model=${override:-$model}
     [[ $model == "$provider/"* ]] || exit 15
-    id=${model#*/}
+    mid=${model#*/}
     config=${XDG_CONFIG_HOME:-$HOME/.config}/opencode/opencode.jsonc
     ids=$(jq -Rs --argjson n "$n" 'gsub("(?m)^\\s*//[^\\n]*"; "") | gsub(",\\s*(?<end>[}\\]])"; .end) | fromjson | if $n == 1 then .provider.bitrixgpt.models | keys else .provider.openrouter.whitelist end' "$config" 2>/dev/null) || exit 15
-    jq -e --arg id "$id" 'index($id) != null' <<<"$ids" >/dev/null 2>&1 || exit 15
+    jq -e --arg id "$mid" 'index($id) != null' <<<"$ids" >/dev/null 2>&1 || exit 15
     if [[ $n == 1 ]]; then
         resphdr=$(mktemp "${TMPDIR:-/tmp}/code-channel-resphdr-XXXXXX") || exit 3
         respbody=$(mktemp "${TMPDIR:-/tmp}/code-channel-respbody-XXXXXX") || exit 3
-        payload=$(printf '{"model":"%s","messages":[{"role":"user","content":"ok"}],"max_tokens":1}' "$id")
+        payload=$(printf '{"model":"%s","messages":[{"role":"user","content":"ok"}],"max_tokens":1}' "$mid")
         ccode=$(curl -sS -m 20 -D "$resphdr" -o "$respbody" -w '%{http_code}' \
             -H @"$hdr" -H 'Content-Type: application/json' -d "$payload" \
             "${CODE_CHANNEL_BASEURL_OVERRIDE:-$base}/chat/completions")
