@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -u
+
+root=$(cd -- "$(dirname -- "$0")/.." && pwd)
+tmp=$(mktemp -d "$root/.code-channel-test.XXXXXX")
+trap 'rm -rf -- "$tmp"' EXIT
+bin=$tmp/bin project=$tmp/project secret=$tmp/secret.env log=$tmp/args.log
+mkdir -p "$bin" "$project"
+printf 'VIBECODE_API_KEY=x\nOPENROUTER_API_KEY=x\n' >"$secret"
+git -C "$project" init -q
+git -C "$project" config user.email test@example.invalid
+git -C "$project" config user.name test
+printf 'base\n' >"$project/base"
+git -C "$project" add base
+git -C "$project" commit -qm init
+
+printf '%s\n' '#!/usr/bin/env bash' 'out=' 'while [[ $# -gt 0 ]]; do' '  [[ $1 == -o ]] && { out=$2; shift 2; continue; }' '  shift' 'done' 'printf "%s\n" "{\"data\":[{\"id\":\"bitrix/bitrixgpt-5.6-agent\"},{\"id\":\"deepseek/deepseek-v4-flash\"}]}" >"$out"' 'printf "%s" "${CURL_CODE:-200}"' >"$bin/curl"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\\n" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "REPORT\\n"' '[[ ${OPENCODE_TOUCH:-} ]] && printf x >"$CODE_CHANNEL_TEST_PROJECT/$OPENCODE_TOUCH"' 'exit "${OPENCODE_RC:-0}"' >"$bin/opencode"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\\n" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "REPORT\\n"' 'exit "${CODEX_RC:-0}"' >"$bin/codex"
+chmod +x "$bin/curl" "$bin/opencode" "$bin/codex"
+
+ok=0
+check() {
+  local n=$1 want=$2 out err rc
+  shift 2
+  : >"$log"
+  out=$(TMPDIR="$tmp" PATH="$bin:$PATH" CODE_CHANNEL_SECRET_OVERRIDE="$secret" CODE_CHANNEL_TEST_LOG="$log" CODE_CHANNEL_TEST_PROJECT="$project" "$@" 2>"$tmp/err")
+  rc=$?; err=$(<"$tmp/err")
+  if eval "$want"; then echo "PASS $n"; ((ok++)); else echo "FAIL $n: rc=$rc out=$out err=$err log=$(<"$log")"; fi
+}
+
+check 1 '[[ $rc == 0 && $out == *REPORT* ]] && grep -Fq -- "--agent audit" "$log"' \
+  "$root/bin/code-channel" audit "$project" "$root/AGENTS.md"
+check 2 '[[ $rc == 22 ]]' env OPENCODE_TOUCH=audit-change "$root/bin/code-channel" audit "$project" "$root/AGENTS.md"
+check 3 '[[ $rc == 0 ]] && grep -Fq -- "-s read-only" "$log"' \
+  env CURL_CODE=401 "$root/bin/code-channel" audit "$project" "$root/AGENTS.md"
+check 4 '[[ $rc == 0 ]] && ! grep -Fq -- "--agent" "$log"' \
+  env OPENCODE_TOUCH=auto-change "$root/bin/code-channel" auto "$project" "$root/AGENTS.md"
+check 5 '[[ $err == *mode=audit* ]]' "$root/bin/code-channel" audit "$project" "$root/AGENTS.md"
+check 6 'bash -n "$root/bin/code-channel"' bash -c 'bash -n "$1"' _ "$root/bin/code-channel"
+
+[[ $ok == 6 ]] && echo 'PASS 6/6'
