@@ -1,7 +1,8 @@
 import pytest
 
-from transcribe import cli, engines, media
+from transcribe import cli, engines, media, pipeline
 from transcribe.cli import main
+from transcribe.engines import EngineError
 from transcribe.keys import load_key
 
 
@@ -9,6 +10,125 @@ def _tmp_src(tmp_path, content=b"audio"):
     p = tmp_path / "src.ogg"
     p.write_bytes(content)
     return str(p)
+
+
+def _result(**kw):
+    base = {
+        "text": "hello",
+        "segments": [],
+        "engines": [],
+        "fallback": False,
+        "reasons": "",
+        "warnings": [],
+    }
+    base.update(kw)
+    return base
+
+
+def _install_media(monkeypatch, tmp_path):
+    flac = tmp_path / "audio.flac"
+    flac.write_bytes(b"flac")
+    monkeypatch.setattr(media, "probe", lambda path: 1.0)
+    monkeypatch.setattr(media, "to_flac", lambda src, tmp: flac)
+    parts = [media.Part(0, flac, 0.0, 1.0, "pause")]
+    split_calls = []
+
+    def _split(flac, tmp):
+        split_calls.append(True)
+        return parts
+
+    monkeypatch.setattr(media, "split", _split)
+    return flac, split_calls
+
+
+def test_auto_assemblyai_whole_file(monkeypatch, tmp_path, capsys):
+    src = _tmp_src(tmp_path)
+    flac, split_calls = _install_media(monkeypatch, tmp_path)
+    calls = []
+
+    def fake_run(paths, lang, engine, speakers=False, offsets=None):
+        calls.append((list(paths), lang, engine, speakers, offsets))
+        return _result(
+            engines=[{"engine": "assemblyai", "model": "best", "parts": 1}]
+        )
+
+    monkeypatch.setattr(pipeline, "run", fake_run)
+    rc = main([src])  # engine default auto
+    assert rc == 0
+    assert split_calls == []
+    assert calls == [([flac], None, "assemblyai", False, None)]
+    assert "engine=assemblyai" in capsys.readouterr().err
+
+
+def test_auto_assemblyai_fails_groq_parts(monkeypatch, tmp_path, capsys):
+    src = _tmp_src(tmp_path)
+    flac, split_calls = _install_media(monkeypatch, tmp_path)
+
+    def fake_run(paths, lang, engine, speakers=False, offsets=None):
+        if engine == "assemblyai":
+            raise EngineError("assemblyai", 401, None, "bad key")
+        return _result(
+            engines=[{"engine": "groq", "model": "m", "parts": 1}]
+        )
+
+    monkeypatch.setattr(pipeline, "run", fake_run)
+    rc = main([src])
+    assert rc == 0
+    assert split_calls == [True]
+    err = capsys.readouterr().err
+    assert "fallback:" in err
+    assert "assemblyai" in err
+
+
+def test_engine_assemblyai_fails_no_groq(monkeypatch, tmp_path):
+    src = _tmp_src(tmp_path)
+    _install_media(monkeypatch, tmp_path)
+    calls = []
+
+    def fake_run(paths, lang, engine, speakers=False, offsets=None):
+        calls.append(engine)
+        if engine == "assemblyai":
+            raise EngineError("assemblyai", 401, None, "bad key")
+        return _result()
+
+    monkeypatch.setattr(pipeline, "run", fake_run)
+    rc = main([src, "--engine", "assemblyai"])
+    assert rc == 3
+    assert calls == ["assemblyai"]
+
+
+def test_speakers_assemblyai_fails_no_groq(monkeypatch, tmp_path):
+    src = _tmp_src(tmp_path)
+    _install_media(monkeypatch, tmp_path)
+    calls = []
+
+    def fake_run(paths, lang, engine, speakers=False, offsets=None):
+        calls.append((engine, speakers))
+        if engine == "assemblyai":
+            raise EngineError("assemblyai", 401, None, "bad key")
+        return _result()
+
+    monkeypatch.setattr(pipeline, "run", fake_run)
+    rc = main([src, "--speakers"])
+    assert rc == 3
+    assert calls == [("assemblyai", True)]
+
+
+def test_engine_groq_uses_split_no_assemblyai(monkeypatch, tmp_path):
+    src = _tmp_src(tmp_path)
+    _install_media(monkeypatch, tmp_path)
+    calls = []
+
+    def fake_run(paths, lang, engine, speakers=False, offsets=None):
+        calls.append((engine, speakers))
+        return _result(
+            engines=[{"engine": "groq", "model": "m", "parts": 1}]
+        )
+
+    monkeypatch.setattr(pipeline, "run", fake_run)
+    rc = main([src, "--engine", "groq"])
+    assert rc == 0
+    assert calls == [("groq", False)]
 
 
 @pytest.mark.parametrize("engine", ["openai", "yandex", "gemini", "openrouter"])

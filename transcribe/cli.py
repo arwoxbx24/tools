@@ -24,25 +24,44 @@ def _transcribe(src, lang, engine, speakers):
     try:
         media.probe(src)
         flac = media.to_flac(src, tmp)
-        if speakers:
-            parts = [media.Part(0, flac, 0.0, 0.0, "pause")]
+        if engine == "groq":
+            return _transcribe_groq(flac, lang, tmp)
+
+        # assemblyai / auto: один вызов на весь файл, без нарезки.
+        reason = None
+        try:
+            result = pipeline.run([flac], lang, "assemblyai", speakers)
+        except Exception as exc:
+            if engine == "assemblyai" or speakers:
+                raise
+            reason = f"assemblyai: {redact(str(exc))}"
         else:
-            parts = media.split(flac, tmp)
-        result = pipeline.run(
-            [p.path for p in parts],
-            lang,
-            engine,
-            speakers,
-            offsets=[p.offset_sec for p in parts],
-        )
-        for part in parts:
-            if part.cut == "hard":
-                result["warnings"].append(
-                    f"жёсткий рез на {_fmt_clock(part.offset_sec)}"
-                )
-        return result, len(parts)
+            return result, 1
+
+        # авто: сбой AssemblyAI → Groq по частям с пометкой fallback.
+        result, num_parts = _transcribe_groq(flac, lang, tmp)
+        result["fallback"] = True
+        result["reasons"] = [reason]
+        return result, num_parts
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _transcribe_groq(flac, lang, tmp):
+    parts = media.split(flac, tmp)
+    result = pipeline.run(
+        [p.path for p in parts],
+        lang,
+        "groq",
+        False,
+        offsets=[p.offset_sec for p in parts],
+    )
+    for part in parts:
+        if part.cut == "hard":
+            result["warnings"].append(
+                f"жёсткий рез на {_fmt_clock(part.offset_sec)}"
+            )
+    return result, len(parts)
 
 
 def _save(args, text, fmt="txt"):
@@ -86,8 +105,8 @@ def _run(argv):
     parser.add_argument("src", help="путь к аудио-файлу")
     parser.add_argument(
         "--engine",
-        default="groq",
-        help="движок транскрибации (groq, assemblyai)",
+        default="auto",
+        help="движок транскрибации (auto (assemblyai → groq), assemblyai, groq)",
     )
     parser.add_argument(
         "--speakers",
