@@ -24,10 +24,13 @@ chmod +x "$bin/curl" "$bin/opencode" "$bin/codex"
 ok=0
 check() {
   local n=$1 want=$2 out err rc ov
+  local -a env_args=("TMPDIR=$tmp" "PATH=$bin:$PATH" "CODE_CHANNEL_TEST_LOG=$log" "CODE_CHANNEL_TEST_PROJECT=$project")
   shift 2
   : >"$log"
   ov=${CC_OVERRIDE-$secret}
-  out=$(TMPDIR="$tmp" PATH="$bin:$PATH" ${ov:+CODE_CHANNEL_SECRET_OVERRIDE="$ov"} ${CC_ROOT:+CODE_CHANNEL_SECRETS_ROOT="$CC_ROOT"} CODE_CHANNEL_TEST_LOG="$log" CODE_CHANNEL_TEST_PROJECT="$project" "$@" 2>"$tmp/err")
+  [[ -n $ov ]] && env_args+=("CODE_CHANNEL_SECRET_OVERRIDE=$ov")
+  [[ -n ${CC_ROOT:-} ]] && env_args+=("CODE_CHANNEL_SECRETS_ROOT=$CC_ROOT")
+  out=$(env "${env_args[@]}" "$@" 2>"$tmp/err")
   rc=$?; err=$(<"$tmp/err")
   if eval "$want"; then echo "PASS $n"; ((ok++)); else echo "FAIL $n: rc=$rc out=$out err=$err log=$(<"$log")"; fi
 }
