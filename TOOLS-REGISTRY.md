@@ -26,6 +26,8 @@
 | `jq`, `grep`, `wc`, `ls`, `git`, `gh` | чтение, замеры, git-слой (I11) | одна команда на вызов | все | штатно |
 | `python3 <файл из tools/ или проекта>` | штатные скрипты (`layout_check.py`, `deploy_manifest.py`, тесты проектов) | путь к файлу, без `-c` | все | штатно |
 | `Workflow name=audit|verify|bd-slice|code-atom` | делегирование (csb стадия 7) | по имени, args `{atom,path,tz}` | Claude | штатно |
+| `transcribe` (`tools/bin/transcribe`) | ЕДИНСТВЕННАЯ транскрибация аудио/видео (spec:056, 23.09): Groq `whisper-large-v3`, запасной AssemblyAI; из любой папки | `transcribe <файл\|ссылка> [--format srt] [--speakers] [--lang ru]`; навык `.claude/skills/transcribe` | все | штатно |
+| `transcribe-test` | самотест транскрибации, итог `PASS 7/7` | `transcribe-test` | все | штатно |
 
 ## 3. ЗАПРЕЩЕНО (машинно: Claude — managed deny; opencode — `permission.bash "*": deny`; Codex — его hooks.json по вердикту)
 | Форма | Почему | Замена |
@@ -35,6 +37,7 @@
 | `aider`, `or-run`, `tools/llm-providers/runner.sh`, `failover.sh` (OpenRouter-эра) | сняты владельцем; файлы оставлены без права исполнения (`chmod a-x`, 18.09) | `opencode run` |
 | чтение/правка `~/.config/opencode/**` агентами | модель выбирает владелец | форма вызова из §1 |
 | `pm2 start <файл>`, `pm2 delete`, `pm2 kill` | закон PM2 | `pm2-boot`, `startOrReload` |
+| Любая транскрибация мимо `transcribe`: Yandex SpeechKit (`transcribe_yandex.py`, `run_yandex_transcribe.py`, `transcribe_with_iam.py`), `client-video-transcription/transcribe.py`, `run_groq_transcribe.py`, `transcription-dev/*`, `acc1-scripts/assemblyai-transcribe.py`, `acc1-scripts/groq-client.sh`, OpenAI/Gemini/OpenRouter-распознавание | запрет владельца 23.09 (SpeechKit — 31,70 ₽/нед), ключи OpenAI недействительны, Gemini — регион, путаница агентов | `transcribe` |
 
 ## 4. Замер (FR-007; окно 24 ч)
 Базовая линия 18.09 10:00 (все транскрипты `~/.claude/projects` за 24 ч): `python -c` 224, `python3 -c` 160, `bash -c` 108, `claude -p` 6; `opencode run` 150, `codex exec` 148.
