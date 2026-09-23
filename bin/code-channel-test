@@ -4,8 +4,8 @@ set -u
 root=$(cd -- "$(dirname -- "$0")/.." && pwd)
 tmp=$(mktemp -d "$root/.code-channel-test.XXXXXX")
 trap 'rm -rf -- "$tmp"' EXIT
-bin=$tmp/bin project=$tmp/project secret=$tmp/secret.env log=$tmp/args.log
-mkdir -p "$bin" "$project"
+bin=$tmp/bin project=$tmp/project secret=$tmp/secret.env log=$tmp/args.log runs=$tmp/runs.jsonl
+mkdir -p "$bin" "$project" "$tmp/state"
 printf 'VIBECODE_API_KEY=x\nOPENROUTER_API_KEY=x\n' >"$secret"
 git -C "$project" init -q
 git -C "$project" config user.email test@example.invalid
@@ -20,17 +20,19 @@ printf 'VIBECODE_API_KEY=x\n' >"$tmp/bitrix-secrets/services/vibecode.env"
 printf '%s\n' '{"provider":{"bitrixgpt":{"models":{"bitrix/bitrixgpt-5.6-agent":{}}},"openrouter":{"whitelist":["other/model"]}}}' >"$tmp/config/opencode/opencode.jsonc"
 printf '%s\n' '{"provider":{"bitrixgpt":{"models":{"bitrix/bitrixgpt-5.6-agent":{}}},"openrouter":{"whitelist":["deepseek/deepseek-v4-flash"]}}}' >"$tmp/config-allow/opencode/opencode.jsonc"
 
-printf '%s\n' '#!/usr/bin/env bash' 'printf "curl %s\\n" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'out=' 'url=${!#}' 'while [[ $# -gt 0 ]]; do' '  [[ $1 == -o ]] && { out=$2; shift 2; continue; }' '  shift' 'done' 'if [[ $url == */key ]]; then' '  printf "%s\n" "{\"data\":{\"limit_remaining\":${CURL_LIMIT_REMAINING:-1}}}" >"$out"' 'else' '  printf "%s\n" "{\"data\":[{\"id\":\"bitrix/bitrixgpt-5.6-agent\"},{\"id\":\"deepseek/deepseek-v4-flash\"}]}" >"$out"' 'fi' 'printf "%s" "${CURL_CODE:-200}"' >"$bin/curl"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "curl %s\\n" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'out=' 'url=${!#}' 'while [[ $# -gt 0 ]]; do' '  [[ $1 == -o ]] && { out=$2; shift 2; continue; }' '  shift' 'done' 'if [[ $url == */key ]]; then' '  printf "%s\n" "{\"data\":{\"limit_remaining\":${CURL_LIMIT_REMAINING:-1}}}" >"$out"' '  printf "%s" "${CURL_KEY_CODE:-${CURL_CODE:-200}}"' 'elif [[ $url == */chat/completions ]]; then' '  printf "%s\n" "insecure api_key=secret token=x authorization=y cookie=z" >"$out"' '  printf "%s" "${CURL_CHAT_CODE:-200}"' 'else' '  printf "%s\n" "{\"data\":[{\"id\":\"bitrix/bitrixgpt-5.6-agent\"},{\"id\":\"deepseek/deepseek-v4-flash\"}]}" >"$out"' '  printf "%s" "${CURL_CODE:-200}"' 'fi' >"$bin/curl"
 printf '%s\n' '#!/usr/bin/env bash' 'printf "opencode %s\\n" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "REPORT\\n"' '[[ ${OPENCODE_TOUCH:-} ]] && printf x >"$CODE_CHANNEL_TEST_PROJECT/$OPENCODE_TOUCH"' 'exit "${OPENCODE_RC:-0}"' >"$bin/opencode"
-printf '%s\n' '#!/usr/bin/env bash' 'printf "codex %s\\n" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "REPORT\\n"' 'exit "${CODEX_RC:-0}"' >"$bin/codex"
-chmod +x "$bin/curl" "$bin/opencode" "$bin/codex"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "codex %s\\n" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "REPORT\\n"' '[[ ${CODEX_SWITCH_BRANCH:-} ]] && git -C "$CODE_CHANNEL_TEST_PROJECT" switch -c "codex/x-branch"' 'exit "${CODEX_RC:-0}"' >"$bin/codex"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "${SQLITE_RESULT:-bitrixgpt|bitrix/bitrixgpt-5.6-agent}"' >"$bin/sqlite3"
+chmod +x "$bin/curl" "$bin/opencode" "$bin/codex" "$bin/sqlite3"
 
 ok=0
 check() {
   local n=$1 want=$2 out err rc ov
-  local -a env_args=("TMPDIR=$tmp" "PATH=$bin:$PATH" "XDG_CONFIG_HOME=$tmp/config-allow" "CODE_CHANNEL_TEST_LOG=$log" "CODE_CHANNEL_TEST_PROJECT=$project")
+  local -a env_args=("TMPDIR=$tmp" "PATH=$bin:$PATH" "XDG_CONFIG_HOME=$tmp/config-allow" "CODE_CHANNEL_TEST_LOG=$log" "CODE_CHANNEL_TEST_PROJECT=$project" "CODE_CHANNEL_STATE=$tmp/state" "CODE_CHANNEL_RUNS_LOG=$runs")
   shift 2
   : >"$log"
+  : >"$runs"
   ov=${CC_OVERRIDE-$secret}
   [[ -n $ov ]] && env_args+=("CODE_CHANNEL_SECRET_OVERRIDE=$ov")
   [[ -n ${CC_ROOT:-} ]] && env_args+=("CODE_CHANNEL_SECRETS_ROOT=$CC_ROOT")
@@ -49,7 +51,7 @@ check 4 '[[ $rc == 0 ]] && ! grep -Fq -- "--agent" "$log"' \
 check 5 '[[ $err == *mode=audit* ]]' "$root/bin/code-channel" audit "$project" "$root/AGENTS.md"
 check 6 'bash -n "$root/bin/code-channel"' bash -c 'bash -n "$1"' _ "$root/bin/code-channel"
 CC_OVERRIDE='' CC_ROOT="$tmp/secrets" check 7 '[[ $rc == 0 && $out == *REPORT* ]] && ! grep -Fq -- "нет секрета" "$tmp/err" && grep -Fq -- /key "$log"' \
-  env XDG_CONFIG_HOME="$tmp/config-allow" "$root/bin/code-channel" 3 "$project" "$root/AGENTS.md"
+  env SQLITE_RESULT='openrouter|deepseek/deepseek-v4-flash' "$root/bin/code-channel" 3 "$project" "$root/AGENTS.md"
 CC_OVERRIDE='' CC_ROOT="$tmp/bitrix-secrets" check 8 '[[ $rc == 5 ]] && ! grep -q "^codex " "$log"' \
   env CURL_CODE=401 "$root/bin/code-channel" auto "$project" "$root/AGENTS.md"
 CC_OVERRIDE='' CC_ROOT="$tmp/secrets" check 9 '[[ $rc == 11 ]] && grep -Fq -- /key "$log"' \
@@ -57,4 +59,14 @@ CC_OVERRIDE='' CC_ROOT="$tmp/secrets" check 9 '[[ $rc == 11 ]] && grep -Fq -- /k
 CC_OVERRIDE='' CC_ROOT="$tmp/secrets" check 10 '[[ $rc == 15 ]]' \
   env XDG_CONFIG_HOME="$tmp/config" "$root/bin/code-channel" 3 "$project" "$root/AGENTS.md" --model openrouter/deepseek/deepseek-v4-flash
 
-[[ $ok == 10 ]] && echo 'PASS 10/10'
+check 11 '[[ $rc == 0 ]] && grep -q '"'"'provider_actual":"bitrixgpt"'"'"' "$runs" && grep -q '"'"'"rc":0'"'"' "$runs" && grep -Eq '"'"'cc-[0-9]+-[0-9]+'"'"' "$runs"' \
+  env SQLITE_RESULT='bitrixgpt|bitrix/bitrixgpt-5.6-agent' "$root/bin/code-channel" 1 "$project" "$root/AGENTS.md"
+check 12 '[[ $rc == 23 ]] && grep -Fq -- "сверка провайдера не прошла" "$tmp/err" && grep -q '"'"'provider_actual":"anthropic"'"'"' "$runs"' \
+  env SQLITE_RESULT='anthropic|claude-sonnet' "$root/bin/code-channel" 1 "$project" "$root/AGENTS.md"
+check 13 '[[ $rc == 12 ]] && [[ $(stat -c %a "$tmp/state/bitrixgpt-last-fail.txt") == 600 ]] && [[ $(grep -ci '"'"'api_key'"'"' "$tmp/state/bitrixgpt-last-fail.txt") == 0 ]]' \
+  env CURL_CHAT_CODE=429 "$root/bin/code-channel" 1 "$project" "$root/AGENTS.md"
+orig=$(git -C "$project" rev-parse --abbrev-ref HEAD)
+check 14 '[[ $rc == 0 ]] && [[ $(git -C "$project" rev-parse --abbrev-ref HEAD) == "$orig" ]] && grep -Fq -- "форма 2 сменила ветку, возвращено" "$tmp/err" && grep -q '"'"'provider_actual":"codex"'"'"' "$runs"' \
+  env CODEX_SWITCH_BRANCH=1 CODEX_RC=0 "$root/bin/code-channel" 2 "$project" "$root/AGENTS.md"
+
+[[ $ok == 14 ]] && echo 'PASS 14/14'
