@@ -920,7 +920,12 @@ cp -f "$DR_JOURNAL" "$DR_JOURNAL_COPY" 2>/dev/null || true
 
 # Сводка за прогон — только обычный прогон (один вызов на run).
 if [ "$MODE" = run ]; then
-  maybe_alert summary "disk-rotate: ${pct_before}% → ${pct_after}%, освобождено ${freed_mb} МБ, зафиксировано ${FIXED_COUNT} (${FIXED_MB} МБ), отложено ${DEFERRED_COUNT}, гейт ${GATE_STATUS}, режим ${GATE_MODE}"
+  _summary="disk-rotate: ${pct_before}% → ${pct_after}%, освобождено ${freed_mb} МБ, зафиксировано ${FIXED_COUNT} (${FIXED_MB} МБ), отложено ${DEFERRED_COUNT}, гейт ${GATE_STATUS}, режим ${GATE_MODE}"
+  if [ "$GATE_STATUS" != open ] || [ "${pct_after%%.*}" -ge "$HARD_PCT" ] 2>/dev/null; then
+    maybe_alert summary "$_summary"
+  else
+    echo "SUMMARY-LOG-ONLY $_summary" >>"$DR_LOG"
+  fi
 fi
 
 echo "=== $(date '+%F %T') END ===" >>"$DR_LOG"
