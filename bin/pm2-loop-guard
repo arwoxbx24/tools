@@ -201,7 +201,7 @@ guard_tick() { # jlist_file now_ts
   [ -f "$restarts.new" ] && mv "$restarts.new" "$restarts"; [ -f "$dead.new" ] && mv "$dead.new" "$dead"
   if [ -f "$BOOT_STATE" ]; then
     local ecosystem_names filter_boot=1
-    if ecosystem_names=$(node -e 'console.log(require(process.argv[1]).apps.map(a=>a.name).join("\\n"))' "$ECOSYSTEM" 2>/dev/null); then :; else filter_boot=0; log "boot filter unavailable"; fi
+    if ecosystem_names=$(node -e 'console.log(require(process.argv[1]).apps.map(a=>a.name).join("\n"))' "$ECOSYSTEM" 2>/dev/null); then :; else filter_boot=0; log "boot filter unavailable"; fi
     while IFS=$'\t' read -r n c s; do
       [ -n "$n" ] || continue
       [ "$filter_boot" = 0 ] || grep -Fxq "$n" <<<"$ecosystem_names" || continue
@@ -216,7 +216,13 @@ PYEOF
   fi
   local dump="$PM2_HOME/dump.pm2" age
   if [ -f "$dump" ]; then age=$(( (now-$(stat -c %Y "$dump")) / 3600 )); else age="отсутствует"; fi
-  if [ "$age" = "отсутствует" ] || [ "$age" -gt "$DUMP_MAX_AGE_H" ]; then log "кэш протух: $age"; fi
+  local stale_flag="$STATE_DIR/cache-stale.flag"
+  if [ "$age" = "отсутствует" ] || [ "$age" -gt "$DUMP_MAX_AGE_H" ]; then
+    [ ! -f "$stale_flag" ] && log "кэш протух: $age"
+    touch "$stale_flag"
+  else
+    rm -f "$stale_flag"
+  fi
   reconcile_digest "$now"
 }
 
