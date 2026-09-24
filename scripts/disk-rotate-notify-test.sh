@@ -105,10 +105,46 @@ scenario_ae4() {
   fi
 }
 
+scenario_u3_static() {
+  local bad=0 word line
+  for word in /root/ owner_list GATE_REASON ecosystem crontab pm2; do
+    while IFS= read -r line; do
+      case "$line" in
+        *"$word"*)
+          echo "U3-STATIC: maybe_alert содержит '$word': $line" >&2
+          bad=1
+          ;;
+      esac
+    done < <(grep 'maybe_alert' "$SCRIPT")
+  done
+  if [ "$bad" -eq 0 ]; then
+    report 4 "U3: maybe_alert без /root/, owner_list, GATE_REASON, ecosystem, crontab, pm2" PASS
+  else
+    report 4 "U3: maybe_alert без /root/, owner_list, GATE_REASON, ecosystem, crontab, pm2" FAIL
+  fi
+}
+
+scenario_u3_gate() {
+  fixture u3gate
+  rm -rf "$REPO"
+  run_rotate >/dev/null 2>&1
+  if [ ! -s "$NOTIFY" ]; then
+    report 5 "U3: заглушка при закрытом гейте" FAIL
+    return
+  fi
+  if grep -q 'приостановлена' "$NOTIFY" && ! grep -q 'closed:' "$NOTIFY"; then
+    report 5 "U3: заглушка cодержит «приостановлена», без closed:" PASS
+  else
+    report 5 "U3: заглушка cодержит «приостановлена», без closed:" FAIL
+  fi
+}
+
 scenario_ae3
 scenario_ae4
+scenario_u3_static
+scenario_u3_gate
 
-echo "PASS $((3 - FAILS))/3"
+echo "PASS $((5 - FAILS))/5"
 [ "$FAILS" -eq 0 ] && exit 0
-echo "$FAILS/3 FAILED"
+echo "$FAILS/5 FAILED"
 exit 1
