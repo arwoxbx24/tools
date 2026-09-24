@@ -214,6 +214,24 @@ module.exports = {
       out_file: '/root/.pm2/logs/forms-gw-guard-out.log'
     },
     {
+      name: 'ags-search-watch',
+      script: '/root/workspaces/tools/scripts/schedulers/ags-search-watch.sh',
+      cwd: '/root',
+      interpreter: 'bash',
+      exec_mode: 'fork_mode',
+      instances: 1,
+      autorestart: false,
+      min_uptime: 1000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
+      cron_restart: '0 */6 * * *',
+      preflight_env_file: '/root/workspaces/secrets/services/pm2-notify.env',
+      preflight_env_keys: ['TG_BOT_TOKEN', 'TG_CHAT_ID'],
+      env: formsGwGuardEnv,
+      error_file: '/root/.pm2/logs/ags-search-watch-error.log',
+      out_file: '/root/.pm2/logs/ags-search-watch-out.log'
+    },
+    {
       name: 'db-replicator',
       script: '/root/workspaces/projects/transcription-dev/admin/db-replicator.js',
       cwd: '/root/workspaces/projects/transcription-dev',
