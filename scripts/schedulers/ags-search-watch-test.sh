@@ -39,8 +39,12 @@ if [ -n "$use_k" ]; then
 fi
 case "$url" in
   *sendMessage*)
-    printf '%s\n' "$text" >> "$AGS_TEST_TMP/sent.log"
-    printf '{"ok":true}'
+    if [ -f "$AGS_TEST_TMP/tg.fail" ]; then
+      printf '{"ok":false}'
+    else
+      printf '%s\n' "$text" >> "$AGS_TEST_TMP/sent.log"
+      printf '{"ok":true}'
+    fi
     ;;
   *q=python*)
     printf '%s\n%s' "$(cat "$AGS_TEST_TMP/spython.body")" "$(cat "$AGS_TEST_TMP/spython.code")"
@@ -93,7 +97,7 @@ set_search_err() { # non-200 => request/transport failure
 }
 
 reset() {
-  rm -f "$STATE" "$tmp/sent.log" "$tmp/gh.fail"
+  rm -f "$STATE" "$tmp/sent.log" "$tmp/gh.fail" "$tmp/tg.fail"
   : > "$tmp/gh.state"
 }
 
@@ -162,6 +166,40 @@ case8() { # transport error (500) => still exit 0, no message
   [ "$rc" = 0 ] && { [ ! -e "$tmp/sent.log" ] || [ ! -s "$tmp/sent.log" ]; }
 }
 
+case9() { # AE6: ok -> err -> ok on fresh state => 0 messages, ok_streak=1
+  reset; set_search_ok
+  bash "$SCRIPT" >/dev/null 2>&1
+  set_search_err
+  bash "$SCRIPT" >/dev/null 2>&1
+  set_search_ok
+  out=$(bash "$SCRIPT" 2>&1); rc=$?
+  [ "$rc" = 0 ] && \
+    { [ ! -e "$tmp/sent.log" ] || [ ! -s "$tmp/sent.log" ]; } && \
+    [ "$(grep '^ok_streak=' "$STATE")" = 'ok_streak=1' ]
+}
+
+case10() { # AE7: two ok with tg.fail => 0 sent, done!=1; ok without => 1 works, done=1
+  reset; set_search_ok
+  : > "$tmp/tg.fail"
+  bash "$SCRIPT" >/dev/null 2>&1
+  bash "$SCRIPT" >/dev/null 2>&1
+  { [ ! -e "$tmp/sent.log" ] || [ ! -s "$tmp/sent.log" ]; } && \
+    [ -z "$(grep '^done=' "$STATE" 2>/dev/null)" ] && {
+      rm -f "$tmp/tg.fail"
+      bash "$SCRIPT" >/dev/null 2>&1
+      [ "$(n_sent "$WRKS")" = 1 ] && [ "$(grep '^done=' "$STATE")" = 'done=1' ]
+    }
+}
+
+case11() { # broken + closed + tg.fail => closed_notified != 1
+  reset; set_search_broken; printf 'closed\n' > "$tmp/gh.state"
+  : > "$tmp/tg.fail"
+  out=$(bash "$SCRIPT" 2>&1); rc=$?
+  [ "$rc" = 0 ] && \
+    { [ ! -e "$tmp/sent.log" ] || [ ! -s "$tmp/sent.log" ]; } && \
+    [ -z "$(grep '^closed_notified=' "$STATE" 2>/dev/null)" ]
+}
+
 if case1; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); printf 'FAIL case 1 (done skip)\n'; fi
 if case2; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); printf 'FAIL case 2 (first ok)\n'; fi
 if case3; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); printf 'FAIL case 3 (works twice)\n'; fi
@@ -170,11 +208,15 @@ if case5; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); printf 'FAIL case 5 (clo
 if case6; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); printf 'FAIL case 6 (open no notify)\n'; fi
 if case7; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); printf 'FAIL case 7 (gh unknown)\n'; fi
 if case8; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); printf 'FAIL case 8 (transport err)\n'; fi
+if case9; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); printf 'FAIL case 9 (AE6 streak reset)\n'; fi
+if case10; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); printf 'FAIL case 10 (AE7 notify fail)\n'; fi
+if case11; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); printf 'FAIL case 11 (closed notify fail)\n'; fi
 
+TOTAL=11
 if [ "$FAIL" = 0 ]; then
-  printf 'PASS %d/8\n' "$PASS"
+  printf 'PASS %d/%d\n' "$PASS" "$TOTAL"
   exit 0
 else
-  printf 'FAIL %d/8\n' "$FAIL"
+  printf 'FAIL %d/%d\n' "$FAIL" "$TOTAL"
   exit 1
 fi

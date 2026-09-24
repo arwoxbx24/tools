@@ -36,22 +36,22 @@ state_set() { # key value (insert or update, keeps other keys)
   mv -f "$tmp" "$STATE_FILE"
 }
 
-notify() { # text
+notify() { # text -> 0 only when Telegram actually accepted (ok==true)
   local text="$1" msg now out
   msg=$(printf '%s' "$text" | tr -d '"\r\n' | head -c 400)
   if [ -z "${TG_BOT_TOKEN:-}" ] || [ -z "${TG_CHAT_ID:-}" ]; then
     log "telegram skipped"
-    return 0
+    return 1
   fi
   now=$(date +%s)
   if out=$(printf 'url = "https://api.telegram.org/bot%s/sendMessage"\ndata = "chat_id=%s"\ndata-urlencode = "text=%s"\n' \
       "$TG_BOT_TOKEN" "$TG_CHAT_ID" "$msg" | curl -s --max-time 10 -K - 2>&1) && \
      printf '%s' "$out" | jq -e '.ok == true' >/dev/null 2>&1; then
     log "sent $now"
-  else
-    log "send failed"
+    return 0
   fi
-  return 0
+  log "send failed"
+  return 1
 }
 
 search_ok() { # 0 if both queries 200, non-empty results, and slugs differ
@@ -78,6 +78,12 @@ issue_closed() { # 0 only when issue state == closed (gh failure => unknown/fals
 
 mkdir -p "$AGS_STATE_DIR"
 
+exec 9>"$AGS_STATE_DIR/ags-search-watch.lock"
+if ! flock -n 9; then
+  log "locked"
+  exit 0
+fi
+
 if [ "$(state_get done)" = "1" ]; then
   log "done skipped"
   exit 0
@@ -91,16 +97,18 @@ if search_ok; then
   log "search ok streak=$ok_streak"
   state_set ok_streak "$ok_streak"
   if [ "$ok_streak" -ge 2 ]; then
-    notify "✅ Поиск навыков agentskill.sh заработал (проверено дважды подряд). /learn снова можно использовать. Чинит агент: вернуть поиск в маршрут навыков."
-    state_set done 1
+    if notify "✅ Поиск навыков agentskill.sh заработал (проверено дважды подряд). /learn снова можно использовать. Чинит агент: вернуть поиск в маршрут навыков."; then
+      state_set done 1
+    fi
   fi
 else
   log "search failed"
   state_set ok_streak 0
   if issue_closed; then
     if [ "$closed_notified" != "1" ]; then
-      notify "⚠️ Автор agentskill.sh закрыл задачу о сломанном поиске, но поиск всё ещё не работает. /learn пока не использовать. Чинит агент: следим дальше."
-      state_set closed_notified 1
+      if notify "⚠️ Автор agentskill.sh закрыл задачу о сломанном поиске, но поиск всё ещё не работает. /learn пока не использовать. Чинит агент: следим дальше."; then
+        state_set closed_notified 1
+      fi
     else
       log "closed already notified"
     fi
