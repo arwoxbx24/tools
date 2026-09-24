@@ -138,7 +138,7 @@ digest_resolved_text() { # key
 }
 
 reconcile_digest() { # now
-  local now="$1" file="$STATE_DIR/digest-sent.tsv" tmp key first last
+  local now="$1" file="$STATE_DIR/digest-sent.tsv" tmp key first last name
   local -a due=()
   local -A old_first=() old_last=() current=()
   touch "$file"; tmp="$file.new"; : > "$tmp"
@@ -157,6 +157,12 @@ reconcile_digest() { # now
   for key in "${!old_last[@]}"; do
     [ -n "${current[$key]+x}" ] && continue
     [ "$key" = dump-cache ] && continue
+    name=""
+    [[ "$key" == dead:* ]] && name="${key#dead:}"
+    if [ -n "$name" ] && awk -F'\t' -v n="$name" '$1==n{f=1} END{exit !f}' "$STATE_DIR/dead-since.tsv" 2>/dev/null; then
+      printf '%s\t%s\t%s\n' "$key" "${old_first[$key]}" "${old_last[$key]}" >> "$tmp"
+      continue
+    fi
     send_or_queue "$now" "$(digest_resolved_text "$key")"
   done
   mv "$tmp" "$file"
@@ -177,6 +183,7 @@ guard_tick() { # jlist_file now_ts
   local name status rt sp out_log err_log autorestart cron prev_rt prev_ts delta_r delta_t rate reason death
   DIGEST_TEXT=(); DIGEST_KEYS=()
   send_pending "$now"; touch "$restarts" "$dead"
+  : > "$dead.new"
   prepare_generation || allow=0
   while IFS=$'\t' read -r name status rt sp out_log err_log autorestart cron; do
     [ -z "$name" ] && continue
@@ -198,7 +205,7 @@ guard_tick() { # jlist_file now_ts
       if [ $((now-death)) -ge $((DEAD_HOURS*3600)) ]; then digest_collect "dead:$name" "Не запускается $name уже $(((now-death)/3600)) ч. Чинит агент."; fi
     fi
   done < <(dump_processes "$jlist")
-  [ -f "$restarts.new" ] && mv "$restarts.new" "$restarts"; [ -f "$dead.new" ] && mv "$dead.new" "$dead"
+  [ -f "$restarts.new" ] && mv "$restarts.new" "$restarts"; mv "$dead.new" "$dead"
   if [ -f "$BOOT_STATE" ]; then
     local ecosystem_names filter_boot=1
     if ecosystem_names=$(node -e 'console.log(require(process.argv[1]).apps.map(a=>a.name).join("\n"))' "$ECOSYSTEM" 2>/dev/null); then :; else filter_boot=0; log "boot filter unavailable"; fi

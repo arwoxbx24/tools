@@ -139,12 +139,26 @@ scenario_u3_gate() {
   fi
 }
 
+scenario_u4() {
+  # Закрытый гейт при ≥HARD_PCT: и exhausted, и сводка — но в прогон уходит ровно 1 сообщение.
+  fixture u4
+  rm -rf "$REPO"
+  run_rotate DR_USAGE_PCT=96 >/dev/null 2>&1
+  notify_count=$(wc -l <"$NOTIFY" 2>/dev/null || echo 0)
+  if [ "$notify_count" -eq 1 ]; then
+    report 6 "U4: закрытый гейт при ≥HARD_PCT — ровно 1 сообщение за прогон" PASS
+  else
+    report 6 "U4: закрытый гейт при ≥HARD_PCT — ровно 1 сообщение за прогон (count=$notify_count)" FAIL
+  fi
+}
+
 scenario_ae3
 scenario_ae4
 scenario_u3_static
 scenario_u3_gate
+scenario_u4
 
-echo "PASS $((5 - FAILS))/5"
+echo "PASS $((6 - FAILS))/6"
 [ "$FAILS" -eq 0 ] && exit 0
-echo "$FAILS/5 FAILED"
+echo "$FAILS/6 FAILED"
 exit 1

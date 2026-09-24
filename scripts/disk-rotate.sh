@@ -928,7 +928,7 @@ if [ "$MODE" = run ]; then
   fi
   _tech="disk-rotate: ${pct_before}% → ${pct_after}%, освобождено ${freed_mb} МБ, зафиксировано ${FIXED_COUNT} (${FIXED_MB} МБ), отложено ${DEFERRED_COUNT}, гейт ${GATE_STATUS}, режим ${GATE_MODE}"
   echo "SUMMARY-LOG-ONLY $_tech" >>"$DR_LOG"
-  if [ "$GATE_STATUS" != open ] || [ "${pct_after%%.*}" -ge "$HARD_PCT" ] 2>/dev/null; then
+  if [ "$ALERT_SENT" -eq 0 ] && { [ "$GATE_STATUS" != open ] || [ "${pct_after%%.*}" -ge "$HARD_PCT" ] 2>/dev/null; }; then
     maybe_alert summary "$_summary"
   fi
 fi
