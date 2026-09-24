@@ -17,7 +17,8 @@ NOTIFY_STUB= REPO= PASSFILE=
 RUN_ENV=()
 
 fixture() {
-  local name=$1 d="$TMP/$name"
+  local name=$1
+  local d="$TMP/$name"
   S="$d"; I="$d/irreplaceable"; R="$d/replaceable"
   mkdir -p "$I" "$R"
   STATE="$d/state.tsv"; JOURNAL="$d/journal.tsv"
@@ -107,7 +108,7 @@ scenario_ae4() {
 scenario_ae3
 scenario_ae4
 
-echo "PASS $((2 - FAILS))/2"
+echo "PASS $((3 - FAILS))/3"
 [ "$FAILS" -eq 0 ] && exit 0
-echo "$FAILS/2 FAILED"
+echo "$FAILS/3 FAILED"
 exit 1
