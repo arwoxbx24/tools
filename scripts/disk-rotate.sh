@@ -271,7 +271,7 @@ maybe_alert() { # состояние текст
 if [ "$MODE" = check ]; then
   check_declared
   if [ "$DECLARED_MISSING" -gt 0 ]; then
-    maybe_alert declared "disk-rotate: $DECLARED_MISSING объявленных скриптов отсутствуют (нужно проверить crontab/ecosystem)"
+    maybe_alert declared "Уборка диска: не найдено $DECLARED_MISSING запланированных скриптов — часть автозадач не работает. Чинит агент."
   fi
   print_mechanisms
   echo "=== $(date '+%F %T') END ===" >>"$DR_LOG"
@@ -344,7 +344,7 @@ if [ "$MODE" = run ] && [ "$DR_TEST_ONLY" != 1 ]; then
   check_declared
   if [ "$DECLARED_MISSING" -gt 0 ]; then
     echo "DECLARED-MISSING $DECLARED_MISSING" >>"$DR_LOG"
-    maybe_alert declared "disk-rotate: $DECLARED_MISSING объявленных скриптов отсутствуют (см. ledger)"
+    maybe_alert declared "Уборка диска: не найдено $DECLARED_MISSING запланированных скриптов — часть автозадач не работает. Чинит агент."
   fi
 fi
 
@@ -864,7 +864,8 @@ if [ "$MODE" = run ] && [ "$pct_after" -gt "$EXHAUSTED_PCT" ]; then
       owner_list+=" ${d}=${sz}M"
     fi
   done
-  maybe_alert exhausted "disk-rotate: занятость ${pct_after}% после уборки — требуют решения владельца:${owner_list:- (нет в запретном списке)}"
+  echo "EXHAUSTED-LIST$owner_list" >>"$DR_LOG"
+  maybe_alert exhausted "Диск занят на ${pct_after}% даже после уборки — скоро может не хватить места. Нужно ваше решение, что удалить; список — в журнале уборки."
 fi
 
 # Алерты о заполнении диска — только обычный прогон.
@@ -875,7 +876,7 @@ if [ "$MODE" = run ]; then
   [ -f "$F" ] && last_ok=$(cat "$F")
   if [ ! -f "$F" ] || [ $((now - last_ok)) -gt 129600 ]; then
     echo "server-backup dead-man: последний успешный прогон старше 36 ч (или не было)" >>"$DR_LOG"
-    maybe_alert backup "server-backup: последний успешный прогон старше 36 ч (или не было) — проверить pm2 server-backup"
+    maybe_alert backup "Резервная копия сервера не делалась больше 36 часов — данные не защищены. Чинит агент."
   fi
 fi
 
@@ -883,7 +884,8 @@ fi
 if [ "$MODE" = run ] && [ "$state" = soft ] && [ "$DR_TEST_ONLY" != 1 ]; then
   gate_open
   if [ $? -ne 0 ]; then
-    maybe_alert gate "disk-rotate: гейт закрыт ($GATE_REASON)"
+    echo "GATE-REASON $GATE_REASON" >>"$DR_LOG"
+    maybe_alert gate "Уборка диска приостановлена — нет свежей резервной копии, удалять небезопасно. Чинит агент."
   fi
 fi
 
@@ -920,7 +922,15 @@ cp -f "$DR_JOURNAL" "$DR_JOURNAL_COPY" 2>/dev/null || true
 
 # Сводка за прогон — только обычный прогон (один вызов на run).
 if [ "$MODE" = run ]; then
-  maybe_alert summary "disk-rotate: ${pct_before}% → ${pct_after}%, освобождено ${freed_mb} МБ, зафиксировано ${FIXED_COUNT} (${FIXED_MB} МБ), отложено ${DEFERRED_COUNT}, гейт ${GATE_STATUS}, режим ${GATE_MODE}"
+  _summary="Уборка диска: занято ${pct_after}% (было ${pct_before}%), освобождено ${freed_mb} МБ."
+  if [ "$GATE_STATUS" != open ]; then
+    _summary+=" Уборка приостановлена — нет свежей копии. Чинит агент."
+  fi
+  _tech="disk-rotate: ${pct_before}% → ${pct_after}%, освобождено ${freed_mb} МБ, зафиксировано ${FIXED_COUNT} (${FIXED_MB} МБ), отложено ${DEFERRED_COUNT}, гейт ${GATE_STATUS}, режим ${GATE_MODE}"
+  echo "SUMMARY-LOG-ONLY $_tech" >>"$DR_LOG"
+  if [ "$ALERT_SENT" -eq 0 ] && { [ "$GATE_STATUS" != open ] || [ "${pct_after%%.*}" -ge "$HARD_PCT" ] 2>/dev/null; }; then
+    maybe_alert summary "$_summary"
+  fi
 fi
 
 echo "=== $(date '+%F %T') END ===" >>"$DR_LOG"

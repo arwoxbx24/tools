@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -uo pipefail
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
-export GUARD_LIB_ONLY=1 GUARD_STATE_DIR="$TMP/state" GUARD_LOG="$TMP/guard.log" GUARD_INCIDENT_ROOT="$TMP/incidents" GUARD_NOTIFY_ENV="$TMP/notify.env" PM2_HOME="$TMP/pm2" PM2_BIN="$TMP/pm2-stub" CURL_BIN="$TMP/curl-stub" GUARD_MIN_STORM=5 GUARD_RATE_LIMIT=20
+export GUARD_LIB_ONLY=1 GUARD_STATE_DIR="$TMP/state" GUARD_LOG="$TMP/guard.log" GUARD_INCIDENT_ROOT="$TMP/incidents" GUARD_NOTIFY_ENV="$TMP/notify.env" PM2_HOME="$TMP/pm2" PM2_BIN="$TMP/pm2-stub" CURL_BIN="$TMP/curl-stub" GUARD_MIN_STORM=5 GUARD_RATE_LIMIT=20 GUARD_ECOSYSTEM="$TMP/ecosystem.config.js"
 mkdir -p "$PM2_HOME"; printf 'TG_BOT_TOKEN=x\nTG_CHAT_ID=y\n' > "$GUARD_NOTIFY_ENV"
+printf 'module.exports = { apps: [{ name: "bad" }] };\n' > "$GUARD_ECOSYSTEM"
 cat > "$PM2_BIN" <<EOF
 #!/usr/bin/env bash
 echo "\$@" >> "$TMP/pm2-calls.log"
@@ -14,7 +15,7 @@ echo "curl \$@" >> "$TMP/curl-calls.log"
 exit "\${CURL_RC:-0}"
 EOF
 chmod +x "$PM2_BIN" "$CURL_BIN"
-source /root/workspaces/tools/bin/pm2-loop-guard
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pm2-loop-guard"
 PASS=0; FAIL=0; ok(){ PASS=$((PASS+1)); echo "ok - $1"; }; bad(){ FAIL=$((FAIL+1)); echo "FAIL - $1"; }
 yes(){ "$@" && ok "$1" || bad "$1"; }; stopped(){ grep -qx "stop $1" "$TMP/pm2-calls.log" 2>/dev/null; }; reset(){ rm -rf "$GUARD_STATE_DIR" "$GUARD_INCIDENT_ROOT"; mkdir -p "$GUARD_STATE_DIR"; : > "$TMP/pm2-calls.log"; : > "$TMP/curl-calls.log"; : > "$GUARD_LOG"; rm -f "$PM2_HOME/dump.pm2" "$PM2_HOME/boot-preflight.json" "$PM2_HOME/pm2.pid"; touch "$PM2_HOME/dump.pm2"; }
 NOW=$(date +%s)
@@ -27,13 +28,19 @@ reset; printf 'ghost-app\t%s\t40\n' "$((NOW-60))" > "$GUARD_STATE_DIR/restarts.t
 reset; printf 'ghost-app\t%s\t42\n' "$((NOW-3600))" > "$GUARD_STATE_DIR/restarts.tsv"; run "$missing" "$NOW"; ! stopped ghost-app && ok idle-missing || bad idle-missing
 reset; printf 'storm-app\t%s\t975\n' "$((NOW-3600))" > "$GUARD_STATE_DIR/restarts.tsv"; run "$storm" "$NOW"; stopped storm-app && ok B-storm || bad B-storm
 reset; printf 'dead-app\t%s\t10\n' "$((NOW-60))" > "$GUARD_STATE_DIR/restarts.tsv"; run "$stopped_json" "$NOW"; stopped dead-app && ok C-stopped-storm || bad C-stopped-storm; grep -q 'phantom loop' "$GUARD_INCIDENT_ROOT"/dead-app-*/reason.txt && ok C-phantom-reason || bad C-phantom-reason
-reset; printf 'dead-app\t%s\n' "$((NOW-7*3600))" > "$GUARD_STATE_DIR/dead-since.tsv"; run "$stopped_json" "$NOW"; ! stopped dead-app && ok D-no-stop || bad D-no-stop; grep -q 'тихие трупы' "$TMP/curl-calls.log" 2>/dev/null && ok D-dead-6h || bad D-dead-6h
-reset; printf '{"failed":[{"name":"bad","check":"script","subject":"x"}]}' > "$PM2_HOME/boot-preflight.json"; run "$healthy" "$NOW"; grep -q 'отказы boot' "$TMP/curl-calls.log" && ok E-boot-failed || bad E-boot-failed
-reset; touch -d '@0' "$PM2_HOME/dump.pm2"; run "$healthy" "$((25*3600))"; grep -q 'кэш протух: 25' "$TMP/curl-calls.log" && ok F-dump-stale || bad F-dump-stale
+reset; printf 'dead-app\t%s\n' "$((NOW-7*3600))" > "$GUARD_STATE_DIR/dead-since.tsv"; run "$stopped_json" "$NOW"; ! stopped dead-app && ok D-no-stop || bad D-no-stop; grep -q 'Не запускается dead-app' "$TMP/curl-calls.log" 2>/dev/null && ok D-dead-6h || bad D-dead-6h
+reset; printf '{"failed":[{"name":"bad","check":"script","subject":"x"}]}' > "$PM2_HOME/boot-preflight.json"; run "$healthy" "$NOW"; grep -q 'Не запускается bad' "$TMP/curl-calls.log" && ok E-boot-failed || bad E-boot-failed
+reset; printf '{"failed":[{"name":"unknown","check":"script","subject":"x"}]}' > "$PM2_HOME/boot-preflight.json"; run "$healthy" "$NOW"; ! grep -q 'text=' "$TMP/curl-calls.log" && ok AE2-unknown-boot-silent || bad AE2-unknown-boot-silent
+reset; printf 'module.exports = { apps: [{ name: "bad" }, { name: "other" }] };\n' > "$GUARD_ECOSYSTEM"; printf '{"failed":[{"name":"bad","check":"script","subject":"x"}]}' > "$PM2_HOME/boot-preflight.json"; run "$healthy" "$NOW"; grep -q 'Не запускается bad' "$TMP/curl-calls.log" && ok F1-boot-declared-multi || bad F1-boot-declared-multi; printf 'module.exports = { apps: [{ name: "bad" }] };\n' > "$GUARD_ECOSYSTEM"
+reset; touch -d '@0' "$PM2_HOME/dump.pm2"; run "$healthy" "$((25*3600))"; run "$healthy" "$((25*3600+60))"; run "$healthy" "$((25*3600+120))"; c=$(grep -c 'кэш протух' "$GUARD_LOG" || true); [ "$c" = 1 ] && ok F2-cache-log-once || bad F2-cache-log-once
+reset; touch -d '@0' "$PM2_HOME/dump.pm2"; run "$healthy" "$((25*3600))"; ! grep -q 'кэш протух: 25' "$TMP/curl-calls.log" && grep -q 'кэш протух: 25' "$GUARD_LOG" && ok F-dump-stale || bad F-dump-stale
 reset; touch -d "@$NOW" "$PM2_HOME/dump.pm2"; run "$healthy" "$NOW"; ! grep -q 'кэш протух' "$TMP/curl-calls.log" && ok F-dump-fresh || bad F-dump-fresh
+reset; printf 'dead-app\t%s\n' "$((NOW-7*3600))" > "$GUARD_STATE_DIR/dead-since.tsv"; run "$stopped_json" "$NOW"; c1=$(grep -c 'PM2 дайджест' "$TMP/curl-calls.log" || true); run "$stopped_json" "$((NOW+86400))"; c2=$(grep -c 'PM2 дайджест' "$TMP/curl-calls.log" || true); run "$stopped_json" "$((NOW+8*86400))"; c3=$(grep -c 'PM2 дайджест' "$TMP/curl-calls.log" || true); run "$healthy" "$((NOW+8*86400+1))"; c4=$(grep -c 'исправлено' "$TMP/curl-calls.log" || true); run "$healthy" "$((NOW+8*86400+2))"; c5=$(grep -c 'исправлено' "$TMP/curl-calls.log" || true); [ "$c1:$c2:$c3:$c4:$c5" = '1:1:2:1:1' ] && ok AE1-remind-and-resolve || bad AE1-remind-and-resolve
 reset; printf '1\n' > "$PM2_HOME/pm2.pid"; printf '1\n' > "$GUARD_STATE_DIR/generation"; printf 'storm-app\t%s\t1\n' "$((NOW-60))" > "$GUARD_STATE_DIR/restarts.tsv"; printf '2\n' > "$PM2_HOME/pm2.pid"; run "$storm" "$NOW"; ! stopped storm-app && ok generation-reset || bad generation-reset
 reset; cron='[{"name":"cron","pm2_env":{"status":"stopped","restart_time":10,"script_path":"/bin/true","autorestart":true,"cron_restart":"0 * * * *"}}]'; printf 'cron\t%s\t0\n' "$((NOW-60))" > "$GUARD_STATE_DIR/restarts.tsv"; run "$cron" "$NOW"; ! stopped cron && ok cron-excluded || bad cron-excluded
 reset; printf 'storm-app\t%s\t975\n' "$((NOW-3600))" > "$GUARD_STATE_DIR/restarts.tsv"; printf 'TG_BOT_TOKEN=x\nTG_CHAT_ID=y\n' > "$GUARD_NOTIFY_ENV"; CURL_RC=7 run "$storm" "$NOW"; [ -s "$GUARD_STATE_DIR/pending-alerts.tsv" ] && ok pending-stored || bad pending-stored; CURL_RC=0 run "$healthy" "$((NOW+60))"; [ ! -s "$GUARD_STATE_DIR/pending-alerts.tsv" ] && ok pending-retry || bad pending-retry
 reset; rm -f "$GUARD_NOTIFY_ENV"; printf 'ghost-app\t%s\t40\n' "$((NOW-60))" > "$GUARD_STATE_DIR/restarts.tsv"; run "$missing" "$NOW"; stopped ghost-app && ok notify-missing-stop || bad notify-missing-stop; grep -q 'telegram skipped' "$GUARD_LOG" && ok notify-missing-log || bad notify-missing-log
 reset; marker="${RANDOM}${RANDOM}${RANDOM}"; export SECRET_MARKER="$marker"; secret="[{\"name\":\"leak\",\"pm2_env\":{\"status\":\"online\",\"restart_time\":10,\"script_path\":\"/no/leak\",\"env\":{\"SECRET_Y\":\"$marker\"}}}]"; printf 'leak\t%s\t1\n' "$((NOW-60))" > "$GUARD_STATE_DIR/restarts.tsv"; run "$secret" "$NOW"; ! grep -r "$marker" "$GUARD_INCIDENT_ROOT" >/dev/null 2>&1 && ok no-secret-leak && ! grep -qx 'describe leak' "$TMP/pm2-calls.log" && ok no-describe-call || bad no-secret-leak
+! grep -Eq 'Архив:|/root/|\{|\.json|\.env' "$TMP/curl-calls.log" 2>/dev/null && ok AE4-human-text || bad AE4-human-text
+reset; printf 'TG_BOT_TOKEN=x\nTG_CHAT_ID=y\n' > "$GUARD_NOTIFY_ENV"; printf 'dead-app\t%s\n' "$((NOW-7*3600))" > "$GUARD_STATE_DIR/dead-since.tsv"; printf '1\n' > "$PM2_HOME/pm2.pid"; printf '1\n' > "$GUARD_STATE_DIR/generation"; run "$stopped_json" "$NOW"; printf '2\n' > "$PM2_HOME/pm2.pid"; run "$stopped_json" "$((NOW+60))"; c1=$(grep -c 'исправлено' "$TMP/curl-calls.log" || true); run "$healthy" "$((NOW+120))"; c2=$(grep -c 'исправлено' "$TMP/curl-calls.log" || true); [ "$c1:$c2" = '0:1' ] && ok D1-dead-no-false-fixed || bad D1-dead-no-false-fixed
 echo "ok=$PASS FAIL=$FAIL"; [ "$FAIL" = 0 ]
