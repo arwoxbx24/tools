@@ -115,21 +115,6 @@ module.exports = {
       out_file: '/root/.pm2/logs/bitrix-sdk-php-server-out.log'
     },
     {
-      name: 'bitrix-sdk-updater',
-      script: '/root/workspaces/tools/scripts/schedulers/bitrix-sdk-updater.sh',
-      cwd: '/root/workspaces/projects',
-      interpreter: 'bash',
-      exec_mode: 'fork_mode',
-      instances: 1,
-      autorestart: false,
-      min_uptime: 1000,
-      max_restarts: 10,
-      exp_backoff_restart_delay: 1000,
-      cron_restart: '0 3 * * 1',
-      error_file: '/root/.pm2/logs/bitrix-sdk-updater-error.log',
-      out_file: '/root/.pm2/logs/bitrix-sdk-updater-out.log'
-    },
-    {
       name: 'bmc-api',
       script: '/root/.nvm/versions/node/v20.19.4/bin/npm',
       args: [
