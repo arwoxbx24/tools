@@ -106,6 +106,17 @@ mkgit "$tmp/p4" "$tmp/o4.git" codex/c4
 CC_TEST_PROJECT="$tmp/p4" CC_TEST_STATE="$tmp/state-auto" check 18 '[[ $rc == 24 ]] && ! grep -q "^codex " "$log" && [[ $(grep -c "^opencode " "$log") == 1 ]]' \
   env OPENCODE_TOUCH=stray "$root/bin/code-channel" auto "$tmp/p4" "$root/AGENTS.md"
 
+# write_block: S unwritable -> fail loudly with message, no orphan left in fallback tmp dir
+aw=/root/workspaces/projects/.agent-work/tmp
+check 19 '[[ $rc == 3 ]] && [[ $err == *"cannot persist block state"* ]] && ! compgen -G "$aw"/bitrixgpt.block.* >/dev/null' \
+  env CODE_CHANNEL_STATE=/proc TMPDIR=/proc CURL_CHAT_CODE=429 \
+  "$root/bin/code-channel" 1 "$project" "$root/AGENTS.md"
+
+# mktemp fallback: all three dirs unavailable -> rc=3 and message listing tried dirs
+check 20 '[[ $rc == 3 ]] && [[ $err == *mktemp* ]] && [[ $err == *"/proc /proc /proc"* ]]' \
+  env CODE_CHANNEL_STATE=/proc TMPDIR=/proc CODE_CHANNEL_AGENT_TMP=/proc \
+  "$root/bin/code-channel" 1 "$project" "$root/AGENTS.md"
+
 printf 'code-channel-test: %s/%s passed (RED expected for auto 15,16,18)\n' "$ok" "$total"
 printf 'code-channel-test temp retained: %s\n' "$tmp"
 [[ $ok -eq $total ]] && exit 0

@@ -5,11 +5,29 @@ set -uo pipefail
 fail() { printf 'code-channel: %s\n' "$*" >&2; }
 S=${CODE_CHANNEL_STATE:-/root/workspaces/tools/state/code-channel}
 mkdir -p "$S" || exit 3
+cc_mktemp() {
+    local name=$1 d f
+    local -a dirs=( "$S" "${TMPDIR:-/tmp}" "${CODE_CHANNEL_AGENT_TMP:-/root/workspaces/projects/.agent-work/tmp}" )
+    for d in "${dirs[@]}"; do
+        [[ -n $d ]] || continue
+        mkdir -p -- "$d" 2>/dev/null
+        if f=$(mktemp -- "$d/$name" 2>/dev/null); then
+            printf '%s\n' "$f"
+            return 0
+        fi
+    done
+    fail "mktemp не удалось в каталогах: ${dirs[*]}"
+    exit 3
+}
 write_block() {
     local until=$1 streak=$2 code=$3 tmp
-    tmp=$(mktemp "$S/bitrixgpt.block.XXXXXX") || exit 3
+    tmp=$(cc_mktemp bitrixgpt.block.XXXXXX) || exit 3
     printf '%s %s %s\n' "$until" "$streak" "$code" > "$tmp"
-    mv -f -- "$tmp" "$S/bitrixgpt.block"
+    if ! mv -f -- "$tmp" "$S/bitrixgpt.block"; then
+        fail "cannot persist block state to $S"
+        rm -f -- "$tmp"
+        exit 3
+    fi
 }
 save_fail() {
     local code=$1 resphdr=$2 respbody=$3
@@ -109,16 +127,21 @@ run_form() (
     [[ -n $val && $val != *$'\r'* && $val != *$'\n'* ]] || { fail "нет секрета $name"; exit 5; }
     export "$name=$val"
     umask 077
-    hdr=$(mktemp "${TMPDIR:-/tmp}/code-channel-hdr-XXXXXX") || exit 3
-    tmpjson=$(mktemp "${TMPDIR:-/tmp}/code-channel-json-XXXXXX") || exit 3
+    hdr=$(cc_mktemp code-channel-hdr-XXXXXX) || exit 3
+    tmpjson=$(cc_mktemp code-channel-json-XXXXXX) || exit 3
     printf 'Authorization: Bearer %s\n' "$val" > "$hdr" || exit 3
     unset val
     case $n in
         3) endpoint="${CODE_CHANNEL_BASEURL_OVERRIDE:-$base}/key";;
         *) endpoint="${CODE_CHANNEL_BASEURL_OVERRIDE:-$base}/models";;
     esac
-    pre=$(curl -sS -m 5 -o "$tmpjson" -w '%{http_code}' -H @"$hdr" "$endpoint")
+    pre=$(curl -sS -m 15 -o "$tmpjson" -w '%{http_code}' -H @"$hdr" "$endpoint")
     rc=$?
+    if [[ $pre == 000 ]]; then
+        sleep 3
+        pre=$(curl -sS -m 15 -o "$tmpjson" -w '%{http_code}' -H @"$hdr" "$endpoint")
+        rc=$?
+    fi
     [[ $rc == 0 ]] || exit 14
     case $pre in 200) ;; 401|403) exit 11;; 429) exit 12;; 402) exit 13;; 5??) exit 14;; 4??) exit 11;; *) exit 14;; esac
     [[ $n != 3 ]] || jq -e '.data.limit_remaining == null or ((.data.limit_remaining | type) == "number" and .data.limit_remaining > 0)' "$tmpjson" >/dev/null 2>&1 || exit 13
@@ -129,8 +152,8 @@ run_form() (
     ids=$(jq -Rs --argjson n "$n" 'gsub("(?m)^\\s*//[^\\n]*"; "") | gsub(",\\s*(?<end>[}\\]])"; .end) | fromjson | if $n == 1 then .provider.bitrixgpt.models | keys else .provider.openrouter.whitelist end' "$config" 2>/dev/null) || exit 15
     jq -e --arg id "$mid" 'index($id) != null' <<<"$ids" >/dev/null 2>&1 || exit 15
     if [[ $n == 1 ]]; then
-        resphdr=$(mktemp "${TMPDIR:-/tmp}/code-channel-resphdr-XXXXXX") || exit 3
-        respbody=$(mktemp "${TMPDIR:-/tmp}/code-channel-respbody-XXXXXX") || exit 3
+        resphdr=$(cc_mktemp code-channel-resphdr-XXXXXX) || exit 3
+        respbody=$(cc_mktemp code-channel-respbody-XXXXXX) || exit 3
         payload=$(printf '{"model":"%s","messages":[{"role":"user","content":"ok"}],"max_tokens":1}' "$mid")
         ccode=$(curl -sS -m 20 -D "$resphdr" -o "$respbody" -w '%{http_code}' \
             -H @"$hdr" -H 'Content-Type: application/json' -d "$payload" \
