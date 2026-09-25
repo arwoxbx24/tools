@@ -794,9 +794,7 @@ if [ "$DR_TEST_ONLY" = 1 ]; then
   REFIX_PATHS=()
   # незаменимые: собрать обычные файлы тестового каталога и отдать гейту
   irrep_tmp=$(mktemp)
-  if [ -n "$DR_TEST_IRREPLACEABLE_DIR" ] && [ -d "$DR_TEST_IRREPLACEABLE_DIR" ]; then
-    find "$DR_TEST_IRREPLACEABLE_DIR" -maxdepth 1 -type f -print 2>/dev/null >>"$irrep_tmp"
-  fi
+  irrep_candidates >>"$irrep_tmp"
   if [ "$MODE" = run ]; then
     gate_process test-irreplaceable "$irrep_tmp"
   else
