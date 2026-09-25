@@ -23,7 +23,11 @@ write_block() {
     local until=$1 streak=$2 code=$3 tmp
     tmp=$(cc_mktemp bitrixgpt.block.XXXXXX) || exit 3
     printf '%s %s %s\n' "$until" "$streak" "$code" > "$tmp"
-    mv -f -- "$tmp" "$S/bitrixgpt.block"
+    if ! mv -f -- "$tmp" "$S/bitrixgpt.block"; then
+        fail "cannot persist block state to $S"
+        rm -f -- "$tmp"
+        exit 3
+    fi
 }
 save_fail() {
     local code=$1 resphdr=$2 respbody=$3
