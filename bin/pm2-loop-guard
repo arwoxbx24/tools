@@ -57,13 +57,14 @@ in_cooldown() {
 }
 
 send_telegram() {
-  local text="$1" token="" chat=""
+  local text="$1" token="" chat="" code=""
   if [ ! -f "$NOTIFY_ENV" ]; then log "telegram skipped (no token/chat): $text"; return 0; fi
   # shellcheck disable=SC1090
   source "$NOTIFY_ENV"
   token="${TG_BOT_TOKEN:-}"; chat="${TG_CHAT_ID:-}"
   if [ -z "$token" ] || [ -z "$chat" ]; then log "telegram skipped (no token/chat): $text"; return 0; fi
-  "$CURL_BIN" -s --max-time 10 "https://api.telegram.org/bot${token}/sendMessage" -d "chat_id=${chat}" --data-urlencode "text=$text" >/dev/null 2>&1
+  code=$("$CURL_BIN" -s --max-time 10 -o /dev/null -w '%{http_code}' "https://api.telegram.org/bot${token}/sendMessage" -d "chat_id=${chat}" --data-urlencode "text=$text" 2>/dev/null)
+  [ "$code" = "200" ]
 }
 
 queue_pending() {
