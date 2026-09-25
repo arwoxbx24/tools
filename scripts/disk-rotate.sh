@@ -801,7 +801,6 @@ if [ "$DR_TEST_ONLY" = 1 ]; then
   else
     while IFS= read -r p; do
       [ -n "$p" ] || continue
-      local kb size age
       kb=$(du -sk "$p" 2>/dev/null | awk '{print $1}'); kb="${kb:-0}"
       size=$(stat -c %s "$p" 2>/dev/null || echo -)
       age=$(( (now - $(stat -c %Y "$p" 2>/dev/null)) / 86400 ))
@@ -816,7 +815,6 @@ if [ "$DR_TEST_ONLY" = 1 ]; then
     else
       while IFS= read -r -d '' p; do
         [ -n "$p" ] || continue
-        local kb size age
         kb=$(du -sk "$p" 2>/dev/null | awk '{print $1}'); kb="${kb:-0}"
         size=$(stat -c %s "$p" 2>/dev/null || echo -)
         age=$(( (now - $(stat -c %Y "$p" 2>/dev/null)) / 86400 ))
