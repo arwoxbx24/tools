@@ -12,6 +12,9 @@ EOF
 cat > "$CURL_BIN" <<EOF
 #!/usr/bin/env bash
 echo "curl \$@" >> "$TMP/curl-calls.log"
+case " \$* " in
+  *" %{http_code} "*) printf '%s' "\${CURL_CODE:-200}" ;;
+esac
 exit "\${CURL_RC:-0}"
 EOF
 chmod +x "$PM2_BIN" "$CURL_BIN"
@@ -38,7 +41,7 @@ reset; touch -d "@$NOW" "$PM2_HOME/dump.pm2"; run "$healthy" "$NOW"; ! grep -q '
 reset; printf 'dead-app\t%s\n' "$((NOW-7*3600))" > "$GUARD_STATE_DIR/dead-since.tsv"; run "$stopped_json" "$NOW"; c1=$(grep -c 'PM2 дайджест' "$TMP/curl-calls.log" || true); run "$stopped_json" "$((NOW+86400))"; c2=$(grep -c 'PM2 дайджест' "$TMP/curl-calls.log" || true); run "$stopped_json" "$((NOW+8*86400))"; c3=$(grep -c 'PM2 дайджест' "$TMP/curl-calls.log" || true); run "$healthy" "$((NOW+8*86400+1))"; c4=$(grep -c 'исправлено' "$TMP/curl-calls.log" || true); run "$healthy" "$((NOW+8*86400+2))"; c5=$(grep -c 'исправлено' "$TMP/curl-calls.log" || true); [ "$c1:$c2:$c3:$c4:$c5" = '1:1:2:1:1' ] && ok AE1-remind-and-resolve || bad AE1-remind-and-resolve
 reset; printf '1\n' > "$PM2_HOME/pm2.pid"; printf '1\n' > "$GUARD_STATE_DIR/generation"; printf 'storm-app\t%s\t1\n' "$((NOW-60))" > "$GUARD_STATE_DIR/restarts.tsv"; printf '2\n' > "$PM2_HOME/pm2.pid"; run "$storm" "$NOW"; ! stopped storm-app && ok generation-reset || bad generation-reset
 reset; cron='[{"name":"cron","pm2_env":{"status":"stopped","restart_time":10,"script_path":"/bin/true","autorestart":true,"cron_restart":"0 * * * *"}}]'; printf 'cron\t%s\t0\n' "$((NOW-60))" > "$GUARD_STATE_DIR/restarts.tsv"; run "$cron" "$NOW"; ! stopped cron && ok cron-excluded || bad cron-excluded
-reset; printf 'storm-app\t%s\t975\n' "$((NOW-3600))" > "$GUARD_STATE_DIR/restarts.tsv"; printf 'TG_BOT_TOKEN=x\nTG_CHAT_ID=y\n' > "$GUARD_NOTIFY_ENV"; CURL_RC=7 run "$storm" "$NOW"; [ -s "$GUARD_STATE_DIR/pending-alerts.tsv" ] && ok pending-stored || bad pending-stored; CURL_RC=0 run "$healthy" "$((NOW+60))"; [ ! -s "$GUARD_STATE_DIR/pending-alerts.tsv" ] && ok pending-retry || bad pending-retry
+reset; printf 'storm-app\t%s\t975\n' "$((NOW-3600))" > "$GUARD_STATE_DIR/restarts.tsv"; printf 'TG_BOT_TOKEN=x\nTG_CHAT_ID=y\n' > "$GUARD_NOTIFY_ENV"; CURL_CODE=403 run "$storm" "$NOW"; [ -s "$GUARD_STATE_DIR/pending-alerts.tsv" ] && ok pending-stored-http-403 || bad pending-stored-http-403; CURL_CODE=200 run "$healthy" "$((NOW+60))"; [ ! -s "$GUARD_STATE_DIR/pending-alerts.tsv" ] && ok pending-cleared-http-200 || bad pending-cleared-http-200
 reset; rm -f "$GUARD_NOTIFY_ENV"; printf 'ghost-app\t%s\t40\n' "$((NOW-60))" > "$GUARD_STATE_DIR/restarts.tsv"; run "$missing" "$NOW"; stopped ghost-app && ok notify-missing-stop || bad notify-missing-stop; grep -q 'telegram skipped' "$GUARD_LOG" && ok notify-missing-log || bad notify-missing-log
 reset; marker="${RANDOM}${RANDOM}${RANDOM}"; export SECRET_MARKER="$marker"; secret="[{\"name\":\"leak\",\"pm2_env\":{\"status\":\"online\",\"restart_time\":10,\"script_path\":\"/no/leak\",\"env\":{\"SECRET_Y\":\"$marker\"}}}]"; printf 'leak\t%s\t1\n' "$((NOW-60))" > "$GUARD_STATE_DIR/restarts.tsv"; run "$secret" "$NOW"; ! grep -r "$marker" "$GUARD_INCIDENT_ROOT" >/dev/null 2>&1 && ok no-secret-leak && ! grep -qx 'describe leak' "$TMP/pm2-calls.log" && ok no-describe-call || bad no-secret-leak
 ! grep -Eq 'Архив:|/root/|\{|\.json|\.env' "$TMP/curl-calls.log" 2>/dev/null && ok AE4-human-text || bad AE4-human-text
