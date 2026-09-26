@@ -82,46 +82,5 @@
       "Bash(crontab *)",
       "Bash(systemctl *)"
     ]
-  },
-  "sandbox": {
-    "enabled": true,
-    "failIfUnavailable": true,
-    "allowUnsandboxedCommands": false,
-    "excludedCommands": [
-      "bd *",
-      "timeout 590 /root/workspaces/tools/bin/code-channel *",
-      "/root/workspaces/tools/bin/code-channel *"
-    ],
-    "filesystem": {
-      "denyRead": [
-        "/root/workspaces/projects",
-        "/root/workspaces/sandbox",
-        "/root/workspaces/secrets",
-        "/root/workspaces/tools/ecosystem.config.js",
-        "/root/.claude/projects",
-        "/root/.codex"
-      ],
-      "allowRead": [
-        ".",
-        "/root/workspaces/projects/.claude/skills",
-        "/root/workspaces/projects/.specify/templates"
-      ]
-    },
-    "network": {
-      "strictAllowlist": true,
-      "allowedDomains": [
-        "habr.com",
-        "*.habr.com",
-        "vc.ru",
-        "*.vc.ru",
-        "api.telegram.org",
-        "core.telegram.org",
-        "pypi.org",
-        "files.pythonhosted.org",
-        "docs.python.org",
-        "github.com",
-        "*.githubusercontent.com"
-      ]
-    }
   }
 }
