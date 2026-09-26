@@ -9,7 +9,7 @@
 
 set +e
 
-ENV_FILE="/root/workspaces/tools/etc/tools-env"
+ENV_FILE="/root/workspaces/secrets/services/tools-env"
 if [ -f "$ENV_FILE" ]; then
     . "$ENV_FILE"
 else

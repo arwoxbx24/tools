@@ -18,18 +18,21 @@ function loadEnvFile(filePath) {
   return env;
 }
 const pm2ApiEnv = loadEnvFile('/root/workspaces/secrets/services/pm2-api.env');
-const kpiEventHandlerEnv = loadEnvFile('/root/workspaces/secrets/services/kpi-event-handler.env');
+const formsGwGuardEnv = loadEnvFile('/root/workspaces/secrets/services/pm2-notify.env');
+const hhBotEnv = loadEnvFile('/root/workspaces/secrets/projects/arwox-biz/hr/bot/.env');
 
 module.exports = {
   apps: [
     {
       name: 'action-log-indexer',
+      time: true,
+      merge_logs: true,
       script: '/root/workspaces/tools/scripts/schedulers/action-log-indexer.sh',
       cwd: '/root/workspaces/projects',
       interpreter: 'bash',
       exec_mode: 'fork_mode',
       instances: 1,
-      autorestart: true,
+      autorestart: false,
       min_uptime: 10000,
       max_restarts: 10,
       exp_backoff_restart_delay: 1000,
@@ -38,6 +41,8 @@ module.exports = {
     },
     {
       name: 'amc-mvp-api',
+      time: true,
+      merge_logs: true,
       script: '/root/workspaces/projects/appsmith-margin-cockpit-mvp-api/server.py',
       cwd: '/root/workspaces/projects/appsmith-margin-cockpit-mvp-api',
       interpreter: 'python3',
@@ -52,6 +57,8 @@ module.exports = {
     },
     {
       name: 'arwox-landing-hub',
+      time: true,
+      merge_logs: true,
       script: '/root/workspaces/projects/arwox-landing/hub/server.cjs',
       cwd: '/root/workspaces/projects',
       interpreter: '/root/.nvm/versions/node/v20.19.4/bin/node',
@@ -66,6 +73,8 @@ module.exports = {
     },
     {
       name: 'backup-rotation',
+      time: true,
+      merge_logs: true,
       script: '/root/workspaces/tools/scripts/pm2/backup-rotation.sh',
       cwd: '/root/workspaces/projects',
       interpreter: 'bash',
@@ -81,6 +90,8 @@ module.exports = {
     },
     {
       name: 'backup-watcher',
+      time: true,
+      merge_logs: true,
       script: '/root/workspaces/tools/scripts/pm2/backup-watcher.sh',
       cwd: '/root',
       interpreter: 'bash',
@@ -95,6 +106,8 @@ module.exports = {
     },
     {
       name: 'bitrix-sdk-php-server',
+      time: true,
+      merge_logs: true,
       script: '/usr/bin/php',
       args: [
         '-S',
@@ -113,22 +126,9 @@ module.exports = {
       out_file: '/root/.pm2/logs/bitrix-sdk-php-server-out.log'
     },
     {
-      name: 'bitrix-sdk-updater',
-      script: '/root/workspaces/tools/scripts/schedulers/bitrix-sdk-updater.sh',
-      cwd: '/root/workspaces/projects',
-      interpreter: 'bash',
-      exec_mode: 'fork_mode',
-      instances: 1,
-      autorestart: false,
-      min_uptime: 1000,
-      max_restarts: 10,
-      exp_backoff_restart_delay: 1000,
-      cron_restart: '0 3 * * 1',
-      error_file: '/root/.pm2/logs/bitrix-sdk-updater-error.log',
-      out_file: '/root/.pm2/logs/bitrix-sdk-updater-out.log'
-    },
-    {
       name: 'bmc-api',
+      time: true,
+      merge_logs: true,
       script: '/root/.nvm/versions/node/v20.19.4/bin/npm',
       args: [
         'run',
@@ -147,6 +147,8 @@ module.exports = {
     },
     {
       name: 'bmc-ui',
+      time: true,
+      merge_logs: true,
       script: '/root/.nvm/versions/node/v20.19.4/bin/npm',
       args: [
         'run',
@@ -165,6 +167,8 @@ module.exports = {
     },
     {
       name: 'context-gc',
+      time: true,
+      merge_logs: true,
       script: '/root/workspaces/tools/scripts/schedulers/context-gc-once.sh',
       cwd: '/root/workspaces/projects',
       interpreter: 'bash',
@@ -180,6 +184,8 @@ module.exports = {
     },
     {
       name: 'context-heartbeat',
+      time: true,
+      merge_logs: true,
       script: '/root/workspaces/tools/scripts/schedulers/context-heartbeat.sh',
       cwd: '/root/workspaces/projects',
       interpreter: 'bash',
@@ -194,7 +200,47 @@ module.exports = {
       out_file: '/root/.pm2/logs/context-heartbeat-out.log'
     },
     {
+      name: 'forms-gw-guard',
+      time: true,
+      merge_logs: true,
+      script: '/root/workspaces/tools/scripts/schedulers/forms-gw-guard.sh',
+      cwd: '/root',
+      interpreter: 'bash',
+      exec_mode: 'fork_mode',
+      instances: 1,
+      autorestart: false,
+      min_uptime: 1000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
+      cron_restart: '*/15 * * * *',
+      preflight_env_file: '/root/workspaces/secrets/services/pm2-notify.env',
+      preflight_env_keys: ['TG_BOT_TOKEN', 'TG_CHAT_ID'],
+      env: formsGwGuardEnv,
+      error_file: '/root/.pm2/logs/forms-gw-guard-error.log',
+      out_file: '/root/.pm2/logs/forms-gw-guard-out.log'
+    },
+    {
+      name: 'ags-search-watch',
+      script: '/root/workspaces/tools/scripts/schedulers/ags-search-watch.sh',
+      cwd: '/root',
+      interpreter: 'bash',
+      exec_mode: 'fork_mode',
+      instances: 1,
+      autorestart: false,
+      min_uptime: 1000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
+      cron_restart: '0 */6 * * *',
+      preflight_env_file: '/root/workspaces/secrets/services/pm2-notify.env',
+      preflight_env_keys: ['TG_BOT_TOKEN', 'TG_CHAT_ID'],
+      env: formsGwGuardEnv,
+      error_file: '/root/.pm2/logs/ags-search-watch-error.log',
+      out_file: '/root/.pm2/logs/ags-search-watch-out.log'
+    },
+    {
       name: 'db-replicator',
+      time: true,
+      merge_logs: true,
       script: '/root/workspaces/projects/transcription-dev/admin/db-replicator.js',
       cwd: '/root/workspaces/projects/transcription-dev',
       interpreter: 'node',
@@ -209,6 +255,8 @@ module.exports = {
     },
     {
       name: 'docker-backup',
+      time: true,
+      merge_logs: true,
       script: '/root/workspaces/tools/scripts/pm2/docker-backup.sh',
       cwd: '/root/workspaces/projects',
       interpreter: 'bash',
@@ -224,6 +272,8 @@ module.exports = {
     },
     {
       name: 'server-backup',
+      time: true,
+      merge_logs: true,
       script: '/root/workspaces/tools/scripts/pm2/server-backup.sh',
       cwd: '/root/workspaces/projects',
       interpreter: 'bash',
@@ -240,6 +290,8 @@ module.exports = {
     {
       // Догоняющий запуск после ребута/простоя: last-ok старше 26 ч → pm2 restart server-backup (16.09)
       name: 'backup-catchup',
+      time: true,
+      merge_logs: true,
       script: '/root/workspaces/tools/scripts/pm2/backup-catchup.sh',
       cwd: '/root/workspaces/projects',
       interpreter: 'bash',
@@ -255,6 +307,8 @@ module.exports = {
     },
     {
       name: 'docker-log-rotation',
+      time: true,
+      merge_logs: true,
       script: '/root/workspaces/tools/scripts/schedulers/docker-log-rotation.sh',
       cwd: '/root/workspaces/projects',
       interpreter: 'bash',
@@ -268,21 +322,9 @@ module.exports = {
       out_file: '/root/.pm2/logs/docker-log-rotation-out.log'
     },
     {
-      name: 'file-cleanup',
-      script: '/root/workspaces/tools/scripts/schedulers/file-cleanup-daemon.sh',
-      cwd: '/root/workspaces/projects',
-      interpreter: 'bash',
-      exec_mode: 'fork_mode',
-      instances: 1,
-      autorestart: true,
-      min_uptime: 10000,
-      max_restarts: 10,
-      exp_backoff_restart_delay: 1000,
-      error_file: '/root/.pm2/logs/file-cleanup-error.log',
-      out_file: '/root/.pm2/logs/file-cleanup-out.log'
-    },
-    {
       name: 'gdrive-token-check',
+      time: true,
+      merge_logs: true,
       script: '/root/workspaces/tools/scripts/pm2/gdrive-token-check.sh',
       cwd: '/root/workspaces/projects',
       interpreter: 'bash',
@@ -298,6 +340,8 @@ module.exports = {
     },
     {
       name: 'git-maintenance',
+      time: true,
+      merge_logs: true,
       script: '/root/workspaces/tools/scripts/pm2/git-maintenance-once.sh',
       cwd: '/root/workspaces/projects',
       interpreter: 'bash',
@@ -312,39 +356,12 @@ module.exports = {
       out_file: '/root/.pm2/logs/git-maintenance-out.log'
     },
     {
-      name: 'google-token-refresh',
-      script: '/root/workspaces/tools/scripts/pm2/google-token-refresh.sh',
-      cwd: '/root/workspaces/projects',
-      interpreter: 'bash',
-      exec_mode: 'fork_mode',
-      instances: 1,
-      autorestart: false,
-      min_uptime: 1000,
-      max_restarts: 10,
-      exp_backoff_restart_delay: 1000,
-      cron_restart: '0 3 */5 * *',
-      error_file: '/root/.pm2/logs/google-token-refresh-error.log',
-      out_file: '/root/.pm2/logs/google-token-refresh-out.log'
-    },
-    {
-      name: 'gpt-codex',
-      script: '/root/workspaces/projects/yubikey-v1/server/index.js',
-      cwd: '/root/workspaces/projects/yubikey-v1',
-      interpreter: 'node',
-      exec_mode: 'fork_mode',
-      instances: 1,
-      autorestart: true,
-      min_uptime: 10000,
-      max_restarts: 10,
-      exp_backoff_restart_delay: 1000,
-      error_file: '/root/.pm2/logs/gpt-codex-error.log',
-      out_file: '/root/.pm2/logs/gpt-codex-out.log'
-    },
-    {
       name: 'hh-cabinet',
-      script: '/root/workspaces/projects/hh-scoring/services/cabinet.py',
-      cwd: '/root/workspaces/projects/hh-scoring',
-      interpreter: '.venv/bin/python',
+      time: true,
+      merge_logs: true,
+      script: '/root/workspaces/projects/hh-scoring-dev/services/cabinet.py',
+      cwd: '/root/workspaces/projects/hh-scoring-dev',
+      interpreter: '/root/workspaces/projects/hh-scoring-dev/.venv/bin/python',
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
@@ -356,6 +373,8 @@ module.exports = {
     },
     {
       name: 'hh-cabinet-bridge',
+      time: true,
+      merge_logs: true,
       script: '/usr/bin/bash',
       args: [
         '-c',
@@ -373,9 +392,12 @@ module.exports = {
     },
     {
       name: 'hh-cabinet-staging',
-      script: '/root/workspaces/projects/hh-scoring/services/cabinet.py',
-      cwd: '/root/workspaces/projects/hh-scoring',
-      interpreter: '.venv/bin/python',
+      time: true,
+      merge_logs: true,
+      env: { CABINET_PORT: '20100' },
+      script: '/root/workspaces/projects/hh-scoring-dev/services/cabinet.py',
+      cwd: '/root/workspaces/projects/hh-scoring-dev',
+      interpreter: '/root/workspaces/projects/hh-scoring-dev/.venv/bin/python',
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
@@ -387,8 +409,10 @@ module.exports = {
     },
     {
       name: 'hh-dashboard-fastloop',
-      script: '/root/workspaces/projects/hh-scoring/scripts/dashboard_fastloop.sh',
-      cwd: '/root/workspaces/projects/hh-scoring',
+      time: true,
+      merge_logs: true,
+      script: '/root/workspaces/projects/hh-scoring-dev/scripts/dashboard_fastloop.sh',
+      cwd: '/root/workspaces/projects/hh-scoring-dev',
       interpreter: 'bash',
       exec_mode: 'fork_mode',
       instances: 1,
@@ -401,9 +425,11 @@ module.exports = {
     },
     {
       name: 'hh-hub-api',
-      script: '/root/workspaces/projects/hh-scoring/services/hub_api.py',
-      cwd: '/root/workspaces/projects/hh-scoring',
-      interpreter: '.venv/bin/python',
+      time: true,
+      merge_logs: true,
+      script: '/root/workspaces/projects/hh-scoring-dev/services/hub_api.py',
+      cwd: '/root/workspaces/projects/hh-scoring-dev',
+      interpreter: '/root/workspaces/projects/hh-scoring-dev/.venv/bin/python',
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
@@ -415,6 +441,8 @@ module.exports = {
     },
     {
       name: 'hh-import',
+      time: true,
+      merge_logs: true,
       script: '/root/workspaces/projects/arwox-biz/hr/hh-import/venv/bin/python',
       args: [
         '-m',
@@ -427,13 +455,18 @@ module.exports = {
       min_uptime: 10000,
       max_restarts: 10,
       exp_backoff_restart_delay: 1000,
+      env: formsGwGuardEnv,
+      preflight_env_file: '/root/workspaces/secrets/services/pm2-notify.env',
+      preflight_env_keys: ['TG_BOT_TOKEN', 'TG_CHAT_ID'],
       error_file: '/root/.pm2/logs/hh-import-error.log',
       out_file: '/root/.pm2/logs/hh-import-out.log'
     },
     {
       name: 'hh-litestream',
-      script: '/root/workspaces/projects/hh-scoring/scripts/litestream-start.sh',
-      cwd: '/root/workspaces/projects/hh-scoring',
+      time: true,
+      merge_logs: true,
+      script: '/root/workspaces/projects/hh-scoring-dev/scripts/litestream-start.sh',
+      cwd: '/root/workspaces/projects/hh-scoring-dev',
       interpreter: 'bash',
       exec_mode: 'fork_mode',
       instances: 1,
@@ -446,12 +479,14 @@ module.exports = {
     },
     {
       name: 'hh-pipeline',
-      script: '/root/workspaces/projects/hh-scoring/scripts/pipeline_events.py',
+      time: true,
+      merge_logs: true,
+      script: '/root/workspaces/projects/hh-scoring-dev/scripts/pipeline_events.py',
       args: [
         '--loop'
       ],
-      cwd: '/root/workspaces/projects/hh-scoring',
-      interpreter: '.venv/bin/python',
+      cwd: '/root/workspaces/projects/hh-scoring-dev',
+      interpreter: '/root/workspaces/projects/hh-scoring-dev/.venv/bin/python',
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: false,
@@ -463,6 +498,8 @@ module.exports = {
     },
     {
       name: 'hh-pipeline-prod',
+      time: true,
+      merge_logs: true,
       script: '/root/workspaces/projects/hh-scoring-prod/scripts/pipeline_events.py',
       args: [
         '--loop'
@@ -480,6 +517,8 @@ module.exports = {
     },
     {
       name: 'hh-refetch',
+      time: true,
+      merge_logs: true,
       script: '/root/workspaces/projects/arwox-biz/hr/hh-import/venv/bin/python',
       args: [
         '-m',
@@ -492,14 +531,19 @@ module.exports = {
       min_uptime: 10000,
       max_restarts: 10,
       exp_backoff_restart_delay: 1000,
+      env: formsGwGuardEnv,
+      preflight_env_file: '/root/workspaces/secrets/services/pm2-notify.env',
+      preflight_env_keys: ['TG_BOT_TOKEN', 'TG_CHAT_ID'],
       error_file: '/root/.pm2/logs/hh-refetch-error.log',
       out_file: '/root/.pm2/logs/hh-refetch-out.log'
     },
     {
       name: 'hh-screening-monitor',
-      script: '/root/workspaces/projects/hh-scoring/scripts/monitor_daemon.py',
-      cwd: '/root/workspaces/projects/hh-scoring',
-      interpreter: '.venv/bin/python',
+      time: true,
+      merge_logs: true,
+      script: '/root/workspaces/projects/hh-scoring-dev/scripts/monitor_daemon.py',
+      cwd: '/root/workspaces/projects/hh-scoring-dev',
+      interpreter: '/root/workspaces/projects/hh-scoring-dev/.venv/bin/python',
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
@@ -511,6 +555,8 @@ module.exports = {
     },
     {
       name: 'hh-token-refresh',
+      time: true,
+      merge_logs: true,
       script: '/root/workspaces/projects/arwox-biz/hr/hh-import/venv/bin/python',
       args: [
         '-m',
@@ -523,11 +569,16 @@ module.exports = {
       min_uptime: 10000,
       max_restarts: 10,
       exp_backoff_restart_delay: 1000,
+      env: { ...formsGwGuardEnv, ...hhBotEnv },
+      preflight_env_file: '/root/workspaces/secrets/projects/arwox-biz/hr/bot/.env',
+      preflight_env_keys: ['HH_CLIENT_ID', 'HH_CLIENT_SECRET', 'TG_BOT_TOKEN', 'TG_CHAT_ID'],
       error_file: '/root/.pm2/logs/hh-token-refresh-error.log',
       out_file: '/root/.pm2/logs/hh-token-refresh-out.log'
     },
     {
       name: 'hh-wal-checkpoint',
+      time: true,
+      merge_logs: true,
       script: '/root/workspaces/projects/hh-scoring-prod/scripts/wal_checkpoint.sh',
       cwd: '/root/workspaces/projects',
       interpreter: 'bash',
@@ -543,6 +594,8 @@ module.exports = {
     },
     {
       name: 'hr-bot-v2',
+      time: true,
+      merge_logs: true,
       script: '/root/workspaces/projects/arwox-biz/hr/bot/main.py',
       cwd: '/root/workspaces/projects/arwox-biz/hr/bot',
       interpreter: '/usr/bin/python3',
@@ -557,6 +610,8 @@ module.exports = {
     },
     {
       name: 'kp-landing-serve',
+      time: true,
+      merge_logs: true,
       script: '/usr/bin/python3',
       args: [
         '-m',
@@ -579,6 +634,8 @@ module.exports = {
     },
     {
       name: 'kpd-proxy',
+      time: true,
+      merge_logs: true,
       script: '/root/workspaces/projects/kpd-proxy/server.js',
       cwd: '/root/workspaces/projects/kpd-proxy',
       interpreter: 'node',
@@ -588,28 +645,13 @@ module.exports = {
       min_uptime: 10000,
       max_restarts: 10,
       exp_backoff_restart_delay: 1000,
-      error_file: '/root/.pm2/logs/kpd-proxy-error-67.log',
-      out_file: '/root/.pm2/logs/kpd-proxy-out-67.log'
-    },
-    {
-      name: 'kpi-event-handler',
-      script: '/root/workspaces/projects/bitrix/kpi-manager/event-handler.js',
-      cwd: '/root/workspaces/projects/bitrix/kpi-manager',
-      interpreter: 'node',
-      exec_mode: 'fork_mode',
-      instances: 1,
-      autorestart: true,
-      min_uptime: 10000,
-      max_restarts: 10,
-      exp_backoff_restart_delay: 1000,
-      preflight_env_file: '/root/workspaces/secrets/services/kpi-event-handler.env',
-      preflight_env_keys: ['KPI_AUTH_TOKEN'],
-      env: kpiEventHandlerEnv,
-      error_file: '/root/.pm2/logs/kpi-event-handler-error.log',
-      out_file: '/root/.pm2/logs/kpi-event-handler-out.log'
+      error_file: '/root/.pm2/logs/kpd-proxy-error.log',
+      out_file: '/root/.pm2/logs/kpd-proxy-out.log'
     },
     {
       name: 'load-governor',
+      time: true,
+      merge_logs: true,
       script: '/root/workspaces/projects/server-recovery/load-governor.sh',
       cwd: '/root/workspaces/projects',
       interpreter: 'bash',
@@ -624,6 +666,8 @@ module.exports = {
     },
     {
       name: 'margin-calc',
+      time: true,
+      merge_logs: true,
       script: '/usr/bin/bash',
       args: [
         '-c',
@@ -641,6 +685,8 @@ module.exports = {
     },
     {
       name: 'memory-updater',
+      time: true,
+      merge_logs: true,
       script: '/root/workspaces/tools/scripts/schedulers/memory-updater-daemon.sh',
       cwd: '/root/workspaces/projects',
       interpreter: 'bash',
@@ -655,6 +701,8 @@ module.exports = {
     },
     {
       name: 'minio-sync-worker',
+      time: true,
+      merge_logs: true,
       script: '/root/workspaces/projects/claude-state/minio-sync-worker.sh',
       cwd: '/root/workspaces/projects',
       interpreter: 'bash',
@@ -669,6 +717,8 @@ module.exports = {
     },
     {
       name: 'node-exporter',
+      time: true,
+      merge_logs: true,
       script: '/opt/node_exporter/node_exporter',
       args: [
         '--web.listen-address=127.0.0.1:9100',
@@ -686,6 +736,8 @@ module.exports = {
     },
     {
       name: 'pdf-decoder',
+      time: true,
+      merge_logs: true,
       script: '/root/workspaces/projects/pdf-decoder/server/index.js',
       cwd: '/root/workspaces/projects/pdf-decoder',
       interpreter: 'node',
@@ -700,6 +752,8 @@ module.exports = {
     },
     {
       name: 'plan-lifecycle-manager',
+      time: true,
+      merge_logs: true,
       script: '/root/workspaces/tools/scripts/pm2/plan-lifecycle-manager.sh',
       cwd: '/root/workspaces/projects',
       interpreter: 'bash',
@@ -715,6 +769,8 @@ module.exports = {
     },
     {
       name: 'pm2-api',
+      time: true,
+      merge_logs: true,
       script: '/root/workspaces/projects/pm2-panel/pm2-api.js',
       cwd: '/root/workspaces/projects/pm2-panel',
       interpreter: 'node',
@@ -734,6 +790,8 @@ module.exports = {
     },
     {
       name: 'pm2-conductor',
+      time: true,
+      merge_logs: true,
       script: '/root/workspaces/tools/scripts/pm2/pm2-conductor.sh',
       cwd: '/root/workspaces/projects',
       interpreter: 'bash',
@@ -748,6 +806,8 @@ module.exports = {
     },
     {
       name: 'pm2-extended-metrics',
+      time: true,
+      merge_logs: true,
       script: '/root/workspaces/tools/scripts/pm2/pm2-extended-metrics.sh',
       cwd: '/root/workspaces/projects',
       interpreter: 'bash',
@@ -762,6 +822,8 @@ module.exports = {
     },
     {
       name: 'pm2-logrotate',
+      time: true,
+      merge_logs: true,
       script: '/root/.pm2/modules/pm2-logrotate/node_modules/pm2-logrotate/app.js',
       cwd: '/root/.pm2/modules/pm2-logrotate/node_modules/pm2-logrotate',
       interpreter: 'node',
@@ -776,6 +838,8 @@ module.exports = {
     },
     {
       name: 'pm2-loop-guard',
+      time: true,
+      merge_logs: true,
       script: '/root/workspaces/tools/bin/pm2-loop-guard',
       cwd: '/root',
       interpreter: 'bash',
@@ -790,6 +854,8 @@ module.exports = {
     },
     {
       name: 'pm2-prometheus-exporter',
+      time: true,
+      merge_logs: true,
       script: '/root/.pm2/modules/pm2-prometheus-exporter/node_modules/pm2-prometheus-exporter/exporter.js',
       cwd: '/root/.pm2/modules/pm2-prometheus-exporter/node_modules/pm2-prometheus-exporter',
       interpreter: 'node',
@@ -803,22 +869,9 @@ module.exports = {
       out_file: '/root/.pm2/logs/pm2-prometheus-exporter-out.log'
     },
     {
-      name: 'profile-rotation',
-      script: '/root/workspaces/tools/scripts/pm2/profile-rotation.sh',
-      cwd: '/root/workspaces/projects',
-      interpreter: 'bash',
-      exec_mode: 'fork_mode',
-      instances: 1,
-      autorestart: false,
-      min_uptime: 1000,
-      max_restarts: 10,
-      exp_backoff_restart_delay: 1000,
-      cron_restart: '0 4 * * *',
-      error_file: '/root/.pm2/logs/profile-rotation-error.log',
-      out_file: '/root/.pm2/logs/profile-rotation-out.log'
-    },
-    {
       name: 'prometheus',
+      time: true,
+      merge_logs: true,
       script: '/opt/prometheus/prometheus',
       args: [
         '--config.file=/opt/prometheus/prometheus.yml',
@@ -838,6 +891,8 @@ module.exports = {
     },
     {
       name: 'redis-backup',
+      time: true,
+      merge_logs: true,
       script: '/root/workspaces/tools/scripts/pm2/redis-backup-daemon.sh',
       cwd: '/root/workspaces/tools/scripts/pm2',
       interpreter: 'bash',
@@ -852,6 +907,8 @@ module.exports = {
     },
     {
       name: 'redis-exporter',
+      time: true,
+      merge_logs: true,
       script: '/opt/redis_exporter/redis_exporter',
       args: [
         '--web.listen-address=127.0.0.1:9121'
@@ -868,6 +925,8 @@ module.exports = {
     },
     {
       name: 'redis-watchdog',
+      time: true,
+      merge_logs: true,
       script: '/root/workspaces/projects/server-recovery/redis-watchdog.sh',
       cwd: '/root/workspaces/projects',
       interpreter: 'bash',
@@ -882,6 +941,8 @@ module.exports = {
     },
     {
       name: 'sched-healthcheck',
+      time: true,
+      merge_logs: true,
       script: '/root/workspaces/tools/scripts/schedulers/healthcheck-scheduler.sh',
       cwd: '/root/workspaces/projects',
       interpreter: 'bash',
@@ -895,21 +956,9 @@ module.exports = {
       out_file: '/root/.pm2/logs/sched-healthcheck-out.log'
     },
     {
-      name: 'sched-validator',
-      script: '/root/workspaces/tools/scripts/pm2/sched-validator.sh',
-      cwd: '/root/workspaces/projects',
-      interpreter: 'bash',
-      exec_mode: 'fork_mode',
-      instances: 1,
-      autorestart: true,
-      min_uptime: 10000,
-      max_restarts: 10,
-      exp_backoff_restart_delay: 1000,
-      error_file: '/root/.pm2/logs/sched-validator-error.log',
-      out_file: '/root/.pm2/logs/sched-validator-out.log'
-    },
-    {
       name: 'search-quality-report',
+      time: true,
+      merge_logs: true,
       script: '/root/workspaces/tools/scripts/schedulers/search-quality-report.sh',
       cwd: '/root/workspaces/projects',
       interpreter: 'bash',
@@ -924,6 +973,8 @@ module.exports = {
     },
     {
       name: 'security-scanner',
+      time: true,
+      merge_logs: true,
       script: '/root/workspaces/projects/security-scanner/scanner.js',
       cwd: '/root/workspaces/projects/security-scanner',
       interpreter: 'node',
@@ -938,6 +989,8 @@ module.exports = {
     },
     {
       name: 'secrets-registry',
+      time: true,
+      merge_logs: true,
       script: '/root/workspaces/tools/scripts/pm2/registry_build.py',
       cwd: '/root/workspaces/tools',
       interpreter: 'python3',
@@ -953,6 +1006,8 @@ module.exports = {
     },
     {
       name: 'session-indexer',
+      time: true,
+      merge_logs: true,
       script: '/root/workspaces/tools/scripts/schedulers/session-indexer-daemon.sh',
       cwd: '/root/workspaces/projects',
       interpreter: 'bash',
@@ -967,6 +1022,8 @@ module.exports = {
     },
     {
       name: 'session-merger',
+      time: true,
+      merge_logs: true,
       script: '/root/workspaces/tools/scripts/schedulers/session-merger-daemon.sh',
       cwd: '/root/workspaces/projects',
       interpreter: 'bash',
@@ -981,6 +1038,8 @@ module.exports = {
     },
     {
       name: 'transcription-panel',
+      time: true,
+      merge_logs: true,
       script: '/root/workspaces/projects/client-video-transcription/admin/start-gunicorn.sh',
       cwd: '/root/workspaces/projects/client-video-transcription/admin',
       interpreter: 'bash',
@@ -995,6 +1054,8 @@ module.exports = {
     },
     {
       name: 'transcription-panel-dev',
+      time: true,
+      merge_logs: true,
       script: '/root/workspaces/projects/transcription-dev/admin/start-gunicorn.sh',
       cwd: '/root/workspaces/projects/transcription-dev/admin',
       interpreter: 'bash',
@@ -1009,6 +1070,8 @@ module.exports = {
     },
     {
       name: 'tx-cleanup',
+      time: true,
+      merge_logs: true,
       script: '/root/workspaces/tools/scripts/pm2/tx-cleanup.sh',
       cwd: '/root/workspaces/projects',
       interpreter: 'bash',
@@ -1024,6 +1087,8 @@ module.exports = {
     },
     {
       name: 'yandex-reviews-backend',
+      time: true,
+      merge_logs: true,
       script: '/root/workspaces/projects/yandex/maps-reviews-autoresponder/backend/server.js',
       cwd: '/root/workspaces/projects/yandex/maps-reviews-autoresponder/backend',
       interpreter: 'node',
@@ -1038,6 +1103,8 @@ module.exports = {
     },
     {
       name: 'yubikey-v1',
+      time: true,
+      merge_logs: true,
       script: '/root/workspaces/projects/yubikey-v1/server/index.js',
       cwd: '/root/workspaces/projects/yubikey-v1',
       interpreter: 'node',
@@ -1052,6 +1119,8 @@ module.exports = {
     },
     {
       name: 'yubikey-v2',
+      time: true,
+      merge_logs: true,
       script: '/root/workspaces/projects/yubikey-v2/server/index.js',
       cwd: '/root/workspaces/projects/yubikey-v2',
       interpreter: 'node',
@@ -1066,6 +1135,8 @@ module.exports = {
     },
     {
       name: 'pm2-reconcile-guard',
+      time: true,
+      merge_logs: true,
       script: '/root/workspaces/tools/scripts/pm2/pm2-reconcile-guard.sh',
       cwd: '/root/workspaces/tools',
       interpreter: 'bash',
