@@ -60,8 +60,6 @@
       "Read(//root/workspaces/projects/yandex/**)",
       "Read(//root/workspaces/projects/yubikey-*/**)",
       "Read(//root/workspaces/tools/ecosystem.config.js)",
-      "Read(//root/workspaces/sandbox/test-csb-e2e-2609b/**)",
-      "Read(//root/.claude/projects/**)",
       "Bash(*workspaces/projects*)",
       "Bash(*../projects*)",
       "Bash(*ecosystem.config*)",
