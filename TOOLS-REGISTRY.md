@@ -27,6 +27,7 @@
 | `python3 <файл из tools/ или проекта>` | штатные скрипты (`layout_check.py`, `deploy_manifest.py`, тесты проектов) | путь к файлу, без `-c` | все | штатно |
 | `Workflow name=audit|verify|bd-slice|code-atom` | делегирование (csb стадия 7) | по имени, args `{atom,path,tz}` | Claude | штатно |
 | `mise` (v2026.9.14, бинарь GitHub releases, SHA256 сверен) | тулчейн языка per-project без глобальных пакетов (Go, Java, .NET, Rust, Ruby…); `mise.toml` в проекте | `/root/.local/bin/mise use <tool>@<ver>` в каталоге проекта, запуск `mise exec -- <cmd>`; данные `~/.local/share/mise` (офиц. путь) | все (владелец 26.09) | штатно |
+| `claude --settings /root/workspaces/tools/claude-sandbox-settings.json` | машинная стена теста в sandbox: deny Edit/Write/git/pm2/gh/tmux вне `sandbox/<test-…>` (26.09: тест без стены закоммитил news-watch в ecosystem и чужие правки tools) | тестовая сессия в `sandbox/<test-…>` запускается только этим флагом; без него тест = брак | все (владелец 26.09) | штатно |
 | `copier` (9.18.2) | каркас проекта из готового шаблона по answers-файлу; обновление проекта | `/root/workspaces/tools/copier-venv/bin/copier copy --defaults <шаблон> <каталог>`, `… update` | все (владелец 26.09) | штатно |
 
 ## 3. ЗАПРЕЩЕНО (машинно: Claude — managed deny; opencode — `permission.bash "*": deny`; Codex — его hooks.json по вердикту)
