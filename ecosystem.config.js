@@ -20,6 +20,7 @@ function loadEnvFile(filePath) {
 const pm2ApiEnv = loadEnvFile('/root/workspaces/secrets/services/pm2-api.env');
 const formsGwGuardEnv = loadEnvFile('/root/workspaces/secrets/services/pm2-notify.env');
 const hhBotEnv = loadEnvFile('/root/workspaces/secrets/projects/arwox-biz/hr/bot/.env');
+const newsWatchEnv = loadEnvFile('/root/workspaces/secrets/services/news-watch.env');
 
 module.exports = {
   apps: [
@@ -1149,6 +1150,25 @@ module.exports = {
       cron_restart: '*/30 * * * *',
       error_file: '/root/.pm2/logs/pm2-reconcile-guard-error.log',
       out_file: '/root/.pm2/logs/pm2-reconcile-guard-out.log'
+    },
+    {
+      name: 'news-watch',
+      script: '/root/workspaces/sandbox/test-csb-e2e-2609/news_watch.py',
+      cwd: '/root/workspaces/sandbox/test-csb-e2e-2609',
+      interpreter: 'python3',
+      exec_mode: 'fork_mode',
+      instances: 1,
+      autorestart: true,
+      min_uptime: 5000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 5000,
+      preflight_env_file: '/root/workspaces/secrets/services/news-watch.env',
+      preflight_env_keys: ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID'],
+      env: Object.assign({ PORT: '20140', POLL_MINUTES: '10', SEND_INTERVAL_MINUTES: '60' }, newsWatchEnv),
+      time: true,
+      merge_logs: true,
+      error_file: '/root/.pm2/logs/news-watch-error.log',
+      out_file: '/root/.pm2/logs/news-watch-out.log'
     }
   ]
 };
