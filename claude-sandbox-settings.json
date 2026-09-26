@@ -2,17 +2,11 @@
   "permissions": {
     "deny": [
       "Edit(//root/workspaces/projects/**)",
-      "Write(//root/workspaces/projects/**)",
       "Edit(//root/workspaces/tools/**)",
-      "Write(//root/workspaces/tools/**)",
       "Edit(//root/workspaces/system/**)",
-      "Write(//root/workspaces/system/**)",
       "Edit(//root/.claude/**)",
-      "Write(//root/.claude/**)",
       "Edit(//root/.codex/**)",
-      "Write(//root/.codex/**)",
       "Edit(//etc/**)",
-      "Write(//etc/**)",
       "Bash(pm2 *)",
       "Bash(git -C /root/workspaces/projects*)",
       "Bash(git -C /root/workspaces/tools*)",
