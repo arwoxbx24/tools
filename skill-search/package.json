@@ -1,0 +1,8 @@
+{
+  "name": "skill-search",
+  "private": true,
+  "description": "Pinned skills.sh CLI for tools/bin/skill-search (spec:068). 1.5.18 = last with engines.node >=18; upgrade = ADR + node >=22.20",
+  "dependencies": {
+    "skills": "1.5.18"
+  }
+}

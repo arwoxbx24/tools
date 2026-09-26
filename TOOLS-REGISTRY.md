@@ -19,6 +19,7 @@
 | `tools/bin/pm2-boot-test`, `pm2-chaos`, `pm2-loop-guard`, `pm2-loop-guard-test`, `pm2-eco-lint` | тесты/страж PM2 (spec:025) | по имени | Claude, Codex | штатно |
 | `tools/bin/restic` | бэкапы (spec backup-coverage) | `restic …` через скрипты `tools/scripts/` | Codex | штатно |
 | `tools/bin/share-test` | самотест share | `share-test` | Claude | штатно |
+| `tools/skill-search/` (`skills@1.5.18`, vercel-labs/skills, по lockfile) | штатный CLI поиска навыков skills.sh (spec:068; без обёрток — владелец 26.09 «только штатное») | `DISABLE_TELEMETRY=1 tools/skill-search/node_modules/.bin/skills find <слово>`; `add/use/update` не вызывать | все | штатно |
 | `pm2` | управление процессами — только `startOrReload <ecosystem> --only <имя>` → `pm2 save` | см. `/root/CLAUDE.md` PM2 | все | штатно |
 | `tools/scripts/pm2/b244-fetch.sh` | загрузка файлов b244/MinIO | `bash …/b244-fetch.sh <b244://…>` | все | штатно |
 | `tmux send-keys` | сообщение другому агенту: `-l "<текст>"` → отдельный `Enter` → `capture-pane` | см. `/root/CLAUDE.md` tmux | Claude ↔ Codex | штатно |
