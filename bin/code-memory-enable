@@ -15,6 +15,7 @@ esac
 
 ensure_stub() {
   local hook="$1" tmp
+  mkdir -p "$(dirname "$hook")"
   if [ -f "$hook" ]; then
     tmp="$(mktemp)"
     awk '
