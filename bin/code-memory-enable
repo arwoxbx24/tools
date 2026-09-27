@@ -3,13 +3,74 @@ set -eu
 
 : "${CME_MIN_MEM_MB:=3072}"
 : "${CME_MIN_SWAP_MB:=1024}"
+: "${CME_PROJECTS_ROOT:=/root/workspaces/projects}"
+: "${CME_DENY:=/root/workspaces/tools/config/code-memory.deny}"
+: "${CME_LOCK:=/tmp/code-memory.lock}"
+: "${CME_SELF:="$0"}"
 
-path="${1:?usage: code-memory-enable <abs-project-path>}"
+case "$CME_SELF" in
+  /*) ;;
+  *)  CME_SELF="$(cd "$(dirname "$CME_SELF")" && pwd)/$(basename "$CME_SELF")" ;;
+esac
+
+ensure_stub() {
+  local hook="$1" tmp
+  if [ -f "$hook" ]; then
+    tmp="$(mktemp)"
+    awk '
+      /# repowise-hook-start/ { s=1; next }
+      /# repowise-hook-end/   { s=0; next }
+      s { next }
+      /codebase-memory-mcp cli index_repository/ { next }
+      /# spec:082/ { next }
+      { print }
+    ' "$hook" > "$tmp"
+    cp -f "$tmp" "$hook"
+    rm -f "$tmp"
+  else
+    printf '#!/bin/sh\n' > "$hook"
+  fi
+  if ! grep -q '# code-memory-hook' "$hook" 2>/dev/null; then
+    printf '%s\n%s\n' '' \
+      "( setsid nice -n 19 $CME_SELF \"\$(git rev-parse --show-toplevel)\" >>/tmp/code-memory.log 2>&1 & ) # code-memory-hook" \
+      >> "$hook"
+  fi
+  chmod +x "$hook"
+}
+
+case "${1:-}" in
+  --template)
+    if [ $# -lt 2 ]; then
+      echo "usage: code-memory-enable --template <hooks-dir>" >&2
+      exit 2
+    fi
+    exec 9>"$CME_LOCK"; flock 9
+    ensure_stub "$2/post-commit"
+    ensure_stub "$2/post-merge"
+    exit 0
+    ;;
+  "")
+    echo "usage: code-memory-enable <abs-project-path>" >&2
+    exit 2
+    ;;
+esac
+
+path="$1"
 base="$(basename "$path")"
 
-# --- exit 2: invalid target ---
+exec 9>"$CME_LOCK"
+flock 9
+
 if [ ! -d "$path" ]; then
   echo "code-memory-enable: not a directory: $path" >&2
+  exit 2
+fi
+if [ "$(dirname "$path")" != "$CME_PROJECTS_ROOT" ]; then
+  echo "skip: $path"
+  exit 2
+fi
+if [ -f "$CME_DENY" ] && grep -xq "$base" "$CME_DENY"; then
+  echo "skip: denied"
   exit 2
 fi
 if [ ! -d "$path/.git" ]; then
@@ -17,16 +78,10 @@ if [ ! -d "$path/.git" ]; then
   exit 2
 fi
 case "$path" in
-  *hh-scoring*)
-    echo "code-memory-enable: blocklisted path: $path" >&2
-    exit 2 ;;
+  *hh-scoring*) echo "code-memory-enable: blocklisted path: $path" >&2; exit 2 ;;
 esac
-if [ "$path" = "/root/workspaces/projects" ]; then
-  echo "code-memory-enable: forbidden path: $path" >&2
-  exit 2
-fi
+[ "$path" = "/root/workspaces/projects" ] && { echo "code-memory-enable: forbidden path: $path" >&2; exit 2; }
 
-# --- exit 3: insufficient memory/swap ---
 mem_kb="$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)"
 : "${mem_kb:=0}"
 swap_kb="$(awk '/^SwapFree:/ {print $2}' /proc/meminfo)"
@@ -38,7 +93,6 @@ if [ "$mem_kb" -lt "$min_mem_kb" ] || [ "$swap_kb" -lt "$min_swap_kb" ]; then
   exit 3
 fi
 
-# --- step 3: target .git/info/exclude = symlink to CME_EXCLUDE_SRC ---
 : "${CME_EXCLUDE_SRC:=/root/.gitignore_global}"
 exclude="$path/.git/info/exclude"
 if [ ! -f "$CME_EXCLUDE_SRC" ]; then
@@ -46,26 +100,14 @@ if [ ! -f "$CME_EXCLUDE_SRC" ]; then
   exit 4
 fi
 if [ -L "$exclude" ]; then
-  if [ "$(readlink "$exclude")" = "$CME_EXCLUDE_SRC" ]; then
-    : # already the correct symlink
-  else
-    echo "code-memory-enable: foreign symlink: $exclude -> $(readlink "$exclude")" >&2
-    exit 4
-  fi
-else
-  if [ -f "$exclude" ]; then
-    foreign="$(awk '!/^#/ && NF {print}' "$exclude" || true)"
-    if [ -n "$foreign" ]; then
-      echo "code-memory-enable: $exclude has existing rules:" >&2
-      printf '%s\n' "$foreign" >&2
-      exit 4
-    fi
-  fi
-  mkdir -p "$path/.git/info"
-  ln -sfn "$CME_EXCLUDE_SRC" "$exclude"
+  [ "$(readlink "$exclude")" = "$CME_EXCLUDE_SRC" ] || { echo "code-memory-enable: foreign symlink: $exclude -> $(readlink "$exclude")" >&2; exit 4; }
+elif [ -f "$exclude" ]; then
+  foreign="$(awk '!/^#/ && NF {print}' "$exclude" || true)"
+  [ -z "$foreign" ] || { echo "code-memory-enable: $exclude has existing rules:" >&2; printf '%s\n' "$foreign" >&2; exit 4; }
 fi
+mkdir -p "$path/.git/info"
+ln -sfn "$CME_EXCLUDE_SRC" "$exclude"
 
-# --- .mcp.json: create / add codebase-memory-mcp key, preserve the rest ---
 repowise_bin="$(command -v repowise)"
 cbm_bin="$(command -v codebase-memory-mcp)"
 python3 - "$path" "$repowise_bin" "$cbm_bin" <<'PY'
@@ -95,23 +137,19 @@ if changed:
         f.write("\n")
 PY
 
-# --- post-commit hook: install repowise, then append indexer ---
-hook="$path/.git/hooks/post-commit"
-if ! grep -q 'repowise-hook-start' "$hook" 2>/dev/null; then
-  repowise hook install --no-workspace "$path"
-fi
-if ! grep -q 'codebase-memory-mcp cli index_repository' "$hook" 2>/dev/null; then
-  printf '%s\n' \
-    '# spec:082 codebase-memory: index repo into memory after commit' \
-    '( setsid nice -n 19 codebase-memory-mcp cli index_repository --repo-path "$PWD" --mode moderate >/dev/null 2>&1 & )' >> "$hook"
-fi
-chmod +x "$hook"
+ensure_stub "$path/.git/hooks/post-commit"
+ensure_stub "$path/.git/hooks/post-merge"
 
-# --- foreground index (no timeout/kill, bug #2271) ---
+if [ -d "$path/.repowise" ]; then
+  env -u OPENROUTER_API_KEY nice -n 19 "$repowise_bin" update --index-only --no-workspace --no-agents "$path"
+else
+  env -u OPENROUTER_API_KEY nice -n 19 "$repowise_bin" init --no-workspace --no-prose --no-editor-setup -y "$path"
+fi
+
 ma1="$(awk '/^MemAvailable:/ {print int($2/1024)}' /proc/meminfo)"
 sf1="$(awk '/^SwapFree:/ {print int($2/1024)}' /proc/meminfo)"
 t0="$(date +%s)"
-nice -n 19 codebase-memory-mcp cli index_repository --repo-path "$path" --mode moderate || { rc=$?; exit "$rc"; }
+nice -n 19 "$cbm_bin" cli index_repository --repo-path "$path" --mode moderate || { rc=$?; exit "$rc"; }
 t1="$(date +%s)"
 ma2="$(awk '/^MemAvailable:/ {print int($2/1024)}' /proc/meminfo)"
 sf2="$(awk '/^SwapFree:/ {print int($2/1024)}' /proc/meminfo)"
@@ -120,5 +158,5 @@ mem_min=$(( ma1 < ma2 ? ma1 : ma2 ))
 swap_min=$(( sf1 < sf2 ? sf1 : sf2 ))
 sec=$(( t1 - t0 ))
 
-printf '%s mcp=ok hook=ok cbm=ok exclude=ok sec=%s mem_min=%s swap_free_min=%s\n' \
+printf '%s mcp=ok hook=ok cbm=ok repowise=ok exclude=ok sec=%s mem_min=%s swap_free_min=%s\n' \
   "$base" "$sec" "$mem_min" "$swap_min"
