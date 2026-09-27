@@ -29,6 +29,8 @@ chmod +x "$TMP/bin/repowise" "$TMP/bin/codebase-memory-mcp"
 
 export PATH="$TMP/bin:$PATH"
 export CME_MIN_MEM_MB=0 CME_MIN_SWAP_MB=0
+export CME_EXCLUDE_SRC="$TMP/gitignore_global"
+printf '%s\n' '# global test ignores' '*.pyc' > "$CME_EXCLUDE_SRC"
 
 fails=0
 fail() { echo "FAIL: $1"; fails=$((fails+1)); }
@@ -100,6 +102,35 @@ set +e; "$enable" "$E" >/dev/null 2>&1; rc=$?; set -e
 F="$TMP/f"; mkrepo "$F"
 set +e; CME_MIN_MEM_MB=99999999 "$enable" "$F" >/dev/null 2>&1; rc=$?; set -e
 [ "$rc" -eq 3 ] || fail "f: rc=$rc (want 3)"
+
+# (g) .git/info/exclude becomes a symlink to CME_EXCLUDE_SRC
+G="$TMP/g"; mkrepo "$G"
+if ! "$enable" "$G" >/dev/null 2>&1; then
+  fail "g: enable failed"
+else
+  [ "$(readlink "$G/.git/info/exclude")" = "$CME_EXCLUDE_SRC" ] \
+    || fail "g: exclude not symlinked to source"
+fi
+
+# (h) rerun -> same symlink, rc 0
+if ! "$enable" "$G" >/dev/null 2>&1; then
+  fail "h: second enable failed"
+else
+  [ "$(readlink "$G/.git/info/exclude")" = "$CME_EXCLUDE_SRC" ] \
+    || fail "h: symlink changed on rerun"
+fi
+
+# (i) info/exclude with foreign rule foo/ -> rc 4, file untouched
+I="$TMP/i"; mkrepo "$I"
+printf 'foo/\n' > "$I/.git/info/exclude"
+set +e; "$enable" "$I" >/dev/null 2>&1; rc=$?; set -e
+[ "$rc" -eq 4 ] || fail "i: rc=$rc (want 4)"
+[ "$(cat "$I/.git/info/exclude")" = "foo/" ] || fail "i: file modified"
+
+# (k) missing source -> rc 4
+K="$TMP/k"; mkrepo "$K"
+set +e; CME_EXCLUDE_SRC="$TMP/no-such-source" "$enable" "$K" >/dev/null 2>&1; rc=$?; set -e
+[ "$rc" -eq 4 ] || fail "k: rc=$rc (want 4)"
 
 if [ "$fails" -ne 0 ]; then
   echo "FAILED: $fails check(s)"
