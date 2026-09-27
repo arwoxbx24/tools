@@ -133,6 +133,17 @@ K="$TMP/k"; mkrepo "$K"
 set +e; CME_EXCLUDE_SRC="$TMP/no-such-source" "$enable" "$K" >/dev/null 2>&1; rc=$?; set -e
 [ "$rc" -eq 4 ] || fail "k: rc=$rc (want 4)"
 
+# (l) info/exclude symlink to a foreign target -> rc 4, symlink untouched
+L="$TMP/l"; mkrepo "$L"
+mkdir -p "$L/.git/info"
+FOREIGN="$TMP/foreign-exclude"
+printf '%s\n' 'foo/' > "$FOREIGN"
+ln -sfn "$FOREIGN" "$L/.git/info/exclude"
+set +e; out="$("$enable" "$L" 2>&1)"; rc=$?; set -e
+[ "$rc" -eq 4 ] || fail "l: rc=$rc (want 4)"
+echo "$out" | grep -q 'foreign symlink' || fail "l: no foreign-symlink message"
+[ "$(readlink "$L/.git/info/exclude")" = "$FOREIGN" ] || fail "l: symlink changed"
+
 if [ "$fails" -ne 0 ]; then
   echo "FAILED: $fails check(s)"
   exit 1

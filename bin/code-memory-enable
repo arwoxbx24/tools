@@ -28,7 +28,9 @@ fi
 
 # --- exit 3: insufficient memory/swap ---
 mem_kb="$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)"
+: "${mem_kb:=0}"
 swap_kb="$(awk '/^SwapFree:/ {print $2}' /proc/meminfo)"
+: "${swap_kb:=0}"
 min_mem_kb=$(( CME_MIN_MEM_MB * 1024 ))
 min_swap_kb=$(( CME_MIN_SWAP_MB * 1024 ))
 if [ "$mem_kb" -lt "$min_mem_kb" ] || [ "$swap_kb" -lt "$min_swap_kb" ]; then
@@ -43,10 +45,15 @@ if [ ! -f "$CME_EXCLUDE_SRC" ]; then
   echo "code-memory-enable: exclude source not found: $CME_EXCLUDE_SRC" >&2
   exit 4
 fi
-if [ -L "$exclude" ] && [ "$(readlink "$exclude")" = "$CME_EXCLUDE_SRC" ]; then
-  : # already the correct symlink
+if [ -L "$exclude" ]; then
+  if [ "$(readlink "$exclude")" = "$CME_EXCLUDE_SRC" ]; then
+    : # already the correct symlink
+  else
+    echo "code-memory-enable: foreign symlink: $exclude -> $(readlink "$exclude")" >&2
+    exit 4
+  fi
 else
-  if [ -f "$exclude" ] && [ ! -L "$exclude" ]; then
+  if [ -f "$exclude" ]; then
     foreign="$(awk '!/^#/ && NF {print}' "$exclude" || true)"
     if [ -n "$foreign" ]; then
       echo "code-memory-enable: $exclude has existing rules:" >&2
