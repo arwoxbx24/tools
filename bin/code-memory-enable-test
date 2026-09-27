@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+set -eu
+
+TMP="$(mktemp -d /root/workspaces/sandbox/test-cme-XXXXXX)"
+trap 'rm -rf "$TMP"' EXIT
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+enable="$script_dir/code-memory-enable"
+
+export REPOWISE_LOG="$TMP/repowise.log"
+export CBM_LOG="$TMP/cbm.log"
+mkdir -p "$TMP/bin"
+
+cat > "$TMP/bin/repowise" <<'STUB'
+#!/usr/bin/env bash
+printf 'repowise %s\n' "$*" >> "$REPOWISE_LOG"
+if [ "${1:-}" = "hook" ] && [ "${2:-}" = "install" ]; then
+  repo="${!#}"
+  mkdir -p "$repo/.git/hooks"
+  printf '%s\n' '# repowise-hook-start' '# repowise-hook-end' > "$repo/.git/hooks/post-commit"
+fi
+STUB
+cat > "$TMP/bin/codebase-memory-mcp" <<'STUB'
+#!/usr/bin/env bash
+printf 'cbm %s\n' "$*" >> "$CBM_LOG"
+exit 0
+STUB
+chmod +x "$TMP/bin/repowise" "$TMP/bin/codebase-memory-mcp"
+
+export PATH="$TMP/bin:$PATH"
+export CME_MIN_MEM_MB=0 CME_MIN_SWAP_MB=0
+
+fails=0
+fail() { echo "FAIL: $1"; fails=$((fails+1)); }
+
+mkrepo() { mkdir -p "$1"; git -C "$1" init -q; }
+json_keys() {
+  python3 - "$1" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+print(" ".join(sorted(d["mcpServers"].keys())))
+PY
+}
+
+# (a) fresh git repo, no .mcp.json -> file with two keys
+A="$TMP/a"; mkrepo "$A"
+if ! "$enable" "$A" >/dev/null 2>&1; then
+  fail "a: enable failed"
+else
+  keys="$(json_keys "$A/.mcp.json")"
+  [ "$keys" = "codebase-memory-mcp repowise" ] || fail "a: keys=[$keys]"
+fi
+
+# (b) .mcp.json with only repowise -> CBM added, repowise preserved
+B="$TMP/b"; mkrepo "$B"
+BEFORE="$TMP/before-b.json"
+python3 - "$B" "$BEFORE" "$TMP/bin/repowise" <<'PY'
+import json, os, sys
+repo, out, rw = sys.argv[1], sys.argv[2], sys.argv[3]
+d = {"mcpServers": {"repowise": {"command": rw, "args": ["mcp", "--no-workspace"]}}}
+open(os.path.join(repo, ".mcp.json"), "w").write(json.dumps(d, indent=2))
+open(out, "w").write(json.dumps(d["mcpServers"]["repowise"], sort_keys=True))
+PY
+if ! "$enable" "$B" >/dev/null 2>&1; then
+  fail "b: enable failed"
+else
+  keys="$(json_keys "$B/.mcp.json")"
+  [ "$keys" = "codebase-memory-mcp repowise" ] || fail "b: keys=[$keys]"
+  python3 - "$B" "$BEFORE" <<'PY' || fail "b: repowise key changed"
+import json, sys
+repo, before = sys.argv[1], sys.argv[2]
+d = json.load(open(repo + "/.mcp.json"))
+sys.exit(0 if json.dumps(d["mcpServers"]["repowise"], sort_keys=True) == open(before).read().strip() else 1)
+PY
+fi
+
+# (c) rerun -> CBM line exactly once, .mcp.json byte-identical
+HA1="$(sha256sum "$A/.mcp.json" | cut -d' ' -f1)"
+if ! "$enable" "$A" >/dev/null 2>&1; then
+  fail "c: second enable failed"
+else
+  HA2="$(sha256sum "$A/.mcp.json" | cut -d' ' -f1)"
+  [ "$HA1" = "$HA2" ] || fail "c: .mcp.json changed on rerun"
+  [ -x "$A/.git/hooks/post-commit" ] || fail "c: post-commit not executable"
+  cnt="$(grep -c 'codebase-memory-mcp cli index_repository' "$A/.git/hooks/post-commit" || true)"
+  [ "$cnt" -eq 1 ] || fail "c: CBM line count=$cnt"
+fi
+
+# (d) no .git -> exit 2
+D="$TMP/d"; mkdir -p "$D"
+set +e; "$enable" "$D" >/dev/null 2>&1; rc=$?; set -e
+[ "$rc" -eq 2 ] || fail "d: rc=$rc (want 2)"
+
+# (e) path contains hh-scoring -> exit 2
+E="$TMP/hh-scoring-project"; mkrepo "$E"
+set +e; "$enable" "$E" >/dev/null 2>&1; rc=$?; set -e
+[ "$rc" -eq 2 ] || fail "e: rc=$rc (want 2)"
+
+# (f) impossible memory threshold -> exit 3
+F="$TMP/f"; mkrepo "$F"
+set +e; CME_MIN_MEM_MB=99999999 "$enable" "$F" >/dev/null 2>&1; rc=$?; set -e
+[ "$rc" -eq 3 ] || fail "f: rc=$rc (want 3)"
+
+if [ "$fails" -ne 0 ]; then
+  echo "FAILED: $fails check(s)"
+  exit 1
+fi
+echo "PASS"
+exit 0

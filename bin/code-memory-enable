@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+set -eu
+
+: "${CME_MIN_MEM_MB:=3072}"
+: "${CME_MIN_SWAP_MB:=1024}"
+
+path="${1:?usage: code-memory-enable <abs-project-path>}"
+base="$(basename "$path")"
+
+# --- exit 2: invalid target ---
+if [ ! -d "$path" ]; then
+  echo "code-memory-enable: not a directory: $path" >&2
+  exit 2
+fi
+if [ ! -d "$path/.git" ]; then
+  echo "code-memory-enable: not a git worktree (no .git): $path" >&2
+  exit 2
+fi
+case "$path" in
+  *hh-scoring*)
+    echo "code-memory-enable: blocklisted path: $path" >&2
+    exit 2 ;;
+esac
+if [ "$path" = "/root/workspaces/projects" ]; then
+  echo "code-memory-enable: forbidden path: $path" >&2
+  exit 2
+fi
+
+# --- exit 3: insufficient memory/swap ---
+mem_kb="$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)"
+swap_kb="$(awk '/^SwapFree:/ {print $2}' /proc/meminfo)"
+min_mem_kb=$(( CME_MIN_MEM_MB * 1024 ))
+min_swap_kb=$(( CME_MIN_SWAP_MB * 1024 ))
+if [ "$mem_kb" -lt "$min_mem_kb" ] || [ "$swap_kb" -lt "$min_swap_kb" ]; then
+  echo "code-memory-enable: insufficient memory/swap (mem=${mem_kb}kB swap=${swap_kb}kB)" >&2
+  exit 3
+fi
+
+# --- .mcp.json: create / add codebase-memory-mcp key, preserve the rest ---
+repowise_bin="$(command -v repowise)"
+cbm_bin="$(command -v codebase-memory-mcp)"
+python3 - "$path" "$repowise_bin" "$cbm_bin" <<'PY'
+import json, os, sys
+
+path, rw, cbm = sys.argv[1], sys.argv[2], sys.argv[3]
+mcp = os.path.join(path, ".mcp.json")
+cbm_key = {"command": cbm, "args": []}
+
+if not os.path.exists(mcp):
+    data = {"mcpServers": {
+        "repowise": {"command": rw, "args": ["mcp", "--no-workspace"]},
+        "codebase-memory-mcp": cbm_key,
+    }}
+    changed = True
+else:
+    with open(mcp) as f:
+        data = json.load(f)
+    data.setdefault("mcpServers", {})
+    changed = "codebase-memory-mcp" not in data["mcpServers"]
+    if changed:
+        data["mcpServers"]["codebase-memory-mcp"] = cbm_key
+
+if changed:
+    with open(mcp, "w") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+PY
+
+# --- post-commit hook: install repowise, then append indexer ---
+hook="$path/.git/hooks/post-commit"
+if ! grep -q 'repowise-hook-start' "$hook" 2>/dev/null; then
+  repowise hook install --no-workspace "$path"
+fi
+if ! grep -q 'codebase-memory-mcp cli index_repository' "$hook" 2>/dev/null; then
+  printf '%s\n' \
+    '# spec:082 codebase-memory: index repo into memory after commit' \
+    '( setsid nice -n 19 codebase-memory-mcp cli index_repository --repo-path "$PWD" --mode moderate >/dev/null 2>&1 & )' >> "$hook"
+fi
+chmod +x "$hook"
+
+# --- foreground index (no timeout/kill, bug #2271) ---
+ma1="$(awk '/^MemAvailable:/ {print int($2/1024)}' /proc/meminfo)"
+sf1="$(awk '/^SwapFree:/ {print int($2/1024)}' /proc/meminfo)"
+t0="$(date +%s)"
+if ! nice -n 19 codebase-memory-mcp cli index_repository --repo-path "$path" --mode moderate; then
+  rc=$?
+  exit "$rc"
+fi
+t1="$(date +%s)"
+ma2="$(awk '/^MemAvailable:/ {print int($2/1024)}' /proc/meminfo)"
+sf2="$(awk '/^SwapFree:/ {print int($2/1024)}' /proc/meminfo)"
+
+mem_min=$(( ma1 < ma2 ? ma1 : ma2 ))
+swap_min=$(( sf1 < sf2 ? sf1 : sf2 ))
+sec=$(( t1 - t0 ))
+
+printf '%s mcp=ok hook=ok cbm=ok sec=%s mem_min=%s swap_free_min=%s\n' \
+  "$base" "$sec" "$mem_min" "$swap_min"
