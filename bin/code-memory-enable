@@ -36,6 +36,28 @@ if [ "$mem_kb" -lt "$min_mem_kb" ] || [ "$swap_kb" -lt "$min_swap_kb" ]; then
   exit 3
 fi
 
+# --- step 3: target .git/info/exclude = symlink to CME_EXCLUDE_SRC ---
+: "${CME_EXCLUDE_SRC:=/root/.gitignore_global}"
+exclude="$path/.git/info/exclude"
+if [ ! -f "$CME_EXCLUDE_SRC" ]; then
+  echo "code-memory-enable: exclude source not found: $CME_EXCLUDE_SRC" >&2
+  exit 4
+fi
+if [ -L "$exclude" ] && [ "$(readlink "$exclude")" = "$CME_EXCLUDE_SRC" ]; then
+  : # already the correct symlink
+else
+  if [ -f "$exclude" ] && [ ! -L "$exclude" ]; then
+    foreign="$(awk '!/^#/ && NF {print}' "$exclude" || true)"
+    if [ -n "$foreign" ]; then
+      echo "code-memory-enable: $exclude has existing rules:" >&2
+      printf '%s\n' "$foreign" >&2
+      exit 4
+    fi
+  fi
+  mkdir -p "$path/.git/info"
+  ln -sfn "$CME_EXCLUDE_SRC" "$exclude"
+fi
+
 # --- .mcp.json: create / add codebase-memory-mcp key, preserve the rest ---
 repowise_bin="$(command -v repowise)"
 cbm_bin="$(command -v codebase-memory-mcp)"
@@ -91,5 +113,5 @@ mem_min=$(( ma1 < ma2 ? ma1 : ma2 ))
 swap_min=$(( sf1 < sf2 ? sf1 : sf2 ))
 sec=$(( t1 - t0 ))
 
-printf '%s mcp=ok hook=ok cbm=ok sec=%s mem_min=%s swap_free_min=%s\n' \
+printf '%s mcp=ok hook=ok cbm=ok exclude=ok sec=%s mem_min=%s swap_free_min=%s\n' \
   "$base" "$sec" "$mem_min" "$swap_min"
