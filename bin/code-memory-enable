@@ -141,7 +141,7 @@ PY
 ensure_stub "$path/.git/hooks/post-commit"
 ensure_stub "$path/.git/hooks/post-merge"
 
-if [ -d "$path/.repowise" ]; then
+if [ -f "$path/.repowise/state.json" ]; then
   env -u OPENROUTER_API_KEY nice -n 19 "$repowise_bin" update --index-only --no-workspace --no-agents "$path"
 else
   env -u OPENROUTER_API_KEY nice -n 19 "$repowise_bin" init --no-workspace --no-prose --no-editor-setup -y "$path"

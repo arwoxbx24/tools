@@ -195,7 +195,8 @@ OUT="$TMP/out/child"; mkrepo "$OUT"
 set +e; "$enable" "$OUT" >/dev/null 2>&1; rc=$?; set -e
 [ "$rc" -eq 2 ] || fail "о: outside-root rc=$rc (want 2)"
 
-# (п) no .repowise -> init; with .repowise -> update --index-only
+# (п) no .repowise -> init; .repowise without state.json -> init;
+#     .repowise with state.json -> update --index-only
 P="$TMP/p"; mkrepo "$P"
 : > "$REPOWISE_LOG"
 if ! "$enable" "$P" >/dev/null 2>&1; then
@@ -205,6 +206,18 @@ else
     || fail "п: repowise init not run"
 fi
 mkdir -p "$P/.repowise"
+printf 'repo: %s\n' "$P" > "$P/.repowise/config.yaml"
+: > "$REPOWISE_LOG"
+if ! "$enable" "$P" >/dev/null 2>&1; then
+  fail "п: init enable failed (dir, no state.json)"
+else
+  grep -q 'init --no-workspace --no-prose --no-editor-setup -y' "$REPOWISE_LOG" \
+    || fail "п: repowise init not run (dir, no state.json)"
+  if grep -q 'repowise update ' "$REPOWISE_LOG"; then
+    fail "п: repowise update run without state.json"
+  fi
+fi
+printf '{}\n' > "$P/.repowise/state.json"
 : > "$REPOWISE_LOG"
 if ! "$enable" "$P" >/dev/null 2>&1; then
   fail "п: update enable failed"
