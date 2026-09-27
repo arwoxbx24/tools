@@ -82,10 +82,7 @@ chmod +x "$hook"
 ma1="$(awk '/^MemAvailable:/ {print int($2/1024)}' /proc/meminfo)"
 sf1="$(awk '/^SwapFree:/ {print int($2/1024)}' /proc/meminfo)"
 t0="$(date +%s)"
-if ! nice -n 19 codebase-memory-mcp cli index_repository --repo-path "$path" --mode moderate; then
-  rc=$?
-  exit "$rc"
-fi
+nice -n 19 codebase-memory-mcp cli index_repository --repo-path "$path" --mode moderate || { rc=$?; exit "$rc"; }
 t1="$(date +%s)"
 ma2="$(awk '/^MemAvailable:/ {print int($2/1024)}' /proc/meminfo)"
 sf2="$(awk '/^SwapFree:/ {print int($2/1024)}' /proc/meminfo)"
