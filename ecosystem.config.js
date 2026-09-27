@@ -632,6 +632,31 @@ module.exports = {
       error_file: '/root/.pm2/logs/kp-landing-serve-error.log',
       out_file: '/root/.pm2/logs/kp-landing-serve-out.log'
     },
+    // spec:077 тест 1 «веб-чат» — демо владельцу, живёт до приёмки трёх тестов, убирается в T027
+    {
+      name: 'ui-chat-staging',
+      time: true,
+      merge_logs: true,
+      script: '/usr/bin/python3',
+      args: [
+        '-m',
+        'http.server',
+        '20101',
+        '--bind',
+        '0.0.0.0',
+        '--directory',
+        '/root/workspaces/sandbox/test-ui-chat/dist'
+      ],
+      cwd: '/root',
+      exec_mode: 'fork_mode',
+      instances: 1,
+      autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
+      error_file: '/root/.pm2/logs/ui-chat-staging-error.log',
+      out_file: '/root/.pm2/logs/ui-chat-staging-out.log'
+    },
     {
       name: 'kpd-proxy',
       time: true,
