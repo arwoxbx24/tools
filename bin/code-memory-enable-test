@@ -14,11 +14,6 @@ mkdir -p "$TMP/bin"
 cat > "$TMP/bin/repowise" <<'STUB'
 #!/usr/bin/env bash
 printf 'repowise %s\n' "$*" >> "$REPOWISE_LOG"
-if [ "${1:-}" = "hook" ] && [ "${2:-}" = "install" ]; then
-  repo="${!#}"
-  mkdir -p "$repo/.git/hooks"
-  printf '%s\n' '# repowise-hook-start' '# repowise-hook-end' > "$repo/.git/hooks/post-commit"
-fi
 STUB
 cat > "$TMP/bin/codebase-memory-mcp" <<'STUB'
 #!/usr/bin/env bash
@@ -29,7 +24,12 @@ chmod +x "$TMP/bin/repowise" "$TMP/bin/codebase-memory-mcp"
 
 export PATH="$TMP/bin:$PATH"
 export CME_MIN_MEM_MB=0 CME_MIN_SWAP_MB=0
+export CME_PROJECTS_ROOT="$TMP"
+export CME_DENY="$TMP/deny"
+export CME_LOCK="$TMP/lock"
+export CME_SELF="$enable"
 export CME_EXCLUDE_SRC="$TMP/gitignore_global"
+: > "$CME_DENY"
 printf '%s\n' '# global test ignores' '*.pyc' > "$CME_EXCLUDE_SRC"
 
 fails=0
@@ -76,7 +76,7 @@ sys.exit(0 if json.dumps(d["mcpServers"]["repowise"], sort_keys=True) == open(be
 PY
 fi
 
-# (c) rerun -> CBM line exactly once, .mcp.json byte-identical
+# (c) rerun -> stub exactly once in both hooks, .mcp.json byte-identical
 HA1="$(sha256sum "$A/.mcp.json" | cut -d' ' -f1)"
 if ! "$enable" "$A" >/dev/null 2>&1; then
   fail "c: second enable failed"
@@ -84,8 +84,10 @@ else
   HA2="$(sha256sum "$A/.mcp.json" | cut -d' ' -f1)"
   [ "$HA1" = "$HA2" ] || fail "c: .mcp.json changed on rerun"
   [ -x "$A/.git/hooks/post-commit" ] || fail "c: post-commit not executable"
-  cnt="$(grep -c 'codebase-memory-mcp cli index_repository' "$A/.git/hooks/post-commit" || true)"
-  [ "$cnt" -eq 1 ] || fail "c: CBM line count=$cnt"
+  cnt="$(grep -c '# code-memory-hook' "$A/.git/hooks/post-commit" || true)"
+  [ "$cnt" -eq 1 ] || fail "c: post-commit stub count=$cnt"
+  cnt="$(grep -c '# code-memory-hook' "$A/.git/hooks/post-merge" || true)"
+  [ "$cnt" -eq 1 ] || fail "c: post-merge stub count=$cnt"
 fi
 
 # (d) no .git -> exit 2
@@ -143,6 +145,91 @@ set +e; out="$("$enable" "$L" 2>&1)"; rc=$?; set -e
 [ "$rc" -eq 4 ] || fail "l: rc=$rc (want 4)"
 echo "$out" | grep -q 'foreign symlink' || fail "l: no foreign-symlink message"
 [ "$(readlink "$L/.git/info/exclude")" = "$FOREIGN" ] || fail "l: symlink changed"
+
+# (м) hook with repowise block + CBM line + foreign line -> cleaned, stub once, post-merge created
+M="$TMP/m"; mkrepo "$M"
+mkdir -p "$M/.git/hooks"
+printf '%s\n' \
+  '#!/bin/sh' \
+  '# repowise-hook-start' \
+  'repowise stuff here' \
+  '# repowise-hook-end' \
+  'echo keep' \
+  '# spec:082 codebase-memory: index repo into memory after commit' \
+  '( setsid nice -n 19 codebase-memory-mcp cli index_repository --repo-path "$PWD" --mode moderate >/dev/null 2>&1 & )' \
+  > "$M/.git/hooks/post-commit"
+if ! "$enable" "$M" >/dev/null 2>&1; then
+  fail "м: enable failed"
+else
+  [ -f "$M/.git/hooks/post-merge" ] || fail "м: post-merge not created"
+  if grep -q '# repowise-hook-start' "$M/.git/hooks/post-commit"; then
+    fail "м: repowise block not removed"
+  fi
+  if grep -q 'codebase-memory-mcp cli index_repository' "$M/.git/hooks/post-commit"; then
+    fail "м: CBM line not removed"
+  fi
+  cnt="$(grep -c '# code-memory-hook' "$M/.git/hooks/post-commit" || true)"
+  [ "$cnt" -eq 1 ] || fail "м: post-commit stub count=$cnt"
+  grep -q 'echo keep' "$M/.git/hooks/post-commit" || fail "м: foreign line removed"
+  cnt="$(grep -c '# code-memory-hook' "$M/.git/hooks/post-merge" || true)"
+  [ "$cnt" -eq 1 ] || fail "м: post-merge stub count=$cnt"
+fi
+
+# (н) rerun -> stub still exactly once in both hooks
+if ! "$enable" "$M" >/dev/null 2>&1; then
+  fail "н: second enable failed"
+else
+  cnt="$(grep -c '# code-memory-hook' "$M/.git/hooks/post-commit" || true)"
+  [ "$cnt" -eq 1 ] || fail "н: post-commit stub count=$cnt"
+  cnt="$(grep -c '# code-memory-hook' "$M/.git/hooks/post-merge" || true)"
+  [ "$cnt" -eq 1 ] || fail "н: post-merge stub count=$cnt"
+fi
+
+# (о) denied project -> 2; path outside CME_PROJECTS_ROOT -> 2
+O="$TMP/deny-proj"; mkrepo "$O"
+printf 'deny-proj\n' > "$CME_DENY"
+set +e; "$enable" "$O" >/dev/null 2>&1; rc=$?; set -e
+[ "$rc" -eq 2 ] || fail "о: deny rc=$rc (want 2)"
+: > "$CME_DENY"
+OUT="$TMP/out/child"; mkrepo "$OUT"
+set +e; "$enable" "$OUT" >/dev/null 2>&1; rc=$?; set -e
+[ "$rc" -eq 2 ] || fail "о: outside-root rc=$rc (want 2)"
+
+# (п) no .repowise -> init; with .repowise -> update --index-only
+P="$TMP/p"; mkrepo "$P"
+: > "$REPOWISE_LOG"
+if ! "$enable" "$P" >/dev/null 2>&1; then
+  fail "п: init enable failed"
+else
+  grep -q 'init --no-workspace --no-prose --no-editor-setup -y' "$REPOWISE_LOG" \
+    || fail "п: repowise init not run"
+fi
+mkdir -p "$P/.repowise"
+: > "$REPOWISE_LOG"
+if ! "$enable" "$P" >/dev/null 2>&1; then
+  fail "п: update enable failed"
+else
+  grep -q 'update --index-only --no-workspace --no-agents' "$REPOWISE_LOG" \
+    || fail "п: repowise update not run"
+  if grep -q 'repowise init ' "$REPOWISE_LOG"; then
+    fail "п: repowise init rerun after .repowise"
+  fi
+fi
+
+# (р) --template -> two executable files with stub; rerun -> once
+RT="$TMP/rt-hooks"
+rm -rf "$RT"
+set +e; "$enable" --template "$RT" >/dev/null 2>&1; rc=$?; set -e
+[ "$rc" -eq 0 ] || fail "р: template rc=$rc (want 0)"
+[ -x "$RT/post-commit" ] && [ -x "$RT/post-merge" ] || fail "р: template files not executable"
+for h in post-commit post-merge; do
+  cnt="$(grep -c '# code-memory-hook' "$RT/$h" || true)"
+  [ "$cnt" -eq 1 ] || fail "р: $h stub count=$cnt"
+done
+set +e; "$enable" --template "$RT" >/dev/null 2>&1; rc=$?; set -e
+[ "$rc" -eq 0 ] || fail "р: second template rc=$rc (want 0)"
+cnt="$(grep -c '# code-memory-hook' "$RT/post-commit" || true)"
+[ "$cnt" -eq 1 ] || fail "р: rerun post-commit stub count=$cnt"
 
 if [ "$fails" -ne 0 ]; then
   echo "FAILED: $fails check(s)"
