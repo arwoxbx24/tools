@@ -657,6 +657,28 @@ module.exports = {
       error_file: '/root/.pm2/logs/ui-chat-staging-error.log',
       out_file: '/root/.pm2/logs/ui-chat-staging-out.log'
     },
+    // spec:077 автоиндексация активного проекта (слово владельца 27.09) — живёт, пока песочница активна, убирается вместе с ui-chat-staging в T027
+    {
+      name: 'repowise-watch-test-ui-chat',
+      time: true,
+      merge_logs: true,
+      script: '/root/.local/bin/repowise',
+      args: [
+        'watch',
+        '/root/workspaces/sandbox/test-ui-chat',
+        '--no-workspace',
+        '--index-only'
+      ],
+      cwd: '/root/workspaces/sandbox/test-ui-chat',
+      exec_mode: 'fork_mode',
+      instances: 1,
+      autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
+      error_file: '/root/.pm2/logs/repowise-watch-test-ui-chat-error.log',
+      out_file: '/root/.pm2/logs/repowise-watch-test-ui-chat-out.log'
+    },
     {
       name: 'kpd-proxy',
       time: true,
