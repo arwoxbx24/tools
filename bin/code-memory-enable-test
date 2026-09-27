@@ -122,6 +122,7 @@ fi
 
 # (i) info/exclude with foreign rule foo/ -> rc 4, file untouched
 I="$TMP/i"; mkrepo "$I"
+mkdir -p "$I/.git/info"
 printf 'foo/\n' > "$I/.git/info/exclude"
 set +e; "$enable" "$I" >/dev/null 2>&1; rc=$?; set -e
 [ "$rc" -eq 4 ] || fail "i: rc=$rc (want 4)"
