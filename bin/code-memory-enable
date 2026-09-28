@@ -234,14 +234,5 @@ if [ "$untrack" -eq 1 ]; then
     git -C "$path" commit -q -m "chore(code-memory): untrack regenerable .repowise, sync .mcp.json (spec:085)"
     untrack="committed"
   fi
-  push="skip"
-  case "$base" in
-    stroyremont|client-video-transcription|auto-consultant-bot) ;;
-    *)
-      if git -C "$path" rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1; then
-        if git -C "$path" push -q; then push="ok"; else push="fail"; fi
-      fi
-      ;;
-  esac
-  printf '%s untrack=%s push=%s\n' "$base" "$untrack" "$push"
+  printf '%s untrack=%s\n' "$base" "$untrack"
 fi
