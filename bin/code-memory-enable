@@ -130,42 +130,6 @@ run_enable() {
 
   repowise_bin="$(command -v repowise)"
   cbm_bin="$(command -v codebase-memory-mcp)"
-  python3 - "$path" "$repowise_bin" "$cbm_bin" <<'PY'
-import json, os, sys
-
-path, rw, cbm = sys.argv[1], sys.argv[2], sys.argv[3]
-mcp = os.path.join(path, ".mcp.json")
-cbm_key = {"command": cbm, "args": []}
-
-if not os.path.exists(mcp):
-    data = {"mcpServers": {
-        "repowise": {"command": rw, "args": ["mcp", "--no-workspace"]},
-        "codebase-memory-mcp": cbm_key,
-    }}
-    changed = True
-else:
-    with open(mcp) as f:
-        data = json.load(f)
-    data.setdefault("mcpServers", {})
-    servers = data["mcpServers"]
-    changed = False
-    rw_cur = servers.get("repowise")
-    if rw_cur is None:
-        servers["repowise"] = {"command": rw, "args": ["mcp", "--no-workspace"]}
-        changed = True
-    elif "--no-workspace" not in (rw_cur.get("args") or []):
-        rw_cur["command"] = rw
-        rw_cur["args"] = ["mcp", "--no-workspace"]
-        changed = True
-    if "codebase-memory-mcp" not in servers:
-        servers["codebase-memory-mcp"] = cbm_key
-        changed = True
-
-if changed:
-    with open(mcp, "w") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-        f.write("\n")
-PY
 
   ensure_stub "$path/.git/hooks/post-commit"
   ensure_stub "$path/.git/hooks/post-merge"
@@ -215,7 +179,7 @@ PY
   swap_min=$(( sf1 < sf2 ? sf1 : sf2 ))
   sec=$(( t1 - t0 ))
 
-  printf '%s mcp=ok hook=ok cbm=ok repowise=ok exclude=ok sec=%s mem_min=%s swap_free_min=%s\n' \
+  printf '%s hook=ok cbm=ok repowise=ok exclude=ok sec=%s mem_min=%s swap_free_min=%s\n' \
     "$base" "$sec" "$mem_min" "$swap_min"
 }
 
@@ -223,7 +187,7 @@ run_enable
 
 if [ "$untrack" -eq 1 ]; then
   git -C "$path" rm -r -q --cached --ignore-unmatch .repowise
-  for f in .mcp.json .claude/CLAUDE.md; do
+  for f in .claude/CLAUDE.md; do
     if [ -f "$path/$f" ] && git -C "$path" ls-files --error-unmatch "$f" >/dev/null 2>&1; then
       git -C "$path" add -- "$f"
     fi
@@ -231,7 +195,7 @@ if [ "$untrack" -eq 1 ]; then
   if git -C "$path" diff --cached --quiet; then
     untrack="clean"
   else
-    git -C "$path" commit -q -m "chore(code-memory): untrack regenerable .repowise, sync .mcp.json (spec:085)"
+    git -C "$path" commit -q -m "chore(code-memory): untrack regenerable .repowise, sync .claude/CLAUDE.md (spec:086)"
     untrack="committed"
   fi
   printf '%s untrack=%s\n' "$base" "$untrack"
