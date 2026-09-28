@@ -292,6 +292,7 @@ mkdir -p "$T3/.repowise"
 printf 'binary\n' > "$T3/.repowise/x.pkl"
 git -C "$T3" add -f .repowise/x.pkl
 git -C "$T3" commit -q -m initial
+git -C "$T3" config core.hooksPath /dev/null
 BEFORE="$(git -C "$T3" rev-list --count HEAD)"
 set +e; out="$("$enable" --untrack "$T3" 2>&1)"; rc=$?; set -e
 [ "$rc" -eq 0 ] || fail "т3: untrack rc=$rc"
@@ -303,9 +304,6 @@ AFTER="$(git -C "$T3" rev-list --count HEAD)"
 
 # ТЗ spec:085 — script must never contain git push
 grep -c 'git.*push' "$enable" >/dev/null 2>&1 && fail "т3: git push found in script" || true
-
-# --untrack commit woke the post-commit hook; wait for it before cleanup.
-flock /tmp/code-memory.lock true
 
 if [ "$fails" -ne 0 ]; then
   echo "FAILED: $fails check(s)"
