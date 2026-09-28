@@ -1,0 +1,313 @@
+#!/usr/bin/env bash
+set -eu
+
+TMP="$(mktemp -d /root/workspaces/sandbox/test-cme-XXXXXX)"
+trap 'rm -rf "$TMP"' EXIT
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+enable="$script_dir/code-memory-enable"
+
+export REPOWISE_LOG="$TMP/repowise.log"
+export CBM_LOG="$TMP/cbm.log"
+mkdir -p "$TMP/bin"
+
+cat > "$TMP/bin/repowise" <<'STUB'
+#!/usr/bin/env bash
+printf 'repowise %s\n' "$*" >> "$REPOWISE_LOG"
+STUB
+cat > "$TMP/bin/codebase-memory-mcp" <<'STUB'
+#!/usr/bin/env bash
+printf 'cbm %s\n' "$*" >> "$CBM_LOG"
+exit 0
+STUB
+chmod +x "$TMP/bin/repowise" "$TMP/bin/codebase-memory-mcp"
+
+export PATH="$TMP/bin:$PATH"
+export CME_MIN_MEM_MB=0 CME_MIN_SWAP_MB=0
+export CME_PROJECTS_ROOT="$TMP"
+export CME_DENY="$TMP/deny"
+export CME_LOCK="$TMP/lock"
+export CME_SELF="$enable"
+export CME_EXCLUDE_SRC="$TMP/gitignore_global"
+: > "$CME_DENY"
+printf '%s\n' '# global test ignores' '*.pyc' > "$CME_EXCLUDE_SRC"
+
+fails=0
+fail() { echo "FAIL: $1"; fails=$((fails+1)); }
+
+mkrepo() { mkdir -p "$1"; git -C "$1" init -q; }
+json_keys() {
+  python3 - "$1" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+print(" ".join(sorted(d["mcpServers"].keys())))
+PY
+}
+
+# (a) fresh git repo, no .mcp.json -> file with two keys
+A="$TMP/a"; mkrepo "$A"
+if ! "$enable" "$A" >/dev/null 2>&1; then
+  fail "a: enable failed"
+else
+  keys="$(json_keys "$A/.mcp.json")"
+  [ "$keys" = "codebase-memory-mcp repowise" ] || fail "a: keys=[$keys]"
+fi
+
+# (b) .mcp.json with only repowise -> CBM added, repowise preserved
+B="$TMP/b"; mkrepo "$B"
+BEFORE="$TMP/before-b.json"
+python3 - "$B" "$BEFORE" "$TMP/bin/repowise" <<'PY'
+import json, os, sys
+repo, out, rw = sys.argv[1], sys.argv[2], sys.argv[3]
+d = {"mcpServers": {"repowise": {"command": rw, "args": ["mcp", "--no-workspace"]}}}
+open(os.path.join(repo, ".mcp.json"), "w").write(json.dumps(d, indent=2))
+open(out, "w").write(json.dumps(d["mcpServers"]["repowise"], sort_keys=True))
+PY
+if ! "$enable" "$B" >/dev/null 2>&1; then
+  fail "b: enable failed"
+else
+  keys="$(json_keys "$B/.mcp.json")"
+  [ "$keys" = "codebase-memory-mcp repowise" ] || fail "b: keys=[$keys]"
+  python3 - "$B" "$BEFORE" <<'PY' || fail "b: repowise key changed"
+import json, sys
+repo, before = sys.argv[1], sys.argv[2]
+d = json.load(open(repo + "/.mcp.json"))
+sys.exit(0 if json.dumps(d["mcpServers"]["repowise"], sort_keys=True) == open(before).read().strip() else 1)
+PY
+fi
+
+# (c) rerun -> stub exactly once in both hooks, .mcp.json byte-identical
+HA1="$(sha256sum "$A/.mcp.json" | cut -d' ' -f1)"
+if ! "$enable" "$A" >/dev/null 2>&1; then
+  fail "c: second enable failed"
+else
+  HA2="$(sha256sum "$A/.mcp.json" | cut -d' ' -f1)"
+  [ "$HA1" = "$HA2" ] || fail "c: .mcp.json changed on rerun"
+  [ -x "$A/.git/hooks/post-commit" ] || fail "c: post-commit not executable"
+  cnt="$(grep -c '# code-memory-hook' "$A/.git/hooks/post-commit" || true)"
+  [ "$cnt" -eq 1 ] || fail "c: post-commit stub count=$cnt"
+  cnt="$(grep -c '# code-memory-hook' "$A/.git/hooks/post-merge" || true)"
+  [ "$cnt" -eq 1 ] || fail "c: post-merge stub count=$cnt"
+fi
+
+# (d) no .git -> exit 2
+D="$TMP/d"; mkdir -p "$D"
+set +e; "$enable" "$D" >/dev/null 2>&1; rc=$?; set -e
+[ "$rc" -eq 2 ] || fail "d: rc=$rc (want 2)"
+
+# (e) path contains hh-scoring -> exit 2
+E="$TMP/hh-scoring-project"; mkrepo "$E"
+set +e; "$enable" "$E" >/dev/null 2>&1; rc=$?; set -e
+[ "$rc" -eq 2 ] || fail "e: rc=$rc (want 2)"
+
+# (f) impossible memory threshold -> exit 3
+F="$TMP/f"; mkrepo "$F"
+set +e; CME_MIN_MEM_MB=99999999 "$enable" "$F" >/dev/null 2>&1; rc=$?; set -e
+[ "$rc" -eq 3 ] || fail "f: rc=$rc (want 3)"
+
+# (g) .git/info/exclude becomes a symlink to CME_EXCLUDE_SRC
+G="$TMP/g"; mkrepo "$G"
+if ! "$enable" "$G" >/dev/null 2>&1; then
+  fail "g: enable failed"
+else
+  [ "$(readlink "$G/.git/info/exclude")" = "$CME_EXCLUDE_SRC" ] \
+    || fail "g: exclude not symlinked to source"
+fi
+
+# (h) rerun -> same symlink, rc 0
+if ! "$enable" "$G" >/dev/null 2>&1; then
+  fail "h: second enable failed"
+else
+  [ "$(readlink "$G/.git/info/exclude")" = "$CME_EXCLUDE_SRC" ] \
+    || fail "h: symlink changed on rerun"
+fi
+
+# (i) info/exclude with foreign rule foo/ -> rc 4, file untouched
+I="$TMP/i"; mkrepo "$I"
+mkdir -p "$I/.git/info"
+printf 'foo/\n' > "$I/.git/info/exclude"
+set +e; "$enable" "$I" >/dev/null 2>&1; rc=$?; set -e
+[ "$rc" -eq 4 ] || fail "i: rc=$rc (want 4)"
+[ "$(cat "$I/.git/info/exclude")" = "foo/" ] || fail "i: file modified"
+
+# (k) missing source -> rc 4
+K="$TMP/k"; mkrepo "$K"
+set +e; CME_EXCLUDE_SRC="$TMP/no-such-source" "$enable" "$K" >/dev/null 2>&1; rc=$?; set -e
+[ "$rc" -eq 4 ] || fail "k: rc=$rc (want 4)"
+
+# (l) info/exclude symlink to a foreign target -> rc 4, symlink untouched
+L="$TMP/l"; mkrepo "$L"
+mkdir -p "$L/.git/info"
+FOREIGN="$TMP/foreign-exclude"
+printf '%s\n' 'foo/' > "$FOREIGN"
+ln -sfn "$FOREIGN" "$L/.git/info/exclude"
+set +e; out="$("$enable" "$L" 2>&1)"; rc=$?; set -e
+[ "$rc" -eq 4 ] || fail "l: rc=$rc (want 4)"
+echo "$out" | grep -q 'foreign symlink' || fail "l: no foreign-symlink message"
+[ "$(readlink "$L/.git/info/exclude")" = "$FOREIGN" ] || fail "l: symlink changed"
+
+# (м) hook with repowise block + CBM line + foreign line -> cleaned, stub once, post-merge created
+M="$TMP/m"; mkrepo "$M"
+mkdir -p "$M/.git/hooks"
+printf '%s\n' \
+  '#!/bin/sh' \
+  '# repowise-hook-start' \
+  'repowise stuff here' \
+  '# repowise-hook-end' \
+  'echo keep' \
+  '# spec:082 codebase-memory: index repo into memory after commit' \
+  '( setsid nice -n 19 codebase-memory-mcp cli index_repository --repo-path "$PWD" --mode moderate >/dev/null 2>&1 & )' \
+  > "$M/.git/hooks/post-commit"
+if ! "$enable" "$M" >/dev/null 2>&1; then
+  fail "м: enable failed"
+else
+  [ -f "$M/.git/hooks/post-merge" ] || fail "м: post-merge not created"
+  if grep -q '# repowise-hook-start' "$M/.git/hooks/post-commit"; then
+    fail "м: repowise block not removed"
+  fi
+  if grep -q 'codebase-memory-mcp cli index_repository' "$M/.git/hooks/post-commit"; then
+    fail "м: CBM line not removed"
+  fi
+  cnt="$(grep -c '# code-memory-hook' "$M/.git/hooks/post-commit" || true)"
+  [ "$cnt" -eq 1 ] || fail "м: post-commit stub count=$cnt"
+  grep -q 'echo keep' "$M/.git/hooks/post-commit" || fail "м: foreign line removed"
+  cnt="$(grep -c '# code-memory-hook' "$M/.git/hooks/post-merge" || true)"
+  [ "$cnt" -eq 1 ] || fail "м: post-merge stub count=$cnt"
+fi
+
+# (н) rerun -> stub still exactly once in both hooks
+if ! "$enable" "$M" >/dev/null 2>&1; then
+  fail "н: second enable failed"
+else
+  cnt="$(grep -c '# code-memory-hook' "$M/.git/hooks/post-commit" || true)"
+  [ "$cnt" -eq 1 ] || fail "н: post-commit stub count=$cnt"
+  cnt="$(grep -c '# code-memory-hook' "$M/.git/hooks/post-merge" || true)"
+  [ "$cnt" -eq 1 ] || fail "н: post-merge stub count=$cnt"
+fi
+
+# (о) denied project -> 2; path outside CME_PROJECTS_ROOT -> 2
+O="$TMP/deny-proj"; mkrepo "$O"
+printf 'deny-proj\n' > "$CME_DENY"
+set +e; "$enable" "$O" >/dev/null 2>&1; rc=$?; set -e
+[ "$rc" -eq 2 ] || fail "о: deny rc=$rc (want 2)"
+: > "$CME_DENY"
+OUT="$TMP/out/child"; mkrepo "$OUT"
+set +e; "$enable" "$OUT" >/dev/null 2>&1; rc=$?; set -e
+[ "$rc" -eq 2 ] || fail "о: outside-root rc=$rc (want 2)"
+
+# (п) no .repowise -> init; .repowise without state.json -> init;
+#     .repowise with state.json -> update --index-only
+P="$TMP/p"; mkrepo "$P"
+: > "$REPOWISE_LOG"
+if ! "$enable" "$P" >/dev/null 2>&1; then
+  fail "п: init enable failed"
+else
+  grep -q 'init --no-workspace --no-prose --no-editor-setup --no-claude-md -y' "$REPOWISE_LOG" \
+    || fail "п: repowise init not run"
+fi
+mkdir -p "$P/.repowise"
+printf 'repo: %s\n' "$P" > "$P/.repowise/config.yaml"
+: > "$REPOWISE_LOG"
+if ! "$enable" "$P" >/dev/null 2>&1; then
+  fail "п: init enable failed (dir, no state.json)"
+else
+  grep -q 'init --no-workspace --no-prose --no-editor-setup --no-claude-md -y' "$REPOWISE_LOG" \
+    || fail "п: repowise init not run (dir, no state.json)"
+  if grep -q 'repowise update ' "$REPOWISE_LOG"; then
+    fail "п: repowise update run without state.json"
+  fi
+fi
+printf '{}\n' > "$P/.repowise/state.json"
+: > "$REPOWISE_LOG"
+if ! "$enable" "$P" >/dev/null 2>&1; then
+  fail "п: update enable failed"
+else
+  grep -q 'update --index-only --no-workspace --no-agents' "$REPOWISE_LOG" \
+    || fail "п: repowise update not run"
+  if grep -q 'repowise init ' "$REPOWISE_LOG"; then
+    fail "п: repowise init rerun after .repowise"
+  fi
+fi
+
+# (р) --template -> two executable files with stub; rerun -> once
+RT="$TMP/rt-hooks"
+rm -rf "$RT"
+set +e; "$enable" --template "$RT" >/dev/null 2>&1; rc=$?; set -e
+[ "$rc" -eq 0 ] || fail "р: template rc=$rc (want 0)"
+[ -x "$RT/post-commit" ] && [ -x "$RT/post-merge" ] || fail "р: template files not executable"
+for h in post-commit post-merge; do
+  cnt="$(grep -c '# code-memory-hook' "$RT/$h" || true)"
+  [ "$cnt" -eq 1 ] || fail "р: $h stub count=$cnt"
+done
+set +e; "$enable" --template "$RT" >/dev/null 2>&1; rc=$?; set -e
+[ "$rc" -eq 0 ] || fail "р: second template rc=$rc (want 0)"
+cnt="$(grep -c '# code-memory-hook' "$RT/post-commit" || true)"
+[ "$cnt" -eq 1 ] || fail "р: rerun post-commit stub count=$cnt"
+
+# (т1) update branch -> config.yaml gets editor_files.claude_md/agents_md: false, rest preserved
+T1="$TMP/t1-config"; mkrepo "$T1"
+mkdir -p "$T1/.repowise"
+printf 'repo: %s\noptions:\n  foo: true\n' "$T1" > "$T1/.repowise/config.yaml"
+printf '{}\n' > "$T1/.repowise/state.json"
+if ! "$enable" "$T1" >/dev/null 2>&1; then
+  fail "т1: enable failed"
+else
+  grep -q 'claude_md: false' "$T1/.repowise/config.yaml" || fail "т1: no claude_md: false"
+  grep -q 'agents_md: false' "$T1/.repowise/config.yaml" || fail "т1: no agents_md: false"
+  grep -q 'foo: true' "$T1/.repowise/config.yaml" || fail "т1: rest of config not preserved"
+  grep -q 'repo:' "$T1/.repowise/config.yaml" || fail "т1: repo line lost"
+fi
+
+# (т2) .mcp.json repowise without --no-workspace -> canon; second run mtime unchanged
+T2="$TMP/t2-mcp"; mkrepo "$T2"
+python3 - "$T2" "$TMP/bin/repowise" <<'PY'
+import json, os, sys
+repo, rw = sys.argv[1], sys.argv[2]
+d = {"mcpServers": {"repowise": {"command": rw, "args": ["mcp"]}}}
+open(os.path.join(repo, ".mcp.json"), "w").write(json.dumps(d, indent=2))
+PY
+if ! "$enable" "$T2" >/dev/null 2>&1; then
+  fail "т2: enable failed"
+else
+  python3 - "$T2" <<'PY' || fail "т2: repowise not canonical"
+import json, sys
+d = json.load(open(sys.argv[1] + "/.mcp.json"))
+r = d["mcpServers"]["repowise"]
+sys.exit(0 if r["args"] == ["mcp", "--no-workspace"] else 1)
+PY
+fi
+MT1="$(stat -c %y "$T2/.mcp.json")"
+if ! "$enable" "$T2" >/dev/null 2>&1; then
+  fail "т2: second enable failed"
+else
+  MT2="$(stat -c %y "$T2/.mcp.json")"
+  [ "$MT1" = "$MT2" ] || fail "т2: mtime changed on rerun"
+fi
+
+# (т3) tracked .repowise/x.pkl -> --untrack: ls-files empty, file on disk, +1 commit, no push
+T3="$TMP/t3-untrack"; mkrepo "$T3"
+git -C "$T3" config user.email 'cme-test@example.com'
+git -C "$T3" config user.name 'cme-test'
+mkdir -p "$T3/.repowise"
+printf 'binary\n' > "$T3/.repowise/x.pkl"
+git -C "$T3" add -f .repowise/x.pkl
+git -C "$T3" commit -q -m initial
+git -C "$T3" config core.hooksPath /dev/null
+BEFORE="$(git -C "$T3" rev-list --count HEAD)"
+set +e; out="$("$enable" --untrack "$T3" 2>&1)"; rc=$?; set -e
+[ "$rc" -eq 0 ] || fail "т3: untrack rc=$rc"
+echo "$out" | grep -qv 'push=' || fail "т3: output contains push="
+[ -z "$(git -C "$T3" ls-files .repowise)" ] || fail "т3: .repowise still tracked"
+[ -f "$T3/.repowise/x.pkl" ] || fail "т3: x.pkl removed from disk"
+AFTER="$(git -C "$T3" rev-list --count HEAD)"
+[ $((AFTER - BEFORE)) -eq 1 ] || fail "т3: commits delta=$((AFTER-BEFORE))"
+
+# ТЗ spec:085 — script must never contain git push
+grep -c 'git.*push' "$enable" >/dev/null 2>&1 && fail "т3: git push found in script" || true
+
+if [ "$fails" -ne 0 ]; then
+  echo "FAILED: $fails check(s)"
+  exit 1
+fi
+echo "PASS"
+exit 0
