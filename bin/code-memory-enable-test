@@ -36,53 +36,19 @@ fails=0
 fail() { echo "FAIL: $1"; fails=$((fails+1)); }
 
 mkrepo() { mkdir -p "$1"; git -C "$1" init -q; }
-json_keys() {
-  python3 - "$1" <<'PY'
-import json, sys
-d = json.load(open(sys.argv[1]))
-print(" ".join(sorted(d["mcpServers"].keys())))
-PY
-}
 
-# (a) fresh git repo, no .mcp.json -> file with two keys
+# (a) fresh git repo -> .mcp.json is never created
 A="$TMP/a"; mkrepo "$A"
 if ! "$enable" "$A" >/dev/null 2>&1; then
   fail "a: enable failed"
 else
-  keys="$(json_keys "$A/.mcp.json")"
-  [ "$keys" = "codebase-memory-mcp repowise" ] || fail "a: keys=[$keys]"
+  [ ! -e "$A/.mcp.json" ] || fail "a: .mcp.json created"
 fi
 
-# (b) .mcp.json with only repowise -> CBM added, repowise preserved
-B="$TMP/b"; mkrepo "$B"
-BEFORE="$TMP/before-b.json"
-python3 - "$B" "$BEFORE" "$TMP/bin/repowise" <<'PY'
-import json, os, sys
-repo, out, rw = sys.argv[1], sys.argv[2], sys.argv[3]
-d = {"mcpServers": {"repowise": {"command": rw, "args": ["mcp", "--no-workspace"]}}}
-open(os.path.join(repo, ".mcp.json"), "w").write(json.dumps(d, indent=2))
-open(out, "w").write(json.dumps(d["mcpServers"]["repowise"], sort_keys=True))
-PY
-if ! "$enable" "$B" >/dev/null 2>&1; then
-  fail "b: enable failed"
-else
-  keys="$(json_keys "$B/.mcp.json")"
-  [ "$keys" = "codebase-memory-mcp repowise" ] || fail "b: keys=[$keys]"
-  python3 - "$B" "$BEFORE" <<'PY' || fail "b: repowise key changed"
-import json, sys
-repo, before = sys.argv[1], sys.argv[2]
-d = json.load(open(repo + "/.mcp.json"))
-sys.exit(0 if json.dumps(d["mcpServers"]["repowise"], sort_keys=True) == open(before).read().strip() else 1)
-PY
-fi
-
-# (c) rerun -> stub exactly once in both hooks, .mcp.json byte-identical
-HA1="$(sha256sum "$A/.mcp.json" | cut -d' ' -f1)"
+# (c) rerun -> stub exactly once in both hooks
 if ! "$enable" "$A" >/dev/null 2>&1; then
   fail "c: second enable failed"
 else
-  HA2="$(sha256sum "$A/.mcp.json" | cut -d' ' -f1)"
-  [ "$HA1" = "$HA2" ] || fail "c: .mcp.json changed on rerun"
   [ -x "$A/.git/hooks/post-commit" ] || fail "c: post-commit not executable"
   cnt="$(grep -c '# code-memory-hook' "$A/.git/hooks/post-commit" || true)"
   [ "$cnt" -eq 1 ] || fail "c: post-commit stub count=$cnt"
@@ -258,32 +224,6 @@ else
   grep -q 'repo:' "$T1/.repowise/config.yaml" || fail "т1: repo line lost"
 fi
 
-# (т2) .mcp.json repowise without --no-workspace -> canon; second run mtime unchanged
-T2="$TMP/t2-mcp"; mkrepo "$T2"
-python3 - "$T2" "$TMP/bin/repowise" <<'PY'
-import json, os, sys
-repo, rw = sys.argv[1], sys.argv[2]
-d = {"mcpServers": {"repowise": {"command": rw, "args": ["mcp"]}}}
-open(os.path.join(repo, ".mcp.json"), "w").write(json.dumps(d, indent=2))
-PY
-if ! "$enable" "$T2" >/dev/null 2>&1; then
-  fail "т2: enable failed"
-else
-  python3 - "$T2" <<'PY' || fail "т2: repowise not canonical"
-import json, sys
-d = json.load(open(sys.argv[1] + "/.mcp.json"))
-r = d["mcpServers"]["repowise"]
-sys.exit(0 if r["args"] == ["mcp", "--no-workspace"] else 1)
-PY
-fi
-MT1="$(stat -c %y "$T2/.mcp.json")"
-if ! "$enable" "$T2" >/dev/null 2>&1; then
-  fail "т2: second enable failed"
-else
-  MT2="$(stat -c %y "$T2/.mcp.json")"
-  [ "$MT1" = "$MT2" ] || fail "т2: mtime changed on rerun"
-fi
-
 # (т3) tracked .repowise/x.pkl -> --untrack: ls-files empty, file on disk, +1 commit, no push
 T3="$TMP/t3-untrack"; mkrepo "$T3"
 git -C "$T3" config user.email 'cme-test@example.com'
@@ -304,6 +244,13 @@ AFTER="$(git -C "$T3" rev-list --count HEAD)"
 
 # ТЗ spec:085 — script must never contain git push
 grep -c 'git.*push' "$enable" >/dev/null 2>&1 && fail "т3: git push found in script" || true
+
+# ТЗ spec:086 — script must never mention .mcp.json
+n="$(grep -c 'mcp\.json' "$enable" || true)"
+[ "$n" -eq 0 ] || fail "т2: script still references mcp.json ($n)"
+
+# ТЗ spec:086 — .mcp.json must not exist on test repo after run
+[ ! -e "$A/.mcp.json" ] || fail "т2: .mcp.json exists after run"
 
 if [ "$fails" -ne 0 ]; then
   echo "FAILED: $fails check(s)"
