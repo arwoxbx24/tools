@@ -1,0 +1,32 @@
+#!/bin/sh
+# gitleaks-диспетчер git-хуков: сканирование секретов + цепочка хуков репо.
+name=$(basename "$0")
+Z=0000000000000000000000000000000000000000
+
+if [ "$name" = "pre-push" ]; then
+  tmp=$(mktemp) || exit 1
+  trap 'rm -f "$tmp"' EXIT HUP INT TERM
+  cat > "$tmp"
+  while read -r local_ref local_sha remote_ref remote_sha; do
+    [ "$local_sha" = "$Z" ] && continue      # удаление ветки — пропуск
+    if [ "$remote_sha" = "$Z" ]; then
+      range="$local_sha --not --remotes"     # новая ветка
+    else
+      range="$remote_sha..$local_sha"
+    fi
+    if ! /root/.local/bin/gitleaks git --no-banner --redact --log-opts="$range"; then
+      echo "BLOCKED: gitleaks нашёл секрет в отправляемых коммитах ($range)" >&2
+      exit 1
+    fi
+  done < "$tmp"
+fi
+
+hook="$(git rev-parse --git-common-dir)/hooks/$name"
+if [ -x "$hook" ]; then
+  if [ "$name" = "pre-push" ]; then
+    exec "$hook" "$@" < "$tmp"
+  else
+    exec "$hook" "$@"
+  fi
+fi
+exit 0
