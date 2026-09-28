@@ -284,7 +284,7 @@ else
   [ "$MT1" = "$MT2" ] || fail "т2: mtime changed on rerun"
 fi
 
-# (т3) tracked .repowise/x.pkl -> --untrack: ls-files empty, file on disk, +1 commit, push=skip
+# (т3) tracked .repowise/x.pkl -> --untrack: ls-files empty, file on disk, +1 commit, no push
 T3="$TMP/t3-untrack"; mkrepo "$T3"
 git -C "$T3" config user.email 'cme-test@example.com'
 git -C "$T3" config user.name 'cme-test'
@@ -295,11 +295,14 @@ git -C "$T3" commit -q -m initial
 BEFORE="$(git -C "$T3" rev-list --count HEAD)"
 set +e; out="$("$enable" --untrack "$T3" 2>&1)"; rc=$?; set -e
 [ "$rc" -eq 0 ] || fail "т3: untrack rc=$rc"
-echo "$out" | grep -q 'push=skip' || fail "т3: not push=skip"
+echo "$out" | grep -qv 'push=' || fail "т3: output contains push="
 [ -z "$(git -C "$T3" ls-files .repowise)" ] || fail "т3: .repowise still tracked"
 [ -f "$T3/.repowise/x.pkl" ] || fail "т3: x.pkl removed from disk"
 AFTER="$(git -C "$T3" rev-list --count HEAD)"
 [ $((AFTER - BEFORE)) -eq 1 ] || fail "т3: commits delta=$((AFTER-BEFORE))"
+
+# ТЗ spec:085 — script must never contain git push
+grep -c 'git.*push' "$enable" >/dev/null 2>&1 && fail "т3: git push found in script" || true
 
 # --untrack commit woke the post-commit hook; wait for it before cleanup.
 flock /tmp/code-memory.lock true
