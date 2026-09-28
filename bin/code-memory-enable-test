@@ -301,6 +301,9 @@ echo "$out" | grep -q 'push=skip' || fail "т3: not push=skip"
 AFTER="$(git -C "$T3" rev-list --count HEAD)"
 [ $((AFTER - BEFORE)) -eq 1 ] || fail "т3: commits delta=$((AFTER-BEFORE))"
 
+# --untrack commit woke the post-commit hook; wait for it before cleanup.
+flock /tmp/code-memory.lock true
+
 if [ "$fails" -ne 0 ]; then
   echo "FAILED: $fails check(s)"
   exit 1
