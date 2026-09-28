@@ -202,7 +202,7 @@ P="$TMP/p"; mkrepo "$P"
 if ! "$enable" "$P" >/dev/null 2>&1; then
   fail "п: init enable failed"
 else
-  grep -q 'init --no-workspace --no-prose --no-editor-setup -y' "$REPOWISE_LOG" \
+  grep -q 'init --no-workspace --no-prose --no-editor-setup --no-claude-md -y' "$REPOWISE_LOG" \
     || fail "п: repowise init not run"
 fi
 mkdir -p "$P/.repowise"
@@ -211,7 +211,7 @@ printf 'repo: %s\n' "$P" > "$P/.repowise/config.yaml"
 if ! "$enable" "$P" >/dev/null 2>&1; then
   fail "п: init enable failed (dir, no state.json)"
 else
-  grep -q 'init --no-workspace --no-prose --no-editor-setup -y' "$REPOWISE_LOG" \
+  grep -q 'init --no-workspace --no-prose --no-editor-setup --no-claude-md -y' "$REPOWISE_LOG" \
     || fail "п: repowise init not run (dir, no state.json)"
   if grep -q 'repowise update ' "$REPOWISE_LOG"; then
     fail "п: repowise update run without state.json"
@@ -243,6 +243,63 @@ set +e; "$enable" --template "$RT" >/dev/null 2>&1; rc=$?; set -e
 [ "$rc" -eq 0 ] || fail "р: second template rc=$rc (want 0)"
 cnt="$(grep -c '# code-memory-hook' "$RT/post-commit" || true)"
 [ "$cnt" -eq 1 ] || fail "р: rerun post-commit stub count=$cnt"
+
+# (т1) update branch -> config.yaml gets editor_files.claude_md/agents_md: false, rest preserved
+T1="$TMP/t1-config"; mkrepo "$T1"
+mkdir -p "$T1/.repowise"
+printf 'repo: %s\noptions:\n  foo: true\n' "$T1" > "$T1/.repowise/config.yaml"
+printf '{}\n' > "$T1/.repowise/state.json"
+if ! "$enable" "$T1" >/dev/null 2>&1; then
+  fail "т1: enable failed"
+else
+  grep -q 'claude_md: false' "$T1/.repowise/config.yaml" || fail "т1: no claude_md: false"
+  grep -q 'agents_md: false' "$T1/.repowise/config.yaml" || fail "т1: no agents_md: false"
+  grep -q 'foo: true' "$T1/.repowise/config.yaml" || fail "т1: rest of config not preserved"
+  grep -q 'repo:' "$T1/.repowise/config.yaml" || fail "т1: repo line lost"
+fi
+
+# (т2) .mcp.json repowise without --no-workspace -> canon; second run mtime unchanged
+T2="$TMP/t2-mcp"; mkrepo "$T2"
+python3 - "$T2" "$TMP/bin/repowise" <<'PY'
+import json, os, sys
+repo, rw = sys.argv[1], sys.argv[2]
+d = {"mcpServers": {"repowise": {"command": rw, "args": ["mcp"]}}}
+open(os.path.join(repo, ".mcp.json"), "w").write(json.dumps(d, indent=2))
+PY
+if ! "$enable" "$T2" >/dev/null 2>&1; then
+  fail "т2: enable failed"
+else
+  python3 - "$T2" <<'PY' || fail "т2: repowise not canonical"
+import json, sys
+d = json.load(open(sys.argv[1] + "/.mcp.json"))
+r = d["mcpServers"]["repowise"]
+sys.exit(0 if r["args"] == ["mcp", "--no-workspace"] else 1)
+PY
+fi
+MT1="$(stat -c %y "$T2/.mcp.json")"
+if ! "$enable" "$T2" >/dev/null 2>&1; then
+  fail "т2: second enable failed"
+else
+  MT2="$(stat -c %y "$T2/.mcp.json")"
+  [ "$MT1" = "$MT2" ] || fail "т2: mtime changed on rerun"
+fi
+
+# (т3) tracked .repowise/x.pkl -> --untrack: ls-files empty, file on disk, +1 commit, push=skip
+T3="$TMP/t3-untrack"; mkrepo "$T3"
+git -C "$T3" config user.email 'cme-test@example.com'
+git -C "$T3" config user.name 'cme-test'
+mkdir -p "$T3/.repowise"
+printf 'binary\n' > "$T3/.repowise/x.pkl"
+git -C "$T3" add .repowise/x.pkl
+git -C "$T3" commit -q -m initial
+BEFORE="$(git -C "$T3" rev-list --count HEAD)"
+set +e; out="$("$enable" --untrack "$T3" 2>&1)"; rc=$?; set -e
+[ "$rc" -eq 0 ] || fail "т3: untrack rc=$rc"
+echo "$out" | grep -q 'push=skip' || fail "т3: not push=skip"
+[ -z "$(git -C "$T3" ls-files .repowise)" ] || fail "т3: .repowise still tracked"
+[ -f "$T3/.repowise/x.pkl" ] || fail "т3: x.pkl removed from disk"
+AFTER="$(git -C "$T3" rev-list --count HEAD)"
+[ $((AFTER - BEFORE)) -eq 1 ] || fail "т3: commits delta=$((AFTER-BEFORE))"
 
 if [ "$fails" -ne 0 ]; then
   echo "FAILED: $fails check(s)"

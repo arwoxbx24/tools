@@ -7,6 +7,8 @@ set -eu
 : "${CME_DENY:=/root/workspaces/tools/config/code-memory.deny}"
 : "${CME_LOCK:=/tmp/code-memory.lock}"
 : "${CME_SELF:="$0"}"
+: "${CBM_MEM_BUDGET_MB:=2048}" "${CBM_WORKERS:=2}"
+export CBM_MEM_BUDGET_MB CBM_WORKERS
 
 case "$CME_SELF" in
   /*) ;;
@@ -39,6 +41,7 @@ ensure_stub() {
   chmod +x "$hook"
 }
 
+untrack=0
 case "${1:-}" in
   --template)
     if [ $# -lt 2 ]; then
@@ -49,6 +52,14 @@ case "${1:-}" in
     ensure_stub "$2/post-commit"
     ensure_stub "$2/post-merge"
     exit 0
+    ;;
+  --untrack)
+    if [ $# -lt 2 ]; then
+      echo "usage: code-memory-enable --untrack <abs-project-path>" >&2
+      exit 2
+    fi
+    untrack=1
+    shift
     ;;
   "")
     echo "usage: code-memory-enable <abs-project-path>" >&2
@@ -83,35 +94,43 @@ case "$path" in
 esac
 [ "$path" = "/root/workspaces/projects" ] && { echo "code-memory-enable: forbidden path: $path" >&2; exit 2; }
 
-mem_kb="$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)"
-: "${mem_kb:=0}"
-swap_kb="$(awk '/^SwapFree:/ {print $2}' /proc/meminfo)"
-: "${swap_kb:=0}"
-min_mem_kb=$(( CME_MIN_MEM_MB * 1024 ))
-min_swap_kb=$(( CME_MIN_SWAP_MB * 1024 ))
-if [ "$mem_kb" -lt "$min_mem_kb" ] || [ "$swap_kb" -lt "$min_swap_kb" ]; then
-  echo "code-memory-enable: insufficient memory/swap (mem=${mem_kb}kB swap=${swap_kb}kB)" >&2
-  exit 3
+if [ "$untrack" -eq 1 ]; then
+  if ! git -C "$path" diff --cached --quiet; then
+    echo "$base untrack=skip staged"
+    exit 0
+  fi
 fi
 
-: "${CME_EXCLUDE_SRC:=/root/.gitignore_global}"
-exclude="$path/.git/info/exclude"
-if [ ! -f "$CME_EXCLUDE_SRC" ]; then
-  echo "code-memory-enable: exclude source not found: $CME_EXCLUDE_SRC" >&2
-  exit 4
-fi
-if [ -L "$exclude" ]; then
-  [ "$(readlink "$exclude")" = "$CME_EXCLUDE_SRC" ] || { echo "code-memory-enable: foreign symlink: $exclude -> $(readlink "$exclude")" >&2; exit 4; }
-elif [ -f "$exclude" ]; then
-  foreign="$(awk '!/^#/ && NF {print}' "$exclude" || true)"
-  [ -z "$foreign" ] || { echo "code-memory-enable: $exclude has existing rules:" >&2; printf '%s\n' "$foreign" >&2; exit 4; }
-fi
-mkdir -p "$path/.git/info"
-ln -sfn "$CME_EXCLUDE_SRC" "$exclude"
+run_enable() {
+  mem_kb="$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)"
+  : "${mem_kb:=0}"
+  swap_kb="$(awk '/^SwapFree:/ {print $2}' /proc/meminfo)"
+  : "${swap_kb:=0}"
+  min_mem_kb=$(( CME_MIN_MEM_MB * 1024 ))
+  min_swap_kb=$(( CME_MIN_SWAP_MB * 1024 ))
+  if [ "$mem_kb" -lt "$min_mem_kb" ] || [ "$swap_kb" -lt "$min_swap_kb" ]; then
+    echo "code-memory-enable: insufficient memory/swap (mem=${mem_kb}kB swap=${swap_kb}kB)" >&2
+    exit 3
+  fi
 
-repowise_bin="$(command -v repowise)"
-cbm_bin="$(command -v codebase-memory-mcp)"
-python3 - "$path" "$repowise_bin" "$cbm_bin" <<'PY'
+  : "${CME_EXCLUDE_SRC:=/root/.gitignore_global}"
+  exclude="$path/.git/info/exclude"
+  if [ ! -f "$CME_EXCLUDE_SRC" ]; then
+    echo "code-memory-enable: exclude source not found: $CME_EXCLUDE_SRC" >&2
+    exit 4
+  fi
+  if [ -L "$exclude" ]; then
+    [ "$(readlink "$exclude")" = "$CME_EXCLUDE_SRC" ] || { echo "code-memory-enable: foreign symlink: $exclude -> $(readlink "$exclude")" >&2; exit 4; }
+  elif [ -f "$exclude" ]; then
+    foreign="$(awk '!/^#/ && NF {print}' "$exclude" || true)"
+    [ -z "$foreign" ] || { echo "code-memory-enable: $exclude has existing rules:" >&2; printf '%s\n' "$foreign" >&2; exit 4; }
+  fi
+  mkdir -p "$path/.git/info"
+  ln -sfn "$CME_EXCLUDE_SRC" "$exclude"
+
+  repowise_bin="$(command -v repowise)"
+  cbm_bin="$(command -v codebase-memory-mcp)"
+  python3 - "$path" "$repowise_bin" "$cbm_bin" <<'PY'
 import json, os, sys
 
 path, rw, cbm = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -128,9 +147,19 @@ else:
     with open(mcp) as f:
         data = json.load(f)
     data.setdefault("mcpServers", {})
-    changed = "codebase-memory-mcp" not in data["mcpServers"]
-    if changed:
-        data["mcpServers"]["codebase-memory-mcp"] = cbm_key
+    servers = data["mcpServers"]
+    changed = False
+    rw_cur = servers.get("repowise")
+    if rw_cur is None:
+        servers["repowise"] = {"command": rw, "args": ["mcp", "--no-workspace"]}
+        changed = True
+    elif "--no-workspace" not in (rw_cur.get("args") or []):
+        rw_cur["command"] = rw
+        rw_cur["args"] = ["mcp", "--no-workspace"]
+        changed = True
+    if "codebase-memory-mcp" not in servers:
+        servers["codebase-memory-mcp"] = cbm_key
+        changed = True
 
 if changed:
     with open(mcp, "w") as f:
@@ -138,26 +167,81 @@ if changed:
         f.write("\n")
 PY
 
-ensure_stub "$path/.git/hooks/post-commit"
-ensure_stub "$path/.git/hooks/post-merge"
+  ensure_stub "$path/.git/hooks/post-commit"
+  ensure_stub "$path/.git/hooks/post-merge"
 
-if [ -f "$path/.repowise/state.json" ]; then
-  env -u OPENROUTER_API_KEY nice -n 19 "$repowise_bin" update --index-only --no-workspace --no-agents "$path"
-else
-  env -u OPENROUTER_API_KEY nice -n 19 "$repowise_bin" init --no-workspace --no-prose --no-editor-setup -y "$path"
+  if [ -f "$path/.repowise/state.json" ]; then
+    python3 - "$path" <<'PY'
+import os, sys
+
+try:
+    import yaml
+except Exception:
+    sys.exit(0)
+
+path = sys.argv[1]
+cfg = os.path.join(path, ".repowise", "config.yaml")
+if not os.path.exists(cfg):
+    sys.exit(0)
+
+with open(cfg) as f:
+    data = yaml.safe_load(f) or {}
+editor = data.setdefault("editor_files", {})
+if not isinstance(editor, dict):
+    editor = data["editor_files"] = {}
+changed = editor.get("claude_md") is not False or editor.get("agents_md") is not False
+editor["claude_md"] = False
+editor["agents_md"] = False
+if changed:
+    with open(cfg, "w") as f:
+        yaml.safe_dump(data, f, default_flow_style=False, sort_keys=False)
+PY
+    env -u OPENAI_API_KEY -u GEMINI_API_KEY -u OPENROUTER_API_KEY \
+      nice -n 19 "$repowise_bin" update --index-only --no-workspace --no-agents "$path"
+  else
+    env -u OPENAI_API_KEY -u GEMINI_API_KEY -u OPENROUTER_API_KEY \
+      nice -n 19 "$repowise_bin" init --no-workspace --no-prose --no-editor-setup --no-claude-md -y "$path"
+  fi
+
+  ma1="$(awk '/^MemAvailable:/ {print int($2/1024)}' /proc/meminfo)"
+  sf1="$(awk '/^SwapFree:/ {print int($2/1024)}' /proc/meminfo)"
+  t0="$(date +%s)"
+  nice -n 19 "$cbm_bin" cli index_repository --repo-path "$path" --mode moderate || { rc=$?; exit "$rc"; }
+  t1="$(date +%s)"
+  ma2="$(awk '/^MemAvailable:/ {print int($2/1024)}' /proc/meminfo)"
+  sf2="$(awk '/^SwapFree:/ {print int($2/1024)}' /proc/meminfo)"
+
+  mem_min=$(( ma1 < ma2 ? ma1 : ma2 ))
+  swap_min=$(( sf1 < sf2 ? sf1 : sf2 ))
+  sec=$(( t1 - t0 ))
+
+  printf '%s mcp=ok hook=ok cbm=ok repowise=ok exclude=ok sec=%s mem_min=%s swap_free_min=%s\n' \
+    "$base" "$sec" "$mem_min" "$swap_min"
+}
+
+run_enable
+
+if [ "$untrack" -eq 1 ]; then
+  git -C "$path" rm -r -q --cached --ignore-unmatch .repowise
+  for f in .mcp.json .claude/CLAUDE.md; do
+    if [ -f "$path/$f" ] && git -C "$path" ls-files --error-unmatch "$f" >/dev/null 2>&1; then
+      git -C "$path" add -- "$f"
+    fi
+  done
+  if git -C "$path" diff --cached --quiet; then
+    untrack="clean"
+  else
+    git -C "$path" commit -q -m "chore(code-memory): untrack regenerable .repowise, sync .mcp.json (spec:085)"
+    untrack="committed"
+  fi
+  push="skip"
+  case "$base" in
+    stroyremont|client-video-transcription|auto-consultant-bot) ;;
+    *)
+      if git -C "$path" rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1; then
+        if git -C "$path" push -q; then push="ok"; else push="fail"; fi
+      fi
+      ;;
+  esac
+  printf '%s untrack=%s push=%s\n' "$base" "$untrack" "$push"
 fi
-
-ma1="$(awk '/^MemAvailable:/ {print int($2/1024)}' /proc/meminfo)"
-sf1="$(awk '/^SwapFree:/ {print int($2/1024)}' /proc/meminfo)"
-t0="$(date +%s)"
-nice -n 19 "$cbm_bin" cli index_repository --repo-path "$path" --mode moderate || { rc=$?; exit "$rc"; }
-t1="$(date +%s)"
-ma2="$(awk '/^MemAvailable:/ {print int($2/1024)}' /proc/meminfo)"
-sf2="$(awk '/^SwapFree:/ {print int($2/1024)}' /proc/meminfo)"
-
-mem_min=$(( ma1 < ma2 ? ma1 : ma2 ))
-swap_min=$(( sf1 < sf2 ? sf1 : sf2 ))
-sec=$(( t1 - t0 ))
-
-printf '%s mcp=ok hook=ok cbm=ok repowise=ok exclude=ok sec=%s mem_min=%s swap_free_min=%s\n' \
-  "$base" "$sec" "$mem_min" "$swap_min"
