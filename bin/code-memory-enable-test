@@ -290,7 +290,7 @@ git -C "$T3" config user.email 'cme-test@example.com'
 git -C "$T3" config user.name 'cme-test'
 mkdir -p "$T3/.repowise"
 printf 'binary\n' > "$T3/.repowise/x.pkl"
-git -C "$T3" add .repowise/x.pkl
+git -C "$T3" add -f .repowise/x.pkl
 git -C "$T3" commit -q -m initial
 BEFORE="$(git -C "$T3" rev-list --count HEAD)"
 set +e; out="$("$enable" --untrack "$T3" 2>&1)"; rc=$?; set -e
