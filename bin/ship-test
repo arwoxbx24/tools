@@ -225,4 +225,19 @@ out=$( ( cd "$w17" && GH_ORIGIN="$(git -C "$w17" config remote.origin.url)" "$bi
 err=$(<"$d/ship17.err")
 [[ $rc == 0 && $err != *getcwd* && $err != *'Unable to read current working directory'* && $out == *'r17'* ]] && p 17 || f 17
 
-[[ $ok == 17 ]] && exit 0 || exit 1
+mkrepo r18; w18=$(mkwt r18 claude/c18)
+printf 'branch\n' > "$w18/x.txt"
+git -C "$w18" add -A; git -C "$w18" commit -q -m branchconf
+( cd "$GA_PROJECTS/r18" && printf 'main\n' > x.txt && git add -A \
+	&& git commit -q -m mainconf && git push -q origin main )
+git -C "$w18" fetch -q origin main
+git -C "$w18" merge -q origin/main || true
+printf 'merged\n' > "$w18/x.txt"; git -C "$w18" add -A
+git -C "$w18" commit -q -m mergeconf
+mc=$(git -C "$w18" rev-parse HEAD)
+out=$(ship "$w18"); rc=$?
+pushed=$(git -C "$GA_PROJECTS/r18" rev-parse refs/remotes/origin/claude/c18 2>/dev/null)
+git -C "$w18" merge-base --is-ancestor "$mc" "$pushed" 2>/dev/null && anc=1 || anc=0
+[[ $rc == 0 && $out == *'ci:none'* && $anc == 1 ]] && p 18 || f 18
+
+[[ $ok == 18 ]] && exit 0 || exit 1
