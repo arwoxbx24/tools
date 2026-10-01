@@ -61,7 +61,9 @@ fi
 locked_core(){
 	local osha=''
 	g fetch -q origin main || return 70
-	g rebase -q origin/main || { g rebase --abort; return 50; }
+	if ! g merge-base --is-ancestor origin/main HEAD 2>/dev/null; then
+		g rebase -q origin/main || { g rebase --abort; return 50; }
+	fi
 	( cd "$wtr" && gitleaks git --redact --no-banner --log-opts "origin/main..HEAD" >/dev/null 2>&1 ) || return 20
 	osha=$(g rev-parse --verify -q refs/remotes/origin/"$branch" 2>/dev/null) || osha=''
 	if [[ -n $osha ]]; then
