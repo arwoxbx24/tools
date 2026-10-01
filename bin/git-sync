@@ -85,14 +85,12 @@ sync_one(){ # <name> — одно репо под ga_ctx; гейты до спа
 			|| { emit "$name" err:main-local; return $?; }
 		savedmain=1
 	fi
-	if ! git reset --hard -q HEAD 2>/dev/null || ! git checkout -q $cof main 2>/dev/null; then
+	if ! git reset --hard -q HEAD 2>/dev/null || ! git checkout -q $cof -B main origin/main 2>/dev/null; then
+		(( savedmain )) && git update-ref refs/heads/main "$r" 2>/dev/null
 		git checkout -q "$branch" 2>/dev/null; [[ -n ${s:-} ]] && git stash apply -q "$s" 2>/dev/null
 		emit "$name" err:checkout; return $?
 	fi
-	if (( savedmain )); then
-		git reset --hard -q origin/main 2>/dev/null || { git checkout -q "$branch" 2>/dev/null; [[ -n ${s:-} ]] && git stash apply -q "$s" 2>/dev/null; emit "$name" err:merge; return $?; }
-	fi
-	git merge --ff-only -q origin/main 2>/dev/null || { git checkout -q "$branch" 2>/dev/null; [[ -n ${s:-} ]] && git stash apply -q "$s" 2>/dev/null; emit "$name" err:merge; return $?; }
+	git branch -q --set-upstream-to=origin/main main 2>/dev/null || true
 	emit "$name" rescued $refs
 	return $?
 }

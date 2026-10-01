@@ -326,4 +326,22 @@ for c in a b; do
 	fi
 done
 
-[[ $ok == 22 ]]
+# 22: live on feat (delivered, ancestor of main); local main lags origin (ancestor);
+# new.txt added in origin/main, byte-identical untracked on disk -> one run rescued
+repo "$GA_PROJECTS/p-22"; mkbare "$GA_PROJECTS/p-22" "$d/origin-22.git"
+git -C "$GA_PROJECTS/p-22" branch feat && git -C "$GA_PROJECTS/p-22" checkout -q feat
+old22=$(date -d '2 hours ago' +%s)
+GIT_COMMITTER_DATE="@$old22" GIT_AUTHOR_DATE="@$old22" git -C "$GA_PROJECTS/p-22" commit -q --allow-empty -m featwork
+git -C "$GA_PROJECTS/p-22" update-ref refs/delivered/x feat && git -C "$GA_PROJECTS/p-22" checkout -q main
+git -C "$GA_PROJECTS/p-22" checkout -q feat
+git clone -q "$d/origin-22.git" "$d/adv-22"; git -C "$d/adv-22" config user.email t@t; git -C "$d/adv-22" config user.name t
+printf 'hello\n' > "$d/adv-22/new.txt"
+git -C "$d/adv-22" add new.txt && git -C "$d/adv-22" commit -q -m remote && git -C "$d/adv-22" push -q origin main
+printf 'hello\n' > "$GA_PROJECTS/p-22/new.txt"
+out=$(cd "$GA_PROJECTS/p-22" && "$bin/git-sync" p-22 2>&1)
+{ grep -qF rescued <<<"$out" \
+	&& [[ $(git -C "$GA_PROJECTS/p-22" symbolic-ref --short -q HEAD) == main ]] \
+	&& [[ $(git -C "$GA_PROJECTS/p-22" rev-parse HEAD) == "$(git -C "$d/origin-22.git" rev-parse main)" ]] \
+	&& [[ -z $(git -C "$GA_PROJECTS/p-22" status --porcelain -uno) ]]; } && p 22 || f 22
+
+[[ $ok == 23 ]]
