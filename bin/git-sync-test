@@ -1,0 +1,140 @@
+#!/usr/bin/env bash
+set -u
+bin=$(cd -- "$(dirname -- "$0")" && pwd)
+d=$(mktemp -d)
+trap 'rm -rf "$d"' EXIT
+export GA_NO_BD=1
+export GA_LOCK_DIR="$d/locks"
+export GA_LOG_DIR="$d/logs"
+export GA_PROJECTS="$d/projects"
+export GA_TOOLS="$d/tools"
+export GA_CONTOUR_GITDIR="$d/contour.git"
+export GA_CONTOUR_WT="$d/contour-wt"
+mkdir -p "$GA_LOCK_DIR" "$GA_LOG_DIR" "$GA_PROJECTS" "$GA_TOOLS"
+
+git init -q "$GA_PROJECTS"; git init -q "$GA_TOOLS"
+for r in projects tools; do
+	git -C "$d/$r" config user.email t@t; git -C "$d/$r" config user.name t
+	git -C "$d/$r" checkout -q -b main; git -C "$d/$r" commit -q --allow-empty -m main
+done
+
+ok=0
+p(){ echo "PASS $1"; ok=$((ok+1)); }
+f(){ echo "FAIL $1"; }
+
+repo(){ # $1 dir — init empty repo, identity, main branch
+	local r=$1
+	git init -q "$r"
+	git -C "$r" config user.email t@t
+	git -C "$r" config user.name t
+	git -C "$r" checkout -q -b main
+}
+mkbare(){ # $1 repo $2 bare — origin -> push main, fetch, set HEAD
+	git -C "$1" commit -q --allow-empty -m base
+	git init -q --bare "$2"
+	git -C "$1" remote add origin "$2"
+	git -C "$1" push -q -u origin main
+	git -C "$1" fetch -q origin
+	git --git-dir="$2" symbolic-ref HEAD refs/heads/main
+}
+
+# 1: allowlist
+repo "$GA_PROJECTS/stroyremont"; mkbare "$GA_PROJECTS/stroyremont" "$d/origin-sr.git"
+out=$(cd "$GA_PROJECTS/stroyremont" && "$bin/git-sync" stroyremont 2>&1)
+grep -qF 'skip:allowlist' <<<"$out" && p 1 || f 1
+
+# 2: hh-scoring
+repo "$GA_PROJECTS/hh-scoring"; mkbare "$GA_PROJECTS/hh-scoring" "$d/origin-hh.git"
+out=$(cd "$GA_PROJECTS/hh-scoring" && "$bin/git-sync" hh-scoring 2>&1)
+grep -qF 'skip:hh-scoring' <<<"$out" && p 2 || f 2
+
+# 3: ok — main clean, origin up to date
+repo "$GA_PROJECTS/p-ok"; mkbare "$GA_PROJECTS/p-ok" "$d/origin-p-ok.git"
+out=$(cd "$GA_PROJECTS/p-ok" && "$bin/git-sync" p-ok 2>&1)
+grep -qF 'p-ok ok' <<<"$out" && p 3 || f 3
+
+# 4: ff — origin advanced
+repo "$GA_PROJECTS/p-ff"; mkbare "$GA_PROJECTS/p-ff" "$d/origin-p-ff.git"
+git clone -q "$d/origin-p-ff.git" "$d/advance-ff"
+git -C "$d/advance-ff" config user.email t@t; git -C "$d/advance-ff" config user.name t
+git -C "$d/advance-ff" commit -q --allow-empty -m adv
+git -C "$d/advance-ff" push -q origin main
+out=$(cd "$GA_PROJECTS/p-ff" && "$bin/git-sync" p-ff 2>&1)
+h=$(git -C "$GA_PROJECTS/p-ff" rev-parse HEAD); o=$(git -C "$d/origin-p-ff.git" rev-parse main)
+{ grep -qF 'p-ff ff' <<<"$out" && [[ $h == "$o" ]]; } && p 4 || f 4
+
+# 5: rescued main-local — local main diverged from origin
+repo "$GA_PROJECTS/p-main1"; mkbare "$GA_PROJECTS/p-main1" "$d/origin-p-main1.git"
+git -C "$GA_PROJECTS/p-main1" commit -q --allow-empty -m local
+git clone -q "$d/origin-p-main1.git" "$d/advance-m1"
+git -C "$d/advance-m1" config user.email t@t; git -C "$d/advance-m1" config user.name t
+git -C "$d/advance-m1" commit -q --allow-empty -m remote
+git -C "$d/advance-m1" push -q origin main
+out=$(cd "$GA_PROJECTS/p-main1" && "$bin/git-sync" p-main1 2>&1)
+h=$(git -C "$GA_PROJECTS/p-main1" rev-parse HEAD); o=$(git -C "$d/origin-p-main1.git" rev-parse main)
+{ grep -qF rescued <<<"$out" && grep -qF main-local <<<"$out" && [[ $h == "$o" ]]; } && p 5 || f 5
+
+# 6: rescued wip+tip — dirty (old) file on non-main branch
+repo "$GA_PROJECTS/p-wip"
+printf 'a\n' > "$GA_PROJECTS/p-wip/f"
+git -C "$GA_PROJECTS/p-wip" add f
+git -C "$GA_PROJECTS/p-wip" commit -q -m base
+mkbare "$GA_PROJECTS/p-wip" "$d/origin-p-wip.git"
+git -C "$GA_PROJECTS/p-wip" branch feature
+git -C "$GA_PROJECTS/p-wip" checkout -q feature
+printf 'b\n' >> "$GA_PROJECTS/p-wip/f"
+touch -d '2 hours ago' "$GA_PROJECTS/p-wip/f"
+out=$(cd "$GA_PROJECTS/p-wip" && "$bin/git-sync" p-wip 2>&1)
+{ grep -qF rescued <<<"$out" && grep -qF feature-wip <<<"$out" && grep -qF feature-tip <<<"$out"; } && p 6 || f 6
+
+# 7: skip:active — recently touched dirty file on main
+repo "$GA_PROJECTS/p-active"
+printf 'a\n' > "$GA_PROJECTS/p-active/f"
+git -C "$GA_PROJECTS/p-active" add f
+git -C "$GA_PROJECTS/p-active" commit -q -m base
+mkbare "$GA_PROJECTS/p-active" "$d/origin-p-active.git"
+printf 'b\n' >> "$GA_PROJECTS/p-active/f"
+out=$(cd "$GA_PROJECTS/p-active" && "$bin/git-sync" p-active 2>&1)
+grep -qF 'skip:active' <<<"$out" && p 7 || f 7
+
+# 8: skip:active — recent commit on non-main branch
+repo "$GA_PROJECTS/p-recent"; mkbare "$GA_PROJECTS/p-recent" "$d/origin-p-recent.git"
+git -C "$GA_PROJECTS/p-recent" branch x
+git -C "$GA_PROJECTS/p-recent" checkout -q x
+git -C "$GA_PROJECTS/p-recent" commit -q --allow-empty -m recent
+out=$(cd "$GA_PROJECTS/p-recent" && "$bin/git-sync" p-recent 2>&1)
+grep -qF 'skip:active' <<<"$out" && p 8 || f 8
+
+# 9: skip:unmerged-branch — old unmerged commit on non-main branch
+repo "$GA_PROJECTS/p-unmerged"; mkbare "$GA_PROJECTS/p-unmerged" "$d/origin-p-unmerged.git"
+git -C "$GA_PROJECTS/p-unmerged" branch feat
+git -C "$GA_PROJECTS/p-unmerged" checkout -q feat
+printf 'x\n' > "$GA_PROJECTS/p-unmerged/uf"
+touch -d '2 hours ago' "$GA_PROJECTS/p-unmerged/uf"
+git -C "$GA_PROJECTS/p-unmerged" add uf
+old=$(date -d '2 hours ago' +%s)
+GIT_COMMITTER_DATE="@$old" GIT_AUTHOR_DATE="@$old" git -C "$GA_PROJECTS/p-unmerged" commit -q -m feat
+out=$(cd "$GA_PROJECTS/p-unmerged" && "$bin/git-sync" p-unmerged 2>&1)
+grep -qF 'skip:unmerged-branch' <<<"$out" && p 9 || f 9
+
+# 10: skip:locked — lock held by another holder
+repo "$GA_PROJECTS/p-lock"; mkbare "$GA_PROJECTS/p-lock" "$d/origin-p-lock.git"
+hash=$(printf '%s' p-lock | sha1sum | cut -c1-12)
+( flock 9; sleep 12 ) 9>"$GA_LOCK_DIR/git-auto-$hash.lock" &
+sleep 0.3
+out=$(cd "$GA_PROJECTS/p-lock" && "$bin/git-sync" p-lock 2>&1)
+wait
+grep -qF 'skip:locked' <<<"$out" && p 10 || f 10
+
+# 11: err:fetch — unreadable origin
+repo "$GA_PROJECTS/p-fetch"
+git -C "$GA_PROJECTS/p-fetch" commit -q --allow-empty -m base
+git -C "$GA_PROJECTS/p-fetch" remote add origin "$d/no-such-origin.git"
+out=$(cd "$GA_PROJECTS/p-fetch" && "$bin/git-sync" p-fetch 2>&1)
+grep -qF 'err:fetch' <<<"$out" && p 11 || f 11
+
+# 12: err:ctx — not in registry
+out=$("$bin/git-sync" no-such-repo 2>&1)
+grep -qF 'err:ctx' <<<"$out" && p 12 || f 12
+
+[[ $ok == 12 ]]
