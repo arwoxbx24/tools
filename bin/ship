@@ -84,7 +84,8 @@ ga_ctx "$name" 2>/dev/null; slug=$GA_SLUG; unset GIT_DIR GIT_WORK_TREE GA_LIVE G
 [[ -n ${slug:-} && $slug != - ]] || slug=$(g config --get remote.origin.url)
 num=$(gh pr list -R "$slug" --head "$branch" --state open --json number --jq '.[0].number' 2>/dev/null)
 if [[ -z $num ]]; then
-	gh pr create -R "$slug" --head "$branch" --base main --fill >/dev/null 2>&1 || leave 30 pr
+	gh pr create -R "$slug" --head "$branch" --base main \
+		--title "$(g log -1 --format=%s)" --body "$(g log -1 --format=%b)" >/dev/null || leave 30 pr
 	num=$(gh pr list -R "$slug" --head "$branch" --state open --json number --jq '.[0].number' 2>/dev/null)
 fi
 printf 'pr:%s\n' "$num"

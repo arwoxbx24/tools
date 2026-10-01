@@ -18,7 +18,11 @@ cat > "$d/bin/gh" <<'EOF'
 printf '%s\n' "$*" >> "$GH_JOURNAL"
 case $1:$2 in
 	pr:list) [[ -f "$GH_CREATED" ]] && echo 7 || echo '' ;;
-	pr:create) : > "$GH_CREATED"; echo 'https://github.com/x/y/pull/7' ;;
+	pr:create)
+		if [[ " $* " == *' --fill '* ]]; then
+			echo 'could not compute title' >&2; exit 1
+		fi
+		: > "$GH_CREATED"; echo 'https://github.com/x/y/pull/7' ;;
 	pr:checks)
 		if [[ " $* " != *' --watch '* ]]; then
 			cnt=$(( $(cat "$GH_TEST_DIR/ci-poll" 2>/dev/null || echo 0) + 1 ))
