@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+set -u
+bin=$(cd -- "$(dirname -- "$0")" && pwd)
+source "$bin/git-auto-lib"
+d=$(mktemp -d)
+export GA_LOCK_DIR="$d/locks"
+mkdir -p "$GA_LOCK_DIR"
+sum=0
+trap 'rm -rf "$d"' EXIT
+pass(){ echo "PASS $1"; sum=$((sum+1)); }
+fail(){ echo "FAIL $1"; }
+
+# T1: registry
+proj="$d/projects"
+mkdir -p "$proj/clients/tools" "$proj/.worktrees/x" "$proj/node_modules"
+for r in a clients/b clients/tools/c node_modules/d; do git init -q -b main "$proj/$r"; done
+git -C "$proj/a" config user.email t@t
+git -C "$proj/a" config user.name t
+git -C "$proj/a" commit -q --allow-empty -m init
+git -C "$proj/a" branch -M main
+git -C "$proj/a" worktree add -q -b wt "$proj/.worktrees/x/a-1" main
+export GA_PROJECTS="$proj"
+export GA_TOOLS="$d/tools"
+export GA_CONTOUR_GITDIR="$d/contour.git"
+export GA_CONTOUR_WT="$d/contour-wt"
+names=$(ga_roots | cut -f1)
+ok=1
+for n in projects a clients/b clients/tools/c; do grep -qx "$n" <<<"$names" || ok=0; done
+grep -qE 'worktrees|node_modules' <<<"$names" && ok=0
+[[ $ok == 1 ]] && pass T1 || fail "T1: $names"
+
+# T2: contour bare git_dir + separate work_tree
+mkdir -p "$GA_CONTOUR_WT"
+git init -q --bare "$GA_CONTOUR_GITDIR"
+(
+	ga_ctx contour || exit 1
+	[[ $GIT_DIR == "$GA_CONTOUR_GITDIR" && $GIT_WORK_TREE == "$GA_CONTOUR_WT" && $GA_LIVE == "$GA_CONTOUR_WT" ]] || exit 1
+	git status -uno >/dev/null 2>&1 || exit 1
+) && pass T2 || fail T2
+
+# T3: slug
+git -C "$proj/a" remote add origin git@github.com:o/r.git
+s1=$(ga_roots | awk -F '\t' '$1=="a"{print $4; exit}')
+s2=$(ga_roots | awk -F '\t' '$1=="clients/b"{print $4; exit}')
+[[ $s1 == o/r && $s2 == - ]] && pass T3 || fail "T3: $s1 $s2"
+
+# T4: ga_repo_of worktree
+r4=$(ga_repo_of "$proj/.worktrees/x/a-1")
+[[ $r4 == a ]] && pass T4 || fail "T4: got=$r4"
+
+# T5: ga_skip_reason
+ok=1
+[[ $(ga_skip_reason clients/stroyremont) == allowlist ]] || ok=0
+[[ $(ga_skip_reason hh-scoring) == hh-scoring ]] || ok=0
+[[ -z $(ga_skip_reason a) ]] || ok=0
+[[ $ok == 1 ]] && pass T5 || fail T5
+
+# T6a: second holder times out -> 75, <=2s
+ga_lock a 1 sleep 3 & bg=$!
+sleep 0.5
+t0=$(date +%s%N)
+ga_lock a 1 sleep 3 2>/dev/null; rc=$?
+t1=$(date +%s%N)
+wait "$bg"
+el=$(((t1-t0)/1000000))
+[[ $rc == 75 && $el -le 2000 ]] && pass T6a || fail "T6a: rc=$rc el=$el"
+
+# T6b: nested same-name -> no flock wait
+ga_lock a 1 bash -c '
+	source "$0"
+	t0=$(date +%s%N)
+	ga_lock a 0 sleep 1; rc=$?
+	t1=$(date +%s%N)
+	[[ $rc == 0 && $(((t1-t0)/1000000)) -le 2000 ]]
+' "$bin/git-auto-lib" && pass T6b || fail T6b
+
+# T7: ga_branch_unmerged
+r7="$d/unmerged"
+git init -q --bare -b main "$d/origin7.git"
+git clone -q "$d/origin7.git" "$r7"
+git -C "$r7" config user.email t@t
+git -C "$r7" config user.name t
+git -C "$r7" commit -q --allow-empty -m main
+git -C "$r7" branch -M main
+git -C "$r7" push -q origin main
+git -C "$r7" checkout -q -b feat/new
+printf 'x\n' >"$r7/newfile"
+git -C "$r7" add newfile
+git -C "$r7" commit -q -m new
+export GIT_DIR="$r7/.git" GIT_WORK_TREE="$r7"
+ga_branch_unmerged feat/new; ra=$?
+[[ $ra == 0 ]] && pass T7a || fail "T7a: rc=$ra"
+git checkout -q main
+git merge -q --squash feat/new
+git commit -q -m "sq new"
+git push -q origin main
+ga_branch_unmerged feat/new; rb=$?
+git branch behind "$(git rev-parse main~1)"
+ga_branch_unmerged behind; rc=$?
+[[ $rb == 1 && $rc == 1 ]] && pass T7b || fail "T7b: rb=$rb rc=$rc"
+unset GIT_DIR GIT_WORK_TREE
+
+[[ $sum == 9 ]]

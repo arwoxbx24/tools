@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+set -u
+bin=$(cd -- "$(dirname -- "$0")" && pwd)
+. "$bin/git-auto-lib"
+
+LOG=${GA_LOG_DIR:-/root/workspaces/tools/logs}/git-sync.log
+mkdir -p "$(dirname "$LOG")"
+stamp=$(date +%Y%m%d-%H%M)
+min_idle=${GA_MIN_IDLE:-30}
+
+bd_mark(){ local n=$1 r=$2 md=${GA_LOG_DIR:-/root/workspaces/tools/logs}/bd-sent
+	[[ -n ${GA_NO_BD:-} ]] && return; mk="$md/${n//\//_}.$r"; mkdir -p "$md"
+	[[ -f $mk && -n $(find "$mk" -mmin -1440 2>/dev/null) ]] && return
+	bd create "[GIT-SYNC] $n $r ${3:-}" -l git-sync; touch "$mk"; }
+
+emit(){ # <name> <status> [ref...] — печать + журнал; rc по status
+	local line
+	line="$(date +%Y-%m-%dT%H:%M:%S) $*"
+	printf '%s\n' "$line"
+	printf '%s\n' "$line" >>"$LOG"
+	[[ $2 == rescued || $2 == err:* ]] && bd_mark "$1" "$2" "${*:3}"
+	[[ $2 == err:* ]] && return 1 || return 0
+}
+
+sync_one(){ # <name> — одно репо под ga_ctx; гейты до спасения
+	local name=$1 reason branch dirty s ref r refs active now ht
+	reason=$(ga_skip_reason "$name")
+	[[ -z $reason ]] || { emit "$name" "skip:$reason"; return $?; }
+	ga_ctx "$name" 2>/dev/null || { emit "$name" err:ctx; return $?; }
+	timeout 20 git fetch --quiet origin main 2>/dev/null || { emit "$name" err:fetch; return $?; }
+	branch=$(git symbolic-ref --short -q HEAD 2>/dev/null) || branch=detached
+	dirty=$(git status --porcelain -uno 2>/dev/null | wc -l)
+	if [[ $branch == main && $dirty == 0 ]]; then
+		head0=$(git rev-parse HEAD)
+		if git merge --ff-only -q origin/main 2>/dev/null; then
+			[[ $(git rev-parse HEAD) == "$head0" ]] && emit "$name" ok || emit "$name" ff
+			return $?
+		fi
+		# локальный main впереди origin — спасение main-local
+		ref="refs/rescue/$stamp/main-local"
+		git update-ref "$ref" HEAD || { emit "$name" err:main-local; return $?; }
+		[[ $(git rev-parse --verify -q "$ref" 2>/dev/null) == "$(git rev-parse HEAD)" ]] \
+			|| { emit "$name" err:main-local; return $?; }
+		git reset --hard -q origin/main 2>/dev/null || { emit "$name" err:reset; return $?; }
+		emit "$name" rescued "$ref"; return $?
+	fi
+	now=$(date +%s); active=""
+	[[ $dirty -gt 0 ]] && active=$(git diff --name-only HEAD 2>/dev/null | xargs -r -d '\n' stat -c %Y 2>/dev/null | awk -v c=$((now-min_idle*60)) '$1>c{print 1; exit}')
+	[[ -z $active && $dirty == 0 && $branch != main ]] && { ht=$(git show -s --format=%ct HEAD 2>/dev/null); (( now-${ht:-0} < min_idle*60 )) && active=1; }
+	[[ -z $active ]] || { emit "$name" skip:active; return $?; }
+	[[ $branch != main ]] && ga_branch_unmerged "$branch" && { emit "$name" skip:unmerged-branch; return $?; }
+	# изменения отслеживаемых или ветка не main — спасение wip/tip
+	refs=""
+	s=$(git stash create) || { emit "$name" err:rescue; return $?; }
+	if [[ -n $s ]]; then
+		r="refs/rescue/$stamp/$branch-wip"
+		git update-ref "$r" "$s" || { emit "$name" err:rescue; return $?; }
+		[[ $(git rev-parse --verify -q "$r" 2>/dev/null) == "$s" ]] || { emit "$name" err:rescue; return $?; }
+		refs="$refs $r"
+	fi
+	if [[ $branch != main ]]; then
+		r="refs/rescue/$stamp/$branch-tip"
+		git update-ref "$r" HEAD || { emit "$name" err:rescue; return $?; }
+		[[ $(git rev-parse --verify -q "$r" 2>/dev/null) == "$(git rev-parse HEAD)" ]] \
+			|| { emit "$name" err:rescue; return $?; }
+		refs="$refs $r"
+	fi
+	if ! git reset --hard -q HEAD 2>/dev/null || ! git checkout -q main 2>/dev/null; then
+		git checkout -q "$branch" 2>/dev/null; [[ -n ${s:-} ]] && git stash apply -q "$s" 2>/dev/null
+		emit "$name" err:checkout; return $?
+	fi
+	git merge --ff-only -q origin/main 2>/dev/null || { git checkout -q "$branch" 2>/dev/null; [[ -n ${s:-} ]] && git stash apply -q "$s" 2>/dev/null; emit "$name" err:merge; return $?; }
+	emit "$name" rescued $refs
+	return $?
+}
+
+run_one(){ # <name> — замок; без него skip:locked
+	local rc
+	ga_lock "$1" 10 sync_one "$1"
+	rc=$?
+	(( rc == 75 )) && { emit "$1" skip:locked; return 0; }
+	return $rc
+}
+
+arg=${1:-}
+[[ ${1:-} == --min-idle ]] && { min_idle=${2:?--min-idle N}; shift 2; arg=${1:-}; }
+if [[ $arg == --all ]]; then
+	buf=$({ ga_roots | cut -f1 | timeout 240 xargs -P 4 -n 1 "$0" --min-idle "$min_idle" 2>&1; }); rc=$?
+	(( rc == 124 )) && { printf 'err:budget\n'; rc=1; }
+	[[ $buf == *err:* ]] && rc=1
+	[[ -z $buf ]] || printf '%s\n' "$buf"
+	exit $rc
+fi
+[[ -n $arg && $arg != --* ]] || { echo "usage: git-sync <name>|--all [--min-idle N]" >&2; exit 2; }
+run_one "$arg"
+exit $?

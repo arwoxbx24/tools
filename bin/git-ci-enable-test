@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+set -u
+bin=$(cd -- "$(dirname -- "$0")" && pwd)
+d=$(mktemp -d)
+trap 'rm -rf "$d"' EXIT
+ok=0
+EXPECTED='name: min-ci
+on:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  min-ci:
+    uses: arwoxbx24/agent-contour/.github/workflows/min-ci.yml@main'
+
+mkrepo(){ local r=$1; mkdir -p "$r"; git -C "$r" init -q; git -C "$r" config user.email t@t; git -C "$r" config user.name t; git -C "$r" commit -q --allow-empty -m init; }
+wfcount(){ find "$1/.github/workflows" -type f \( -name '*.yml' -o -name '*.yaml' \) 2>/dev/null | wc -l; }
+
+# T1: no workflows -> ci:added, file equals reference
+mkrepo "$d/r1"
+out=$("$bin/git-ci-enable" "$d/r1"); rc=$?
+f="$d/r1/.github/workflows/min-ci-caller.yml"
+if [[ $rc == 0 && $out == "ci:added $f" && -f $f && $(cat "$f") == "$EXPECTED" ]]; then
+  echo 'PASS 1'; ok=$((ok+1))
+else echo "FAIL 1: rc=$rc out=$out"; fi
+
+# T2: repeat -> ci:present, file not duplicated
+out=$("$bin/git-ci-enable" "$d/r1"); rc=$?
+if [[ $rc == 0 && $out == "ci:present" && $(wfcount "$d/r1") == 1 ]]; then
+  echo 'PASS 2'; ok=$((ok+1))
+else echo "FAIL 2: rc=$rc out=$out"; fi
+
+# T3: repo with ci.yml on pull_request -> ci:present, no new files
+mkrepo "$d/r2"
+mkdir -p "$d/r2/.github/workflows"
+printf 'name: ci\non:\n  pull_request:\n' > "$d/r2/.github/workflows/ci.yml"
+before=$(wfcount "$d/r2")
+out=$("$bin/git-ci-enable" "$d/r2"); rc=$?
+after=$(wfcount "$d/r2")
+if [[ $rc == 0 && $out == "ci:present" && $after == $before ]]; then
+  echo 'PASS 3'; ok=$((ok+1))
+else echo "FAIL 3: rc=$rc out=$out before=$before after=$after"; fi
+
+# T4: no argument -> exit 2
+"$bin/git-ci-enable" >/dev/null 2>&1; rc=$?
+if [[ $rc == 2 ]]; then echo 'PASS 4'; ok=$((ok+1)); else echo "FAIL 4: rc=$rc"; fi
+
+[[ $ok == 4 ]]
