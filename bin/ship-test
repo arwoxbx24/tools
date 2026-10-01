@@ -16,30 +16,39 @@ mkdir -p "$GA_WT_ROOT/claude" "$GA_PROJECTS" "$GA_LOG_DIR" "$GA_LOCK_DIR" "$d/bi
 cat > "$d/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$GH_JOURNAL"
-if [[ -f "$GH_TEST_DIR/gh-401" ]]; then
-	echo 'HTTP 401' >&2; exit 1
-elif [[ $1 == pr && $2 == list ]]; then
-	[[ -f "$GH_CREATED" ]] && echo 7 || echo ''
-elif [[ $1 == pr && $2 == create ]]; then
-	: > "$GH_CREATED"
-	echo 'https://github.com/x/y/pull/7'
-elif [[ $1 == pr && $2 == checks ]]; then
-	[[ " $* " == *' --watch '* ]] || cat "$GH_TEST_DIR/checks.json" 2>/dev/null || echo '[]'
-elif [[ $1 == pr && $2 == merge ]]; then
-	[[ ! -f "$GH_TEST_DIR/merge-fail" ]] || { echo 'merge refused' >&2; exit 1; }
-	origin=${GH_ORIGIN:-$(git -C "$PWD" config remote.origin.url)}
-	branch=$(git -C "$PWD" rev-parse --abbrev-ref HEAD)
-	tmp=$(mktemp -d "$GH_TEST_DIR/merge.XXXXXX")
-	git clone -q "$origin" "$tmp" && git -C "$tmp" config user.email t@t \
-		&& git -C "$tmp" config user.name t \
-		&& git -C "$tmp" fetch -q origin "main:refs/remotes/origin/main" "$branch:refs/remotes/origin/$branch" \
-		&& git -C "$tmp" checkout -q -B main origin/main && git -C "$tmp" merge --squash "origin/$branch" \
-		&& git -C "$tmp" commit -q -m squash \
-		&& git -C "$tmp" push -q origin HEAD:main && git -C "$tmp" rev-parse HEAD > "$GH_TEST_DIR/merge-sha" || exit 1
-	rm -rf "$tmp"
-elif [[ $1 == pr && $2 == view ]]; then
-	cat "$GH_TEST_DIR/merge-sha"
-fi
+case $1:$2 in
+	pr:list) [[ -f "$GH_CREATED" ]] && echo 7 || echo '' ;;
+	pr:create) : > "$GH_CREATED"; echo 'https://github.com/x/y/pull/7' ;;
+	pr:checks)
+		if [[ " $* " != *' --watch '* ]]; then
+			cnt=$(( $(cat "$GH_TEST_DIR/ci-poll" 2>/dev/null || echo 0) + 1 ))
+			echo "$cnt" > "$GH_TEST_DIR/ci-poll"
+			if [[ -f "$GH_TEST_DIR/checks-late" && $cnt -ge ${GH_CI_DELAY:-1} ]]; then
+				cf="$GH_TEST_DIR/checks-late"
+			else
+				cf="$GH_TEST_DIR/checks.json"
+			fi
+			if [[ " $* " == *'length'* ]]; then
+				jq length "$cf" 2>/dev/null || echo 0
+			else
+				jq -r '.[]|select(.bucket=="fail" or .bucket=="cancel")|.name' "$cf" 2>/dev/null
+			fi
+		fi ;;
+	pr:merge)
+		[[ ! -f "$GH_TEST_DIR/gh-401" ]] || { echo 'HTTP 401' >&2; exit 1; }
+		[[ ! -f "$GH_TEST_DIR/merge-fail" ]] || { echo 'merge refused' >&2; exit 1; }
+		origin=${GH_ORIGIN:-$(git -C "$PWD" config remote.origin.url)}
+		branch=$(git -C "$PWD" rev-parse --abbrev-ref HEAD)
+		tmp=$(mktemp -d "$GH_TEST_DIR/merge.XXXXXX")
+		git clone -q "$origin" "$tmp" && git -C "$tmp" config user.email t@t \
+			&& git -C "$tmp" config user.name t \
+			&& git -C "$tmp" fetch -q origin "main:refs/remotes/origin/main" "$branch:refs/remotes/origin/$branch" \
+			&& git -C "$tmp" checkout -q -B main origin/main && git -C "$tmp" merge --squash "origin/$branch" \
+			&& git -C "$tmp" commit -q -m squash \
+			&& git -C "$tmp" push -q origin HEAD:main && git -C "$tmp" rev-parse HEAD > "$GH_TEST_DIR/merge-sha" || exit 1
+		rm -rf "$tmp" ;;
+	pr:view) cat "$GH_TEST_DIR/merge-sha" ;;
+esac
 exit 0
 EOF
 chmod +x "$d/bin/gh"
@@ -59,6 +68,24 @@ ship(){ ( cd "$1" && GH_ORIGIN="$(git -C "$1" config remote.origin.url)" "$bin/s
 p(){ echo "PASS $1"; ok=$((ok+1)); }
 f(){ echo "FAIL $1"; }
 ok=0
+
+mkrepo(){ # name [ci] — bare+clone в GA_PROJECTS, main; [ci] добавляет workflow в origin/main
+	local n=$1 ci=${2:-0}
+	git init -q --bare "$d/origin-$n.git"
+	git clone -q "$d/origin-$n.git" "$GA_PROJECTS/$n"
+	git -C "$GA_PROJECTS/$n" config user.email t@t
+	git -C "$GA_PROJECTS/$n" config user.name t
+	( cd "$GA_PROJECTS/$n" && printf 'x\n' > f.txt && git add . && git commit -q -m base \
+		&& git branch -M main && git push -q -u origin main && git fetch -q origin )
+	[[ $ci == 1 ]] && ( cd "$GA_PROJECTS/$n" && mkdir -p .github/workflows \
+		&& printf 'on:\n  pull_request:\n' > .github/workflows/ci.yml \
+		&& git add . && git commit -q -m ci && git push -q origin main && git fetch -q origin )
+}
+mkwt(){ # project branch -> worktree path
+	local p=$1 br=$2 n=${2#*/}
+	git -C "$GA_PROJECTS/$p" worktree add -q -b "$br" "$GA_WT_ROOT/claude/$n" origin/main
+	echo "$GA_WT_ROOT/claude/$n"
+}
 
 git init -q --bare "$d/origin-r1.git"
 git clone -q "$d/origin-r1.git" "$GA_PROJECTS/r1"
@@ -142,4 +169,51 @@ git -C "$live" rev-parse HEAD >/dev/null 2>&1 && head=$(git -C "$live" rev-parse
 git -C "$live" rev-parse --verify claude/nine >/dev/null 2>&1; branch_rc=$?
 [[ $rc == 0 && $out == *'ci:none'* && $head == "$(cat "$d/merge-sha")" && ! -d $r9 && $branch_rc != 0 ]] && p 9 || f 9
 
-[[ $ok == 9 ]] && exit 0 || exit 1
+mkrepo r10 1; w10=$(mkwt r10 claude/c10); printf 's10\n' >> "$w10/f.txt"
+printf '[]\n' > "$d/checks.json"; rm -f "$d/checks-late" "$d/ci-poll"
+printf '[{"name":"min-ci","bucket":"pass"}]\n' > "$d/checks-late"
+out=$(GA_CI_APPEAR=15 GH_CI_DELAY=3 ship "$w10"); rc=$?
+rm -f "$d/checks.json" "$d/checks-late" "$d/ci-poll"
+[[ $rc == 0 && $out != *'ci:none'* ]] && p 10 || f 10
+
+mkrepo r11 1; w11=$(mkwt r11 claude/c11); printf 's11\n' >> "$w11/f.txt"
+printf '[{"name":"min-ci","bucket":"fail"}]\n' > "$d/checks.json"; rm -f "$d/checks-late" "$d/ci-poll"
+out=$(GA_CI_APPEAR=15 ship "$w11" 2>&1); rc=$?
+rm -f "$d/checks.json" "$d/checks-late" "$d/ci-poll"
+[[ $rc == 40 && $out == *'min-ci'* && -d "$w11" ]] && p 11 || f 11
+
+mkrepo r12 1; w12=$(mkwt r12 claude/c12); printf 's12\n' >> "$w12/f.txt"
+printf '[]\n' > "$d/checks.json"; rm -f "$d/checks-late" "$d/ci-poll"
+GA_CI_APPEAR=3 ship "$w12" >/dev/null 2>&1; rc=$?
+rm -f "$d/checks.json" "$d/ci-poll"
+[[ $rc == 30 ]] && p 12 || f 12
+
+mkrepo r13; w13=$(mkwt r13 claude/c13); printf 's13\n' >> "$w13/f.txt"
+: > "$d/merge-fail"
+ship "$w13" >/dev/null 2>&1; rc=$?
+rm -f "$d/merge-fail"
+[[ $rc == 50 ]] && p 13 || f 13
+
+mkrepo r14; w14=$(mkwt r14 claude/c14); printf 's14\n' >> "$w14/f.txt"
+out=$(ship "$w14"); rc=$?
+[[ $rc == 0 && $out == *'live:deferred'* && -d "$w14" ]] && p 14 || f 14
+
+mkrepo r15; w15=$(mkwt r15 claude/c15); printf 's15\n' >> "$w15/f.txt"
+printf '9999999999999\n' > "$d/uptime"
+( cd "$w15" && GH_ORIGIN="$(git -C "$w15" config remote.origin.url)" "$bin/ship" "$w15" --atom "$atom" --tz "$tz#U1" --reload app >/dev/null 2>&1 ); rc1=$?
+mkrepo r15b; w15b=$(mkwt r15b claude/c15b); printf 's15b\n' >> "$w15b/f.txt"
+printf '1000\n' > "$d/uptime"
+( cd "$w15b" && GH_ORIGIN="$(git -C "$w15b" config remote.origin.url)" "$bin/ship" "$w15b" --atom "$atom" --tz "$tz#U1" --reload app >/dev/null 2>&1 ); rc2=$?
+rm -f "$d/uptime"
+[[ $rc1 == 0 && $rc2 == 60 ]] && p 15 || f 15
+
+mkrepo r16; w16=$(mkwt r16 claude/c16)
+printf 's16\n' >> "$w16/f.txt"; git -C "$w16" add -A; git -C "$w16" commit -q -m s16
+before=$(git -C "$w16" rev-parse HEAD)
+: > "$d/gh-401"
+ship "$w16" >/dev/null 2>&1; rc=$?
+after=$(git -C "$w16" rev-parse HEAD)
+rm -f "$d/gh-401"
+[[ $rc == 70 && $before == "$after" && -d "$w16" ]] && p 16 || f 16
+
+[[ $ok == 16 ]] && exit 0 || exit 1
