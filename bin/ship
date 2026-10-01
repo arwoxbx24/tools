@@ -115,5 +115,22 @@ ga_lock "$name" 60
 gh_or70 gh pr merge "$num" -R "$slug" --squash --match-head-commit "$(git -C "$wtr" rev-parse HEAD)" || leave 50 merge
 merge_sha=$(gh pr view "$num" -R "$slug" --json mergeCommit --jq .mergeCommit.oid)
 merge_ms=$(( $(date +%s) * 1000 ))
-# ship part 2 (T031)
-leave 0 pr
+[[ $handover == 1 ]] && { echo 'live:deferred handover'; leave 0 handover; }
+
+"$bin/git-sync" "$name"
+"$bin/git-state" --live "$name" "$merge_sha" >/dev/null || { echo err:live >&2; leave 60 live; }
+
+if [[ -n $reload ]]; then
+	pm2 startOrReload "${GA_ECOSYSTEM:-/root/workspaces/tools/ecosystem.config.js}" --only "$reload" >/dev/null
+	up=$(pm2 jlist | jq -r --arg n "$reload" '.[]|select(.name==$n)|.pm2_env.pm_uptime')
+	[[ ${up:-0} -gt $merge_ms ]] || leave 60 reload
+fi
+
+live=$(ga_ctx "$name" && echo "$GA_LIVE")
+head=$(git -C "$wtr" rev-parse HEAD)
+git -C "$live" worktree remove "$wtr"
+git -C "$live" update-ref -d "refs/heads/$branch" "$head"
+git -C "$live" push -q origin --delete "$branch" || true
+
+"$bin/git-state" --no-fetch | grep -F "$name"
+leave 0 live
