@@ -127,6 +127,7 @@ if [[ -n $reload ]]; then
 fi
 
 live=$(ga_ctx "$name" && echo "$GA_LIVE")
+cd "$live"
 head=$(git -C "$wtr" rev-parse HEAD)
 git -C "$live" worktree remove "$wtr"
 git -C "$live" update-ref -d "refs/heads/$branch" "$head"

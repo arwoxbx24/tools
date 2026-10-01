@@ -216,4 +216,9 @@ after=$(git -C "$w16" rev-parse HEAD)
 rm -f "$d/gh-401"
 [[ $rc == 70 && $before == "$after" && -d "$w16" ]] && p 16 || f 16
 
-[[ $ok == 16 ]] && exit 0 || exit 1
+mkrepo r17; w17=$(mkwt r17 claude/c17); printf 's17\n' >> "$w17/f.txt"
+out=$( ( cd "$w17" && GH_ORIGIN="$(git -C "$w17" config remote.origin.url)" "$bin/ship" "$w17" --atom "$atom" --tz "$tz#U1" ) 2>"$d/ship17.err" ); rc=$?
+err=$(<"$d/ship17.err")
+[[ $rc == 0 && $err != *getcwd* && $err != *'Unable to read current working directory'* && $out == *'r17'* ]] && p 17 || f 17
+
+[[ $ok == 17 ]] && exit 0 || exit 1
