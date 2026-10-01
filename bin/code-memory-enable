@@ -4,6 +4,8 @@ set -eu
 : "${CME_MIN_MEM_MB:=3072}"
 : "${CME_MIN_SWAP_MB:=1024}"
 : "${CME_PROJECTS_ROOT:=/root/workspaces/projects}"
+: "${CME_CLIENTS_ROOT:=$CME_PROJECTS_ROOT/clients}"
+: "${CME_PARENT_REV:=}"
 : "${CME_DENY:=/root/workspaces/tools/config/code-memory.deny}"
 : "${CME_LOCK:=/tmp/code-memory.lock}"
 : "${CME_SELF:="$0"}"
@@ -70,37 +72,6 @@ esac
 path="$1"
 base="$(basename "$path")"
 
-exec 9>"$CME_LOCK"
-flock 9
-
-if [ ! -d "$path" ]; then
-  echo "code-memory-enable: not a directory: $path" >&2
-  exit 2
-fi
-if [ "$(dirname "$path")" != "$CME_PROJECTS_ROOT" ]; then
-  echo "skip: $path"
-  exit 2
-fi
-if [ -f "$CME_DENY" ] && grep -xq "$base" "$CME_DENY"; then
-  echo "skip: denied"
-  exit 2
-fi
-if [ ! -d "$path/.git" ]; then
-  echo "code-memory-enable: not a git worktree (no .git): $path" >&2
-  exit 2
-fi
-case "$path" in
-  *hh-scoring*) echo "code-memory-enable: blocklisted path: $path" >&2; exit 2 ;;
-esac
-[ "$path" = "/root/workspaces/projects" ] && { echo "code-memory-enable: forbidden path: $path" >&2; exit 2; }
-
-if [ "$untrack" -eq 1 ]; then
-  if ! git -C "$path" diff --cached --quiet; then
-    echo "$base untrack=skip staged"
-    exit 0
-  fi
-fi
-
 run_enable() {
   mem_kb="$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)"
   : "${mem_kb:=0}"
@@ -113,26 +84,27 @@ run_enable() {
     exit 3
   fi
 
-  : "${CME_EXCLUDE_SRC:=/root/.gitignore_global}"
   exclude="$path/.git/info/exclude"
-  if [ ! -f "$CME_EXCLUDE_SRC" ]; then
-    echo "code-memory-enable: exclude source not found: $CME_EXCLUDE_SRC" >&2
-    exit 4
+  if [ -d "$path/.git" ]; then
+    : "${CME_EXCLUDE_SRC:=/root/.gitignore_global}"
+    if [ ! -f "$CME_EXCLUDE_SRC" ]; then
+      echo "code-memory-enable: exclude source not found: $CME_EXCLUDE_SRC" >&2
+      exit 4
+    fi
+    if [ -L "$exclude" ]; then
+      [ "$(readlink "$exclude")" = "$CME_EXCLUDE_SRC" ] || { echo "code-memory-enable: foreign symlink: $exclude -> $(readlink "$exclude")" >&2; exit 4; }
+    elif [ -f "$exclude" ]; then
+      foreign="$(awk '!/^#/ && NF {print}' "$exclude" || true)"
+      [ -z "$foreign" ] || { echo "code-memory-enable: $exclude has existing rules:" >&2; printf '%s\n' "$foreign" >&2; exit 4; }
+    fi
+    mkdir -p "$path/.git/info"
+    ln -sfn "$CME_EXCLUDE_SRC" "$exclude"
+    ensure_stub "$path/.git/hooks/post-commit"
+    ensure_stub "$path/.git/hooks/post-merge"
   fi
-  if [ -L "$exclude" ]; then
-    [ "$(readlink "$exclude")" = "$CME_EXCLUDE_SRC" ] || { echo "code-memory-enable: foreign symlink: $exclude -> $(readlink "$exclude")" >&2; exit 4; }
-  elif [ -f "$exclude" ]; then
-    foreign="$(awk '!/^#/ && NF {print}' "$exclude" || true)"
-    [ -z "$foreign" ] || { echo "code-memory-enable: $exclude has existing rules:" >&2; printf '%s\n' "$foreign" >&2; exit 4; }
-  fi
-  mkdir -p "$path/.git/info"
-  ln -sfn "$CME_EXCLUDE_SRC" "$exclude"
 
   repowise_bin="$(command -v repowise)"
   cbm_bin="$(command -v codebase-memory-mcp)"
-
-  ensure_stub "$path/.git/hooks/post-commit"
-  ensure_stub "$path/.git/hooks/post-merge"
 
   if [ -f "$path/.repowise/state.json" ]; then
     python3 - "$path" <<'PY'
@@ -179,9 +151,71 @@ PY
   swap_min=$(( sf1 < sf2 ? sf1 : sf2 ))
   sec=$(( t1 - t0 ))
 
-  printf '%s hook=ok cbm=ok repowise=ok exclude=ok sec=%s mem_min=%s swap_free_min=%s\n' \
-    "$base" "$sec" "$mem_min" "$swap_min"
+  if [ -d "$path/.git" ]; then
+    printf '%s hook=ok cbm=ok repowise=ok exclude=ok sec=%s mem_min=%s swap_free_min=%s\n' \
+      "$base" "$sec" "$mem_min" "$swap_min"
+  else
+    printf '%s hook=none cbm=ok repowise=ok exclude=none sec=%s mem_min=%s swap_free_min=%s\n' \
+      "$base" "$sec" "$mem_min" "$swap_min"
+  fi
 }
+
+exec 9>"$CME_LOCK"
+flock 9
+
+if [ ! -d "$path" ]; then
+  echo "code-memory-enable: not a directory: $path" >&2
+  exit 2
+fi
+
+if [ "$path" = "$CME_PROJECTS_ROOT" ] && [ "$untrack" -eq 0 ]; then
+  if [ -n "$CME_PARENT_REV" ]; then
+    changed="$(git -C "$path" diff-tree --no-commit-id --name-only -r -m --first-parent "$CME_PARENT_REV")"
+  else
+    changed="$(git -C "$path" diff --name-only "HEAD@{1}" HEAD 2>/dev/null)" \
+      || changed="$(git -C "$path" diff-tree --no-commit-id --name-only -r -m --first-parent HEAD)"
+  fi
+  clients="$(printf '%s\n' "$changed" | sed -n 's#^clients/\([^/]*\)/.*$#\1#p' | sort -u)"
+  for x in $clients; do
+    if [ ! -f "$CME_CLIENTS_ROOT/$x/.repowise/state.json" ]; then continue; fi
+    if [ -d "$CME_CLIENTS_ROOT/$x/.git" ]; then continue; fi
+    if [ -f "$CME_DENY" ] && grep -xq "$x" "$CME_DENY"; then continue; fi
+    path="$CME_CLIENTS_ROOT/$x"
+    base="$x"
+    ( run_enable ) || echo "$x failed rc=$?"
+  done
+  exit 0
+fi
+
+if [ "$(dirname "$path")" != "$CME_PROJECTS_ROOT" ] && [ "$(dirname "$path")" != "$CME_CLIENTS_ROOT" ]; then
+  echo "skip: $path"
+  exit 2
+fi
+if [ -f "$CME_DENY" ] && grep -xq "$base" "$CME_DENY"; then
+  echo "skip: denied"
+  exit 2
+fi
+if [ ! -d "$path/.git" ]; then
+  if [ "$(dirname "$path")" != "$CME_CLIENTS_ROOT" ] || [ ! -f "$path/.repowise/state.json" ]; then
+    echo "code-memory-enable: not a git worktree (no .git): $path" >&2
+    exit 2
+  fi
+fi
+case "$path" in
+  *hh-scoring*) echo "code-memory-enable: blocklisted path: $path" >&2; exit 2 ;;
+esac
+[ "$path" = "/root/workspaces/projects" ] && { echo "code-memory-enable: forbidden path: $path" >&2; exit 2; }
+
+if [ "$untrack" -eq 1 ]; then
+  if [ ! -d "$path/.git" ]; then
+    echo "$base untrack=skip no-.git"
+    exit 0
+  fi
+  if ! git -C "$path" diff --cached --quiet; then
+    echo "$base untrack=skip staged"
+    exit 0
+  fi
+fi
 
 run_enable
 
