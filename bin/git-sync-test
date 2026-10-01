@@ -202,7 +202,7 @@ sq1=$(git -C "$GA_PROJECTS/p-squash" rev-parse codex/x)
 	&& [[ $sq0 == "$sq1" ]] \
 	&& [[ $(git -C "$GA_PROJECTS/p-squash" rev-parse HEAD) == $(git -C "$d/origin-squash.git" rev-parse main) ]]; } && p 15 || f 15
 
-# 16: err:checkout — untracked clash.txt blocks checkout of main (which tracks it)
+# 16: err:untracked — untracked clash.txt (diff content vs origin/main) blocks switch
 repo "$GA_PROJECTS/p-clash16"
 git -C "$GA_PROJECTS/p-clash16" commit -q --allow-empty -m base
 git -C "$GA_PROJECTS/p-clash16" branch old
@@ -223,7 +223,7 @@ printf 'keepme\n' > "$GA_PROJECTS/p-clash16/clash.txt"
 usnap 16 git -C "$GA_PROJECTS/p-clash16" ls-files --others
 out=$(cd "$GA_PROJECTS/p-clash16" && "$bin/git-sync" p-clash16 2>&1)
 br16=$(git -C "$GA_PROJECTS/p-clash16" symbolic-ref --short -q HEAD)
-{ grep -qF 'err:checkout' <<<"$out" \
+{ grep -qF 'err:untracked' <<<"$out" \
 	&& [[ $br16 == old ]] \
 	&& [[ $(cat "$GA_PROJECTS/p-clash16/clash.txt") == keepme ]]; } && p 16 || f 16
 
@@ -282,4 +282,48 @@ log=$GA_LOG_DIR/git-sync.log
 	&& ucheck 18b git -C "$all_p/sync-b" ls-files --others \
 	&& ucheck 18c git -C "$all_p/sync-c" ls-files --others; } && p 19 || f 19
 
-[[ $ok == 19 ]]
+# 20: rescued main-local — live on delivered feat, local main diverged from origin/main
+repo "$GA_PROJECTS/p-20"; mkbare "$GA_PROJECTS/p-20" "$d/origin-20.git"
+git -C "$GA_PROJECTS/p-20" branch feat && git -C "$GA_PROJECTS/p-20" checkout -q feat
+old20=$(date -d '2 hours ago' +%s)
+GIT_COMMITTER_DATE="@$old20" GIT_AUTHOR_DATE="@$old20" git -C "$GA_PROJECTS/p-20" commit -q --allow-empty -m featwork
+git -C "$GA_PROJECTS/p-20" update-ref refs/delivered/x feat && git -C "$GA_PROJECTS/p-20" checkout -q main
+git -C "$GA_PROJECTS/p-20" commit -q --allow-empty -m localmain
+oldm20=$(git -C "$GA_PROJECTS/p-20" rev-parse HEAD); git -C "$GA_PROJECTS/p-20" checkout -q feat
+git clone -q "$d/origin-20.git" "$d/adv-20"; git -C "$d/adv-20" config user.email t@t; git -C "$d/adv-20" config user.name t
+git -C "$d/adv-20" commit -q --allow-empty -m remote && git -C "$d/adv-20" push -q origin main
+out=$(cd "$GA_PROJECTS/p-20" && "$bin/git-sync" p-20 2>&1)
+{ grep -qvF 'err:' <<<"$out" \
+	&& [[ $(git -C "$GA_PROJECTS/p-20" symbolic-ref --short -q HEAD) == main ]] \
+	&& [[ $(git -C "$GA_PROJECTS/p-20" rev-parse HEAD) == "$(git -C "$d/origin-20.git" rev-parse main)" ]] \
+	&& [[ $(git -C "$GA_PROJECTS/p-20" for-each-ref --format='%(refname) %(objectname)' refs/rescue | awk '$1 ~ /main-local/ {print $2; exit}') == "$oldm20" ]]; } && p 20 || f 20
+
+# 21: same + new.txt added in origin/main, untracked on disk; a) byte-identical b) differing
+for c in a b; do
+	repo "$GA_PROJECTS/p-21$c"; mkbare "$GA_PROJECTS/p-21$c" "$d/origin-21$c.git"
+	git -C "$GA_PROJECTS/p-21$c" branch feat && git -C "$GA_PROJECTS/p-21$c" checkout -q feat
+	old21=$(date -d '2 hours ago' +%s)
+	GIT_COMMITTER_DATE="@$old21" GIT_AUTHOR_DATE="@$old21" git -C "$GA_PROJECTS/p-21$c" commit -q --allow-empty -m featwork
+	git -C "$GA_PROJECTS/p-21$c" update-ref refs/delivered/x feat && git -C "$GA_PROJECTS/p-21$c" checkout -q main
+	git -C "$GA_PROJECTS/p-21$c" commit -q --allow-empty -m localmain && git -C "$GA_PROJECTS/p-21$c" checkout -q feat
+	git clone -q "$d/origin-21$c.git" "$d/adv-21$c"; git -C "$d/adv-21$c" config user.email t@t; git -C "$d/adv-21$c" config user.name t
+	printf 'hello\n' > "$d/adv-21$c/new.txt"
+	git -C "$d/adv-21$c" add new.txt && git -C "$d/adv-21$c" commit -q -m remote && git -C "$d/adv-21$c" push -q origin main
+	if [[ $c == a ]]; then
+		printf 'hello\n' > "$GA_PROJECTS/p-21a/new.txt"
+		out=$(cd "$GA_PROJECTS/p-21a" && "$bin/git-sync" p-21a 2>&1)
+		{ grep -qvF 'err:' <<<"$out" \
+			&& [[ $(git -C "$GA_PROJECTS/p-21a" symbolic-ref --short -q HEAD) == main ]] \
+			&& [[ $(git -C "$GA_PROJECTS/p-21a" rev-parse HEAD) == "$(git -C "$d/origin-21a.git" rev-parse main)" ]] \
+			&& [[ $(git -C "$GA_PROJECTS/p-21a" rev-parse HEAD:new.txt) == "$(git -C "$d/origin-21a.git" rev-parse main:new.txt)" ]]; } && p 21a || f 21a
+	else
+		printf 'conflict\n' > "$GA_PROJECTS/p-21b/new.txt"
+		h0=$(git -C "$GA_PROJECTS/p-21b" rev-parse HEAD)
+		out=$(cd "$GA_PROJECTS/p-21b" && "$bin/git-sync" p-21b 2>&1)
+		{ grep -qF 'err:untracked' <<<"$out" \
+			&& [[ $(git -C "$GA_PROJECTS/p-21b" rev-parse HEAD) == "$h0" ]] \
+			&& [[ $(cat "$GA_PROJECTS/p-21b/new.txt") == conflict ]]; } && p 21b || f 21b
+	fi
+done
+
+[[ $ok == 22 ]]
