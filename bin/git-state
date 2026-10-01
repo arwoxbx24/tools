@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+set -u
+bin=$(cd -- "$(dirname -- "$0")" && pwd)
+. "$bin/git-auto-lib"
+
+now=$(date +%s); GA_FETCH=1; json=0
+mode=${1:-row}
+[[ $mode == --live ]] && { name=${2:-}; sha=${3:-}; mode=live; } || mode=row
+for a in "$@"; do
+	case $a in --json) json=1 ;; --no-fetch) GA_FETCH=0 ;; esac
+done
+
+jnum(){ [[ $1 =~ ^-?[0-9]+$ ]] && printf '%s' "$1" || printf '"%s"' "$1"; }
+jqs(){ printf '%s' "$1" | sed 's/\\/\\\\/g;s/"/\\"/g'; }
+
+ba(){ # -> behind ahead vs origin/main
+	if ! git remote 2>/dev/null | grep -qx origin; then echo 'no-remote -'; return; fi
+	if ! git rev-parse --verify -q refs/remotes/origin/main >/dev/null 2>&1; then echo 'no-main -'; return; fi
+	[[ $GA_FETCH == 1 ]] && timeout 20 git fetch --quiet origin main 2>/dev/null || true
+	local l
+	l=$(git rev-list --left-right --count origin/main...HEAD 2>/dev/null) || { echo '- -'; return; }
+	echo "${l%%$'\t'*} ${l##*$'\t'}"
+}
+
+unshipped(){ # 0 if a claude/codex/opencode branch is ahead and older than an hour, not in ship.log
+	local log br aheadb ct
+	log="${GA_LOG_DIR:-/root/workspaces/tools/logs}/ship.log"
+	while IFS= read -r br; do
+		case $br in claude/*|codex/*|opencode/*) ;; *) continue ;; esac
+		aheadb=$(git rev-list --count origin/main.."$br" 2>/dev/null) || continue
+		ct=$(git log -1 --format=%ct "$br" 2>/dev/null)
+		[[ $aheadb -gt 0 && -n $ct && $ct -lt $((now-3600)) ]] || continue
+		[[ -f $log ]] && grep -qF "$br" "$log" && find "$log" -mmin -60 2>/dev/null | grep -q . && continue
+		return 0
+	done < <(git for-each-ref refs/heads/ --format='%(refname:short)' 2>/dev/null)
+	return 1
+}
+
+emit(){ # $1 name -> 8 space-separated columns (after name)
+	local name=$1 branch behind ahead dirty prs active7d rescue alarm r cut hc p mt d sync step
+	branch=$(git symbolic-ref --short -q HEAD 2>/dev/null) || branch=detached
+	read -r behind ahead <<< "$(ba)"
+	dirty=$(git status --porcelain -uno 2>/dev/null | wc -l)
+	prs=-
+	if [[ ${GA_NO_GH:-} != 1 ]] && [[ -n ${GA_SLUG:-} && ${GA_SLUG:-} != - ]]; then
+		prs=$(gh pr list -R "$GA_SLUG" --state open --json number,headRefName,createdAt 2>/dev/null \
+			| python3 -c 'import sys,json;print(len(json.load(sys.stdin)))' 2>/dev/null) || prs=-
+	fi
+	active7d=no; cut=$((now-604800))
+	hc=$(git log -1 --format=%ct HEAD 2>/dev/null)
+	if [[ -n $hc && $hc -ge $cut ]]; then active7d=yes
+	else
+		while IFS= read -r d; do
+			p=${d:3}; [[ -e "$GA_LIVE/$p" ]] || continue
+			mt=$(stat -c %Y "$GA_LIVE/$p" 2>/dev/null || echo 0)
+			[[ $mt -ge $cut ]] && { active7d=yes; break; }
+		done < <(git status --porcelain -uno 2>/dev/null)
+	fi
+	rescue=$(git for-each-ref refs/rescue/ 2>/dev/null | wc -l)
+	alarm=-
+	r=$(ga_skip_reason "$name")
+	if [[ -n $r ]]; then alarm="skip:$r"
+	elif [[ $branch != main ]] && ga_branch_unmerged "$branch"; then alarm=skip:unmerged-branch
+	elif unshipped; then alarm=unshipped
+	else
+		sync="${GA_LOG_DIR:-/root/workspaces/tools/logs}/git-sync.log"
+		step=$(grep -F "$name" "$sync" 2>/dev/null | grep -oF 'err:[^ ,]*' | tail -1 | sed 's/^err://')
+		[[ -n $step ]] && alarm="err:$step"
+	fi
+	printf '%s %s %s %s %s %s %s %s\n' "$branch" "$behind" "$ahead" "$dirty" "$prs" "$active7d" "$rescue" "$alarm"
+}
+
+if [[ $mode == live ]]; then
+	unset GIT_DIR GIT_WORK_TREE
+	ga_ctx "$name" 2>/dev/null || { echo "no-such-repo: $name" >&2; exit 2; }
+	printf '%s %s\n' "$name" "$(emit "$name")"
+	git -C "$GA_LIVE" merge-base --is-ancestor "$sha" HEAD
+	exit $?
+fi
+
+total=0; main0=0; skipped=0; sep=''
+[[ $json == 1 ]] && printf '['
+while IFS=$'\t' read -r name gd wt slug; do
+	unset GIT_DIR GIT_WORK_TREE
+	ga_ctx "$name" 2>/dev/null || continue
+	cols=$(emit "$name")
+	read -r branch behind ahead dirty prs active7d rescue alarm <<< "$cols"
+	total=$((total+1))
+	if [[ $alarm == skip:* ]]; then skipped=$((skipped+1))
+	elif [[ $branch == main && $behind == 0 ]]; then main0=$((main0+1)); fi
+	if [[ $json == 1 ]]; then
+		printf '%s{"name":"%s","branch":"%s","behind":%s,"ahead":%s,"dirty":%s,"prs":%s,"active7d":"%s","rescue":%s,"alarm":"%s"}' \
+			"$sep" "$(jqs "$name")" "$(jqs "$branch")" "$(jnum "$behind")" "$(jnum "$ahead")" \
+			"$(jnum "$dirty")" "$(jnum "$prs")" "$(jqs "$active7d")" "$(jnum "$rescue")" "$(jqs "$alarm")"
+		sep=,
+	else
+		printf '%s %s\n' "$name" "$cols"
+	fi
+done < <(ga_roots)
+if [[ $json == 1 ]]; then printf ']\n'
+else printf 'total=%d main_behind0=%d skipped=%d\n' "$total" "$main0" "$skipped"; fi

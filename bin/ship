@@ -1,0 +1,138 @@
+#!/usr/bin/env bash
+set -u
+bin=$(cd -- "$(dirname -- "$0")" && pwd)
+. "$bin/git-auto-lib"
+
+logdir=${GA_LOG_DIR:-/root/workspaces/tools/logs}
+mkdir -p "$logdir"
+ship_log="$logdir/ship.log"
+
+name='-'; branch='-'
+gg_log(){ # $1 code $2 step
+	printf '%s %s %s %s %s\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" "$name" "$branch" "$1" "$2" >> "$ship_log"
+}
+leave(){ gg_log "$1" "$2"; exit "$1"; }
+
+usage(){ cat >&2 <<'EOF'
+usage: ship <worktree> --atom <id> --tz <path#U> [--reload <pm2-name>] [--handover]
+EOF
+leave 10 usage
+}
+
+wt=''; atom=''; tz=''; reload=''; handover=0
+while [[ $# -gt 0 ]]; do
+	case $1 in
+		--atom) atom=${2:-}; shift 2 ;;
+		--tz) tz=${2:-}; shift 2 ;;
+		--reload) reload=${2:-}; shift 2 ;;
+		--handover) handover=1; shift ;;
+		-*) usage ;;
+		*) wt=$1; shift ;;
+	esac
+done
+[[ -n $wt && -n $atom && -n $tz ]] || usage
+
+root=${GA_WT_ROOT:-/root/workspaces/projects/.worktrees}
+wtr=$(realpath -m "$wt")
+[[ $wtr == "$root"/* ]] || leave 10 preflight
+agent=${wtr#"$root"/}; agent=${agent%%/*}
+[[ -n $agent && $wtr == "$root/$agent/"* ]] || leave 10 preflight
+
+branch=$(git -C "$wtr" symbolic-ref --short -q HEAD 2>/dev/null) || leave 10 preflight
+[[ $branch != main && $branch != master && $branch == "$agent/"* ]] || leave 10 preflight
+
+name=$(ga_repo_of "$wtr") || leave 10 preflight
+[[ -z $(ga_skip_reason "$name") ]] || leave 10 preflight
+
+g(){ git -C "$wtr" "$@"; }
+g add -A
+if g diff --cached --quiet; then
+	[[ $(g rev-list --count origin/main..HEAD 2>/dev/null) == 0 ]] && { echo 'ship: nothing'; leave 0 nothing; }
+else
+	if ! ( cd "$wtr" && gitleaks git --pre-commit --staged --redact --no-banner ); then
+		leave 20 gitleaks
+	fi
+	first=$(sed -n '1p' "${tz%%#*}" 2>/dev/null)
+	g commit -q -m "$atom: ${first:-$atom}" \
+		--trailer "Atom: $atom" --trailer "ТЗ: $tz" --trailer "Agent: $agent" \
+		|| leave 30 commit
+fi
+
+locked_core(){
+	local osha=''
+	g fetch -q origin main || return 70
+	g rebase -q origin/main || { g rebase --abort; return 50; }
+	( cd "$wtr" && gitleaks git --redact --no-banner --log-opts "origin/main..HEAD" >/dev/null 2>&1 ) || return 20
+	osha=$(g rev-parse --verify -q refs/remotes/origin/"$branch" 2>/dev/null) || osha=''
+	if [[ -n $osha ]]; then
+		g push -q --force-with-lease="$branch:$osha" origin HEAD:refs/heads/"$branch" || return 30
+	else
+		g push -q -u origin HEAD:refs/heads/"$branch" || return 30
+	fi
+	return 0
+}
+ga_lock "$name" 60 locked_core
+rc=$?
+if [[ $rc -ne 0 ]]; then
+	case $rc in
+		70) step=fetch;; 50) step=rebase;; 20) step=gitleaks;; 30) step=push;; *) step=lock;;
+	esac
+	leave "$rc" "$step"
+fi
+
+ga_ctx "$name" 2>/dev/null; slug=$GA_SLUG; unset GIT_DIR GIT_WORK_TREE GA_LIVE GA_SLUG
+[[ -n ${slug:-} && $slug != - ]] || slug=$(g config --get remote.origin.url)
+num=$(gh pr list -R "$slug" --head "$branch" --state open --json number --jq '.[0].number' 2>/dev/null)
+if [[ -z $num ]]; then
+	gh pr create -R "$slug" --head "$branch" --base main \
+		--title "$(g log -1 --format=%s)" --body "$(g log -1 --format=%b)" >/dev/null || leave 30 pr
+	num=$(gh pr list -R "$slug" --head "$branch" --state open --json number --jq '.[0].number' 2>/dev/null)
+fi
+printf 'pr:%s\n' "$num"
+ci=none
+for f in $(git -C "$wtr" ls-tree --name-only origin/main:.github/workflows 2>/dev/null); do
+	case $f in *.yml|*.yaml)
+		git -C "$wtr" show "origin/main:.github/workflows/$f" 2>/dev/null | grep -q pull_request && { ci=ci; break; } ;;
+	esac
+done
+if [[ $ci == none ]]; then
+	echo ci:none
+else
+	it=$(( (${GA_CI_APPEAR:-60}) / 5 ))
+	for _ in $(seq 1 "$it"); do
+		n=$(gh pr checks "$num" -R "$slug" --json name,bucket --jq length 2>/dev/null)
+		[[ ${n:-0} -gt 0 ]] && break
+		sleep 5
+	done
+	[[ ${n:-0} -gt 0 ]] || leave 30 ci-absent
+	timeout "${GA_CI_CAP:-900}" gh pr checks "$num" -R "$slug" --watch >/dev/null 2>&1
+	bad=$(gh pr checks "$num" -R "$slug" --json name,bucket --jq '.[]|select(.bucket=="fail" or .bucket=="cancel")|.name' 2>/dev/null)
+	if [[ -n $bad ]]; then printf '%s\n' "$bad" >&2; leave 40 ci; fi
+fi
+
+gh_or70(){ local e; e=$("$@" 2>&1 >/dev/null) && return 0; grep -qiE 'HTTP 40[13]|authentication|could not connect|timeout' <<<"$e" && leave 70 gh; return 1; }
+
+ga_lock "$name" 60
+gh_or70 gh pr merge "$num" -R "$slug" --squash --match-head-commit "$(git -C "$wtr" rev-parse HEAD)" || leave 50 merge
+merge_sha=$(gh pr view "$num" -R "$slug" --json mergeCommit --jq .mergeCommit.oid)
+merge_ms=$(( $(date +%s) * 1000 ))
+[[ $handover == 1 ]] && { echo 'live:deferred handover'; leave 0 handover; }
+
+"$bin/git-sync" "$name"
+"$bin/git-state" --live "$name" "$merge_sha" >/dev/null || { echo err:live >&2; leave 60 live; }
+
+if [[ -n $reload ]]; then
+	pm2 startOrReload "${GA_ECOSYSTEM:-/root/workspaces/tools/ecosystem.config.js}" --only "$reload" >/dev/null
+	up=$(pm2 jlist | jq -r --arg n "$reload" '.[]|select(.name==$n)|.pm2_env.pm_uptime')
+	[[ ${up:-0} -gt $merge_ms ]] || leave 60 reload
+fi
+
+live=$(ga_ctx "$name" && echo "$GA_LIVE")
+cd "$live"
+head=$(git -C "$wtr" rev-parse HEAD)
+git -C "$live" worktree remove "$wtr"
+git -C "$live" update-ref -d "refs/heads/$branch" "$head"
+git -C "$live" push -q origin --delete "$branch" || true
+
+"$bin/git-state" --no-fetch | grep -F "$name"
+leave 0 live

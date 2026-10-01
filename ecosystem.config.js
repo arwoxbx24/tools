@@ -1214,6 +1214,25 @@ module.exports = {
       cron_restart: '*/30 * * * *',
       error_file: '/root/.pm2/logs/sandbox-janitor-error.log',
       out_file: '/root/.pm2/logs/sandbox-janitor-out.log'
+    },
+    {
+      // bd dcfg-9jdfv.13 spec:021 US5 — живые каталоги на origin/main каждые 5 мин
+      name: 'git-sync-loop',
+      time: true,
+      merge_logs: true,
+      script: '/root/workspaces/tools/bin/git-sync',
+      args: '--all',
+      cwd: '/root',
+      interpreter: 'bash',
+      exec_mode: 'fork_mode',
+      instances: 1,
+      autorestart: false,
+      min_uptime: 1000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
+      cron_restart: '*/5 * * * *',
+      error_file: '/root/.pm2/logs/git-sync-loop-error.log',
+      out_file: '/root/.pm2/logs/git-sync-loop-out.log'
     }
   ]
 };
