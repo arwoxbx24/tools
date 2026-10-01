@@ -83,7 +83,10 @@ ga_lock(){ # <name> <timeout_s> <cmd...>
 }
 
 ga_branch_unmerged(){ # <branch> in current GIT_DIR — 0 if unmerged vs origin/main
-	local branch=$1 mb changed
+	local branch=$1 mb changed ref
+	for ref in $(git for-each-ref --format='%(refname)' refs/delivered/); do
+		git merge-base --is-ancestor "$branch" "$ref" && return 1
+	done
 	mb=$(git merge-base origin/main "$branch") || return 1
 	changed=$(git diff --name-only "$mb" "$branch") || return 1
 	[[ -n $changed ]] || return 1
