@@ -112,4 +112,28 @@ git update-ref -d refs/delivered/x
 [[ $rl == 0 && $rd == 1 ]] && pass T7c || fail "T7c: rl=$rl rd=$rd"
 unset GIT_DIR GIT_WORK_TREE
 
-[[ $sum == 10 ]]
+# T8a: broken/empty .git skipped
+mkdir -p "$proj/broken/.git"
+names=$(ga_roots | cut -f1)
+grep -qx broken <<<"$names" && fail "T8a: broken present" || pass T8a
+
+# T8b: real repo yes, linked worktree no
+git init -q -b main "$proj/real"
+git -C "$proj/real" config user.email t@t
+git -C "$proj/real" config user.name t
+git -C "$proj/real" commit -q --allow-empty -m init
+git -C "$proj/real" worktree add -q -b rwt "$proj/real-wt"
+names=$(ga_roots | cut -f1)
+ok=1
+grep -qx real <<<"$names" || ok=0
+grep -qx real-wt <<<"$names" && ok=0
+[[ $ok == 1 ]] && pass T8b || fail "T8b: $names"
+
+# T8c: hh-scoring* skip
+ok=1
+[[ $(ga_skip_reason hh-scoring-dev) == hh-scoring ]] || ok=0
+[[ $(ga_skip_reason x/hh-scoring-prod) == hh-scoring ]] || ok=0
+[[ -z $(ga_skip_reason projects) ]] || ok=0
+[[ $ok == 1 ]] && pass T8c || fail T8c
+
+[[ $sum == 13 ]]
