@@ -99,10 +99,10 @@ git branch behind "$(git rev-parse main~1)"
 ga_branch_unmerged behind; rc=$?
 [[ $rb == 1 && $rc == 1 ]] && pass T7b || fail "T7b: rb=$rb rc=$rc"
 git checkout -q -b live
-printf 'live\n' >newfile
+printf 'live\n' >"$r7/newfile"
 git commit -q -am live
 git checkout -q main
-printf 'main\n' >newfile
+printf 'main\n' >"$r7/newfile"
 git commit -q -am main
 git push -q origin main
 ga_branch_unmerged live; rl=$?
