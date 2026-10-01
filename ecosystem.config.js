@@ -645,7 +645,7 @@ module.exports = {
         '--bind',
         '0.0.0.0',
         '--directory',
-        '/root/workspaces/sandbox/test-ui-chat/dist'
+        '/root/workspaces/projects/claude-test-apps/chat/dist'
       ],
       cwd: '/root',
       exec_mode: 'fork_mode',
@@ -665,11 +665,11 @@ module.exports = {
       script: '/root/.local/bin/repowise',
       args: [
         'watch',
-        '/root/workspaces/sandbox/test-ui-chat',
+        '/root/workspaces/projects/claude-test-apps/chat',
         '--no-workspace',
         '--index-only'
       ],
-      cwd: '/root/workspaces/sandbox/test-ui-chat',
+      cwd: '/root/workspaces/projects/claude-test-apps/chat',
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
@@ -1196,6 +1196,24 @@ module.exports = {
       cron_restart: '*/30 * * * *',
       error_file: '/root/.pm2/logs/pm2-reconcile-guard-error.log',
       out_file: '/root/.pm2/logs/pm2-reconcile-guard-out.log'
+    },
+    {
+      // bd dcfg-jm1nw.39 авто-уборка sandbox (владелец 27.09)
+      name: 'sandbox-janitor',
+      time: true,
+      merge_logs: true,
+      script: '/root/workspaces/tools/scripts/pm2/sandbox-janitor.sh',
+      cwd: '/root',
+      interpreter: 'bash',
+      exec_mode: 'fork_mode',
+      instances: 1,
+      autorestart: false,
+      min_uptime: 1000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
+      cron_restart: '*/30 * * * *',
+      error_file: '/root/.pm2/logs/sandbox-janitor-error.log',
+      out_file: '/root/.pm2/logs/sandbox-janitor-out.log'
     }
   ]
 };
