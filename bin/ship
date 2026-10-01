@@ -48,10 +48,15 @@ g(){ git -C "$wtr" "$@"; }
 g add -A
 if g diff --cached --quiet; then
 	[[ $(g rev-list --count origin/main..HEAD 2>/dev/null) == 0 ]] && { echo 'ship: nothing'; leave 0 nothing; }
+else
+	if ! ( cd "$wtr" && gitleaks git --pre-commit --staged --redact --no-banner ); then
+		leave 20 gitleaks
+	fi
+	first=$(sed -n '1p' "${tz%%#*}" 2>/dev/null)
+	g commit -q -m "$atom: ${first:-$atom}" \
+		--trailer "Atom: $atom" --trailer "ТЗ: $tz" --trailer "Agent: $agent" \
+		|| leave 30 commit
 fi
-first=$(sed -n '1p' "${tz%%#*}" 2>/dev/null)
-g commit -q -m "$atom: ${first:-$atom}" \
-	--trailer "Atom: $atom" --trailer "ТЗ: $tz" --trailer "Agent: $agent"
 
 locked_core(){
 	local osha=''
@@ -66,8 +71,9 @@ locked_core(){
 	fi
 	return 0
 }
-if ! ga_lock "$name" 60 locked_core; then
-	rc=$?
+ga_lock "$name" 60 locked_core
+rc=$?
+if [[ $rc -ne 0 ]]; then
 	case $rc in
 		70) step=fetch;; 50) step=rebase;; 20) step=gitleaks;; 30) step=push;; *) step=lock;;
 	esac
