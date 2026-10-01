@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+set -u
+export SAFE_DELETE_GH=false
+bin=$(cd -- "$(dirname -- "$0")" && pwd)
+d=/tmp/safe-delete-test-$$
+export SAFE_DELETE_ROOTS="$d"
+trap 'rm -rf "$d"' EXIT
+mkdir -p "$d"
+git init -q --bare "$d/origin.git"
+git clone -q "$d/origin.git" "$d/w"
+git -C "$d/w" config user.email t@t
+git -C "$d/w" config user.name t
+git -C "$d/w" checkout -q main 2>/dev/null || git -C "$d/w" checkout -q -b main
+git -C "$d/w" commit -q --allow-empty -m main
+git -C "$d/w" push -q origin main
+git -C "$d/w" checkout -q -b feat/x
+git -C "$d/w" commit -q --allow-empty -m feat
+git -C "$d/w" push -q origin feat/x
+bk="$d/bk"
+ok=0
+
+"$bin/safe-delete" --bk "$bk" branch "$d/w" feat/x; rc=$?
+refs() { git -C "$d/origin.git" for-each-ref --format='%(refname)'; }
+headless=$(refs | grep -F 'refs/heads/feat/x' || echo none)
+b=$(ls "$bk"/*.bundle 2>/dev/null | head -1)
+if [[ $b ]]; then git -C "$d/origin.git" bundle verify "$b" >/dev/null 2>&1; bv=$?; else bv=1; fi
+delcount=$(grep -c $'\tdeleted$' "$bk/ledger.tsv" 2>/dev/null) || delcount=0
+if [[ $rc == 0 && $headless == none && $bv == 0 && $delcount == 1 ]]; then
+  echo 'PASS 1'; ok=$((ok+1))
+else echo "FAIL 1: rc=$rc bv=$bv del=$delcount"; fi
+
+"$bin/safe-delete" --bk "$bk" branch "$d/w" main 2>/dev/null; [[ $? == 2 ]] && { echo 'PASS 2'; ok=$((ok+1)); } || echo 'FAIL 2: main'
+"$bin/safe-delete" --bk "$bk" branch "$d/w" codex/y 2>/dev/null; [[ $? == 2 ]] && { echo 'PASS 3'; ok=$((ok+1)); } || echo 'FAIL 3: codex/y'
+"$bin/safe-delete" --bk "$bk" branch "$d/w" nope 2>/dev/null; [[ $? == 2 ]] && { echo 'PASS 4'; ok=$((ok+1)); } || echo 'FAIL 4: nope'
+
+git -C "$d/w" push -q origin feat/x
+"$bin/safe-delete" --bk "$bk" branch "$d/w" feat/x; rc=$?
+tags=$(refs | grep -c 'refs/tags/archive/feat-x-')
+if [[ $rc == 0 && $tags == 1 ]]; then echo 'PASS 5'; ok=$((ok+1)); else echo "FAIL 5: rc=$rc tags=$tags"; fi
+
+# T5: file
+printf 'hello\n' > "$d/a.txt"
+"$bin/safe-delete" --bk "$bk" file "$d/a.txt"; rc=$?
+fdel=$(grep -n $'\tdeleted$' "$bk/ledger.tsv" | tail -1 | cut -d: -f1)
+if [[ $rc == 0 && ! -e "$d/a.txt" ]]; then
+  copy=$(sed -n "${fdel}p" "$bk/ledger.tsv" | cut -f6)
+  csha=$(sha256sum "$copy" 2>/dev/null | cut -d' ' -f1)
+  esha=$(printf 'hello\n' | sha256sum | cut -d' ' -f1)
+  [[ -f $copy && $csha == $esha ]] && { echo 'PASS T5a'; ok=$((ok+1)); } || echo 'FAIL T5a: copy/sha'
+else echo "FAIL T5a: rc=$rc"; fi
+mkdir -p "$d/secrets"; printf 's\n' > "$d/secrets/k"
+"$bin/safe-delete" --bk "$bk" file "$d/secrets/k" 2>/dev/null; [[ $? == 2 ]] && { echo 'PASS T5b'; ok=$((ok+1)); } || echo 'FAIL T5b: secrets'
+"$bin/safe-delete" --bk "$bk" file /etc/hostname 2>/dev/null; [[ $? == 2 ]] && { echo 'PASS T5c'; ok=$((ok+1)); } || echo 'FAIL T5c: /etc'
+
+# T6: restore file (T5a line)
+"$bin/safe-delete" --bk "$bk" restore "$fdel"; rc=$?
+if [[ $rc == 0 && -f "$d/a.txt" && $(cat "$d/a.txt") == hello ]]; then echo 'PASS T6'; ok=$((ok+1)); else echo "FAIL T6: rc=$rc"; fi
+
+# T7: restore branch (T1 deleted line)
+bdel=$(grep -n $'\tdeleted$' "$bk/ledger.tsv" | head -1 | cut -d: -f1)
+"$bin/safe-delete" --bk "$bk" restore "$bdel"; rc=$?
+if [[ $rc == 0 && -n $(git -C "$d/origin.git" for-each-ref --format='%(refname)' refs/heads/feat/x 2>/dev/null) ]]; then echo 'PASS T7'; ok=$((ok+1)); else echo "FAIL T7: rc=$rc"; fi
+
+# T8: purge keeps fresh, drops old
+printf 'old\n' > "$bk/old.bundle"; touch -d '20 days ago' "$bk/old.bundle"
+printf 'fresh\n' > "$bk/fresh.bundle"
+"$bin/safe-delete" --bk "$bk" purge; rc=$?
+if [[ $rc == 0 && ! -e "$bk/old.bundle" && -e "$bk/fresh.bundle" ]]; then echo 'PASS T8'; ok=$((ok+1)); else echo "FAIL T8: rc=$rc"; fi
+
+# T9: invalid branch names
+"$bin/safe-delete" --bk "$bk" branch "$d/w" refs/heads/codex/y >/dev/null 2>&1; r9a=$?
+"$bin/safe-delete" --bk "$bk" branch "$d/w" heads/main >/dev/null 2>&1; r9b=$?
+"$bin/safe-delete" --bk "$bk" branch "$d/w" 'feat/*' >/dev/null 2>&1; r9c=$?
+if [[ $r9a == 2 && $r9b == 2 && $r9c == 2 ]]; then echo 'PASS T9'; ok=$((ok+1)); else echo "FAIL T9: $r9a $r9b $r9c"; fi
+
+# T10: delete x, keep feat/x2
+git -C "$d/w" commit -q --allow-empty -m t10
+git -C "$d/w" branch x
+git -C "$d/w" push -q origin x
+xsha=$(git -C "$d/w" rev-parse x)
+git -C "$d/w" checkout -q main
+git -C "$d/w" commit -q --allow-empty -m t10x2
+git -C "$d/w" branch feat/x2
+git -C "$d/w" push -q origin feat/x2
+"$bin/safe-delete" --bk "$bk" branch "$d/w" x; rc=$?
+on10=$(refs | grep -F 'refs/heads/x' || true)
+x2on=$(refs | grep -F 'refs/heads/feat/x2' || true)
+delx=$(grep -n $'\tdeleted$' "$bk/ledger.tsv" | tail -1 | cut -d: -f1)
+c4=$(sed -n "${delx}p" "$bk/ledger.tsv" | cut -f4)
+if [[ $rc == 0 && -z $on10 && -n $x2on && $c4 == $xsha ]]; then echo 'PASS T10'; ok=$((ok+1)); else echo "FAIL T10: rc=$rc c4=$c4 xsha=$xsha"; fi
+
+# T11: restore x from bundle (drop tag + gc first)
+bline=$(grep -n $'\tbackup-ok$' "$bk/ledger.tsv" | tail -1 | cut -d: -f1)
+btag=$(sed -n "${bline}p" "$bk/ledger.tsv" | cut -f5)
+git --git-dir="$d/origin.git" tag -d "$btag" >/dev/null
+git -C "$d/w" update-ref -d refs/remotes/origin/x
+git -C "$d/w" branch -D x >/dev/null
+while IFS= read -r ref; do git -C "$d/w" update-ref -d "$ref"; done < <(git -C "$d/w" for-each-ref --contains "$xsha" --format='%(refname)')
+rm -f "$d/w/.git/FETCH_HEAD" "$d/w/.git/ORIG_HEAD"
+git -C "$d/w" reflog expire --expire=now --all
+git -C "$d/w" gc -q --prune=now
+git -C "$d/w" cat-file -e "$xsha^{commit}" 2>/dev/null; missing=$?
+"$bin/safe-delete" --bk "$bk" restore "$bline"; rc=$?
+xon11=$(refs | grep -F 'refs/heads/x' || true)
+if [[ $missing != 0 && $rc == 0 && -n $xon11 ]]; then echo 'PASS T11'; ok=$((ok+1)); else echo "FAIL T11: missing=$missing rc=$rc"; fi
+
+# T12: restore rejects bad N
+"$bin/safe-delete" --bk "$bk" restore "1w /tmp/sd-inj-$$" 2>/dev/null; r12a=$?
+"$bin/safe-delete" --bk "$bk" restore 0 2>/dev/null; r12b=$?
+if [[ $r12a == 2 && $r12b == 2 && ! -e /tmp/sd-inj-$$ ]]; then echo 'PASS T12'; ok=$((ok+1)); else echo "FAIL T12: $r12a $r12b"; fi
+
+# T13: file rules
+printf 'old\n' > "$d/old.txt"; touch -d '30 days ago' "$d/old.txt"
+"$bin/safe-delete" --bk "$bk" file "$d/old.txt" 2>/dev/null; r13a=$?
+sold=$(find "$bk/files" -type f -mtime +14 2>/dev/null | wc -l)
+mkdir -p "$d/.repowise-workspace"; printf 'f\n' > "$d/.repowise-workspace/f"
+"$bin/safe-delete" --bk "$bk" file "$d/.repowise-workspace/f" 2>/dev/null; r13b=$?
+"$bin/safe-delete" --bk "$bk" file "$bk/ledger.tsv" 2>/dev/null; r13c=$?
+if [[ $r13a == 0 && $sold == 0 && $r13b == 2 && $r13c == 2 ]]; then echo 'PASS T13'; ok=$((ok+1)); else echo "FAIL T13: $r13a $sold $r13b $r13c"; fi
+
+# T14: purge without ledger.tsv
+mkdir -p "$d/nobk"; printf 'x\n' > "$d/nobk/old.bundle"; touch -d '20 days ago' "$d/nobk/old.bundle"
+"$bin/safe-delete" --bk "$d/nobk" purge 2>/dev/null; rc=$?
+if [[ $rc == 2 && -f "$d/nobk/old.bundle" ]]; then echo 'PASS T14'; ok=$((ok+1)); else echo "FAIL T14: rc=$rc"; fi
+
+# T15: SAFE_DELETE_ROOTS=/ rejects file
+SAFE_DELETE_ROOTS=/ "$bin/safe-delete" --bk "$bk" file /etc/hostname >/dev/null 2>&1
+[[ $? == 2 ]] && { echo 'PASS T15'; ok=$((ok+1)); } || echo 'FAIL T15'
+
+# T16: fake gh aborts branch delete
+mkdir -p "$d/fakebin"; printf '#!/bin/sh\nexit 1\n' > "$d/fakebin/gh"; chmod +x "$d/fakebin/gh"
+git -C "$d/w" commit -q --allow-empty -m t16
+git -C "$d/w" branch tb16
+git -C "$d/w" push -q origin tb16
+env -u SAFE_DELETE_GH PATH="$d/fakebin:$PATH" "$bin/safe-delete" --bk "$bk" branch "$d/w" tb16 >/dev/null 2>&1; rc=$?
+tb16on=$(refs | grep -F 'refs/heads/tb16' || true)
+if [[ $rc == 1 && -n $tb16on ]]; then echo 'PASS T16'; ok=$((ok+1)); else echo "FAIL T16: rc=$rc"; fi
+
+[[ $ok == 19 ]]
