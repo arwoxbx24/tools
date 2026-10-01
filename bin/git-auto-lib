@@ -1,0 +1,89 @@
+# bin/git-auto-lib — sourced, defines ga_* helpers. No execution on source.
+
+_ga_url_slug(){ # $1 git_dir $2 work_tree -> OWNER/REPO or -
+	local u
+	u=$(git --git-dir="$1" --work-tree="$2" config --get remote.origin.url 2>/dev/null) || { echo '-'; return 0; }
+	u=${u%.git}
+	case $u in
+		git@github.com:*) u=${u#git@github.com:} ;;
+		https://github.com/*) u=${u#https://github.com/} ;;
+		*) echo '-'; return 0 ;;
+	esac
+	[[ $u == */* && -n ${u%%/*} ]] && echo "$u" || echo '-'
+}
+
+_ga_emit(){ # name git_dir work_tree
+	printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$(_ga_url_slug "$2" "$3")"
+	return 0
+}
+
+ga_roots(){
+	local p=${GA_PROJECTS:-/root/workspaces/projects}
+	local t=${GA_TOOLS:-/root/workspaces/tools}
+	local cg=${GA_CONTOUR_GITDIR:-/root/workspaces/system/contour-config.git}
+	local cw=${GA_CONTOUR_WT:-/root}
+	local g rel name
+	_ga_emit projects "$p/.git" "$p"
+	_ga_emit tools "$t/.git" "$t"
+	_ga_emit contour "$cg" "$cw"
+	while IFS= read -r g; do
+		rel=${g#"$p"/}
+		name=${rel%.git}
+		[[ -n $name ]] || continue
+		_ga_emit "$name" "$g" "${g%/.git}"
+	done < <(find "$p" -maxdepth 4 -name .git ! -path '*/\.worktrees/*' ! -path '*/node_modules/*' 2>/dev/null)
+}
+
+ga_ctx(){ # <name> — export GIT_DIR/GIT_WORK_TREE/GA_LIVE/GA_SLUG; missing -> 2
+	local name=$1 line rest gd wt slug
+	[[ -n $name ]] || return 2
+	line=$(ga_roots | awk -F '\t' -v n="$name" '$1==n{print; exit}')
+	[[ -n $line ]] || return 2
+	IFS=$'\t' read -r rest gd wt slug <<< "$line"
+	export GIT_DIR=$gd GIT_WORK_TREE=$wt GA_LIVE=$wt GA_SLUG=$slug
+	return 0
+}
+
+ga_repo_of(){ # <path> — registry name of containing repo; none -> 2
+	local p=$1 gd name gd2 wt slug
+	[[ -n $p ]] || return 2
+	gd=$(git -C "$p" rev-parse --git-common-dir --path-format=absolute 2>/dev/null) || return 2
+	while IFS=$'\t' read -r name gd2 wt slug; do
+		[[ $gd == "$gd2" ]] && { echo "$name"; return 0; }
+	done < <(ga_roots)
+	return 2
+}
+
+ga_skip_reason(){ # <name> -> allowlist|hh-scoring|''
+	local seg=${1##*/}
+	case $seg in
+		stroyremont|client-video-transcription|auto-consultant-bot) echo allowlist ;;
+		hh-scoring) echo hh-scoring ;;
+	esac
+	return 0
+}
+
+ga_lock(){ # <name> <timeout_s> <cmd...>
+	local name=$1 timeout=$2 hash lock
+	shift 2
+	hash=$(printf '%s' "$name" | sha1sum | cut -c1-12)
+	lock="${GA_LOCK_DIR:-/run/lock}/git-auto-$hash.lock"
+	if [[ ${GIT_AUTO_LOCK_HELD:-} == "$hash" ]]; then
+		GIT_AUTO_LOCK_HELD=$hash "$@"
+		return $?
+	fi
+	(
+		flock -w "$timeout" 9 || { echo 'skip:locked' >&2; exit 75; }
+		GIT_AUTO_LOCK_HELD=$hash "$@"
+	) 9>"$lock"
+	return $?
+}
+
+ga_branch_unmerged(){ # <branch> in current GIT_DIR — 0 if unmerged vs origin/main
+	local branch=$1 mb changed
+	mb=$(git merge-base origin/main "$branch") || return 1
+	changed=$(git diff --name-only "$mb" "$branch") || return 1
+	[[ -n $changed ]] || return 1
+	git diff --quiet origin/main "$branch" -- $changed
+	(( $? == 0 )) && return 1 || return 0
+}
