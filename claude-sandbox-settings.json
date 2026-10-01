@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "deny": [
+      "Edit(//root/workspaces/projects/**)",
+      "Edit(//root/workspaces/tools/**)",
+      "Edit(//root/workspaces/system/**)",
+      "Edit(//root/.claude/**)",
+      "Edit(//root/.codex/**)",
+      "Edit(//etc/**)",
+      "Bash(*ecosystem.config*)",
+      "Bash(docker *)",
+      "Bash(pm2 *)",
+      "Bash(git -C /root/workspaces/projects*)",
+      "Bash(git -C /root/workspaces/tools*)",
+      "Bash(git -C /root/workspaces/system*)",
+      "Bash(git -C /root *)",
+      "Bash(git --git-dir*)",
+      "Bash(gh *)",
+      "Bash(tmux *)",
+      "Bash(rm -rf /root/workspaces/projects*)",
+      "Bash(rm -rf /root/workspaces/tools*)",
+      "Bash(crontab *)",
+      "Bash(systemctl *)"
+    ]
+  }
+}

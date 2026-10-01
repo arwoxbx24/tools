@@ -247,7 +247,7 @@ def main():
         sys.exit("--all/--count работают с key=value параметрами, не с --json")
 
     if count_only:
-        data = urllib.parse.urlencode(pairs + [("start", "-1")]).encode()
+        data = urllib.parse.urlencode(pairs + [("start", "0")]).encode()
         parsed = call(method, data, {})
         if parsed.get("error"):
             print(json.dumps(parsed, ensure_ascii=False, indent=1), file=sys.stderr)

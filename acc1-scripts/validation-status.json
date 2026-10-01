@@ -1,13 +1,45 @@
 {
-  "timestamp": "2026-09-10T11:49:22+03:00",
-  "status": "PASS",
+  "timestamp": "2026-09-16T13:21:29+03:00",
+  "status": "FAIL",
   "checks": {
-    "hooks_syntax": {"status":"PASS","errors":[],"output":"All hooks syntax OK "},
-    "settings_json": {"status":"PASS","errors":[],"output":"All settings.json files valid "},
-    "pm2_services": {"status":"PASS","errors":[],"output":"PM2 issues: sched-clean-disk:missing sched-clear-ram:missing context-gc:stopped context-heartbeat:st"},
-    "redis": {"status":"PASS","errors":[],"output":"Redis OK: used_memory_human:1.95M, Keys: DB0= DB1= DB2= "},
-    "scripts_syntax": {"status":"PASS","errors":[],"output":"All scripts syntax OK "}
+    "hooks_syntax": {
+      "status": "PASS",
+      "errors": [],
+      "output": "All hooks syntax OK"
+    },
+    "settings_json": {
+      "status": "PASS",
+      "errors": [],
+      "output": "All settings.json files valid"
+    },
+    "pm2_services": {
+      "status": "FAIL",
+      "errors": [
+        "PM2 issues: sched-healthcheck:missing sched-clean-disk:missing sched-clear-ram:missing session-indexer:missing memory-updater:missing context-gc:missi"
+      ]
+    },
+    "redis": {
+      "status": "FAIL",
+      "errors": [
+        "Redis not responding"
+      ]
+    },
+    "scripts_syntax": {
+      "status": "PASS",
+      "errors": [],
+      "output": "All scripts syntax OK"
+    },
+    "credentials": {
+      "google_credentials": {
+        "status": "FAIL",
+        "reason": "check_error"
+      },
+      "assemblyai_credentials": {
+        "status": "FAIL",
+        "reason": "check_error"
+      }
+    }
   },
-  "uptime_hours": 500.70,
-  "validator_pid": 3555056
+  "uptime_hours": 124.87,
+  "validator_pid": 2513174
 }

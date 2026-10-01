@@ -19,6 +19,7 @@
 | `tools/bin/pm2-boot-test`, `pm2-chaos`, `pm2-loop-guard`, `pm2-loop-guard-test`, `pm2-eco-lint` | тесты/страж PM2 (spec:025) | по имени | Claude, Codex | штатно |
 | `tools/bin/restic` | бэкапы (spec backup-coverage) | `restic …` через скрипты `tools/scripts/` | Codex | штатно |
 | `tools/bin/share-test` | самотест share | `share-test` | Claude | штатно |
+| `tools/skill-search/` (`skills@1.5.18`, vercel-labs/skills, по lockfile) | штатный CLI поиска навыков skills.sh (spec:068; без обёрток — владелец 26.09 «только штатное») | `DISABLE_TELEMETRY=1 tools/skill-search/node_modules/.bin/skills find <слово>`; `add/use/update` не вызывать | все | штатно |
 | `pm2` | управление процессами — только `startOrReload <ecosystem> --only <имя>` → `pm2 save` | см. `/root/CLAUDE.md` PM2 | все | штатно |
 | `tools/scripts/pm2/b244-fetch.sh` | загрузка файлов b244/MinIO | `bash …/b244-fetch.sh <b244://…>` | все | штатно |
 | `tmux send-keys` | сообщение другому агенту: `-l "<текст>"` → отдельный `Enter` → `capture-pane` | см. `/root/CLAUDE.md` tmux | Claude ↔ Codex | штатно |
@@ -26,8 +27,9 @@
 | `jq`, `grep`, `wc`, `ls`, `git`, `gh` | чтение, замеры, git-слой (I11) | одна команда на вызов | все | штатно |
 | `python3 <файл из tools/ или проекта>` | штатные скрипты (`layout_check.py`, `deploy_manifest.py`, тесты проектов) | путь к файлу, без `-c` | все | штатно |
 | `Workflow name=audit|verify|bd-slice|code-atom` | делегирование (csb стадия 7) | по имени, args `{atom,path,tz}` | Claude | штатно |
-| `transcribe` (`tools/bin/transcribe`) | ЕДИНСТВЕННАЯ транскрибация аудио/видео (spec:056 → spec:059, 23.09): AssemblyAI первым (целиком до 10 ч, спикеры, SRT/VTT), запасной Groq `whisper-large-v3`; файл, прямая ссылка, страница YouTube и др. (`yt-dlp` в `.venv`); журнал `state/transcribe/runs.jsonl`; из любой папки | `transcribe <файл\|ссылка> [--format txt\|srt\|vtt\|json] [--speakers] [--engine auto\|assemblyai\|groq] [--lang ru]`; навык `.claude/skills/transcribe` | все | штатно |
-| `transcribe-test` | живой самотест транскрибации, итог `PASS 9/9` | `transcribe-test` | все | штатно |
+| `mise` (v2026.9.14, бинарь GitHub releases, SHA256 сверен) | тулчейн языка per-project без глобальных пакетов (Go, Java, .NET, Rust, Ruby…); `mise.toml` в проекте | `/root/.local/bin/mise use <tool>@<ver>` в каталоге проекта, запуск `mise exec -- <cmd>`; данные `~/.local/share/mise` (офиц. путь) | все (владелец 26.09) | штатно |
+| `claude --settings /root/workspaces/tools/claude-sandbox-settings.json` | машинная стена теста в sandbox: deny Edit/git/pm2/gh/tmux/docker вне теста + deny Read чужих проектов, конституции, ecosystem (26.09: тест 1 закоммитил в ecosystem, тест 2 читал rss-tg-ins) | ПОРЯДОК: 1) `mkdir sandbox/test-<имя>` + `request.txt`; 2) окно `tmux new-window -d -t cl: -n test-<имя> -c <каталог>`; 3) `claude --settings <этот файл> "<запрос>"`; 4) наблюдение, стоп по бюджету csb — Escape; 5) выход `/exit`; 6) результат в bd; 7) удаление каталога и окна — по закону «Тестовый мусор». ЗАПРЕТЫ стены: путь конкретного теста в файл не вписывать (Read deny = и запрет записи: тест 2 не смог писать план); штатный `sandbox.enabled` Claude Code на этом сервере не включать — AppArmor `apparmor_restrict_unprivileged_userns=1` роняет каждую команду (тест 3), починка = правка /etc только по слову владельца | все (владелец 26.09) | штатно |
+| `copier` (9.18.2) | каркас проекта из готового шаблона по answers-файлу; обновление проекта | `/root/workspaces/tools/copier-venv/bin/copier copy --defaults <шаблон> <каталог>`, `… update` | все (владелец 26.09) | штатно |
 
 ## 3. ЗАПРЕЩЕНО (машинно: Claude — managed deny; opencode — `permission.bash "*": deny`; Codex — его hooks.json по вердикту)
 | Форма | Почему | Замена |
@@ -37,7 +39,6 @@
 | `aider`, `or-run`, `tools/llm-providers/runner.sh`, `failover.sh` (OpenRouter-эра) | сняты владельцем; файлы оставлены без права исполнения (`chmod a-x`, 18.09) | `opencode run` |
 | чтение/правка `~/.config/opencode/**` агентами | модель выбирает владелец | форма вызова из §1 |
 | `pm2 start <файл>`, `pm2 delete`, `pm2 kill` | закон PM2 | `pm2-boot`, `startOrReload` |
-| Любая транскрибация мимо `transcribe`: Yandex SpeechKit (`transcribe_yandex.py`, `run_yandex_transcribe.py`, `transcribe_with_iam.py`), `client-video-transcription/transcribe.py`, `run_groq_transcribe.py`, `transcription-dev/*`, `acc1-scripts/assemblyai-transcribe.py`, `acc1-scripts/groq-client.sh`, OpenAI/Gemini/OpenRouter-распознавание | запрет владельца 23.09 (SpeechKit — 31,70 ₽/нед), ключи OpenAI недействительны, Gemini — регион, путаница агентов | `transcribe` |
 
 ## 4. Замер (FR-007; окно 24 ч)
 Базовая линия 18.09 10:00 (все транскрипты `~/.claude/projects` за 24 ч): `python -c` 224, `python3 -c` 160, `bash -c` 108, `claude -p` 6; `opencode run` 150, `codex exec` 148.

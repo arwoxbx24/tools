@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# Contract test for csb-check fixtures from spec:042.
+set -u -o pipefail
+
+TARGET="$(dirname "$0")/csb-check"
+EVALS=/root/workspaces/projects/.claude/skills/csb/evals/evals.json
+FIXTURES=/root/.claude/projects
+PASS=0
+FAIL=0
+
+ok() { printf 'ok - %s\n' "$1"; PASS=$((PASS + 1)); }
+not_ok() { printf 'not ok - %s\n' "$1"; FAIL=$((FAIL + 1)); }
+assert_line() {
+  local message=$1 pattern=$2 output=$3
+  if grep -Eq -- "$pattern" <<<"$output"; then ok "$message"; else not_ok "$message"; fi
+}
+fixture() {
+  local files=("$FIXTURES/$1/$2"*.jsonl)
+  printf '%s' "${files[0]}"
+}
+run_check() {
+  local output rc
+  output=$(CSB_JOURNAL_DIR="$JD" "$TARGET" "$@" 2>&1); rc=$?
+  printf '%s' "$output"
+  return "$rc"
+}
+
+# RED must name an absent checker before the harness touches any fixture.
+if [[ ! -x $TARGET ]]; then
+  not_ok 'csb-check exists and is executable'
+  printf 'FAIL=%d PASS=%d (RED: implementation is absent)\n' "$FAIL" "$PASS"
+  exit 1
+fi
+
+JD=$(mktemp -d /tmp/csb-journal.XXXXXX)
+JD2=$(mktemp -d /tmp/csb-journal.XXXXXX)
+trap 'rm -rf -- "$JD" "$JD2"' EXIT
+
+out=$(run_check T-A "$(fixture -root-workspaces-sandbox-claude-e2e-1 a0c13c8c)" --evals "$EVALS" || true)
+assert_line 'T-A has R4 FAIL' '^R4 \| FAIL' "$out"
+assert_line 'T-A has R5 FAIL' '^R5 \| FAIL' "$out"
+
+out=$(run_check T-B "$(fixture -root-workspaces-sandbox-claude-e2e-2 d7857e8b)" --evals "$EVALS" || true)
+assert_line 'T-B has R5 FAIL' '^R5 \| FAIL' "$out"
+assert_line 'T-B has R6 FAIL' '^R6 \| FAIL' "$out"
+assert_line 'T-B has R8 FAIL' '^R8 \| FAIL' "$out"
+
+out=$(run_check T-C "$(fixture -root-workspaces-sandbox-claude-e2e-4 ab6acba5)" --evals "$EVALS" || true)
+assert_line 'T-C has R4 FAIL' '^R4 \| FAIL' "$out"
+
+out=$(run_check T-G "$(fixture -root-workspaces-sandbox-claude-e2e-3 8fe4e1bd)" --evals "$EVALS" || true)
+assert_line 'T-G has R7 FAIL' '^R7 \| FAIL' "$out"
+assert_line 'T-G has R8 FAIL' '^R8 \| FAIL' "$out"
+
+case6=$(fixture -root-workspaces-sandbox-claude-e2e-5 bf283fbf)
+out=$(run_check T-A "$case6" --evals "$EVALS")
+rc=$?
+assert_line 'T-A fixture 6 has R8 FAIL' '^R8 \| FAIL' "$out"
+[[ ${rc:-0} == 1 ]] && ok 'T-A fixture 6 exits 1' || not_ok 'T-A fixture 6 exits 1'
+unset rc
+
+jq -c 'select(.type != "cost-state")' $case6 >"$JD/nocost.jsonl"
+out=$(run_check T-A "$JD/nocost.jsonl" --evals "$EVALS" || true)
+assert_line 'missing cost is incomplete' '^R8 \| INCOMPLETE' "$out"
+
+run_check T-A "$case6" --evals "$EVALS" >/dev/null || true
+out=$(run_check T-A "$case6" --evals "$EVALS" || true)
+count=$(grep -h -c 'T-A@bf283fbf' "$JD"/*-week.md 2>/dev/null || true)
+[[ $count == 1 ]] && ok 'journal is idempotent' || not_ok 'journal is idempotent'
+assert_line 'second run reports existing journal' 'journal: exists' "$out"
+
+"$TARGET" T-Z "$case6" --evals "$EVALS" >/dev/null 2>&1; rc=$?
+[[ $rc == 64 ]] && ok 'unknown eval exits 64' || not_ok 'unknown eval exits 64'
+
+out=$(CSB_JOURNAL_DIR="$JD2" "$TARGET" T-A "$case6" --evals "$EVALS" --no-journal 2>&1 || true)
+[[ $(ls "$JD2" | wc -l) == 0 ]] && ok '--no-journal leaves directory empty' || not_ok '--no-journal leaves directory empty'
+
+printf 'FAIL=%d PASS=%d\n' "$FAIL" "$PASS"
+(( FAIL == 0 ))

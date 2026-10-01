@@ -126,7 +126,6 @@ ALERT_RESULT=none
 FIXED_COUNT=0
 FIXED_MB=0
 DEFERRED_COUNT=0
-GATE_RC=0
 
 # Общий список незаменимых файлов прогона (копится во время классов, фиксируется
 # через гейт после них). Создаётся в начале каждого прогона.
@@ -794,12 +793,15 @@ if [ "$DR_TEST_ONLY" = 1 ]; then
   REFIX_PATHS=()
   # незаменимые: собрать обычные файлы тестового каталога и отдать гейту
   irrep_tmp=$(mktemp)
-  irrep_candidates >>"$irrep_tmp"
+  if [ -n "$DR_TEST_IRREPLACEABLE_DIR" ] && [ -d "$DR_TEST_IRREPLACEABLE_DIR" ]; then
+    find "$DR_TEST_IRREPLACEABLE_DIR" -maxdepth 1 -type f -print 2>/dev/null >>"$irrep_tmp"
+  fi
   if [ "$MODE" = run ]; then
     gate_process test-irreplaceable "$irrep_tmp"
   else
     while IFS= read -r p; do
       [ -n "$p" ] || continue
+      local kb size age
       kb=$(du -sk "$p" 2>/dev/null | awk '{print $1}'); kb="${kb:-0}"
       size=$(stat -c %s "$p" 2>/dev/null || echo -)
       age=$(( (now - $(stat -c %Y "$p" 2>/dev/null)) / 86400 ))
@@ -814,6 +816,7 @@ if [ "$DR_TEST_ONLY" = 1 ]; then
     else
       while IFS= read -r -d '' p; do
         [ -n "$p" ] || continue
+        local kb size age
         kb=$(du -sk "$p" 2>/dev/null | awk '{print $1}'); kb="${kb:-0}"
         size=$(stat -c %s "$p" 2>/dev/null || echo -)
         age=$(( (now - $(stat -c %Y "$p" 2>/dev/null)) / 86400 ))

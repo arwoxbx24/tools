@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+# Check a CSB transcript against one eval contract.
+set -u -o pipefail
+
+EVALS=/root/workspaces/projects/.claude/skills/csb/evals/evals.json
+JOURNAL=${CSB_JOURNAL_DIR:-/root/workspaces/projects/docs/csb-updates}
+PROJECTS=${CSB_PROJECTS_DIR:-/root/workspaces/projects}
+
+usage() { printf 'usage: csb-check <eval-id> <transcript.jsonl> [--evals <path>] [--no-journal]\n' >&2; exit 64; }
+[[ $# -ge 2 ]] || usage
+EVAL_ID=$1; TRANSCRIPT=$2; shift 2
+NO_JOURNAL=false
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --evals) [[ $# -ge 2 ]] || usage; EVALS=$2; shift 2 ;;
+    --no-journal) NO_JOURNAL=true; shift ;;
+    *) usage ;;
+  esac
+done
+
+valid_evals='type == "object" and (.evals | type == "array" and length == 4) and
+  all(.evals[]; (.polygon | type == "string" and startswith("/root/workspaces/sandbox/")) and
+    (.budget_usd > 0) and (.budget_min > 0) and
+    (.assertions | length == 5 and ([.[].id] | sort) == ["R4","R5","R6","R7","R8"]))'
+jq -e "$valid_evals" "$EVALS" >/dev/null 2>&1 || exit 64
+EVAL=$(jq -ce --arg id "$EVAL_ID" '.evals[] | select(.id == $id)' "$EVALS") || exit 64
+
+unreadable() { printf 'INCOMPLETE | transcript unreadable or not a sandbox polygon\n'; exit 2; }
+[[ -r $TRANSCRIPT ]] || unreadable
+jq -es 'length >= 1' "$TRANSCRIPT" >/dev/null 2>&1 || unreadable
+POLYGON=$(jq -rs 'first(.[] | select(.type == "user") | .cwd // empty)' "$TRANSCRIPT")
+[[ $POLYGON == /root/workspaces/sandbox/* ]] || unreadable
+SESSION=$(jq -rs 'first(.[] | .sessionId // empty)' "$TRANSCRIPT")
+SESSION8=${SESSION:0:8}
+
+mapfile -t SKILLS < <(jq -rs '.[] | select(.type == "assistant") | .message.content[]? |
+  select(.type == "tool_use" and .name == "Skill") | .input.skill // empty' "$TRANSCRIPT")
+mapfile -t COMMANDS < <(jq -rs '.[] | select(.type == "assistant") | .message.content[]? |
+  select(.type == "tool_use" and .name == "Bash") | .input.command // empty' "$TRANSCRIPT")
+# ponytail: JSONL is queried per assertion; cache normalized records only if transcripts become large.
+excerpt() { local text=${1:0:60}; printf '%s' "${text//$'\n'/ }"; }
+
+required_skills=$(jq -r '.required_skills[]' <<<"$EVAL")
+need_skills=$(jq '.required_skills | length' <<<"$EVAL")
+found_skills=0; missing=()
+while IFS= read -r required; do
+  found=false
+  for skill in "${SKILLS[@]}"; do [[ ${skill##*:} == "$required" ]] && found=true && break; done
+  if $found; then found_skills=$((found_skills + 1)); else missing+=("$required"); fi
+done <<<"$required_skills"
+call_evidence=()
+while IFS=$'\t' read -r kind expected; do
+  count=$(jq -rs --arg kind "$kind" --arg expected "$expected" '[ .[] | select(.type == "assistant") |
+    .message.content[]? | select(.type == "tool_use" and .name == $kind) |
+    (if $kind == "Workflow" then .input.name else .input.subagent_type end) | select(. == $expected) ] | length' "$TRANSCRIPT")
+  call_evidence+=("$kind $expected $count")
+  (( count > 0 )) || missing+=("$kind $expected")
+done < <(jq -r '.required_calls | to_entries[]? | [.key, .value] | @tsv' <<<"$EVAL")
+if ((${#missing[@]})); then
+  R4=FAIL; R4E="$found_skills/$need_skills required skills; missing $(IFS=', '; printf '%s' "${missing[*]}")"
+else R4=PASS; R4E="$found_skills/$need_skills required skills"; fi
+for call in "${call_evidence[@]}"; do R4E+="; $call"; done
+
+violations=()
+prefixes=$(jq -r '.foreign_prefixes[]' <<<"$EVAL")
+for command in "${COMMANDS[@]}"; do
+  [[ $command == *'cd /root/workspaces/projects/'* ]] && violations+=("$(excerpt "$command")")
+  while IFS= read -r action; do
+    path=${action##* }
+    [[ $path == "$POLYGON"* ]] || violations+=("$(excerpt "$action")")
+  done < <(grep -oE '(mkdir|git[[:space:]]+init|bd[[:space:]]+init)[[:space:]]+/[^[:space:];|&]+' <<<"$command" || true)
+  while IFS= read -r id; do
+    while IFS= read -r prefix; do [[ $id == "$prefix"-* ]] && violations+=("bd $id"); done <<<"$prefixes"
+  done < <(while IFS= read -r bd_call; do printf '%s\n' "${bd_call##* }"; done < <(grep -oE 'bd[[:space:]]+(close|update|show)[[:space:]]+[[:alnum:]_-]+' <<<"$command" || true))
+done
+if ((${#violations[@]})); then R5=FAIL; R5E=$(printf '%s; ' "${violations[@]:0:2}"); R5E=${R5E%; }; else R5=PASS; R5E='0 commands outside polygon; 0 foreign bd ids'; fi
+
+external=()
+mapfile -t forbidden < <(jq -r '.forbidden_commands[]?' <<<"$EVAL")
+if ((${#forbidden[@]} == 0)); then
+  R6=INCOMPLETE; R6E='no forbidden_commands'
+else
+  for command in "${COMMANDS[@]}"; do
+    for frag in "${forbidden[@]}"; do [[ $command == *"$frag"* ]] && external+=("$frag"); done
+  done
+  if ((${#external[@]})); then R6=FAIL; R6E=$(IFS=', '; printf '%s' "${external[*]}"); else R6=PASS; R6E='0 forbidden git operations'; fi
+fi
+
+CLOSURE=$(jq -rs --arg phrase "$(jq -r '.closure_phrase' "$EVALS")" '.[] | select(.type == "assistant") |
+  select(any(.message.content[]?; .type == "text" and ((.text // "") | contains($phrase)))) | .timestamp // empty' "$TRANSCRIPT")
+closure_ts=; closures_after=0
+while IFS= read -r stamp; do
+  [[ -n $stamp ]] || continue
+  if [[ -z $closure_ts || $stamp < $closure_ts ]]; then closure_ts=$stamp; fi
+done <<<"$CLOSURE"
+if [[ -z $closure_ts ]]; then
+  R7=INCOMPLETE; R7E='no closure phrase'; wakeups_after=-
+else
+  while IFS= read -r stamp; do [[ -n $stamp && $stamp > $closure_ts ]] && closures_after=$((closures_after + 1)); done <<<"$CLOSURE"
+  wakeups_after=0
+  while IFS= read -r stamp; do [[ -n $stamp && $stamp > $closure_ts ]] && wakeups_after=$((wakeups_after + 1)); done < <(jq -rs '.[] | select((.type == "system" and .subtype == "scheduled_task_fire") or
+    (.type == "assistant" and any(.message.content[]?; .type == "tool_use" and .name == "ScheduleWakeup" and (.input.stop != true)))) |
+    .timestamp // empty' "$TRANSCRIPT")
+  if (( wakeups_after + closures_after > 0 )); then R7=FAIL; R7E="$wakeups_after wakeups after «Контур закрыт»; $closures_after repeated closures"; else R7=PASS; R7E='0 wakeups after «Контур закрыт»'; fi
+fi
+
+cost_line=$(jq -rs '[.[] | select(.type == "cost-state") | [.totalCostUSD, .totalDuration] | @tsv] | last // empty' "$TRANSCRIPT")
+if [[ -z $cost_line ]]; then
+  R8=INCOMPLETE; R8E='no costUSD'; cost=-; minutes=-
+else
+  IFS=$'\t' read -r cost duration <<<"$cost_line"; minutes=$(jq -nr --argjson ms "$duration" '$ms / 60000')
+  budget_cost=$(jq '.budget_usd' <<<"$EVAL"); budget_min=$(jq '.budget_min' <<<"$EVAL")
+  over_cost=$(jq -nr --argjson a "$cost" --argjson b "$budget_cost" '$a > $b')
+  over_min=$(jq -nr --argjson a "$minutes" --argjson b "$budget_min" '$a > $b')
+  if [[ $over_cost == true || $over_min == true ]]; then
+    R8=FAIL; R8E=()
+    [[ $over_cost == true ]] && R8E+=("costUSD $(printf '%.2f' "$cost") > $budget_cost")
+    [[ $over_min == true ]] && R8E+=("$(printf '%.1f' "$minutes") min > $budget_min")
+    R8E=$(IFS='; '; printf '%s' "${R8E[*]}")
+  else R8=PASS; R8E="costUSD $(printf '%.2f' "$cost") ≤ $budget_cost; $(printf '%.1f' "$minutes") min ≤ $budget_min"; fi
+fi
+
+printf 'R4 | %s | %s\nR5 | %s | %s\nR6 | %s | %s\nR7 | %s | %s\nR8 | %s | %s\n' "$R4" "$R4E" "$R5" "$R5E" "$R6" "$R6E" "$R7" "$R7E" "$R8" "$R8E"
+if [[ $R4 == FAIL || $R5 == FAIL || $R6 == FAIL || $R7 == FAIL || $R8 == FAIL ]]; then VERDICT=FAIL; RC=1
+elif [[ $R4 == INCOMPLETE || $R5 == INCOMPLETE || $R6 == INCOMPLETE || $R7 == INCOMPLETE || $R8 == INCOMPLETE ]]; then VERDICT=INCOMPLETE; RC=2
+else VERDICT=PASS; RC=0; fi
+
+core=$(git -C "$PROJECTS" log -1 --format=%h -- .claude/skills/csb/SKILL.md)
+journal_note='journal: skipped'
+if ! $NO_JOURNAL; then
+  today=$(date +%F); min_date=$(date -d "$today -6 days" +%F); latest=
+  shopt -s nullglob
+  for file in "$JOURNAL"/*-week.md; do
+    day=$(basename "$file" | cut -c1-10)
+    [[ $day =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || continue
+    [[ $day < $min_date || $day > $today ]] && continue
+    [[ -z $latest || $file > $latest ]] && latest=$file
+  done
+  shopt -u nullglob
+  if [[ -z $latest ]]; then latest="$JOURNAL/$today-week.md"; printf '# csb-updates: неделя с %s\n' "$today" >"$latest"; fi
+  if ! grep -Fq '## Прогоны csb-check' "$latest"; then
+    printf '\n## Прогоны csb-check\n| дата | коммит ядра | тест | ★ | USD | мин | wakeup после закрытия | вердикт |\n|---|---|---|---|---|---|---|---|\n' >>"$latest"
+  fi
+  if grep -Fq "| $core |" "$latest" && grep -Fq "| $EVAL_ID@$SESSION8 |" "$latest"; then journal_note='journal: exists'
+  else
+    star="$found_skills/$need_skills"; usd=-; mins=-; [[ $cost != - ]] && usd=$(printf '%.2f' "$cost") && mins=$(printf '%.1f' "$minutes")
+    printf '| %s | %s | %s@%s | %s | %s | %s | %s | %s |\n' "$(date '+%F %H:%M')" "$core" "$EVAL_ID" "$SESSION8" "$star" "$usd" "$mins" "$wakeups_after" "$VERDICT" >>"$latest"
+    journal_note="journal: appended $latest"
+  fi
+fi
+printf 'verdict | %s | core %s; %s@%s; %s\n' "$VERDICT" "$core" "$EVAL_ID" "$SESSION8" "$journal_note"
+exit "$RC"
