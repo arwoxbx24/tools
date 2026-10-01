@@ -10,25 +10,52 @@ export GA_LOCK_DIR="$d/lock"
 export GA_LOG_DIR="$d/logs"
 export GH_JOURNAL="$d/gh.log"
 export GH_CREATED="$d/gh-created"
+export GH_TEST_DIR="$d"
 mkdir -p "$GA_WT_ROOT/claude" "$GA_PROJECTS" "$GA_LOG_DIR" "$GA_LOCK_DIR" "$d/bin"
 
 cat > "$d/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$GH_JOURNAL"
-if [[ $1 == pr && $2 == list ]]; then
+if [[ -f "$GH_TEST_DIR/gh-401" ]]; then
+	echo 'HTTP 401' >&2; exit 1
+elif [[ $1 == pr && $2 == list ]]; then
 	[[ -f "$GH_CREATED" ]] && echo 7 || echo ''
 elif [[ $1 == pr && $2 == create ]]; then
 	: > "$GH_CREATED"
 	echo 'https://github.com/x/y/pull/7'
+elif [[ $1 == pr && $2 == checks ]]; then
+	[[ " $* " == *' --watch '* ]] || cat "$GH_TEST_DIR/checks.json" 2>/dev/null || echo '[]'
+elif [[ $1 == pr && $2 == merge ]]; then
+	[[ ! -f "$GH_TEST_DIR/merge-fail" ]] || { echo 'merge refused' >&2; exit 1; }
+	origin=${GH_ORIGIN:-$(git -C "$PWD" config remote.origin.url)}
+	branch=$(git -C "$PWD" rev-parse --abbrev-ref HEAD)
+	tmp=$(mktemp -d "$GH_TEST_DIR/merge.XXXXXX")
+	git clone -q "$origin" "$tmp" && git -C "$tmp" config user.email t@t \
+		&& git -C "$tmp" config user.name t \
+		&& git -C "$tmp" fetch -q origin "main:refs/remotes/origin/main" "$branch:refs/remotes/origin/$branch" \
+		&& git -C "$tmp" checkout -q -B main origin/main && git -C "$tmp" merge --squash "origin/$branch" \
+		&& git -C "$tmp" commit -q -m squash \
+		&& git -C "$tmp" push -q origin HEAD:main && git -C "$tmp" rev-parse HEAD > "$GH_TEST_DIR/merge-sha" || exit 1
+	rm -rf "$tmp"
+elif [[ $1 == pr && $2 == view ]]; then
+	cat "$GH_TEST_DIR/merge-sha"
 fi
 exit 0
 EOF
 chmod +x "$d/bin/gh"
+cat > "$d/bin/pm2" <<'EOF'
+#!/usr/bin/env bash
+case $1 in
+	startOrReload) exit 0 ;;
+	jlist) printf '[{"name":"app","pm2_env":{"pm_uptime":%s}}]\n' "$(cat "$GH_TEST_DIR/uptime" 2>/dev/null || echo $(( $(date +%s%3N) + 1000 )))" ;;
+esac
+EOF
+chmod +x "$d/bin/pm2"
 export PATH="$d/bin:$PATH"
 
 tz="$d/tz.md"; printf 'ship test tz\n' > "$tz"
 atom=dcfg-9jdfv.5
-ship(){ "$bin/ship" "$@" --atom "$atom" --tz "$tz#U1"; }
+ship(){ ( cd "$1" && GH_ORIGIN="$(git -C "$1" config remote.origin.url)" "$bin/ship" "$@" --atom "$atom" --tz "$tz#U1" --handover ); }
 p(){ echo "PASS $1"; ok=$((ok+1)); }
 f(){ echo "FAIL $1"; }
 ok=0
@@ -64,13 +91,16 @@ sha2=$(git -C "$GA_PROJECTS/r1" rev-parse refs/remotes/origin/claude/x)
 
 git -C "$r1x" reset -q --hard origin/claude/x
 before=$(grep -c '^pr create' "$GH_JOURNAL" || true)
+git -C "$r1x" fetch -q origin
+git -C "$r1x" reset -q --hard origin/main
+printf 'again\n' >> "$r1x/f.txt"
 ship "$r1x" >/dev/null 2>&1; rc=$?
 after=$(grep -c '^pr create' "$GH_JOURNAL" || true)
 [[ $rc == 0 && $after -eq $before ]] && p 5 || f 5
 
+git -C "$r1x" fetch -q origin
 git -C "$r1x" reset -q --hard origin/main
 printf 'v2\n' > "$r1x/f.txt"
-git -C "$r1x" add -A; git -C "$r1x" commit -q -m v2
 ship "$r1x" >/dev/null 2>&1; [[ $? == 0 ]] && p 6 || f 6
 
 git init -q "$GA_PROJECTS/stroyremont"
@@ -102,4 +132,14 @@ ship "$GA_WT_ROOT/claude/r2-c" >/dev/null 2>&1; rc=$?
 status=$(git -C "$GA_WT_ROOT/claude/r2-c" status)
 [[ $rc == 50 && $status != *'rebase in progress'* ]] && p 8 || f 8
 
-[[ $ok == 8 ]] && exit 0 || exit 1
+git -C "$GA_PROJECTS/r2" fetch -q origin
+git -C "$GA_PROJECTS/r2" worktree add -q -b claude/nine "$GA_WT_ROOT/claude/r2-nine" origin/main
+r9="$GA_WT_ROOT/claude/r2-nine"
+printf 'nine\n' >> "$r9/f.txt"
+out=$( ( cd "$r9" && GH_ORIGIN="$(git -C "$r9" config remote.origin.url)" "$bin/ship" "$r9" --atom "$atom" --tz "$tz#U1" ) ); rc=$?
+live="$GA_PROJECTS/r2"
+git -C "$live" rev-parse HEAD >/dev/null 2>&1 && head=$(git -C "$live" rev-parse HEAD) || head=''
+git -C "$live" rev-parse --verify claude/nine >/dev/null 2>&1; branch_rc=$?
+[[ $rc == 0 && $out == *'ci:none'* && $head == "$(cat "$d/merge-sha")" && ! -d $r9 && $branch_rc != 0 ]] && p 9 || f 9
+
+[[ $ok == 9 ]] && exit 0 || exit 1
