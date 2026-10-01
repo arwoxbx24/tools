@@ -137,4 +137,149 @@ grep -qF 'err:fetch' <<<"$out" && p 11 || f 11
 out=$("$bin/git-sync" no-such-repo 2>&1)
 grep -qF 'err:ctx' <<<"$out" && p 12 || f 12
 
-[[ $ok == 12 ]]
+usnap(){ # <tag> <cmd...> — snapshot `git ls-files --others` of a repo (sc 19)
+	local tag=$1; shift
+	"$@" >"$d/u_${tag}" 2>/dev/null
+}
+ucheck(){ # <tag> <cmd...> — 0 if ls-files --others unchanged
+	local tag=$1 a; shift
+	a=$(cat "$d/u_${tag}" 2>/dev/null)
+	[[ $a == "$("$@" 2>/dev/null)" ]]
+}
+
+# 13: rescued — dirty (old) tracked file on main + untracked keep.txt preserved
+repo "$GA_PROJECTS/p-dirty13"
+printf 'a\n' > "$GA_PROJECTS/p-dirty13/f"
+git -C "$GA_PROJECTS/p-dirty13" add f
+git -C "$GA_PROJECTS/p-dirty13" commit -q -m base
+mkbare "$GA_PROJECTS/p-dirty13" "$d/origin-dirty13.git"
+printf 'dirty13\n' >> "$GA_PROJECTS/p-dirty13/f"
+touch -d '2 hours ago' "$GA_PROJECTS/p-dirty13/f"
+printf 'keep\n' > "$GA_PROJECTS/p-dirty13/keep.txt"
+usnap 13 git -C "$GA_PROJECTS/p-dirty13" ls-files --others
+out=$(cd "$GA_PROJECTS/p-dirty13" && "$bin/git-sync" p-dirty13 2>&1)
+wip=$(git -C "$GA_PROJECTS/p-dirty13" for-each-ref --format='%(refname)' refs/rescue 2>/dev/null | grep 'main-wip' | head -1)
+{ grep -qF rescued <<<"$out" \
+	&& git -C "$GA_PROJECTS/p-dirty13" diff "$wip^" "$wip" 2>/dev/null | grep -qF '+dirty13' \
+	&& [[ -z $(git -C "$GA_PROJECTS/p-dirty13" status --porcelain -uno) ]] \
+	&& [[ $(cat "$GA_PROJECTS/p-dirty13/keep.txt") == keep ]]; } && p 13 || f 13
+
+# 14: GIT_AUTO_LOCK_HELD bypasses a held lock, fast and not skip:locked
+repo "$GA_PROJECTS/p-lockheld"; mkbare "$GA_PROJECTS/p-lockheld" "$d/origin-lockheld.git"
+hash=$(printf '%s' p-lockheld | sha1sum | cut -c1-12)
+( flock 9; sleep 12 ) 9>"$GA_LOCK_DIR/git-auto-$hash.lock" &
+sleep 0.3
+usnap 14 git -C "$GA_PROJECTS/p-lockheld" ls-files --others
+start=$(date +%s)
+out=$(cd "$GA_PROJECTS/p-lockheld" && GIT_AUTO_LOCK_HELD="$hash" "$bin/git-sync" p-lockheld 2>&1)
+end=$(date +%s)
+wait
+{ grep -qvF 'skip:locked' <<<"$out" && (( end-start < 3 )); } && p 14 || f 14
+
+# 15: rescued — branch on codex/x (old commit), its change already squashed into origin/main
+repo "$GA_PROJECTS/p-squash"
+printf 'a\n' > "$GA_PROJECTS/p-squash/f"
+git -C "$GA_PROJECTS/p-squash" add f
+git -C "$GA_PROJECTS/p-squash" commit -q -m base
+mkbare "$GA_PROJECTS/p-squash" "$d/origin-squash.git"
+git -C "$GA_PROJECTS/p-squash" branch codex/x
+git -C "$GA_PROJECTS/p-squash" checkout -q codex/x
+printf 'a\nbranch\n' > "$GA_PROJECTS/p-squash/f"
+old15=$(date -d '2 hours ago' +%s)
+GIT_COMMITTER_DATE="@$old15" GIT_AUTHOR_DATE="@$old15" git -C "$GA_PROJECTS/p-squash" commit -q -am branch
+sq0=$(git -C "$GA_PROJECTS/p-squash" rev-parse codex/x)
+git clone -q "$d/origin-squash.git" "$d/adv-squash"
+git -C "$d/adv-squash" config user.email t@t; git -C "$d/adv-squash" config user.name t
+printf 'a\nbranch\n' > "$d/adv-squash/f"
+git -C "$d/adv-squash" add f
+git -C "$d/adv-squash" commit -q -m squashed
+git -C "$d/adv-squash" push -q origin main
+usnap 15 git -C "$GA_PROJECTS/p-squash" ls-files --others
+out=$(cd "$GA_PROJECTS/p-squash" && "$bin/git-sync" p-squash 2>&1)
+sq1=$(git -C "$GA_PROJECTS/p-squash" rev-parse codex/x)
+{ grep -qF rescued <<<"$out" \
+	&& [[ $(git -C "$GA_PROJECTS/p-squash" symbolic-ref --short -q HEAD) == main ]] \
+	&& [[ $sq0 == "$sq1" ]] \
+	&& [[ $(git -C "$GA_PROJECTS/p-squash" rev-parse HEAD) == $(git -C "$d/origin-squash.git" rev-parse main) ]]; } && p 15 || f 15
+
+# 16: err:checkout — untracked clash.txt blocks checkout of main (which tracks it)
+repo "$GA_PROJECTS/p-clash16"
+git -C "$GA_PROJECTS/p-clash16" commit -q --allow-empty -m base
+git -C "$GA_PROJECTS/p-clash16" branch old
+git -C "$GA_PROJECTS/p-clash16" checkout -q old
+old16=$(date -d '2 hours ago' +%s)
+GIT_COMMITTER_DATE="@$old16" GIT_AUTHOR_DATE="@$old16" git -C "$GA_PROJECTS/p-clash16" commit -q --allow-empty -m old
+git -C "$GA_PROJECTS/p-clash16" checkout -q main
+printf 'clash-main\n' > "$GA_PROJECTS/p-clash16/clash.txt"
+git -C "$GA_PROJECTS/p-clash16" add clash.txt
+git -C "$GA_PROJECTS/p-clash16" commit -q -m clash
+git init -q --bare "$d/origin-clash16.git"
+git -C "$GA_PROJECTS/p-clash16" remote add origin "$d/origin-clash16.git"
+git -C "$GA_PROJECTS/p-clash16" push -q -u origin main
+git -C "$GA_PROJECTS/p-clash16" fetch -q origin
+git --git-dir="$d/origin-clash16.git" symbolic-ref HEAD refs/heads/main
+git -C "$GA_PROJECTS/p-clash16" checkout -q old
+printf 'keepme\n' > "$GA_PROJECTS/p-clash16/clash.txt"
+usnap 16 git -C "$GA_PROJECTS/p-clash16" ls-files --others
+out=$(cd "$GA_PROJECTS/p-clash16" && "$bin/git-sync" p-clash16 2>&1)
+br16=$(git -C "$GA_PROJECTS/p-clash16" symbolic-ref --short -q HEAD)
+{ grep -qF 'err:checkout' <<<"$out" \
+	&& [[ $br16 == old ]] \
+	&& [[ $(cat "$GA_PROJECTS/p-clash16/clash.txt") == keepme ]]; } && p 16 || f 16
+
+# 17: contour form — separate git dir, origin ahead by 1 -> contour ff
+git init -q --separate-git-dir="$GA_CONTOUR_GITDIR" "$GA_CONTOUR_WT"
+git -C "$GA_CONTOUR_WT" config user.email t@t; git -C "$GA_CONTOUR_WT" config user.name t
+git -C "$GA_CONTOUR_WT" checkout -q -b main
+git -C "$GA_CONTOUR_WT" commit -q --allow-empty -m base
+git init -q --bare "$d/origin-contour.git"
+git -C "$GA_CONTOUR_WT" remote add origin "$d/origin-contour.git"
+git -C "$GA_CONTOUR_WT" push -q -u origin main
+git -C "$GA_CONTOUR_WT" fetch -q origin
+git --git-dir="$d/origin-contour.git" symbolic-ref HEAD refs/heads/main
+git clone -q "$d/origin-contour.git" "$d/adv-contour"
+git -C "$d/adv-contour" config user.email t@t; git -C "$d/adv-contour" config user.name t
+git -C "$d/adv-contour" commit -q --allow-empty -m adv
+git -C "$d/adv-contour" push -q origin main
+usnap 17 git --git-dir="$GA_CONTOUR_GITDIR" --work-tree="$GA_CONTOUR_WT" ls-files --others
+out=$(cd "$GA_CONTOUR_WT" && "$bin/git-sync" contour 2>&1)
+grep -qF 'contour ff' <<<"$out" && p 17 || f 17
+
+# 18: --all over an isolated fixture of 3 clean repos
+all_p="$d/all-projects"; all_t="$d/all-tools"
+all_cg="$d/all-contour.git"; all_cw="$d/all-contour-wt"
+repo "$all_p"; mkbare "$all_p" "$d/o-all-projects.git"
+repo "$all_t"; mkbare "$all_t" "$d/o-all-tools.git"
+repo "$all_p/sync-a"; mkbare "$all_p/sync-a" "$d/o-sync-a.git"
+repo "$all_p/sync-b"; mkbare "$all_p/sync-b" "$d/o-sync-b.git"
+repo "$all_p/sync-c"; mkbare "$all_p/sync-c" "$d/o-sync-c.git"
+git init -q --separate-git-dir="$all_cg" "$all_cw"
+git -C "$all_cw" config user.email t@t; git -C "$all_cw" config user.name t
+git -C "$all_cw" checkout -q -b main
+git -C "$all_cw" commit -q --allow-empty -m base
+git init -q --bare "$d/o-all-contour.git"
+git -C "$all_cw" remote add origin "$d/o-all-contour.git"
+git -C "$all_cw" push -q -u origin main
+git -C "$all_cw" fetch -q origin
+git --git-dir="$d/o-all-contour.git" symbolic-ref HEAD refs/heads/main
+usnap 18a git -C "$all_p/sync-a" ls-files --others
+usnap 18b git -C "$all_p/sync-b" ls-files --others
+usnap 18c git -C "$all_p/sync-c" ls-files --others
+start=$(date +%s)
+out=$(GA_PROJECTS="$all_p" GA_TOOLS="$all_t" GA_CONTOUR_GITDIR="$all_cg" GA_CONTOUR_WT="$all_cw" "$bin/git-sync" --all 2>&1); rc=$?
+end=$(date +%s)
+log=$GA_LOG_DIR/git-sync.log
+{ [[ $rc == 0 ]] && (( end-start < 240 )) \
+	&& grep -qF 'sync-a ok' "$log" && grep -qF 'sync-b ok' "$log" && grep -qF 'sync-c ok' "$log"; } && p 18 || f 18
+
+# 19: untracked files (ls-files --others) of each repo unchanged across 13-18
+{ ucheck 13 git -C "$GA_PROJECTS/p-dirty13" ls-files --others \
+	&& ucheck 14 git -C "$GA_PROJECTS/p-lockheld" ls-files --others \
+	&& ucheck 15 git -C "$GA_PROJECTS/p-squash" ls-files --others \
+	&& ucheck 16 git -C "$GA_PROJECTS/p-clash16" ls-files --others \
+	&& ucheck 17 git --git-dir="$GA_CONTOUR_GITDIR" --work-tree="$GA_CONTOUR_WT" ls-files --others \
+	&& ucheck 18a git -C "$all_p/sync-a" ls-files --others \
+	&& ucheck 18b git -C "$all_p/sync-b" ls-files --others \
+	&& ucheck 18c git -C "$all_p/sync-c" ls-files --others; } && p 19 || f 19
+
+[[ $ok == 19 ]]
