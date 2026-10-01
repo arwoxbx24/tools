@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+set -u
+bin=$(cd -- "$(dirname -- "$0")" && pwd)
+d=$(mktemp -d)
+trap 'rm -rf "$d"' EXIT
+export GA_NO_GH=1
+export GA_LOG_DIR="$d/logs"
+export GA_PROJECTS="$d/projects"
+export GA_TOOLS="$d/tools"
+export GA_CONTOUR_GITDIR="$d/contour.git"
+export GA_CONTOUR_WT="$d/contour-wt"
+mkdir -p "$GA_LOG_DIR" "$GA_PROJECTS" "$GA_TOOLS"
+
+git init -q "$GA_PROJECTS"; git init -q "$GA_TOOLS"
+for r in projects tools; do
+	git -C "$d/$r" config user.email t@t; git -C "$d/$r" config user.name t
+	git -C "$d/$r" checkout -q -b main; git -C "$d/$r" commit -q --allow-empty -m main
+done
+git init -q --bare "$d/origin-projects.git"
+git -C "$GA_PROJECTS" remote add origin "$d/origin-projects.git"
+git -C "$GA_PROJECTS" push -q -u origin main; git -C "$GA_PROJECTS" fetch -q origin
+
+# p1: on feature-x, behind main by 3
+git init -q "$GA_PROJECTS/p1"
+git -C "$GA_PROJECTS/p1" config user.email t@t; git -C "$GA_PROJECTS/p1" config user.name t
+git -C "$GA_PROJECTS/p1" checkout -q -b main; git -C "$GA_PROJECTS/p1" commit -q --allow-empty -m m0
+git -C "$GA_PROJECTS/p1" branch feature-x
+git -C "$GA_PROJECTS/p1" commit -q --allow-empty -m m1
+git -C "$GA_PROJECTS/p1" commit -q --allow-empty -m m2
+git -C "$GA_PROJECTS/p1" commit -q --allow-empty -m m3
+git init -q --bare "$d/origin-p1.git"
+git -C "$GA_PROJECTS/p1" remote add origin "$d/origin-p1.git"
+git -C "$GA_PROJECTS/p1" push -q -u origin main; git -C "$GA_PROJECTS/p1" fetch -q origin
+git -C "$GA_PROJECTS/p1" checkout -q feature-x
+
+# p2: no remote
+git init -q "$GA_PROJECTS/p2"
+git -C "$GA_PROJECTS/p2" config user.email t@t; git -C "$GA_PROJECTS/p2" config user.name t
+git -C "$GA_PROJECTS/p2" checkout -q -b main; git -C "$GA_PROJECTS/p2" commit -q --allow-empty -m main
+
+# stroyremont: allowlisted
+git init -q "$GA_PROJECTS/stroyremont"
+git -C "$GA_PROJECTS/stroyremont" config user.email t@t; git -C "$GA_PROJECTS/stroyremont" config user.name t
+git -C "$GA_PROJECTS/stroyremont" checkout -q -b main; git -C "$GA_PROJECTS/stroyremont" commit -q --allow-empty -m main
+
+# p5: live ancestry (side commit not reachable from HEAD)
+git init -q "$GA_PROJECTS/p5"
+git -C "$GA_PROJECTS/p5" config user.email t@t; git -C "$GA_PROJECTS/p5" config user.name t
+git -C "$GA_PROJECTS/p5" checkout -q -b main; git -C "$GA_PROJECTS/p5" commit -q --allow-empty -m headA
+git -C "$GA_PROJECTS/p5" checkout -q -b side; git -C "$GA_PROJECTS/p5" commit -q --allow-empty -m aside
+git -C "$GA_PROJECTS/p5" checkout -q main
+head_sha=$(git -C "$GA_PROJECTS/p5" rev-parse HEAD)
+side_sha=$(git -C "$GA_PROJECTS/p5" rev-parse side)
+
+# contour: separate git-dir
+git init -q --separate-git-dir="$GA_CONTOUR_GITDIR" "$GA_CONTOUR_WT"
+git -C "$GA_CONTOUR_WT" config user.email t@t; git -C "$GA_CONTOUR_WT" config user.name t
+git -C "$GA_CONTOUR_WT" checkout -q -b main; git -C "$GA_CONTOUR_WT" commit -q --allow-empty -m c0
+git init -q --bare "$d/origin-contour.git"
+git -C "$GA_CONTOUR_WT" remote add origin "$d/origin-contour.git"
+git -C "$GA_CONTOUR_WT" push -q -u origin main; git -C "$GA_CONTOUR_WT" fetch -q origin
+
+# p7: claude/x ahead 1, old commit, no ship.log -> unshipped
+git init -q "$GA_PROJECTS/p7"
+git -C "$GA_PROJECTS/p7" config user.email t@t; git -C "$GA_PROJECTS/p7" config user.name t
+git -C "$GA_PROJECTS/p7" checkout -q -b main; git -C "$GA_PROJECTS/p7" commit -q --allow-empty -m m
+git init -q --bare "$d/origin-p7.git"
+git -C "$GA_PROJECTS/p7" remote add origin "$d/origin-p7.git"
+git -C "$GA_PROJECTS/p7" push -q -u origin main; git -C "$GA_PROJECTS/p7" fetch -q origin
+git -C "$GA_PROJECTS/p7" branch claude/x
+git -C "$GA_PROJECTS/p7" checkout -q claude/x
+old=$(date -d '2 hours ago' +%s)
+GIT_COMMITTER_DATE="@$old" GIT_AUTHOR_DATE="@$old" \
+	git -C "$GA_PROJECTS/p7" commit -q --allow-empty -m ship
+git -C "$GA_PROJECTS/p7" checkout -q main
+
+ok=0
+
+out=$("$bin/git-state" --no-fetch); rc=$?
+[[ ${GA_DEBUG:-} ]] && printf '%s\n' "$out" > /tmp/gitstate-out.txt
+echo "$out" | grep -qF ' main 0 0 0 ' && { echo 'PASS 1'; ok=$((ok+1)); } || echo "FAIL 1"
+echo "$out" | grep -qF ' feature-x 3 ' && { echo 'PASS 2'; ok=$((ok+1)); } || echo 'FAIL 2'
+[[ $rc == 0 ]] && echo "$out" | grep -qF no-remote && { echo 'PASS 3'; ok=$((ok+1)); } || echo 'FAIL 3'
+echo "$out" | grep -qF skip:allowlist && { echo 'PASS 4'; ok=$((ok+1)); } || echo 'FAIL 4'
+
+"$bin/git-state" --live p5 "$head_sha" >/dev/null; a=$?
+"$bin/git-state" --live p5 "$side_sha" >/dev/null; b=$?
+[[ $a == 0 && $b == 1 ]] && { echo 'PASS 5'; ok=$((ok+1)); } || echo "FAIL 5: $a $b"
+
+echo "$out" | grep -qF 'contour main 0 0' && { echo 'PASS 6'; ok=$((ok+1)); } || echo 'FAIL 6'
+echo "$out" | grep -qF unshipped && { echo 'PASS 7'; ok=$((ok+1)); } || echo 'FAIL 7'
+"$bin/git-state" --json --no-fetch | python3 -m json.tool >/dev/null && { echo 'PASS 8'; ok=$((ok+1)); } || echo 'FAIL 8'
+
+[[ $ok == 8 ]]
