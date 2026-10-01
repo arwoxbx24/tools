@@ -22,15 +22,18 @@ ga_roots(){
 	local t=${GA_TOOLS:-/root/workspaces/tools}
 	local cg=${GA_CONTOUR_GITDIR:-/root/workspaces/system/contour-config.git}
 	local cw=${GA_CONTOUR_WT:-/root}
-	local g rel name
+	local g rel name gd wt
 	_ga_emit projects "$p/.git" "$p"
 	_ga_emit tools "$t/.git" "$t"
 	_ga_emit contour "$cg" "$cw"
 	while IFS= read -r g; do
 		rel=${g#"$p"/}
 		name=${rel%.git}
+		name=${name%/}
 		[[ -n $name ]] || continue
-		_ga_emit "$name" "$g" "${g%/.git}"
+		wt=${g%/.git}
+		gd=$(git -C "$wt" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || gd=$g
+		_ga_emit "$name" "$gd" "$wt"
 	done < <(find "$p" -maxdepth 4 -name .git ! -path '*/\.worktrees/*' ! -path '*/node_modules/*' 2>/dev/null)
 }
 

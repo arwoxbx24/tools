@@ -13,7 +13,7 @@ fail(){ echo "FAIL $1"; }
 # T1: registry
 proj="$d/projects"
 mkdir -p "$proj/clients/tools" "$proj/.worktrees/x" "$proj/node_modules"
-for r in a clients/b clients/tools/c node_modules/d; do git init -q "$proj/$r"; done
+for r in a clients/b clients/tools/c node_modules/d; do git init -q -b main "$proj/$r"; done
 git -C "$proj/a" config user.email t@t
 git -C "$proj/a" config user.name t
 git -C "$proj/a" commit -q --allow-empty -m init
@@ -76,27 +76,28 @@ ga_lock a 1 bash -c '
 
 # T7: ga_branch_unmerged
 r7="$d/unmerged"
-git init -q --bare "$d/origin7.git"
+git init -q --bare -b main "$d/origin7.git"
 git clone -q "$d/origin7.git" "$r7"
 git -C "$r7" config user.email t@t
 git -C "$r7" config user.name t
 git -C "$r7" commit -q --allow-empty -m main
+git -C "$r7" branch -M main
 git -C "$r7" push -q origin main
 git -C "$r7" checkout -q -b feat/new
 printf 'x\n' >"$r7/newfile"
 git -C "$r7" add newfile
 git -C "$r7" commit -q -m new
-(
-	export GIT_DIR="$r7/.git" GIT_WORK_TREE="$r7"
-	ga_branch_unmerged feat/new; ra=$?
-	git checkout -q main
-	git merge -q --squash feat/new
-	git commit -q -m "sq new"
-	git push -q origin main
-	ga_branch_unmerged feat/new; rb=$?
-	git branch behind "$(git rev-parse main~1)"
-	ga_branch_unmerged behind; rc=$?
-	[[ $ra == 0 && $rb == 1 && $rc == 1 ]]
-) && pass T7 || fail "T7: ra=$ra rb=$rb rc=$rc"
+export GIT_DIR="$r7/.git" GIT_WORK_TREE="$r7"
+ga_branch_unmerged feat/new; ra=$?
+[[ $ra == 0 ]] && pass T7a || fail "T7a: rc=$ra"
+git checkout -q main
+git merge -q --squash feat/new
+git commit -q -m "sq new"
+git push -q origin main
+ga_branch_unmerged feat/new; rb=$?
+git branch behind "$(git rev-parse main~1)"
+ga_branch_unmerged behind; rc=$?
+[[ $rb == 1 && $rc == 1 ]] && pass T7b || fail "T7b: rb=$rb rc=$rc"
+unset GIT_DIR GIT_WORK_TREE
 
-[[ $sum == 8 ]]
+[[ $sum == 9 ]]
