@@ -4,7 +4,7 @@ set -u
 
 LAST_OK=${LAST_OK:-/root/workspaces/system/tools/scripts/data/server-backup.last-ok}
 ALERT_PENDING=${ALERT_PENDING:-/root/workspaces/system/tools/scripts/data/server-backup.alert-pending}
-NOTIFY_ENV=${NOTIFY_ENV:-/root/workspaces/projects/hh-scoring/data/notify.env}
+NOTIFY_ENV=${NOTIFY_ENV:-/root/workspaces/secrets/services/pm2-notify.env}
 LOG=${LOG:-/root/workspaces/system/tools/scripts/logs/backup-catchup.log}
 MAX_AGE=93600
 PM2=${PM2:-$(command -v pm2 || echo /usr/local/bin/pm2)}
