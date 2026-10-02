@@ -22,7 +22,7 @@ printf '%s\n' '{"provider":{"bitrixgpt":{"models":{"bitrix/bitrixgpt-5.6-agent":
 
 printf '%s\n' '#!/usr/bin/env bash' 'printf "curl %s\\n" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'out=' 'url=${!#}' 'while [[ $# -gt 0 ]]; do' '  [[ $1 == -o ]] && { out=$2; shift 2; continue; }' '  shift' 'done' 'if [[ $url == */key ]]; then' '  printf "%s\n" "{\"data\":{\"limit_remaining\":${CURL_LIMIT_REMAINING:-1}}}" >"$out"' '  printf "%s" "${CURL_KEY_CODE:-${CURL_CODE:-200}}"' 'elif [[ $url == */chat/completions ]]; then' '  printf "%s\n" "insecure api_key=secret token=x authorization=y cookie=z" >"$out"' '  printf "%s" "${CURL_CHAT_CODE:-200}"' 'else' '  printf "%s\n" "{\"data\":[{\"id\":\"bitrix/bitrixgpt-5.6-agent\"},{\"id\":\"deepseek/deepseek-v4-flash\"}]}" >"$out"' '  printf "%s" "${CURL_CODE:-200}"' 'fi' >"$bin/curl"
 printf '%s\n' '#!/usr/bin/env bash' 'printf "opencode %s\\n" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "REPORT\\n"' '[[ ${OPENCODE_TOUCH:-} ]] && printf x >"$CODE_CHANNEL_TEST_PROJECT/$OPENCODE_TOUCH"' 'exit "${OPENCODE_RC:-0}"' >"$bin/opencode"
-printf '%s\n' '#!/usr/bin/env bash' 'printf "codex %s\\n" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "REPORT\\n"' '[[ ${CODEX_SWITCH_BRANCH:-} ]] && git -C "$CODE_CHANNEL_TEST_PROJECT" switch -c "codex/x-branch"' 'exit "${CODEX_RC:-0}"' >"$bin/codex"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "codex %s\\n" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "REPORT\\n"' '[[ ${CODEX_SWITCH_BRANCH:-} ]] && git -C "$CODE_CHANNEL_TEST_PROJECT" switch -c "codex/x-branch"' '[[ ${CODEX_ERR:-} ]] && printf "%s\n" "$CODEX_ERR" >&2' 'exit "${CODEX_RC:-0}"' >"$bin/codex"
 printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "${SQLITE_RESULT:-bitrixgpt|bitrix/bitrixgpt-5.6-agent}"' >"$bin/sqlite3"
 chmod +x "$bin/curl" "$bin/opencode" "$bin/codex" "$bin/sqlite3"
 
@@ -69,4 +69,12 @@ orig=$(git -C "$project" rev-parse --abbrev-ref HEAD)
 check 14 '[[ $rc == 0 ]] && [[ $(git -C "$project" rev-parse --abbrev-ref HEAD) == "$orig" ]] && grep -Fq -- "форма 2 сменила ветку, возвращено" "$tmp/err" && grep -q '"'"'provider_actual":"codex"'"'"' "$runs"' \
   env CODEX_SWITCH_BRANCH=1 CODEX_RC=0 "$root/bin/code-channel" 2 "$project" "$root/AGENTS.md"
 
-[[ $ok == 14 ]] && echo 'PASS 14/14'
+gcd=$(git -C "$project" rev-parse --path-format=absolute --git-common-dir)
+check 15 '[[ $rc == 0 ]] && grep -Fq -- "--add-dir '"$gcd"'" "$log" && grep -Fq -- "-c sandbox_workspace_write.network_access=true" "$log"' \
+  env CODEX_RC=0 "$root/bin/code-channel" 2 "$project" "$root/AGENTS.md"
+check 16 '[[ $rc == 0 ]] && grep -Fq -- "-c sandbox_workspace_write.network_access=true Не вызывай bd: трекер ведёт оркестратор" "$log" && grep -Fq -- "Не создавай и не переключай ветки; пиши и коммить только в текущую ветку" "$log"' \
+  env CODEX_RC=0 "$root/bin/code-channel" 2 "$project" "$root/AGENTS.md"
+check 17 '[[ $rc == 24 ]] && grep -Fq -- "form=2 среда: read-only" "$tmp/err"' \
+  env CODEX_ERR='Read-only file system' CODEX_RC=1 "$root/bin/code-channel" 2 "$project" "$root/AGENTS.md"
+
+[[ $ok == 17 ]] && echo 'PASS 17/17'
