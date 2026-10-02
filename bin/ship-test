@@ -65,6 +65,11 @@ esac
 EOF
 chmod +x "$d/bin/pm2"
 export PATH="$d/bin:$PATH"
+cat > "$d/bin/code-archive" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_TEST_DIR/code-archive-calls"
+EOF
+chmod +x "$d/bin/code-archive"
 
 tz="$d/tz.md"; printf 'ship test tz\n' > "$tz"
 atom=dcfg-9jdfv.5
@@ -240,4 +245,31 @@ pushed=$(git -C "$GA_PROJECTS/r18" rev-parse refs/remotes/origin/claude/c18 2>/d
 git -C "$w18" merge-base --is-ancestor "$mc" "$pushed" 2>/dev/null && anc=1 || anc=0
 [[ $rc == 0 && $out == *'ci:none'* && $anc == 1 ]] && p 18 || f 18
 
-[[ $ok == 18 ]] && exit 0 || exit 1
+# U4: код-архив вызывается только для slug arwoxbx24/<имя> после доставки.
+# ship через симлинк в $d/bin, чтобы $bin=$d/bin и $bin/code-archive был заглушкой.
+ln -sf "$bin/ship" "$d/bin/ship"
+ln -sf "$bin/git-auto-lib" "$d/bin/git-auto-lib"
+ln -sf "$bin/git-sync" "$d/bin/git-sync"
+ln -sf "$bin/git-state" "$d/bin/git-state"
+
+# отрицательный: локальный origin (slug не из arwoxbx24/) -> вызова нет
+mkrepo r20; w20=$(mkwt r20 claude/c20); printf 's20\n' >> "$w20/f.txt"
+rm -f "$d/code-archive-calls"
+( cd "$w20" && GH_ORIGIN="$(git -C "$w20" config remote.origin.url)" "$d/bin/ship" "$w20" --atom "$atom" --tz "$tz#U1" ) >/dev/null 2>&1; rc=$?
+[[ $rc == 0 && ! -e "$d/code-archive-calls" ]] && neg=0 || neg=1
+
+# положительный: slug arwoxbx24/<имя>; git-fetch переписан на локальный bare
+mkrepo r19; w19=$(mkwt r19 claude/c19); printf 's19\n' >> "$w19/f.txt"
+git -C "$GA_PROJECTS/r19" remote set-url origin 'git@github.com:arwoxbx24/archive-name'
+git -C "$GA_PROJECTS/r19" config "url.$d/origin-r19.git.insteadOf" 'git@github.com:arwoxbx24/archive-name'
+rm -f "$d/code-archive-calls"
+( cd "$w19" && GH_ORIGIN="$d/origin-r19.git" "$d/bin/ship" "$w19" --atom "$atom" --tz "$tz#U1" ) >/dev/null 2>&1; rc=$?
+calls=''
+for _ in $(seq 1 50); do
+	[[ -s "$d/code-archive-calls" ]] && { calls=$(<"$d/code-archive-calls"); break; }
+	sleep 0.1
+done
+[[ $rc == 0 && $calls == 'archive-name' ]] && pos=0 || pos=1
+[[ $neg == 0 && $pos == 0 ]] && p 19 || f 19
+
+[[ $ok == 19 ]] && exit 0 || exit 1
