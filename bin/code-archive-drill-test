@@ -103,5 +103,12 @@ else
   ((failed++))
 fi
 
+# TEST 5: HTTPS GitLab askpass wiring is present and the script parses cleanly.
+if bash -n "$DRILL_SCRIPT" && grep -q 'GIT_ASKPASS' "$DRILL_SCRIPT"; then
+  ((passed++))
+else
+  ((failed++))
+fi
+
 echo "PASS $passed FAIL $failed"
 exit $(( failed > 0 ? 1 : 0 ))

@@ -50,6 +50,10 @@ fi
 trap 'rm -rf "$drill_dir"' EXIT INT TERM
 
 # Clone from GitLab
+# HTTPS GitLab is a private project: prime askpass so clone/ls-remote read it non-interactively.
+if [[ "$CA_GITLAB_BASE" == https://* ]]; then
+  export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS="${CA_ASKPASS_CMD:-$(dirname "$0")/code-archive}" CA_ASKPASS=1
+fi
 gitlab_url=$(build_url "$CA_GITLAB_BASE" "$name")
 if ! git clone -q --bare "$gitlab_url" "$drill_dir" 2>/dev/null; then
   echo "drill:mismatch restore $name" | mask

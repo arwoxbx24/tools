@@ -10,6 +10,7 @@ if [[ ${CA_ASKPASS:-} == 1 && $# -eq 1 ]]; then
 fi
 export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS="$0" CA_ASKPASS=1
 CA_GITHUB_BASE="${CA_GITHUB_BASE:-git@github.com:arwoxbx24}"
+CA_GITLAB_BASE="${CA_GITLAB_BASE:-https://gitlab.com/arwox24-group}"
 CA_REPOS_DIR="${CA_REPOS_DIR:-/home/gitmirror/repos}"
 CA_LOG="${CA_LOG:-/root/workspaces/system/services/gitmirror/code-archive.log}"
 CA_STATE_DIR="${CA_STATE_DIR:-/home/gitmirror/state}"
@@ -129,8 +130,6 @@ mirror_name(){
   done < <(git --git-dir="$dst" for-each-ref --format='%(refname) %(objectname)' refs/incoming/)
   while read -r ref _; do git --git-dir="$dst" update-ref -d "$ref"; done < <(git --git-dir="$dst" for-each-ref --format='%(refname)' refs/incoming/)
   # U8a: push to GitLab without rewrite; on rejection, retry with rewritten/<timestamp>/<name>
-  # Only push to GitLab if CA_GITLAB_BASE is explicitly set
-  [[ -n "${CA_GITLAB_BASE:-}" ]] || return 0
   if [[ "$CA_GITLAB_BASE" == /* ]]; then
     # Local path mode: create bare repo if missing
     gl_path="$CA_GITLAB_BASE/$name.git"
