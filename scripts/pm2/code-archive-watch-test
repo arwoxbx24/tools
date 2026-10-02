@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# Тест сторожа code-archive-watch.sh: последняя строка PASS <n> FAIL <n>, код 0 только при FAIL 0.
+set -euo pipefail
+
+T=/root/workspaces/sandbox/test-code-archive-watch-$$
+trap 'rm -rf "$T"' EXIT
+WDIR="$(cd "$(dirname "$0")" && pwd)"
+WATCH="$WDIR/code-archive-watch.sh"
+
+PASS=0; FAIL=0
+ok() { PASS=$((PASS+1)); echo "ok - $1"; }
+bad() { FAIL=$((FAIL+1)); echo "FAIL - $1"; }
+
+setup() {
+  rm -rf "$T"; mkdir -p "$T"
+  cat >"$T/pm2" <<EOF
+#!/bin/bash
+echo "\$*" >> "$T/pm2.calls"
+EOF
+  chmod +x "$T/pm2"
+  cat >"$T/notify" <<EOF
+#!/bin/bash
+printf '%s\n' "\$*" >> "$T/notify.calls"
+EOF
+  chmod +x "$T/notify"
+  export CAW_DIR="$T" CAW_PM2="$T/pm2" CAW_NOTIFY="$T/notify"
+  r=0
+}
+
+run_watch() { bash "$WATCH"; }
+req() { "$@" || r=1; }
+req_not() { "$@" && r=1 || true; }
+case_end() {
+  if [ "$r" -eq 0 ]; then ok "$1"; else bad "$1"; fi
+}
+
+# 1) last-ok 2 ч → код 0, без вызовов pm2 и notify
+setup
+touch -d '-2 hours' "$T/last-ok"
+rc=0; run_watch || rc=$?
+req test "$rc" -eq 0
+req test ! -f "$T/pm2.calls"
+req test ! -f "$T/notify.calls"
+case_end "1: 2 ч — бездействие"
+
+# 2) 30 ч → restart + строка в журнале, notify нет
+setup
+touch -d '-30 hours' "$T/last-ok"
+run_watch || r=1
+req grep -qF "restart code-archive" "$T/pm2.calls"
+req test ! -f "$T/notify.calls"
+req grep -qF "watch: restart (last-ok " "$T/code-archive.log"
+case_end "2: 30 ч — restart и лог"
+
+# 3) 50 ч, последний pass с err=1 и строка repoX err:fetch → restart + notify с repoX и датой
+setup
+touch -d '-50 hours' "$T/last-ok"
+ed=$(date -d '@'"$(stat -c %Y "$T/last-ok")" '+%F %T')
+now=$(date '+%F_%T')
+{
+  echo "=== pass 2026-09-01_09:00:00 | ok=1 err=0 skipped=0 ==="
+  echo "2026-09-01_09:00:01 repoA ok"
+  echo "=== pass ${now} | ok=0 err=1 skipped=0 ==="
+  echo "${now} repoX err:fetch"
+} >"$T/code-archive.log"
+run_watch || r=1
+req grep -qF "restart code-archive" "$T/pm2.calls"
+req grep -qF "сбой у repoX" "$T/notify.calls"
+req grep -qF "repoX" "$T/notify.calls"
+req grep -qF "$ed" "$T/notify.calls"
+req_not grep -qF "проходов не было" "$T/notify.calls"
+case_end "3: 50 ч — сбой repoX"
+
+# 4) 50 ч, нет pass новее last-ok → «проходов не было»
+setup
+touch -d '-50 hours' "$T/last-ok"
+old=$(date -d '-100 hours' '+%F_%T')
+{
+  echo "=== pass ${old} | ok=0 err=1 skipped=0 ==="
+  echo "${old} repoY err:clone"
+} >"$T/code-archive.log"
+run_watch || r=1
+req grep -qF "restart code-archive" "$T/pm2.calls"
+req grep -qF "проходов не было" "$T/notify.calls"
+req_not grep -qF "repoY" "$T/notify.calls"
+case_end "4: 50 ч — проходов не было"
+
+# 5) нет last-ok → «проходов не было», restart + notify
+setup
+rm -f "$T/last-ok"
+run_watch || r=1
+req grep -qF "restart code-archive" "$T/pm2.calls"
+req grep -qF "проходов не было" "$T/notify.calls"
+req grep -qF "никогда" "$T/notify.calls"
+case_end "5: нет last-ok"
+
+echo "PASS $PASS FAIL $FAIL"
+[ "$FAIL" -eq 0 ]
