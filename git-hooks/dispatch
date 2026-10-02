@@ -4,52 +4,60 @@ name=$(basename "$0")
 Z=0000000000000000000000000000000000000000
 SG=/root/workspaces/tools/bin/secret-gate
 
+# U13: barrier only warns — never blocks commit/push. Prints a WARN to stderr
+# and appends a line to the log; a log write failure is ignored. Always exits 0.
+warn() {
+  echo "WARN: $1" >&2
+  { printf '%s %s %s\n' "$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo '?')" "$PWD" "$1"
+  } >>"${SECRET_WARN_LOG:-/root/workspaces/system/services/gitmirror/secret-warn.log}" 2>/dev/null || true
+}
+
 if [ "$name" = "pre-commit" ]; then
   if ! "$SG" check --staged; then
-    echo "BLOCKED: secret-gate check --staged" >&2
-    exit 1
+    warn "secret-gate check --staged"
   fi
 fi
 
 if [ "$name" = "pre-push" ]; then
-  tmp=$(mktemp) || exit 1
-  trap 'rm -f "$tmp"' EXIT HUP INT TERM
-  cat > "$tmp"
-  if [ ! -x "$SG" ]; then
-    echo "BLOCKED: secret-gate недоступен" >&2
-    exit 1
+  tmp=
+  if tmp=$(mktemp); then
+    trap 'rm -f "$tmp"' EXIT HUP INT TERM
+    cat > "$tmp"
+  else
+    warn "не удалось создать временный файл; проверка на секреты пропущена"
   fi
-  while read -r local_ref local_sha remote_ref remote_sha; do
-    [ "$local_sha" = "$Z" ] && continue      # удаление ветки — пропуск
-    if [ "$remote_sha" = "$Z" ]; then
-      range="$local_sha --not --remotes=$1/*"     # новая ветка
-    else
-      range="$remote_sha..$local_sha"
+  if [ -n "$tmp" ]; then
+    if [ ! -x "$SG" ]; then
+      warn "secret-gate недоступен"
     fi
-    if ! /root/.local/bin/gitleaks git --no-banner --redact --log-opts="$range"; then
-      echo "BLOCKED: gitleaks нашёл секрет в отправляемых коммитах ($range)" >&2
-      exit 1
-    fi
-    if [ "$remote_sha" = "$Z" ]; then
-      if ! "$SG" check "$local_sha" --not "--remotes=$1/*"; then
-        echo "BLOCKED: secret-gate check $range" >&2
-        exit 1
+    while read -r local_ref local_sha remote_ref remote_sha; do
+      [ "$local_sha" = "$Z" ] && continue      # удаление ветки — пропуск
+      if [ "$remote_sha" = "$Z" ]; then
+        range="$local_sha --not --remotes=$1/*"     # новая ветка
+      else
+        range="$remote_sha..$local_sha"
       fi
-    elif ! "$SG" check "$remote_sha..$local_sha"; then
-      echo "BLOCKED: secret-gate check $range" >&2
-      exit 1
-    fi
-    case "$local_ref" in
-      refs/tags/*)
-        if [ "$(git cat-file -t "$local_sha" 2>/dev/null)" = "tag" ]; then
-          if ! "$SG" check --tag "$local_sha"; then
-            echo "BLOCKED: secret-gate check --tag ($local_sha)" >&2
-            exit 1
-          fi
+      if ! /root/.local/bin/gitleaks git --no-banner --redact --log-opts="$range"; then
+        warn "gitleaks нашёл секрет в отправляемых коммитах ($range)"
+      fi
+      if [ "$remote_sha" = "$Z" ]; then
+        if ! "$SG" check "$local_sha" --not "--remotes=$1/*"; then
+          warn "secret-gate check $range"
         fi
-        ;;
-    esac
-  done < "$tmp"
+      elif ! "$SG" check "$remote_sha..$local_sha"; then
+        warn "secret-gate check $range"
+      fi
+      case "$local_ref" in
+        refs/tags/*)
+          if [ "$(git cat-file -t "$local_sha" 2>/dev/null)" = "tag" ]; then
+            if ! "$SG" check --tag "$local_sha"; then
+              warn "secret-gate check --tag ($local_sha)"
+            fi
+          fi
+          ;;
+      esac
+    done < "$tmp"
+  fi
 fi
 
 # U7a/D12: after a commit/merge in a normal (non-bare) working repo, fire the
@@ -63,7 +71,7 @@ fi
 
 hook="$(git rev-parse --git-common-dir)/hooks/$name"
 if [ -x "$hook" ]; then
-  if [ "$name" = "pre-push" ]; then
+  if [ "$name" = "pre-push" ] && [ -n "$tmp" ]; then
     exec "$hook" "$@" < "$tmp"
   else
     exec "$hook" "$@"
@@ -71,7 +79,7 @@ if [ -x "$hook" ]; then
 elif [ "$(git rev-parse --is-bare-repository 2>/dev/null)" = "false" ]; then
   hook="$(git rev-parse --show-toplevel)/.beads/hooks/$name"
   if [ -x "$hook" ]; then
-    if [ "$name" = "pre-push" ]; then
+    if [ "$name" = "pre-push" ] && [ -n "$tmp" ]; then
       exec "$hook" "$@" < "$tmp"
     else
       exec "$hook" "$@"
