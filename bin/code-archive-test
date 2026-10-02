@@ -48,5 +48,49 @@ if [[ $rc3 == 0 ]] && [[ -z $m3 ]] \
 else
   f 3
 fi
-echo "PASS $ok FAIL $((3-ok))"
-[[ $ok == 3 ]]
+
+# Check 4: rewritten main is archived; copy main advances to the new tip
+git clone -q "$T/github/demo.git" "$T/rewrite"
+git -C "$T/rewrite" checkout -q main
+git -C "$T/rewrite" config user.email t@t
+git -C "$T/rewrite" config user.name t
+old_main=$(git --git-dir="$T/repos/demo.git" rev-parse main)
+git -C "$T/rewrite" commit -q --amend --allow-empty -m x
+git -C "$T/rewrite" push -qf origin main
+out4=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env "$bin/code-archive" demo 2>&1); rc4=$?
+new_main=$(git --git-dir="$T/github/demo.git" rev-parse main)
+d_main=$(git --git-dir="$T/repos/demo.git" rev-parse main)
+arch_obj=$(git --git-dir="$T/repos/demo.git" for-each-ref refs/heads/archive/ --format='%(objectname)')
+arch_name=$(git --git-dir="$T/repos/demo.git" for-each-ref refs/heads/archive/ --format='%(refname)')
+if [[ $rc4 == 0 ]] && [[ $new_main == $d_main ]] \
+   && [[ $arch_obj == $old_main ]] \
+   && [[ $arch_name == refs/heads/archive/*/main ]]; then
+  p 4
+else
+  f 4
+fi
+# Check 5: branch deleted in source remains in copy
+git -C "$T/rewrite" checkout -q -b feature
+git -C "$T/rewrite" commit -q --allow-empty -m f
+git -C "$T/rewrite" push -q origin feature
+feat_src=$(git --git-dir="$T/github/demo.git" rev-parse feature)
+out5a=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env "$bin/code-archive" demo 2>&1); rc5a=$?
+feat_cpy=$(git --git-dir="$T/repos/demo.git" rev-parse feature 2>/dev/null) || feat_cpy=""
+git -C "$T/rewrite" push -q origin --delete feature
+out5b=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env "$bin/code-archive" demo 2>&1); rc5b=$?
+feat_cpy2=$(git --git-dir="$T/repos/demo.git" rev-parse feature 2>/dev/null) || feat_cpy2=""
+if [[ $rc5a == 0 ]] && [[ $rc5b == 0 ]] \
+   && [[ $feat_cpy == $feat_src ]] \
+   && [[ $feat_cpy2 == $feat_src ]]; then
+  p 5
+else
+  f 5
+fi
+# Check 6: source refs are unchanged across a run
+refs_before=$(git --git-dir="$T/github/demo.git" for-each-ref)
+out6=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env "$bin/code-archive" demo 2>&1); rc6=$?
+refs_after=$(git --git-dir="$T/github/demo.git" for-each-ref)
+{ [[ $rc6 == 0 ]] && [[ $refs_before == $refs_after ]]; } && p 6 || f 6
+
+echo "PASS $ok FAIL $((6-ok))"
+[[ $ok == 6 ]]
