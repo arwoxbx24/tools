@@ -73,13 +73,17 @@ notify_ok(){
 # its group if missing. Sets $result and returns 1 on any failure. The token is
 # fed on stdin (`-H @-`) so it never appears in the process args.
 gitlab_group_id=""
+gitlab_created=0
+gitlab_project_id=""
 gitlab_ensure_project(){
   local name="$1" code body vis
   local group="${CA_GITLAB_BASE##*/}"
   local api="${CA_GITLAB_API:-https://gitlab.com/api/v4}"
+  gitlab_created=0
   body="$(mktemp)"
   code=$(printf 'PRIVATE-TOKEN: %s\n' "$GITLAB_MIRROR_TOKEN" | curl -s --max-time 60 -o "$body" -w '%{http_code}' -H @- "$api/projects/$group%2F$name")
   if [[ "$code" == 200 ]]; then
+    gitlab_project_id="$(jq -r '.id // ""' "$body")"
     vis=$(jq -r '.visibility // ""' "$body")
     rm -f "$body"
     if [[ "$vis" != "private" ]]; then
@@ -104,9 +108,35 @@ gitlab_ensure_project(){
       -X POST --data-urlencode "path=$name" --data-urlencode "name=$name" \
       --data-urlencode "namespace_id=$gitlab_group_id" --data-urlencode "visibility=private" \
       "$api/projects")
+  if [[ "$code" == 201 ]]; then
+    gitlab_project_id="$(jq -r '.id // ""' "$body")"
+    gitlab_created=1
+  fi
   rm -f "$body"
   if [[ "$code" != 201 ]]; then result="err:gitlab http=$code"; return 1; fi
   return 0
+}
+# U7c/D15: protect the `*` branch (no delete / no force-push) on a GitLab
+# project. POST /projects/:id/protected_branches; success is confirmed by a
+# list GET containing a `*` entry (an "already protected" POST may error).
+# Sets $result and returns 1 on failure. Token fed on stdin, never in args.
+gitlab_protect_branches(){
+  local name="$1" pid="$2" code body
+  local api="${CA_GITLAB_API:-https://gitlab.com/api/v4}"
+  body="$(mktemp)"
+  code=$(printf 'PRIVATE-TOKEN: %s\n' "$GITLAB_MIRROR_TOKEN" | curl -s --max-time 60 -o "$body" -w '%{http_code}' -H @- \
+      -X POST --data-urlencode "name=*" --data-urlencode "push_access_level=40" \
+      --data-urlencode "merge_access_level=40" --data-urlencode "allow_force_push=false" \
+      "$api/projects/$pid/protected_branches")
+  rm -f "$body"
+  # Success is defined by the list holding a `*` entry, not the POST alone.
+  body="$(mktemp)"
+  code=$(printf 'PRIVATE-TOKEN: %s\n' "$GITLAB_MIRROR_TOKEN" | curl -s --max-time 60 -o "$body" -w '%{http_code}' -H @- \
+      "$api/projects/$pid/protected_branches")
+  if jq -e --arg n '*' '.[] | select(.name == $n)' "$body" >/dev/null 2>&1; then
+    rm -f "$body"; return 0
+  fi
+  rm -f "$body"; result="err:gitlab protect http=$code"; return 1
 }
 # Mirror one repo. On success sets $result (ok|ok:created) and returns 0; on
 # failure sets $result (err:<why>) and returns non-zero. Called in an if
@@ -217,6 +247,12 @@ mirror_name(){
     if [[ "$CA_GITLAB_BASE" == https://* ]] && ! gitlab_ensure_project "$name"; then
       return 1
     fi
+    # U7c: protect the `*` branch (no delete/force-push) when the project was
+    # just created.
+    if [[ "$CA_GITLAB_BASE" == https://* ]] && [[ "$gitlab_created" == 1 ]]; then
+      gitlab_created=0
+      gitlab_protect_branches "$name" "$gitlab_project_id" || return 1
+    fi
   fi
   # U8a: push all heads+tags without force; on a "not fast-forward" rejection
   # archive the rejected ref under rewritten/<ts>/<dest-name> and keep going.
@@ -308,6 +344,13 @@ local_mode(){
     if [[ "$CA_GITLAB_BASE" == https://* ]] && ! gitlab_ensure_project "$name"; then
       exec {lockfd}>&-; notify_fail "$name" "$result"; journal_local; return 1
     fi
+    # U7c: protect the `*` branch when the project was just created.
+    if [[ "$CA_GITLAB_BASE" == https://* ]] && [[ "$gitlab_created" == 1 ]]; then
+      gitlab_created=0
+      gitlab_protect_branches "$name" "$gitlab_project_id" || {
+        exec {lockfd}>&-; notify_fail "$name" "$result"; journal_local; return 1
+      }
+    fi
   fi
   # Holder: push, and while a `.again` marker signals a queued follow-up, drop
   # it and re-push — at most 3 pushes.
@@ -328,6 +371,46 @@ local_mode(){
   notify_ok "$name"
   journal_local
   return 0
+}
+# U7c/D15: --protect-all — protect the `*` branch across every project of the
+# GitLab group. The group's projects are paged (per_page=100) via the API and
+# each is protected; per-project journal lines plus a summary line are logged.
+protect_all(){
+  # `name` and `result` are globals read by journal_local; keep them non-local.
+  local api group page rows row pid code body
+  group="${CA_GITLAB_BASE##*/}"
+  api="${CA_GITLAB_API:-https://gitlab.com/api/v4}"
+  ok=0; err=0; skipped=0
+  page=1
+  while :; do
+    body="$(mktemp)"
+    code=$(printf 'PRIVATE-TOKEN: %s\n' "$GITLAB_MIRROR_TOKEN" | curl -s --max-time 60 -o "$body" -w '%{http_code}' -H @- \
+        "$api/groups/$group/projects?per_page=100&page=$page")
+    if [[ "$code" != 200 ]]; then
+      rm -f "$body"
+      name="$group"; result="err:gitlab list http=$code"; journal_local
+      err=$((err+1)); break
+    fi
+    mapfile -t rows < <(jq -r '.[] | [.id, .path] | @tsv' "$body")
+    rm -f "$body"
+    [[ ${#rows[@]} -eq 0 ]] && break
+    for row in "${rows[@]}"; do
+      IFS=$'\t' read -r pid name <<< "$row"
+      [[ -n "$pid" && -n "$name" ]] || continue
+      if gitlab_protect_branches "$name" "$pid"; then
+        result=ok; ok=$((ok+1))
+      else
+        err=$((err+1))
+      fi
+      journal_local
+    done
+    (( ${#rows[@]} < 100 )) && break
+    page=$((page+1))
+  done
+  sum="=== protect-all $(date +%F_%T) | ok=$ok err=$err skipped=$skipped ==="
+  printf '%s\n' "$sum"
+  printf '%s\n' "$sum" >> "$CA_LOG"
+  return $(( err > 0 ? 1 : 0 ))
 }
 # Mirror one name under a free-space floor `min` (KB); prints and logs its
 # journal line and bumps ok/err. On a successful mirror `result` is ok/ok:created.
@@ -371,6 +454,11 @@ process_one(){
 mkdir -p "$CA_REPOS_DIR" "$(dirname "$CA_LOG")" "$CA_STATE_DIR"
 if [[ "${1:-}" == "--local" ]]; then
   local_mode "${2:?}" && exit 0
+  exit $?
+fi
+if [[ "${1:-}" == "--protect-all" ]]; then
+  mkdir -p "$(dirname "$CA_LOG")" "$CA_STATE_DIR"
+  protect_all
   exit $?
 fi
 ok=0; err=0; skipped=0
