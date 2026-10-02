@@ -18,10 +18,11 @@ mask(){ sed -E 's#(ghp_|gho_|github_pat_|glpat-|oauth2:)[^@ ]*#***#g'; }
 # failure sets $result (err:<why>) and returns non-zero. Called in an if
 # condition so a failure doesn't abort the whole pass.
 mirror_name(){
-  local name="$1" src dst
+  local name="$1" src dst existing=0 ferr
   src="$CA_GITHUB_BASE/$name.git"; dst="$CA_REPOS_DIR/$name.git"
   result=ok
   if [[ -d "$dst" ]]; then
+    existing=1
     # U2: clean leaked credentials / mirror refspec from every remote of an existing copy.
     for r in $(git --git-dir="$dst" remote); do
       git --git-dir="$dst" config --unset-all "remote.$r.mirror" || true
@@ -36,7 +37,18 @@ mirror_name(){
     result=ok:created
   fi
   # U3: only accumulate — fetch into temp space, propagate to real refs, archiving rewrites.
-  git --git-dir="$dst" fetch -q github '+refs/heads/*:refs/incoming/heads/*' '+refs/tags/*:refs/incoming/tags/*' 2>/dev/null || { result=err:fetch; return 1; }
+  ferr="$(git --git-dir="$dst" fetch -q --refmap= github '+refs/heads/*:refs/incoming/heads/*' '+refs/tags/*:refs/incoming/tags/*' 2>&1)" || {
+    # U7: if an existing copy's source is gone, keep the copy untouched and report kept.
+    if (( existing )) && [[ -n "$(git --git-dir="$dst" for-each-ref --count=1 --format='%(refname)' refs/heads refs/tags)" ]] \
+       && { [[ "$ferr" == *"Repository not found"* || "$ferr" == *"does not appear to be a git repository"* ]]; }; then
+      result=kept:source-gone; return 0
+    fi
+    result=err:fetch; return 1
+  }
+  # U7: an empty source produces no incoming refs — nothing to mirror.
+  if [[ -z "$(git --git-dir="$dst" for-each-ref --count=1 --format='%(refname)' refs/incoming/)" ]]; then
+    result=skip:empty; return 0
+  fi
   while read -r ref obj; do
     case "$ref" in
       refs/incoming/heads/*) kind=heads; leaf="${ref#refs/incoming/heads/}";;
@@ -56,7 +68,24 @@ mirror_name(){
         git --git-dir="$dst" update-ref "$real" "$obj"
       fi
     else
-      git --git-dir="$dst" update-ref "$real" "$obj"
+      if ! git --git-dir="$dst" update-ref "$real" "$obj" 2>/dev/null; then
+        # U7: the new ref is blocked because an ancestor name is already a ref
+        # (e.g. foo/bar arrives while foo exists). Archive every occupying
+        # ancestor under archive/<ts>/<name>, remove it, then retry.
+        p="$leaf"
+        while [[ "$p" == */* ]]; do
+          p="${p%/*}"
+          if git --git-dir="$dst" rev-parse -q --verify "refs/$kind/$p" >/dev/null 2>&1; then
+            ts="$(date +%Y%m%d-%H%M%S)"; base="refs/$kind/archive/$ts"
+            rn="$base/$p"; n=0
+            while git --git-dir="$dst" rev-parse -q --verify "$rn" >/dev/null 2>&1; do n=$((n+1)); rn="${base}-${n}/$p"; done
+            git --git-dir="$dst" update-ref "$rn" "$(git --git-dir="$dst" rev-parse "refs/$kind/$p")"
+            git --git-dir="$dst" update-ref -d "refs/$kind/$p"
+            result="ok:ref-conflict archive/$ts/$p"
+          fi
+        done
+        git --git-dir="$dst" update-ref "$real" "$obj"
+      fi
     fi
   done < <(git --git-dir="$dst" for-each-ref --format='%(refname) %(objectname)' refs/incoming/)
   while read -r ref _; do git --git-dir="$dst" update-ref -d "$ref"; done < <(git --git-dir="$dst" for-each-ref --format='%(refname)' refs/incoming/)
@@ -71,7 +100,14 @@ process_one(){
   flock "$lockfd"
   avail=$(df --output=avail -k "$CA_REPOS_DIR" 2>/dev/null | tail -n1 | tr -d '[:space:]' || true)
   if [[ "$avail" =~ ^[0-9]+$ ]] && (( avail >= min )); then
-    if mirror_name "$name"; then ok=$((ok+1)); else err=$((err+1)); fi
+    if mirror_name "$name"; then
+      case "$result" in
+        skip:*) skipped=$((skipped+1));;
+        *) ok=$((ok+1));;
+      esac
+    else
+      err=$((err+1))
+    fi
   else
     result=err:no-space; err=$((err+1))
   fi
