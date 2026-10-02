@@ -26,8 +26,8 @@ elif ! grep -q '^archive:\$apr1\$' "$ht"; then
 	bad 1 "htpasswd не archive:\$apr1\$"
 elif ! grep -q '^user = "archive:' "$cr"; then
 	bad 1 "curlrc не user = \"archive:"
-elif [ "$(stat -c %a "$ht")" != 600 ] || [ "$(stat -c %a "$cr")" != 600 ]; then
-	bad 1 "права != 600: ht=$(stat -c %a "$ht") cr=$(stat -c %a "$cr")"
+elif [ "$(stat -c '%a %g' "$ht")" != "640 101" ] || [ "$(stat -c %a "$cr")" != 600 ]; then
+	bad 1 "права/группа != 640 101 / 600: ht=$(stat -c '%a %g' "$ht") cr=$(stat -c %a "$cr")"
 else
 	ok 1
 fi

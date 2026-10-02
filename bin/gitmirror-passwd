@@ -10,5 +10,8 @@ mkdir -p "$GMP_DIR"
 pw=$(openssl rand -hex 16)
 hash=$(printf '%s' "$pw" | openssl passwd -apr1 -stdin)
 printf 'archive:%s\n' "$hash" > "$GMP_DIR/gitmirror.htpasswd"
+chgrp 101 "$GMP_DIR/gitmirror.htpasswd"
+chmod 640 "$GMP_DIR/gitmirror.htpasswd"
+# ponytail: gid 101 = nginx в alpine-образе cgit (services/gitmirror/Dockerfile); сменится образ — сверить id nginx
 printf 'user = "archive:%s"\n' "$pw" > "$GMP_DIR/gitmirror.curlrc"
 echo "created $GMP_DIR/gitmirror.htpasswd $GMP_DIR/gitmirror.curlrc"
