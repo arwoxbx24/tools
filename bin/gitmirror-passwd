@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+GMP_DIR=${GMP_DIR:-/root/workspaces/secrets}
+if [ -e "$GMP_DIR/gitmirror.htpasswd" ] || [ -e "$GMP_DIR/gitmirror.curlrc" ]; then
+	echo exists
+	exit 0
+fi
+mkdir -p "$GMP_DIR"
+pw=$(openssl rand -hex 16)
+hash=$(printf '%s' "$pw" | openssl passwd -apr1 -stdin)
+printf 'archive:%s\n' "$hash" > "$GMP_DIR/gitmirror.htpasswd"
+printf 'user = "archive:%s"\n' "$pw" > "$GMP_DIR/gitmirror.curlrc"
+echo "created $GMP_DIR/gitmirror.htpasswd $GMP_DIR/gitmirror.curlrc"

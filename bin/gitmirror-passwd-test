@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# Self-test для bin/gitmirror-passwd: генератор пароля просмотра архива.
+set -u
+
+bin="$(cd -- "$(dirname -- "$0")" && pwd)/gitmirror-passwd"
+T="/root/workspaces/sandbox/test-gitmirror-passwd-$$"
+trap 'rm -rf "$T"' EXIT
+
+pass=0
+fail=0
+ok()   { printf 'PASS %s\n' "$1"; pass=$((pass + 1)); }
+bad()  { printf 'FAIL %s: %s\n' "$1" "$2"; fail=$((fail + 1)); }
+
+ht="$T/gitmirror.htpasswd"
+cr="$T/gitmirror.curlrc"
+
+# 1: первый запуск — файлы созданы, права 600
+GMP_DIR=$T "$bin" >"$T.out" 2>"$T.err"; rc=$?
+if [ "$rc" -ne 0 ]; then
+	bad 1 "rc=$rc"
+elif [ ! -f "$ht" ] || [ ! -f "$cr" ]; then
+	bad 1 "нет файлов"
+elif [ "$(wc -l < "$ht")" -ne 1 ] || [ "$(wc -l < "$cr")" -ne 1 ]; then
+	bad 1 "файл не в одну строку"
+elif ! grep -q '^archive:\$apr1\$' "$ht"; then
+	bad 1 "htpasswd не archive:\$apr1\$"
+elif ! grep -q '^user = "archive:' "$cr"; then
+	bad 1 "curlrc не user = \"archive:"
+elif [ "$(stat -c %a "$ht")" != 600 ] || [ "$(stat -c %a "$cr")" != 600 ]; then
+	bad 1 "права != 600: ht=$(stat -c %a "$ht") cr=$(stat -c %a "$cr")"
+else
+	ok 1
+fi
+
+# 2: пароль из curlrc проверяется хешем htpasswd
+pw=$(sed -n 's/^user = "archive:\(.*\)"$/\1/p' "$cr")
+hash=$(sed -n 's/^archive:\(.*\)$/\1/p' "$ht")
+salt=$(printf '%s' "$hash" | sed 's/^\$apr1\$\([^$]*\)\$.*$/\1/')
+calc=$(printf '%s' "$pw" | openssl passwd -apr1 -salt "$salt" -stdin)
+if [ -z "$pw" ] || [ -z "$hash" ] || [ -z "$salt" ]; then
+	bad 2 "не удалось распарсить"
+elif [ "$calc" != "$hash" ]; then
+	bad 2 "хеш не совпал (calc=$calc)"
+else
+	ok 2
+fi
+
+# 3: пароль не в stdout/stderr запуска (grep -cF -> 0)
+c1=$(grep -cF -- "$pw" "$T.out" 2>/dev/null || true)
+c2=$(grep -cF -- "$pw" "$T.err" 2>/dev/null || true)
+if [ "$c1" -ne 0 ] || [ "$c2" -ne 0 ]; then
+	bad 3 "пароль в выводе (stdout=$c1 stderr=$c2)"
+else
+	ok 3
+fi
+
+# 4: повторный запуск — ничего не меняет, stdout exists
+h1=$(sha256sum "$ht" | cut -d' ' -f1)
+r1=$(sha256sum "$cr" | cut -d' ' -f1)
+out2=$(GMP_DIR=$T "$bin" 2>&1); rc2=$?
+h2=$(sha256sum "$ht" | cut -d' ' -f1)
+r2=$(sha256sum "$cr" | cut -d' ' -f1)
+if [ "$rc2" -ne 0 ]; then
+	bad 4 "rc=$rc2"
+elif [ "$h1" != "$h2" ] || [ "$r1" != "$r2" ]; then
+	bad 4 "файлы изменились"
+elif ! grep -qx 'exists' <<<"$out2"; then
+	bad 4 "stdout без exists: $out2"
+else
+	ok 4
+fi
+
+printf 'PASS %d FAIL %d\n' "$pass" "$fail"
+if [ "$fail" -eq 0 ]; then exit 0; else exit 1; fi
