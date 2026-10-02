@@ -29,7 +29,7 @@ form=$1; project=$2; tz=$3; override=${5:-}
 prompt=$(cat -- "$tz") || exit 3
 cd -- "$project" || exit 3
 run_form() (
-    n=$1; start=$SECONDS; pre=-; run=-; hdr=; tmpjson=; resphdr=; respbody=
+    n=$1; start=$SECONDS; pre=-; run=-; hdr=; tmpjson=; resphdr=; respbody=; codetmp=
     id="cc-$(date +%s)-$$"
     case $n in
         1) provider=bitrixgpt; name=VIBECODE_API_KEY; secret=vibecode; base=https://vibecode.bitrix24.tech/v1; model=bitrixgpt/bitrix/bitrixgpt-5.6-agent;;
@@ -78,6 +78,7 @@ run_form() (
         [[ -z $tmpjson ]] || unlink -- "$tmpjson"
         [[ -z $resphdr ]] || unlink -- "$resphdr"
         [[ -z $respbody ]] || unlink -- "$respbody"
+        [[ -z $codetmp ]] || unlink -- "$codetmp"
         printf 'code-channel: mode=%s form=%s provider=%s precheck=%s run=%s t=%s\n' "$mode" "$n" "$provider" "$pre" "$run" "$((SECONDS-start))" >&2
         trap - EXIT; exit "$rc"
     }
@@ -88,11 +89,21 @@ run_form() (
     if [[ $n == 2 ]]; then
         orig_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
         prompt=$(printf 'Не создавай и не переключай ветки; пиши и коммить только в текущую ветку\n\n%s' "$prompt")
+        prompt=$(printf 'Не вызывай bd: трекер ведёт оркестратор\n\n%s' "$prompt")
         started=$SECONDS
         if [[ $mode == audit ]]; then
             timeout 590 codex exec -p quota-terra -s read-only "$prompt"; run=$?
         else
-            timeout 590 codex exec -p quota-terra -s workspace-write "$prompt"; run=$?
+            gcd=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+            add_dir=()
+            [[ -n $gcd ]] && add_dir+=(--add-dir "$gcd")
+            codetmp=$(mktemp "${TMPDIR:-/tmp}/code-channel-codex-XXXXXX") || exit 3
+            timeout 590 codex exec -p quota-terra -s workspace-write "${add_dir[@]}" \
+                -c sandbox_workspace_write.network_access=true "$prompt" 2> >(tee -- "$codetmp" >&2); run=$?
+            if [[ $run != 0 ]] && grep -q -- 'Read-only file system' "$codetmp"; then
+                printf 'code-channel: form=2 среда: read-only\n' >&2
+                exit 24
+            fi
         fi
         [[ $run == 0 || $run == 124 || $((SECONDS-started)) -gt 30 ]] || exit 21
         reconcile "$run"; exit $?
