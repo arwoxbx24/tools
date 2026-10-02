@@ -110,5 +110,51 @@ else
   ((failed++))
 fi
 
+# TEST 6: an SSH base with a path suffix becomes git@host:path/name.git.
+printf '%s\n' '#!/bin/sh' 'echo "$*" >> "$SSH_ARGS"' 'exit 1' > "$T/stub-ssh"
+chmod +x "$T/stub-ssh"
+rm -f "$T/ssh.args"
+source "$ENV_FILE"
+output=$(CA_GITHUB_BASE=git@h:o GIT_SSH_COMMAND="$T/stub-ssh" SSH_ARGS="$T/ssh.args" CA_DRILL_NAME=demo bash "$DRILL_SCRIPT" 2>&1)
+if grep -qF 'o/demo.git' "$T/ssh.args"; then
+  ((passed++))
+else
+  ((failed++))
+fi
+
+# TEST 7: every drill outcome is appended to CA_LOG.
+source "$ENV_FILE"
+rm -f "$T/drill.log"
+output=$(CA_DRILL_NAME=demo bash "$DRILL_SCRIPT" 2>&1)
+if grep -q 'drill:' "$T/drill.log"; then
+  ((passed++))
+else
+  ((failed++))
+fi
+
+# TEST 8: a state entry with a local copy but no GitLab project clears pushed_at.
+git clone --bare "$T/github/demo.git" "$T/repos/ghost.git" 2>/dev/null || cp -r "$T/github/demo.git" "$T/repos/ghost.git"
+echo '2026-10-02T10:00:00Z' > "$T/state/ghost.pushed_at"
+rm -rf "$T/gitlab/ghost.git"
+source "$ENV_FILE"
+output=$(CA_DRILL_NAME=ghost bash "$DRILL_SCRIPT" 2>&1)
+if [[ ! -f "$T/state/ghost.pushed_at" ]] && echo "$output" | grep -q 'drill:missing ghost gitlab'; then
+  ((passed++))
+else
+  ((failed++))
+fi
+
+# TEST 9: GitHub HEAD present only under rewritten/ is still restorable.
+head9=$(git --git-dir="$T/github/demo.git" rev-parse HEAD)
+git --git-dir="$T/gitlab/demo.git" update-ref -d refs/heads/main 2>/dev/null || git --git-dir="$T/gitlab/demo.git" update-ref -d refs/heads/master
+git --git-dir="$T/gitlab/demo.git" update-ref refs/heads/rewritten/test/main "$head9"
+source "$ENV_FILE"
+output=$(CA_DRILL_NAME=demo bash "$DRILL_SCRIPT" 2>&1)
+if [[ $output == *'drill:ok'* ]]; then
+  ((passed++))
+else
+  ((failed++))
+fi
+
 echo "PASS $passed FAIL $failed"
 exit $(( failed > 0 ? 1 : 0 ))
