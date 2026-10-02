@@ -2,17 +2,18 @@
 # Догоняет пропущенный ежедневный бэкап после простоя.
 set -u
 
-LAST_OK=/root/workspaces/system/tools/scripts/data/server-backup.last-ok
-ALERT_PENDING=/root/workspaces/system/tools/scripts/data/server-backup.alert-pending
-NOTIFY_ENV=/root/workspaces/projects/hh-scoring/data/notify.env
-LOG=/root/workspaces/system/tools/scripts/logs/backup-catchup.log
+LAST_OK=${LAST_OK:-/root/workspaces/system/tools/scripts/data/server-backup.last-ok}
+ALERT_PENDING=${ALERT_PENDING:-/root/workspaces/system/tools/scripts/data/server-backup.alert-pending}
+NOTIFY_ENV=${NOTIFY_ENV:-/root/workspaces/projects/hh-scoring/data/notify.env}
+LOG=${LOG:-/root/workspaces/system/tools/scripts/logs/backup-catchup.log}
 MAX_AGE=93600
-PM2=$(command -v pm2 || echo /usr/local/bin/pm2)
+PM2=${PM2:-$(command -v pm2 || echo /usr/local/bin/pm2)}
 
 mkdir -p "$(dirname "$LOG")"
 if [ -f "$LOG" ] && [ "$(stat -c%s "$LOG")" -gt $((1024 * 1024)) ]; then
   mv -f "$LOG" "$LOG.1"
 fi
+BK_HOUR=${BK_HOUR:-$(date +%H)}
 log() { echo "[$(date '+%F %T')] $*" >>"$LOG"; }
 
 if [ -f "$ALERT_PENDING" ]; then
@@ -30,6 +31,12 @@ if [ -f "$ALERT_PENDING" ]; then
   else
     log "pending alert: сеть недоступна"
   fi
+fi
+
+# Догон разрешён только в ночном окне 23:00–07:00.
+if ! [ "$BK_HOUR" -ge 23 ] && ! [ "$BK_HOUR" -le 7 ]; then
+  log "outside-night-window hour=$BK_HOUR"
+  exit 0
 fi
 
 # Нет метки — нужен срочный первый бэкап.

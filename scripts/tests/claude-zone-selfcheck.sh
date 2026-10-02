@@ -58,10 +58,29 @@ sum=$(awk -F'\t' '{s+=$7} END{print s+0}' "$TSV")
 [ "$sum" = 0 ]
 rep "4 повторный enforce freed_mb=0 (sum=$sum)" $?
 
-# 5. Стубы получили store prune и --vacuum-size=200M.
-grep -q 'store prune' "$PL" && grep -q -- '--vacuum-size=200M' "$JL"
-rep "5 стубы: store prune и vacuum-size=200M" $?
+# 5. Стуб journalctl НЕ получил --vacuum ни в dry-run, ни в enforce.
+grep -q 'store prune' "$PL" && ! grep -q -- '--vacuum' "$JL"
+rep "5 стубы: store prune есть, journalctl без --vacuum" $?
 
-echo "PASS $PASS/5"
+# 6. node_modules и не-белый ext не тронуты и не посчитаны (enforce).
+mkdir -p "$AW/node_modules"
+printf '{"a":1}\n' >"$AW/node_modules/x.json"; touch -d '20 days ago' "$AW/node_modules/x.json"
+printf 'PNG\n' >"$AW/a.png"; touch -d '20 days ago' "$AW/a.png"
+run enforce
+[ -f "$AW/node_modules/x.json" ] && [ ! -e "$AW/node_modules/x.json.zst" ] \
+  && [ -f "$AW/a.png" ] && [ ! -e "$AW/a.png.zst" ] \
+  && ! grep -q node_modules "$TSV"
+rep "6 node_modules и a.png не тронуты и не посчитаны" $?
+
+# 7. Сводный журнал: ≤20 строк zone claude за один прогон при 50 кандидатах.
+mkdir -p "$AW/bulk"
+for i in $(seq 1 50); do printf 'data %s\n' "$i" >"$AW/bulk/f$i.log"; touch -d '20 days ago' "$AW/bulk/f$i.log"; done
+before=$(wc -l <"$TSV")
+run dry-run
+added=$(tail -n +$((before+1)) "$TSV" | awk -F'\t' '$2=="claude"{c++} END{print c+0}')
+[ "$added" -le 20 ]
+rep "7 сводный журнал ≤20 строк за прогон (added=$added)" $?
+
+echo "PASS $PASS/7"
 [ "$FAIL" -eq 0 ] && exit 0
 exit 1
