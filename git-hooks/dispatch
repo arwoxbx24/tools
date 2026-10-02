@@ -52,6 +52,15 @@ if [ "$name" = "pre-push" ]; then
   done < "$tmp"
 fi
 
+# U7a/D12: after a commit/merge in a normal (non-bare) working repo, fire the
+# local code-archive push detached so it never blocks the commit. The hook
+# neither waits for it nor can change its result.
+if [ "$name" = "post-commit" ] || [ "$name" = "post-merge" ]; then
+  if [ "$(git rev-parse --is-bare-repository 2>/dev/null)" = "false" ]; then
+    setsid -f timeout 300 /root/workspaces/tools/bin/code-archive --local "$(git rev-parse --git-common-dir)" >/dev/null 2>&1 </dev/null || true
+  fi
+fi
+
 hook="$(git rev-parse --git-common-dir)/hooks/$name"
 if [ -x "$hook" ]; then
   if [ "$name" = "pre-push" ]; then
