@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -u
+bin=$(cd -- "$(dirname -- "$0")" && pwd)
+T=/root/workspaces/sandbox/test-code-archive-$$
+trap 'rm -rf "$T"' EXIT
+mkdir -p "$T/github" "$T/repos" "$T/state" "$T/log"
+git init -q --bare "$T/github/demo.git"
+git init -q "$T/work"
+git -C "$T/work" config user.email t@t
+git -C "$T/work" config user.name t
+git -C "$T/work" checkout -q -b main
+git -C "$T/work" commit -q --allow-empty -m init
+git -C "$T/work" tag v1
+git -C "$T/work" push -q "$T/github/demo.git" main v1
+printf '%s\n' 'GITLAB_MIRROR_TOKEN=glpat-TESTONLY000' > "$T/env"
+touch "$T/empty"
+ok=0
+p(){ echo "PASS $1"; ok=$((ok+1)); }
+f(){ echo "FAIL $1"; }
+# Check 1: first run with valid token
+out=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env "$bin/code-archive" demo 2>&1); rc=$?
+s=$(git --git-dir="$T/github/demo.git" rev-parse main v1)
+d=$(git --git-dir="$T/repos/demo.git" rev-parse main v1 2>/dev/null) || d=""
+{ [[ $rc == 0 ]] && grep -qF 'demo ok:created' <<<"$out" && [[ $s == "$d" ]]; } && p 1 || f 1
+# Check 2: same with empty env file -> exit 2
+rm -rf "$T/repos"
+out2=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/empty "$bin/code-archive" demo 2>&1); rc2=$?
+{ [[ $rc2 == 2 ]] && grep -qF 'err:no-key' <<<"$out2"; } && p 2 || f 2
+echo "PASS $ok FAIL $((2-ok))"
+[[ $ok == 2 ]]
