@@ -2,14 +2,21 @@
 # Ежедневный restic-бэкап критичных данных сервера.
 set -u
 
-RESTIC=/root/workspaces/tools/bin/restic
-S3_ENV=/root/workspaces/secrets/yandex-s3.env
-PW_ENV=/root/workspaces/secrets/restic.env
-LOG=/root/workspaces/system/tools/scripts/logs/server-backup.log
-NOTIFY_ENV=/root/workspaces/projects/hh-scoring/data/notify.env
-STAGE=/root/workspaces/system/tools/scripts/data/server-backup-stage
-LAST_OK=/root/workspaces/system/tools/scripts/data/server-backup.last-ok
-ALERT_PENDING=/root/workspaces/system/tools/scripts/data/server-backup.alert-pending
+RESTIC=${RESTIC:-/root/workspaces/tools/bin/restic}
+S3_ENV=${S3_ENV:-/root/workspaces/secrets/yandex-s3.env}
+PW_ENV=${PW_ENV:-/root/workspaces/secrets/restic.env}
+LOG=${LOG:-/root/workspaces/system/tools/scripts/logs/server-backup.log}
+NOTIFY_ENV=${NOTIFY_ENV:-/root/workspaces/projects/hh-scoring/data/notify.env}
+STAGE=${STAGE:-/root/workspaces/system/tools/scripts/data/server-backup-stage}
+LAST_OK=${LAST_OK:-/root/workspaces/system/tools/scripts/data/server-backup.last-ok}
+ALERT_PENDING=${ALERT_PENDING:-/root/workspaces/system/tools/scripts/data/server-backup.alert-pending}
+BK_MIRROR_DIR=${BK_MIRROR_DIR:-/home/gitmirror/repos}
+
+# Ночной бэкап — максимально низкий приоритет (nice 19 + ionice idle).
+NICE_PREFIX=(nice -n 19)
+if command -v ionice >/dev/null 2>&1; then
+  NICE_PREFIX=(nice -n 19 ionice -c3)
+fi
 
 if [ -f "$LOG" ] && [ "$(stat -c%s "$LOG")" -gt $((5 * 1024 * 1024)) ]; then
   mv -f "$LOG" "$LOG.1"
@@ -134,11 +141,11 @@ if [ "$preflight_rc" -ne 0 ]; then
   fail preflight "$preflight_rc" 3
 fi
 
-timeout 3600 "$RESTIC" cat config >/dev/null 2>&1
+timeout 3600 "${NICE_PREFIX[@]}" "$RESTIC" cat config --retry-lock 30m >/dev/null 2>&1
 config_rc=$?
 log "config rc=$config_rc"
 if [ "$config_rc" -ne 0 ]; then
-  run_step init "$RESTIC" init
+  run_step init "${NICE_PREFIX[@]}" "$RESTIC" init --retry-lock 30m
   init_rc=$?
   if [ "$init_rc" -ne 0 ]; then
     fail init "$init_rc" 2
@@ -156,7 +163,7 @@ paths=(
   /root/.claude.json /root/.bashrc /root/.profile /root/.gitconfig /root/.gitignore_global
   /root/.mc /root/.docker /root/.gnupg /root/.beads /root/.dolt /root/.opencode
   /root/.agents /root/ecosystem.config.js /var/www /opt/actions-runner/.runner
-  /root/actions-runner-2/.runner /home/claude /home/gitmirror/repos
+  /root/actions-runner-2/.runner /home/claude /home/gitmirror/repos /home/gitmirror/archived-repos
 )
 paths+=(/root/.tmux*)
 [ -n "$LATEST_SNAP" ] && paths+=("/root/backups/docker/$LATEST_SNAP")
@@ -166,32 +173,43 @@ for path in "${paths[@]}"; do
   [ -e "$path" ] && backup_paths+=("$path")
 done
 
-run_step unlock "$RESTIC" unlock
+run_step unlock "${NICE_PREFIX[@]}" "$RESTIC" unlock --retry-lock 30m
 
-run_step backup "$RESTIC" backup --tag server --group-by host,tags --one-file-system \
+run_step backup "${NICE_PREFIX[@]}" "$RESTIC" backup --tag server --group-by host,tags --one-file-system \
   --exclude-caches --exclude node_modules --exclude .venv --exclude venv \
   --exclude __pycache__ --exclude .cache --exclude .worktrees --exclude .repowise \
   --exclude '*.pyc' --exclude /root/workspaces/system/archives --exclude /root/.pm2/logs \
   --exclude /root/.claude/file-history --exclude /root/.claude/paste-cache \
-  --exclude /root/.claude/projects --exclude /root/.claude/jobs "${backup_paths[@]}"
+  --exclude /root/.claude/projects --exclude /root/.claude/jobs \
+  --read-concurrency 1 --limit-upload "${BK_LIMIT_UPLOAD:-5120}" --retry-lock 30m \
+  "${backup_paths[@]}"
 backup_rc=$?
 case "$backup_rc" in 0|3) ;; *) fail backup "$backup_rc" ;; esac
 date +%s >"$LAST_OK"
 
-run_step forget "$RESTIC" forget --tag server --group-by host,tags --keep-daily 7 --keep-weekly 4 --keep-monthly 3 --prune
+# Сверка числа bare-репозиториев зеркала в S3 с локальным каталогом.
+mirror_local=$(ls -d "$BK_MIRROR_DIR"/*.git 2>/dev/null | wc -l)
+mirror_s3=$(timeout 3600 "${NICE_PREFIX[@]}" "$RESTIC" ls latest "$BK_MIRROR_DIR" 2>>"$LOG" \
+  | grep -Ec '(\.git)?/HEAD$')
+log "mirror-check s3=$mirror_s3 local=$mirror_local"
+if [ "$mirror_s3" -lt "$mirror_local" ]; then
+  fail mirror-check "$((mirror_local - mirror_s3))"
+fi
+
+run_step forget "${NICE_PREFIX[@]}" "$RESTIC" forget --tag server --group-by host,tags --keep-daily 7 --keep-weekly 4 --keep-monthly 3 --prune --retry-lock 30m
 forget_rc=$?
 case "$forget_rc" in 0|3) ;; *) fail forget "$forget_rc" ;; esac
 
 check_rc=0
 if [ "$(date +%u)" = 7 ]; then
-  run_step check "$RESTIC" check --read-data-subset=5%
+  run_step check "${NICE_PREFIX[@]}" "$RESTIC" check --read-data-subset=5% --retry-lock 30m
   check_rc=$?
   case "$check_rc" in 0|3) ;; *) fail check "$check_rc" ;; esac
 
   DRILL=/tmp/restic-drill
   rm -rf "$DRILL"
-  run_step restore "$RESTIC" restore latest --target "$DRILL" \
-    --include /root/CLAUDE.md --include /root/workspaces/tools/ecosystem.config.js
+  run_step restore "${NICE_PREFIX[@]}" "$RESTIC" restore latest --target "$DRILL" \
+    --include /root/CLAUDE.md --include /root/workspaces/tools/ecosystem.config.js --retry-lock 30m
   restore_rc=$?
   if [ "$restore_rc" -ne 0 ]; then
     rm -rf "$DRILL"
@@ -208,7 +226,7 @@ else
   log "check rc=0 (не воскресенье)"
 fi
 
-stats_output=$(timeout 3600 "$RESTIC" stats --mode raw-data latest 2>&1)
+stats_output=$(timeout 3600 "${NICE_PREFIX[@]}" "$RESTIC" stats --mode raw-data latest --retry-lock 30m 2>&1)
 stats_rc=$?
 printf '%s\n' "$stats_output" >>"$LOG"
 log "stats rc=$stats_rc"
