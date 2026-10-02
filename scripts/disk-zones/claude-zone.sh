@@ -20,7 +20,21 @@ row() {
 size_mb() { du -sm "$1" 2>/dev/null | awk '{print $1}'; }
 mb() { echo "$(( ($1 + 1048575) / 1048576 ))"; }
 excluded() { case "$1" in *"/home/gitmirror"*|*"hh-scoring"*|*"/root/workspaces/secrets"*) return 0;; esac; return 1; }
-jsize() { journalctl --disk-usage 2>/dev/null | sed -nE 's/.*take up ([0-9]+)[KMG]? in the file system.*/\1/p' | head -n1; }
+jsize() {
+  # Дробные значения + суффиксы B|K|M|G|T -> целые МБ (округление вверх).
+  journalctl --disk-usage 2>/dev/null | awk '
+    tolower($0) ~ /take up/ {
+      for (i = 1; i <= NF; i++) {
+        if (tolower($i) ~ /^[0-9]+([.][0-9]+)?[bkmgt]$/) {
+          n = tolower($i); u = substr(n, length(n)); sub(/[bkmgt]$/, "", n)
+          mult = (u == "b") ? 1/1048576 : (u == "k") ? 1/1024 : (u == "m") ? 1 : (u == "g") ? 1024 : 1048576
+          v = n * mult
+          print (v == int(v)) ? v : int(v) + 1
+          exit
+        }
+      }
+    }'
+}
 mkdir -p "$(dirname "$DZ_ZONES_TSV")"
 
 # 1. Класс К: pnpm store.
@@ -42,7 +56,7 @@ fi
 
 # 2. Класс К: journal (только замер; удаление без копии запрещено).
 js=$(jsize); js=${js:-0}
-printf 'path=journal class=И state=measure-only size_mb=%s\n' "$js" >>"$DZ_ZONES_TSV"
+row journal И "$js" "$js" 0 0 measure-only
 
 # 3. Класс С: ротированные varlog + старые файлы agent-work.
 # Для agent-work: белый список расширений и запрещённые сегменты пути.

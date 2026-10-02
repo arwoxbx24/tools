@@ -19,7 +19,7 @@ printf 'pkg\n' >"$TMP/pnpm-store/pkg"
 # Стубы: пишут вызовы, pnpm возвращает путь store, journalctl даёт размер.
 printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "%s"\nif [ "$1" = store ] && [ "$2" = path ]; then echo "%s"; fi\n' \
   "$PL" "$TMP/pnpm-store" >"$FB/pnpm"
-printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "%s"\nif [ "$1" = --disk-usage ]; then echo "Archived and active journals take up 200M in the file system."; fi\n' \
+printf '#!/bin/bash\nprintf "%%s\\n" "$*" >> "%s"\nif [ "$1" = --disk-usage ]; then echo "Archived and active journals take up 404.0M in the file system."; fi\n' \
   "$JL" >"$FB/journalctl"
 printf '#!/bin/bash\nexit 1\n' >"$FB/lsof"
 chmod +x "$FB/pnpm" "$FB/journalctl" "$FB/lsof"
@@ -58,9 +58,12 @@ sum=$(awk -F'\t' '{s+=$7} END{print s+0}' "$TSV")
 [ "$sum" = 0 ]
 rep "4 повторный enforce freed_mb=0 (sum=$sum)" $?
 
-# 5. Стуб journalctl НЕ получил --vacuum ни в dry-run, ни в enforce.
-grep -q 'store prune' "$PL" && ! grep -q -- '--vacuum' "$JL"
-rep "5 стубы: store prune есть, journalctl без --vacuum" $?
+# 5. Стуб journalctl НЕ получил --vacuum ни в dry-run, ни в enforce;
+#    journal идёт строкой row(): path=journal, size 404, measure-only, без path=.
+grep -q 'store prune' "$PL" && ! grep -q -- '--vacuum' "$JL" \
+  && awk -F'\t' '$3=="journal" && $5=="404" && $9=="measure-only"{ok=1} END{exit !ok}' "$TSV" \
+  && ! grep -q '^path=' "$TSV"
+rep "5 стубы: journal row 404 measure-only, без --vacuum и path=" $?
 
 # 6. node_modules и не-белый ext не тронуты и не посчитаны (enforce).
 mkdir -p "$AW/node_modules"
