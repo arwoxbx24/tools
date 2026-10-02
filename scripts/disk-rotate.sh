@@ -859,6 +859,42 @@ case "$MODE" in
   *)       freed_mb=$(( (used_before - used_after) / 1024 )) ;;
 esac
 
+# Журнал зон (spec:090): каждый прогон пишет меры своей зоны; ловит зоны,
+# молчащие дольше DR_ZONE_SILENT_H часов. Вызывается в конце run/dry-run.
+zones_check() { # end of run/dry-run; журналирует зону claude и сигналит молчащие
+  local zones_file="${DR_ZONES_TSV:-/var/lib/disk-rotate/zones.tsv}"
+  local expected="${DR_ZONES_EXPECTED:-codex}"
+  local silent_h="${DR_ZONE_SILENT_H:-26}"
+  local used_before_mb=$((used_before / 1024))
+  local used_after_mb=$((used_after / 1024))
+  mkdir -p "$(dirname "$zones_file")"
+  printf '%s\tclaude\t/\tИ\t%s\t%s\t%s\t0\trun-done\n' \
+    "$ts" "$used_before_mb" "$used_after_mb" "$freed_mb" >>"$zones_file"
+  local zone last_ts ts_epoch age silent
+  for zone in $expected; do
+    last_ts=$(awk -F'\t' -v z="$zone" '$2==z && $NF=="run-done" {ts=$1} END{print ts}' "$zones_file" 2>/dev/null)
+    silent=1
+    if [ -n "$last_ts" ]; then
+      ts_epoch=$(date -d "$last_ts" +%s 2>/dev/null)
+      ts_epoch="${ts_epoch:-$now}"
+      age=$(( (now - ts_epoch) / 3600 ))
+      if [ "$age" -le "$silent_h" ]; then silent=0; fi
+    fi
+    if [ "$silent" = 1 ]; then
+      journal_row zone silent "$zone" - - - "zone-silent $zone"
+      [ "$MODE" = dry-run ] && echo "zone-silent $zone"
+      echo "zone-silent $zone" >>"$DR_LOG"
+      maybe_alert "zone-silent:$zone" "Зона $zone молчит >${silent_h}ч — нужен агент зоны $zone"
+    fi
+  done
+}
+
+[ "${DR_ZONES_ONLY:-}" = 1 ] && { zones_check; exit 0; }
+
+if [ "$MODE" = run ] || [ "$MODE" = dry-run ]; then
+  zones_check
+fi
+
 # Состояние exhausted: классы отработали, а занятость после уборки выше 88% (код 3).
 if [ "$MODE" = run ] && [ "$pct_after" -gt "$EXHAUSTED_PCT" ]; then
   state_ledger=exhausted
