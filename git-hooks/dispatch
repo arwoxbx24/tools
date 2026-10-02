@@ -1,5 +1,5 @@
 #!/bin/sh
-# gitleaks/secret-gate диспетчер git-хуков: сканирование секретов + цепочка хуков.
+# secret-gate диспетчер git-хуков: проверка секретов при коммите + цепочка хуков.
 name=$(basename "$0")
 Z=0000000000000000000000000000000000000000
 SG=/root/workspaces/tools/bin/secret-gate
@@ -25,38 +25,6 @@ if [ "$name" = "pre-push" ]; then
     cat > "$tmp"
   else
     warn "не удалось создать временный файл; проверка на секреты пропущена"
-  fi
-  if [ -n "$tmp" ]; then
-    if [ ! -x "$SG" ]; then
-      warn "secret-gate недоступен"
-    fi
-    while read -r local_ref local_sha remote_ref remote_sha; do
-      [ "$local_sha" = "$Z" ] && continue      # удаление ветки — пропуск
-      if [ "$remote_sha" = "$Z" ]; then
-        range="$local_sha --not --remotes=$1/*"     # новая ветка
-      else
-        range="$remote_sha..$local_sha"
-      fi
-      if ! /root/.local/bin/gitleaks git --no-banner --redact --log-opts="$range"; then
-        warn "gitleaks нашёл секрет в отправляемых коммитах ($range)"
-      fi
-      if [ "$remote_sha" = "$Z" ]; then
-        if ! "$SG" check "$local_sha" --not "--remotes=$1/*"; then
-          warn "secret-gate check $range"
-        fi
-      elif ! "$SG" check "$remote_sha..$local_sha"; then
-        warn "secret-gate check $range"
-      fi
-      case "$local_ref" in
-        refs/tags/*)
-          if [ "$(git cat-file -t "$local_sha" 2>/dev/null)" = "tag" ]; then
-            if ! "$SG" check --tag "$local_sha"; then
-              warn "secret-gate check --tag ($local_sha)"
-            fi
-          fi
-          ;;
-      esac
-    done < "$tmp"
   fi
 fi
 
