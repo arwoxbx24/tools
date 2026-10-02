@@ -17,6 +17,7 @@ set -u
 DR_LOG=${DR_LOG:-/var/log/disk-rotate.log}
 DR_LEDGER=${DR_LEDGER:-${LEDGER:-/var/log/disk-rotate-ledger.tsv}}
 DR_STATE_FILE=${DR_STATE_FILE:-/var/lib/disk-rotate/fixed.tsv}
+DR_LOGROTATE_STATE=${DR_LOGROTATE_STATE:-/var/lib/disk-rotate/logrotate.state}
 DR_ALERT_STATE_FILE=${DR_ALERT_STATE_FILE:-/var/log/disk-rotate-alert-state.tsv}
 DR_LOCK_FILE=${DR_LOCK_FILE:-/var/run/disk-rotate.lock}
 DR_LAST_OK=${DR_LAST_OK:-/root/workspaces/system/tools/scripts/data/server-backup.last-ok}
@@ -439,6 +440,11 @@ if [ "$MODE" = drill ]; then
   exit 1
 fi
 
+# Каталог состояния: state и logrotate дописывают в него с первого прогона.
+# Создаём заранее, чтобы запись не падала и logrotate не ругался на отсутствие.
+mkdir -p "$(dirname "$DR_STATE_FILE")" /var/lib/disk-rotate
+mkdir -p "$(dirname "$DR_LOGROTATE_STATE")"
+
 fix_candidates() { # class listfile -> 0/1; фиксирует незаменимые в restic predelete и пишет state/journal
   local class=$1 listfile=$2
   local -a paths=() fix_paths=()
@@ -762,9 +768,9 @@ cleanup_always() { # вызывается в каждом run/dry-run; логи 
   local lr=/root/workspaces/tools/etc/disk-rotate-logrotate.conf
   if [ -f "$lr" ]; then
     if [ "$MODE" = dry-run ]; then
-      logrotate -d -s /var/lib/disk-rotate/logrotate.state "$lr" >>"$DR_LOG" 2>&1
+      logrotate -d -s "$DR_LOGROTATE_STATE" "$lr" >>"$DR_LOG" 2>&1
     else
-      logrotate -s /var/lib/disk-rotate/logrotate.state "$lr" >>"$DR_LOG" 2>&1
+      logrotate -s "$DR_LOGROTATE_STATE" "$lr" >>"$DR_LOG" 2>&1
     fi
   else
     echo "logrotate: нет $lr (пропускаю)" >>"$DR_LOG"

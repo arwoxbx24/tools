@@ -272,6 +272,20 @@ scenario_11() { # --dry-run с DR_TEST_ONLY=1: ни одного пути вне
   fi
 }
 
+scenario_12() { # state в несуществующем подкаталоге: каталог создаётся, файл пишется
+  fixture scen12
+  printf 'state-dir payload\n' >"$A"
+  local S_STATE="$S/missing/state.tsv"
+  run_rotate GATE_MODE=enforce DR_USAGE_PCT=85 DR_STATE_FILE="$S_STATE" -- >/dev/null 2>&1
+  local n
+  n=$(awk -F'\t' 'NF==6{c++} END{print c+0}' "$S_STATE" 2>/dev/null)
+  if [ -f "$S_STATE" ] && [ "$n" -ge 1 ]; then
+    report 12 "state в несуществующем подкаталоге" PASS
+  else
+    report 12 "state в несуществующем подкаталоге" FAIL
+  fi
+}
+
 scenario_1
 scenario_2
 scenario_3
@@ -283,8 +297,9 @@ scenario_8
 scenario_9
 scenario_10
 scenario_11
+scenario_12
 
-echo "PASS $((11 - FAILS))/11"
+echo "PASS $((12 - FAILS))/12"
 [ "$FAILS" -eq 0 ] && exit 0
-echo "$FAILS/11 FAILED"
+echo "$FAILS/12 FAILED"
 exit 1
