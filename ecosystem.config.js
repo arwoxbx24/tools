@@ -271,6 +271,24 @@ module.exports = {
       out_file: '/root/.pm2/logs/docker-backup-out.log'
     },
     {
+      name: 'disk-zone-codex',
+      time: true,
+      merge_logs: true,
+      script: '/root/workspaces/tools/scripts/disk-zones/run-night.sh',
+      cwd: '/root/workspaces/tools',
+      interpreter: 'bash',
+      exec_mode: 'fork_mode',
+      instances: 1,
+      autorestart: false,
+      min_uptime: 1000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
+      env: { ZONE_MODE: 'dry-run' },
+      cron_restart: '15 2 * * *',
+      error_file: '/root/.pm2/logs/disk-zone-codex-error.log',
+      out_file: '/root/.pm2/logs/disk-zone-codex-out.log'
+    },
+    {
       name: 'server-backup',
       time: true,
       merge_logs: true,
