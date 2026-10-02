@@ -1,0 +1,107 @@
+#!/bin/bash
+# code-archive-drill-test: test suite for code-archive-drill
+
+set -o pipefail
+passed=0
+failed=0
+
+# Create temp directory
+T="/root/workspaces/sandbox/test-code-archive-drill-$$"
+trap 'rm -rf "$T"' EXIT INT TERM
+mkdir -p "$T"/{github,repos,gitlab,state,work}
+
+# Get script directory
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DRILL_SCRIPT="$SCRIPT_DIR/code-archive-drill"
+
+# Env file
+ENV_FILE="$T/.env"
+cat > "$ENV_FILE" <<EOF
+export CA_GITHUB_BASE="$T/github"
+export CA_GITLAB_BASE="$T/gitlab"
+export CA_REPOS_DIR="$T/repos"
+export CA_STATE_DIR="$T/state"
+export CA_LOG="$T/drill.log"
+export CA_DRILL_DIR="$T/drill"
+EOF
+
+# Create initial repo with commits
+(
+  cd "$T/work"
+  git init >/dev/null 2>&1
+  git config user.email "test@test.com"
+  git config user.name "Test User"
+  echo "test content" > file.txt
+  git add file.txt
+  git commit -m "initial commit" >/dev/null 2>&1
+  git clone --bare . "$T/github/demo.git" >/dev/null 2>&1
+) 2>/dev/null
+
+# Clone github to gitlab and repos
+git clone --bare "$T/github/demo.git" "$T/gitlab/demo.git" 2>/dev/null || cp -r "$T/github/demo.git" "$T/gitlab/demo.git"
+git clone --bare "$T/github/demo.git" "$T/repos/demo.git" 2>/dev/null || cp -r "$T/github/demo.git" "$T/repos/demo.git"
+
+# Create marker
+echo "2026-10-02T10:00:00Z" > "$T/state/demo.pushed_at"
+
+# Record initial refs count
+demo_refs=$(git --git-dir="$T/repos/demo.git" for-each-ref | wc -l)
+[[ "$demo_refs" -lt 1 ]] && demo_refs=1
+echo "$demo_refs" > "$T/state/demo.refs"
+
+run_drill() {
+  local name="${1:-demo}"
+  source "$ENV_FILE"
+  CA_DRILL_NAME="$name" bash "$DRILL_SCRIPT" 2>&1
+}
+
+# TEST 1: drill:ok
+output=$(run_drill demo 2>&1)
+rc=$?
+if [[ $rc -eq 0 ]] && echo "$output" | grep -q "drill:ok" && [[ ! -d "$T/drill" ]] && [[ -f "$T/state/demo.refs" ]]; then
+  ((passed++))
+else
+  ((failed++))
+fi
+
+# TEST 2: drill:mismatch refs-shrunk
+ref_to_del=$(git --git-dir="$T/repos/demo.git" for-each-ref --format='%(refname)' | head -1)
+if [[ -n "$ref_to_del" ]]; then
+  git --git-dir="$T/repos/demo.git" update-ref -d "$ref_to_del" >/dev/null 2>&1
+fi
+output=$(run_drill demo 2>&1)
+rc=$?
+if [[ $rc -ne 0 ]] && echo "$output" | grep -q "drill:mismatch refs-shrunk"; then
+  ((passed++))
+else
+  ((failed++))
+fi
+
+# Restore ref
+main_sha=$(git --git-dir="$T/github/demo.git" rev-parse main 2>/dev/null || git --git-dir="$T/github/demo.git" rev-parse master)
+git --git-dir="$T/repos/demo.git" update-ref refs/heads/main "$main_sha" 2>/dev/null || git --git-dir="$T/repos/demo.git" update-ref refs/heads/master "$main_sha" 2>/dev/null || true
+
+# TEST 3: drill:mismatch restore
+output=$(run_drill nosuch 2>&1)
+rc=$?
+if [[ $rc -ne 0 ]] && echo "$output" | grep -q "drill:mismatch restore" && [[ ! -d "$T/drill" ]]; then
+  ((passed++))
+else
+  ((failed++))
+fi
+
+# TEST 4: drill:missing
+echo "2026-10-02T10:00:00Z" > "$T/state/ghost.pushed_at"
+rm -rf "$T/repos/ghost.git" "$T/gitlab/ghost.git"
+# Must source ENV_FILE for test 4 as well
+source "$ENV_FILE"
+output=$(CA_DRILL_NAME=demo bash "$DRILL_SCRIPT" 2>&1)
+rc=$?
+if echo "$output" | grep -q "drill:missing ghost" && [[ ! -f "$T/state/ghost.pushed_at" ]]; then
+  ((passed++))
+else
+  ((failed++))
+fi
+
+echo "PASS $passed FAIL $failed"
+exit $(( failed > 0 ? 1 : 0 ))
