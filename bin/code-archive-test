@@ -5,7 +5,6 @@ T="${T:-/tmp/test-code-archive-$$}"
 trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/github" "$T/repos" "$T/state" "$T/log" "$T/gitlab"
 export CA_LAST_OK="$T/last-ok"
-export CA_GITLAB_BASE="$T/gitlab"
 git init -q --bare "$T/github/demo.git"
 git init -q "$T/work"
 git -C "$T/work" config user.email t@t
