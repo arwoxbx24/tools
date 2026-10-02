@@ -61,13 +61,13 @@ mirror_name(){
   while read -r ref _; do git --git-dir="$dst" update-ref -d "$ref"; done < <(git --git-dir="$dst" for-each-ref --format='%(refname)' refs/incoming/)
   return 0
 }
-mkdir -p "$CA_REPOS_DIR" "$(dirname "$CA_LOG")" "$CA_STATE_DIR"
-ok=0; err=0; skipped=0
-for name; do
+# Mirror one name under a free-space floor `min` (KB); prints and logs its
+# journal line and bumps ok/err. On a successful mirror `result` is ok/ok:created.
+process_one(){
+  local name="$1" min="$2"
   mkdir -p "$CA_STATE_DIR"
   exec {lockfd}>"$CA_STATE_DIR/$name.lock"
   flock "$lockfd"
-  min="${CA_FREE_MIN_KB:-2097152}"
   avail=$(df --output=avail -k "$CA_REPOS_DIR" 2>/dev/null | tail -n1 | tr -d '[:space:]' || true)
   if [[ "$avail" =~ ^[0-9]+$ ]] && (( avail >= min )); then
     if mirror_name "$name"; then ok=$((ok+1)); else err=$((err+1)); fi
@@ -77,7 +77,59 @@ for name; do
   line="$(printf '%s %s %s\n' "$(date +%F_%T)" "$name" "$result" | mask)"
   printf '%s\n' "$line"
   printf '%s\n' "$line" >> "$CA_LOG"
-done
+}
+mkdir -p "$CA_REPOS_DIR" "$(dirname "$CA_LOG")" "$CA_STATE_DIR"
+ok=0; err=0; skipped=0
+if [[ "${1:-}" == "--changed" ]]; then
+  shift
+  # D5 source: list of "<name>\t<pushed_at>\t<size_kb>\t<archived>" rows. Use a
+  # provided file (tests) or fetch the org's repos from GitHub via gh api.
+  if [[ -n "${CA_LIST_FILE:-}" ]]; then
+    list_file="$CA_LIST_FILE"
+  else
+    list_file="$(mktemp)"
+    trap 'rm -f "$list_file"' EXIT
+    if ! gh api --paginate '/orgs/arwoxbx24/repos?per_page=100' \
+         -q '.[] | [.name, .pushed_at, (.size|tostring), (.archived|tostring)] | @tsv' > "$list_file"; then
+      echo "err:list-fetch" >&2; exit 2
+    fi
+  fi
+  # D3 completeness check: a list far smaller than the previous pass means the
+  # source shrank (e.g. mass deletion) — refuse rather than silently drop copies.
+  prev=""
+  if [[ -f "$CA_STATE_DIR/list-count" ]]; then
+    prev=$(<"$CA_STATE_DIR/list-count")
+    [[ "$prev" =~ ^[0-9]+$ ]] || prev=""
+  fi
+  cur=$(wc -l < "$list_file")
+  if [[ -n "$prev" ]] && (( cur < prev - 1 )); then
+    line="err:list-shrunk $prev→$cur"
+    printf '%s\n' "$line"
+    printf '%s\n' "$line" >> "$CA_LOG"
+    exit 2
+  fi
+  printf '%s\n' "$cur" > "$CA_STATE_DIR/list-count"
+  mapfile -t rows < "$list_file"
+  for row in "${rows[@]}"; do
+    IFS=$'\t' read -r name pushed size archived <<< "$row"
+    [[ -n "$name" ]] || continue
+    [[ "$archived" == "true" ]] && { skipped=$((skipped+1)); continue; }
+    if [[ -d "$CA_REPOS_DIR/$name.git" ]] \
+       && [[ -f "$CA_STATE_DIR/$name.pushed_at" ]] \
+       && [[ "$(<"$CA_STATE_DIR/$name.pushed_at")" == "$pushed" ]]; then
+      skipped=$((skipped+1)); continue
+    fi
+    # D10: keep at least 2 GiB + this repo's size free before mirroring it.
+    process_one "$name" "$(( 2097152 + ${size:-0} ))"
+    if [[ "$result" == ok || "$result" == ok:created ]]; then
+      printf '%s\n' "$pushed" > "$CA_STATE_DIR/$name.pushed_at"
+    fi
+  done
+else
+  for name; do
+    process_one "$name" "${CA_FREE_MIN_KB:-2097152}"
+  done
+fi
 sum="=== pass $(date +%F_%T) | ok=$ok err=$err skipped=$skipped ==="
 printf '%s\n' "$sum"
 printf '%s\n' "$sum" >> "$CA_LOG"

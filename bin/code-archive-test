@@ -119,5 +119,58 @@ out9b=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_
 { [[ $rc9 == 0 ]] && [[ -f "$T/last-ok" ]] \
   && [[ $rc9b == 1 ]] && grep -qF 'err:no-space' <<<"$out9b"; } && p 9 || f 9
 
-echo "PASS $ok FAIL $((9-ok))"
-[[ $ok == 9 ]]
+# Scaffold a bare source repo so --changed can mirror it without the network.
+mkgh(){ git init -q --bare "$T/github/$1.git"; }
+# Check 11: --changed mirrors new/changed, skips the unchanged copy, writes pushed_at
+for r in alpha bravo charlie delta; do mkgh "$r"; done
+cp -rf "$T/github/alpha.git" "$T/repos/alpha.git"
+printf '%s\n' '2026-09-30T10:00:00Z' > "$T/state/alpha.pushed_at"
+printf '%s\t%s\t%s\t%s\n' \
+  'alpha'   '2026-09-30T10:00:00Z' '100' 'false' \
+  'bravo'   '2026-09-30T11:00:00Z' '200' 'false' \
+  'charlie' '2026-09-30T12:00:00Z' '300' 'false' \
+  'delta'   '2026-09-30T13:00:00Z' '400' 'false' > "$T/list11.tsv"
+rm -f "$T/last-ok"
+out11=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_LAST_OK=$T/last-ok CA_LIST_FILE=$T/list11.tsv "$bin/code-archive" --changed 2>&1); rc11=$?
+if [[ $rc11 == 0 ]] \
+   && grep -qF 'bravo ok' <<<"$out11" \
+   && grep -qF 'charlie ok' <<<"$out11" \
+   && grep -qF 'delta ok' <<<"$out11" \
+   && ! grep -qF 'alpha' <<<"$out11" \
+   && ! grep -qF 'alpha' "$T/log/code-archive.log" \
+   && [[ "$(cat "$T/state/bravo.pushed_at")" == '2026-09-30T11:00:00Z' ]] \
+   && [[ "$(cat "$T/state/charlie.pushed_at")" == '2026-09-30T12:00:00Z' ]] \
+   && [[ "$(cat "$T/state/delta.pushed_at")" == '2026-09-30T13:00:00Z' ]] \
+   && grep -qF 'ok=3 err=0 skipped=1' <<<"$out11" \
+   && [[ -f "$T/last-ok" ]]; then
+  p 11
+else
+  f 11
+fi
+# Check 12: list far smaller than state/list-count -> err:list-shrunk, code 2, last-ok untouched
+printf '%s\n' '10' > "$T/state/list-count"
+last12=$(cat "$T/last-ok")
+out12=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_LAST_OK=$T/last-ok CA_LIST_FILE=$T/list11.tsv "$bin/code-archive" --changed 2>&1); rc12=$?
+if [[ $rc12 == 2 ]] \
+   && grep -qF 'err:list-shrunk 10→4' <<<"$out12" \
+   && [[ "$(cat "$T/last-ok")" == "$last12" ]]; then
+  p 12
+else
+  f 12
+fi
+# Check 13: a row with archived=true is skipped without being mirrored or logged
+mkgh "archrepo"
+printf '%s\n' '1' > "$T/state/list-count"
+printf '%s\t%s\t%s\t%s\n' 'archrepo' '2026-09-30T14:00:00Z' '50' 'true' > "$T/list13.tsv"
+out13=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_LAST_OK=$T/last-ok CA_LIST_FILE=$T/list13.tsv "$bin/code-archive" --changed 2>&1); rc13=$?
+if [[ $rc13 == 0 ]] \
+   && [[ ! -e "$T/repos/archrepo.git" ]] \
+   && ! grep -qF 'archrepo' "$T/log/code-archive.log" \
+   && grep -qF 'skipped=1' <<<"$out13"; then
+  p 13
+else
+  f 13
+fi
+
+echo "PASS $ok FAIL $((12-ok))"
+[[ $ok == 12 ]]
