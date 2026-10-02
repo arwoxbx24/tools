@@ -14,6 +14,45 @@ CA_REPOS_DIR="${CA_REPOS_DIR:-/home/gitmirror/repos}"
 CA_LOG="${CA_LOG:-/root/workspaces/system/services/gitmirror/code-archive.log}"
 CA_STATE_DIR="${CA_STATE_DIR:-/home/gitmirror/state}"
 mask(){ sed -E 's#(ghp_|gho_|github_pat_|glpat-|oauth2:)[^@ ]*#***#g'; }
+# U8b: ensure the GitLab target project exists and is private, creating it in
+# its group if missing. Sets $result and returns 1 on any failure. The token is
+# fed on stdin (`-H @-`) so it never appears in the process args.
+gitlab_group_id=""
+gitlab_ensure_project(){
+  local name="$1" code body vis
+  local group="${CA_GITLAB_BASE##*/}"
+  local api="${CA_GITLAB_API:-https://gitlab.com/api/v4}"
+  body="$(mktemp)"
+  code=$(printf 'PRIVATE-TOKEN: %s\n' "$GITLAB_MIRROR_TOKEN" | curl -s -o "$body" -w '%{http_code}' -H @- "$api/projects/$group%2F$name")
+  if [[ "$code" == 200 ]]; then
+    vis=$(jq -r '.visibility // ""' "$body")
+    rm -f "$body"
+    if [[ "$vis" != "private" ]]; then
+      result=err:visibility; return 1
+    fi
+    return 0
+  fi
+  if [[ "$code" != 404 ]]; then
+    rm -f "$body"; result=err:gitlab; return 1
+  fi
+  rm -f "$body"
+  # Project missing: resolve the group id once per run, then create the project.
+  if [[ -z "${gitlab_group_id:-}" ]]; then
+    body="$(mktemp)"
+    code=$(printf 'PRIVATE-TOKEN: %s\n' "$GITLAB_MIRROR_TOKEN" | curl -s -o "$body" -w '%{http_code}' -H @- "$api/groups/$group")
+    if [[ "$code" == 200 ]]; then gitlab_group_id="$(jq -r '.id' "$body")"; fi
+    rm -f "$body"
+    if [[ -z "${gitlab_group_id:-}" ]]; then result=err:gitlab; return 1; fi
+  fi
+  body="$(mktemp)"
+  code=$(printf 'PRIVATE-TOKEN: %s\n' "$GITLAB_MIRROR_TOKEN" | curl -s -o "$body" -w '%{http_code}' -H @- \
+      -X POST --data-urlencode "path=$name" --data-urlencode "name=$name" \
+      --data-urlencode "namespace_id=$gitlab_group_id" --data-urlencode "visibility=private" \
+      "$api/projects")
+  rm -f "$body"
+  if [[ "$code" != 201 ]]; then result=err:gitlab; return 1; fi
+  return 0
+}
 # Mirror one repo. On success sets $result (ok|ok:created) and returns 0; on
 # failure sets $result (err:<why>) and returns non-zero. Called in an if
 # condition so a failure doesn't abort the whole pass.
@@ -108,9 +147,14 @@ mirror_name(){
       git --git-dir="$dst" remote add gitlab "$gl_dest" || { result=err:gitlab; return 1; }
     fi
     gl_dest="gitlab"
+    # U8b: verify the target project exists and is private (creating it if
+    # missing) before pushing.
+    if [[ "$CA_GITLAB_BASE" == https://* ]] && ! gitlab_ensure_project "$name"; then
+      return 1
+    fi
   fi
   # Push all refs without force; collect rejections
-  push_out=$(git --git-dir="$dst" push --porcelain "$gl_dest" 'refs/heads/*:refs/heads/*' 'refs/tags/*:refs/tags/*' 2>&1) || true
+  push_out=$(git --git-dir="$dst" push --porcelain "$gl_dest" 'refs/heads/*:refs/heads/*' 'refs/tags/*:refs/tags/*' 2>&1); push_rc=$?
   rewritten_first=""
   while read -r line; do
     [[ "$line" == "!"* ]] || continue
@@ -137,6 +181,11 @@ mirror_name(){
       result=err:gitlab; return 1
     fi
   done < <(echo "$push_out" | mask)
+  # U8b: a push that neither produced a handled rejection nor succeeded (e.g.
+  # the remote is unreachable) is an error.
+  if [[ -z "$rewritten_first" && "$push_rc" != 0 ]]; then
+    result=err:gitlab; return 1
+  fi
   if [[ -n "$rewritten_first" ]]; then
     result="ok:gitlab-rewritten $rewritten_first"
   fi

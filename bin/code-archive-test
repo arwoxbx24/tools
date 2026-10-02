@@ -289,5 +289,70 @@ else
   f 19
 fi
 
-echo "PASS $ok FAIL $((19-ok))"
-[[ $ok == 19 ]]
+# U8b: stub curl that logs its args and the value-free auth header, then
+# answers per the requested URL. The token is only ever passed via `-H @-` on
+# stdin, so it never appears in the logged args.
+mkdir -p "$T/stub"
+cat > "$T/stub/curl" <<'STUB'
+#!/usr/bin/env bash
+# Test-only curl stub: log args + value-free auth header, answer per URL.
+log="${CURL_LOG:?}"
+printf 'ARGS: %s\n' "$*" >> "$log"
+if [[ ! -t 0 ]]; then
+  while IFS= read -r line; do
+    case "$line" in
+      PRIVATE-TOKEN:*) printf 'PRIVATE-TOKEN:\n' >> "$log";;
+    esac
+  done
+fi
+url=""; for a in "$@"; do case "$a" in http://*|https://*) url="$a"; break;; esac; done
+out=""; prev=""
+for a in "$@"; do if [[ "$prev" == "-o" ]]; then out="$a"; fi; prev="$a"; done
+code=500; body='{}'
+if [[ "$url" == *"/projects/"* && "$*" != *"-X POST"* ]]; then
+  if [[ "$url" == *"%2Fdemo3"* ]]; then code=404
+  else code=200; body='{"visibility":"public"}'; fi
+elif [[ "$url" == *"/projects"* && "$*" == *"-X POST"* ]]; then
+  code=201; body='{"id":99}'
+elif [[ "$url" == *"/groups/"* ]]; then
+  code=200; body='{"id":42}'
+fi
+if [[ -n "$out" ]]; then printf '%s' "$body" > "$out"; fi
+printf '%s' "$code"
+STUB
+chmod +x "$T/stub/curl"
+printf '%s\n' 'GITLAB_MIRROR_TOKEN=glpat-TESTONLY000' > "$T/envU8b"
+
+# Check 20: GitLab project already public -> err:visibility, no POST, no key leak
+rm -f "$T/curl.log"
+out20=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/envU8b CA_LAST_OK=$T/last-ok CA_FREE_MIN_KB=1 CA_GITLAB_BASE=https://example.invalid/arwox24-group CURL_LOG="$T/curl.log" PATH="$T/stub:$PATH" "$bin/code-archive" demo 2>&1); rc20=$?
+if [[ $rc20 == 1 ]] \
+   && grep -qF 'demo err:visibility' <<<"$out20" \
+   && ! grep -q 'POST' "$T/curl.log" \
+   && ! grep -q 'glpat-TESTONLY000' "$T/curl.log" \
+   && ! grep -q 'glpat-TESTONLY000' <<<"$out20"; then
+  p 20
+else
+  f 20
+fi
+
+# Check 21: GitLab project missing -> group id + create private project, then
+# the push to example.invalid fails (no network) -> err:gitlab
+git init -q --bare "$T/github/demo3.git"
+git -C "$T/seed" push -q "$T/github/demo3.git" main
+rm -f "$T/curl.log"
+out21=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/envU8b CA_LAST_OK=$T/last-ok CA_FREE_MIN_KB=1 CA_GITLAB_BASE=https://example.invalid/arwox24-group CURL_LOG="$T/curl.log" PATH="$T/stub:$PATH" "$bin/code-archive" demo3 2>&1); rc21=$?
+if [[ $rc21 == 1 ]] \
+   && grep -qF 'demo3 err:gitlab' <<<"$out21" \
+   && grep -q 'POST' "$T/curl.log" \
+   && grep -q 'namespace_id=42' "$T/curl.log" \
+   && grep -q 'visibility=private' "$T/curl.log" \
+   && grep -q 'path=demo3' "$T/curl.log" \
+   && ! grep -q 'glpat-TESTONLY000' "$T/curl.log"; then
+  p 21
+else
+  f 21
+fi
+
+echo "PASS $ok FAIL $((21-ok))"
+[[ $ok == 21 ]]
