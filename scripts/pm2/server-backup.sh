@@ -156,7 +156,7 @@ paths=(
   /root/.claude.json /root/.bashrc /root/.profile /root/.gitconfig /root/.gitignore_global
   /root/.mc /root/.docker /root/.gnupg /root/.beads /root/.dolt /root/.opencode
   /root/.agents /root/ecosystem.config.js /var/www /opt/actions-runner/.runner
-  /root/actions-runner-2/.runner /home/claude
+  /root/actions-runner-2/.runner /home/claude /home/gitmirror/repos
 )
 paths+=(/root/.tmux*)
 [ -n "$LATEST_SNAP" ] && paths+=("/root/backups/docker/$LATEST_SNAP")
