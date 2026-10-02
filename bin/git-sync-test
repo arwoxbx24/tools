@@ -128,6 +128,7 @@ grep -qF 'skip:locked' <<<"$out" && p 10 || f 10
 
 # 11: err:fetch — origin/main ref present, origin url dead
 repo "$GA_PROJECTS/p-fetch"
+git -C "$GA_PROJECTS/p-fetch" commit -q --allow-empty -m base
 git init -q --bare "$d/origin-p-fetch.git"
 git -C "$GA_PROJECTS/p-fetch" remote add origin "$d/origin-p-fetch.git"
 git -C "$GA_PROJECTS/p-fetch" push -q -u origin main
