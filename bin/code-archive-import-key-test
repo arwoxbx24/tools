@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Self-test для bin/code-archive-import-key: перенос ключа GitLab из адресов копий в secrets.
+set -u
+
+bin="$(cd -- "$(dirname -- "$0")" && pwd)/code-archive-import-key"
+T="/root/workspaces/sandbox/test-import-key-$$"
+trap 'rm -rf "$T"' EXIT
+
+pass=0
+fail=0
+ok()   { printf 'PASS %s\n' "$1"; pass=$((pass + 1)); }
+bad()  { printf 'FAIL %s: %s\n' "$1" "$2"; fail=$((fail + 1)); }
+
+mkdir -p "$T/repos/a.git"
+printf 'url = https://oauth2:glpat-TESTONLY111@gitlab.com/x/a.git\n' > "$T/repos/a.git/config"
+env="$T/env"
+
+# 1: первый запуск — ключ импортирован, права 600
+CA_REPOS_DIR=$T/repos CA_ENV_FILE=$env "$bin" >"$T.out" 2>"$T.err"; rc=$?
+if [ "$rc" -ne 0 ]; then
+	bad 1 "rc=$rc"
+elif [ "$(cat "$T.out")" != "imported from a" ]; then
+	bad 1 "stdout != imported from a: $(cat "$T.out")"
+elif ! grep -qx 'GITLAB_MIRROR_TOKEN=glpat-TESTONLY111' "$env"; then
+	bad 1 "env без GITLAB_MIRROR_TOKEN"
+elif [ "$(stat -c %a "$env")" != 600 ]; then
+	bad 1 "права env != 600: $(stat -c %a "$env")"
+else
+	ok 1
+fi
+
+# 2: ключ не в stdout/stderr запуска
+c1=$(grep -cF 'glpat-' "$T.out" 2>/dev/null || true)
+c2=$(grep -cF 'glpat-' "$T.err" 2>/dev/null || true)
+if [ "$c1" -ne 0 ] || [ "$c2" -ne 0 ]; then
+	bad 2 "ключ в выводе (stdout=$c1 stderr=$c2)"
+else
+	ok 2
+fi
+
+# 3: повторный запуск — stdout exists, env не изменился
+h1=$(sha256sum "$env" | cut -d' ' -f1)
+out2=$(CA_REPOS_DIR=$T/repos CA_ENV_FILE=$env "$bin" 2>&1); rc2=$?
+h2=$(sha256sum "$env" | cut -d' ' -f1)
+if [ "$rc2" -ne 0 ]; then
+	bad 3 "rc=$rc2"
+elif [ "$h1" != "$h2" ]; then
+	bad 3 "env изменился"
+elif ! grep -qx 'exists' <<<"$out2"; then
+	bad 3 "stdout без exists: $out2"
+else
+	ok 3
+fi
+
+# 4: пустой каталог копий — err:not-found, код 2
+mkdir -p "$T/repos2"
+env2="$T/env2"
+CA_REPOS_DIR=$T/repos2 CA_ENV_FILE=$env2 "$bin" >"$T.out4" 2>"$T.err4"; rc3=$?
+if [ "$rc3" -ne 2 ]; then
+	bad 4 "rc=$rc3"
+elif ! grep -qx 'err:not-found' "$T.err4"; then
+	bad 4 "stderr без err:not-found: $(cat "$T.err4")"
+else
+	ok 4
+fi
+
+printf 'PASS %d FAIL %d\n' "$pass" "$fail"
+if [ "$fail" -eq 0 ]; then exit 0; else exit 1; fi

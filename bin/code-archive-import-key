@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+CA_REPOS_DIR=${CA_REPOS_DIR:-/home/gitmirror/repos}
+CA_ENV_FILE=${CA_ENV_FILE:-/root/workspaces/secrets/gitmirror.env}
+if [ -f "$CA_ENV_FILE" ] && grep -qs '^GITLAB_MIRROR_TOKEN=.' "$CA_ENV_FILE"; then
+	echo exists
+	exit 0
+fi
+for cfg in "$CA_REPOS_DIR"/*.git/config; do
+	[ -f "$cfg" ] || continue
+	key=$(sed -n 's#.*https://oauth2:\([^@]*\)@gitlab\.com.*#\1#p' "$cfg" | head -n1)
+	[ -n "$key" ] || continue
+	name=$(basename "$(dirname "$cfg")" .git)
+	printf 'GITLAB_MIRROR_TOKEN=%s\n' "$key" >> "$CA_ENV_FILE"
+	echo "imported from $name"
+	exit 0
+done
+echo err:not-found >&2
+exit 2
