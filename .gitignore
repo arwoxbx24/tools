@@ -32,3 +32,6 @@ etc/tools-env
 *.db
 .beads-credential-key
 .beads/proxieddb/
+secret-gate
+secret-gate-test
+secret-gate.allow
