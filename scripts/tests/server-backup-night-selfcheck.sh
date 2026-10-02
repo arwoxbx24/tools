@@ -45,7 +45,20 @@ if [ "$mode" = backup ]; then
 fi
 if [ "$mode" = ls ]; then cat "$STUB_LS_FILE" 2>/dev/null; exit 0; fi
 if [ "$mode" = stats ]; then printf "Total Size: 100 MiB\n"; exit 0; fi
+if [ "$mode" = check ]; then exit "${STUB_CHECK_RC:-0}"; fi
 exit 0
+'
+
+# Воскресная ветка check требует date +%u=7, +%-d=8; форсируем только по флагу,
+# прочие вызовы date (лог, +%s) делегируем системной date.
+write_stub date '
+if [ "${STUB_FORCE_SUNDAY:-0}" = 1 ]; then
+  case "${1:-}" in
+    +%u) echo 7; exit 0;;
+    +%-d) echo 8; exit 0;;
+  esac
+fi
+exec /bin/date "$@"
 '
 
 # Сетевые/тяжёлые/служебные заглушки — сервер не нагружаем, наружу не ходим.
@@ -87,7 +100,7 @@ run_backup() { # ls_file notify_env argc_file  -> rc
 }
 
 PASS=0
-TOTAL=10
+TOTAL=11
 
 # --- (a)+(b): штатный ночной бэкап, mirror-check сходится (3==3).
 SB_LOG="$TMP/logs/server-backup.log"
@@ -149,6 +162,19 @@ if grep -q 'mirror-check s3=2 local=3' "$SB_LOG"; then PASS=$((PASS+1)); else
 fi
 if grep -q 'mirror-check' "$TMP/curl.log"; then PASS=$((PASS+1)); else
   echo "[d] нет алерта mirror-check"; exit 1
+fi
+
+# --- (e): воскресная ветка check -> rc=1 -> тревога в ALERT_PENDING (пустой токен).
+printf 'repos/repo1.git/HEAD\nrepos/repo2.git/HEAD\nrepos/repo3.git/HEAD\n' >"$TMP/ls-e.txt"
+ARGV_E="$TMP/argv-e.txt"
+: >"$TMP/alert-pending"
+export STUB_FORCE_SUNDAY=1 STUB_CHECK_RC=1
+if run_backup "$TMP/ls-e.txt" "$TMP/notify-empty.env" "$ARGV_E"; then
+  echo "[e] ожидали сбой check rc=1, а бэкап завершился успешно"; exit 1
+fi
+unset STUB_FORCE_SUNDAY STUB_CHECK_RC
+if grep -q 'check rc=1' "$TMP/alert-pending"; then PASS=$((PASS+1)); else
+  echo "[e] нет 'check rc=1' в ALERT_PENDING"; exit 1
 fi
 
 echo "PASS $PASS/$TOTAL"
