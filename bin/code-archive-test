@@ -829,5 +829,27 @@ else
   f 43
 fi
 
-echo "PASS $ok FAIL $((43-ok))"
-[[ $ok == 43 ]]
+# Check 44: --local survives a launch from a directory removed before the send
+# starts (U7g). The post-commit/post-merge hook fires from a worktree dir that
+# `ship` deletes mid-run; the orphaned process's CWD no longer exists on disk,
+# yet the push must still reach GitLab -> ok:local, code 0.
+initlocal "$T/lw44" 'git@github.com:arwoxbx24/local44.git'
+main44=$(git -C "$T/lw44" rev-parse main)
+mkdir -p "$T/gone44"
+( cd "$T/gone44" && rmdir "$T/gone44"
+  out44=$(env "${localenv[@]}" "$bin/code-archive" --local "$T/lw44/.git" 2>&1); rc44=$?
+  printf '%s' "$out44" > "$T/out44"
+  printf '%s' "$rc44" > "$T/rc44" )
+out44=$(cat "$T/out44")
+rc44=$(cat "$T/rc44")
+srv44=$(git --git-dir="$T/gitlab/local44.git" rev-parse refs/heads/server/main 2>/dev/null) || srv44=""
+if [[ $rc44 == 0 ]] && [[ "$srv44" == "$main44" ]] \
+   && grep -qF 'local44 ok:local' <<<"$out44" \
+   && grep -qF 'local44 ok:local' "$T/log/code-archive.log"; then
+  p 44
+else
+  f 44
+fi
+
+echo "PASS $ok FAIL $((44-ok))"
+[[ $ok == 44 ]]

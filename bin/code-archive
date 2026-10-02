@@ -349,6 +349,9 @@ journal_local(){
 # drops a `.again` marker for the holder and exits 0 with no journal line).
 local_mode(){
   local gdir="$1" url gl_path gl_out attempt
+  # U7g: the hook fires from a worktree dir that `ship` may delete mid-run.
+  # cd into the git dir first so an orphaned CWD cannot break every git call.
+  cd "$gdir" || cd /
   url="$(git --git-dir="$gdir" config --get remote.origin.url 2>/dev/null || true)"
   name="$(printf '%s\n' "$url" | sed -nE 's#.*github\.com[:/]arwoxbx24/([^/]+)$#\1#p')"
   name="${name%.git}"
