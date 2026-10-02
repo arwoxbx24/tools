@@ -780,5 +780,54 @@ else
   f 42
 fi
 
-echo "PASS $ok FAIL $((42-ok))"
-[[ $ok == 42 ]]
+# U7f: a branch vanishes between composing the ref list and the push, so the
+# first `push` emits "src refspec <ref> does not match any". The vanish must not
+# fail the pass: code-archive re-pushes the surviving refs -> ok:local, code 0,
+# the remaining branch lands on GitLab, and no state/<name>.fail is left. A stub
+# `git` at the head of PATH captures the heads as explicit refspecs (including
+# the branch that will vanish), deletes that branch, then runs the real git — so
+# the first push attempts it and errors exactly like the observed log line.
+# Check 43:
+initlocal "$T/lw43" 'git@github.com:arwoxbx24/local43.git'
+git -C "$T/lw43" branch feature
+rm -f "$T/vanish.done" "$T/state/local43.fail"
+mkdir -p "$T/stubgit"
+cat > "$T/stubgit/git" <<'STUB'
+#!/usr/bin/env bash
+done_flag="${VANISH_DONE:?}"
+if [[ "$*" == *" push "* ]] && [[ ! -e "$done_flag" ]]; then
+  : > "$done_flag"
+  gdir=""; args=(); refs=()
+  for a in "$@"; do
+    case "$a" in
+      --git-dir=*) gdir="${a#--git-dir=}"; args+=("$a");;
+      refs/*:refs/*) :;;
+      *) args+=("$a");;
+    esac
+  done
+  # compose the explicit ref list for every current head (before deletion)
+  while read -r r; do b="${r#refs/heads/}"; refs+=("refs/heads/$b:refs/heads/server/$b"); done \
+    < <(/usr/bin/git --git-dir="$gdir" for-each-ref --format='%(refname)' refs/heads/)
+  /usr/bin/git --git-dir="$gdir" update-ref -d "refs/heads/${VANISH_BRANCH:?}"
+  exec /usr/bin/git "${args[@]}" "${refs[@]}"
+fi
+exec /usr/bin/git "$@"
+STUB
+chmod +x "$T/stubgit/git"
+main43=$(git -C "$T/lw43" rev-parse main)
+out43=$(env "${localenv[@]}" PATH="$T/stubgit:$PATH" VANISH_DONE="$T/vanish.done" \
+        VANISH_BRANCH=feature "$bin/code-archive" --local "$T/lw43/.git" 2>&1); rc43=$?
+srv43=$(git --git-dir="$T/gitlab/local43.git" rev-parse refs/heads/server/main 2>/dev/null) || srv43=""
+vanish43=$(git --git-dir="$T/gitlab/local43.git" for-each-ref refs/heads/server/feature --format='%(refname)' 2>/dev/null)
+fail43=$([[ -e "$T/state/local43.fail" ]] && echo yes || echo no)
+if [[ $rc43 == 0 ]] && [[ "$srv43" == "$main43" ]] && [[ -z "$vanish43" ]] \
+   && grep -qF 'local43 ok:local' <<<"$out43" \
+   && grep -qF 'local43 ok:local' "$T/log/code-archive.log" \
+   && [[ "$fail43" == no ]]; then
+  p 43
+else
+  f 43
+fi
+
+echo "PASS $ok FAIL $((43-ok))"
+[[ $ok == 43 ]]

@@ -268,10 +268,41 @@ mirror_name(){
 # becomes server/<branch>) rather than failing the pass. On a hard unhandled
 # failure sets $result to err:gitlab and returns 1; $rewritten_first is '' after
 # a clean push.
+# U7f: expand a (possibly wildcard) refspec `src:dst` into explicit `src:dst`
+# pairs over the refs currently present in repo $1 (`*` in src and dst align). A
+# ref deleted mid-push is simply absent from the result instead of failing the
+# push with "does not match any".
+expand_refspec(){
+  local repo="$1" rs="$2" src dst pre suf ref mid
+  src="${rs%%:*}"; dst="${rs#*:}"
+  if [[ "$src" == *"*"* ]]; then
+    pre="${src%%\**}"
+    suf="${src##*\*}"
+    while read -r ref; do
+      [[ "$ref" == "$pre"*"$suf" ]] || continue
+      mid="${ref#"$pre"}"; mid="${mid%"$suf"}"
+      printf '%s:%s\n' "$ref" "${dst/\*/$mid}"
+    done < <(git --git-dir="$repo" for-each-ref --format='%(refname)' "$pre")
+  else
+    printf '%s:%s\n' "$src" "$dst"
+  fi
+}
 gl_push(){
   local repo="$1"; shift
   local line refspec ref_src ref_dest ref_category dest_name ts rewritten_ref retry_out retry_rc obj
+  local rr rs retry_refs
   push_out=$(git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 --git-dir="$repo" push --porcelain "$gl_dest" "$@" 2>&1); push_rc=$?
+  # U7f: a source ref vanished between composing the ref list and the push
+  # ("error: src refspec <ref> does not match any"), e.g. ship deletes a merged
+  # branch while --local pushes. Not a failure: re-push once against an explicit
+  # list of the refs that still exist, so the vanished one is simply skipped.
+  if [[ "$push_rc" != 0 && "$push_out" == *"does not match any"* ]]; then
+    retry_refs=()
+    for rs in "$@"; do
+      while read -r rr; do retry_refs+=("$rr"); done < <(expand_refspec "$repo" "$rs")
+    done
+    push_out=$(git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 --git-dir="$repo" push --porcelain "$gl_dest" "${retry_refs[@]}" 2>&1); push_rc=$?
+  fi
   # U7b: a rejected push whose barrier reports a leaked secret fails as err:secret.
   if [[ "$push_out" == *"BLOCKED: secret-gate"* ]]; then result="err:secret"; return 1; fi
   rewritten_first=""
