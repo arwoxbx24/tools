@@ -26,5 +26,27 @@ d=$(git --git-dir="$T/repos/demo.git" rev-parse main v1 2>/dev/null) || d=""
 rm -rf "$T/repos"
 out2=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/empty "$bin/code-archive" demo 2>&1); rc2=$?
 { [[ $rc2 == 2 ]] && grep -qF 'err:no-key' <<<"$out2"; } && p 2 || f 2
-echo "PASS $ok FAIL $((2-ok))"
-[[ $ok == 2 ]]
+# Check 3: existing copy with a leaked-credential gitlab remote is cleaned
+mkdir -p "$T/repos"
+cp -rf "$T/github/demo.git" "$T/repos/demo.git"
+git --git-dir="$T/repos/demo.git" remote add github "$T/github/demo.git"
+git --git-dir="$T/repos/demo.git" remote add gitlab https://oauth2:glpat-TESTONLY111@gitlab.com/x/demo.git
+git --git-dir="$T/repos/demo.git" config remote.gitlab.mirror true
+git --git-dir="$T/repos/demo.git" config --add remote.gitlab.fetch '+refs/*:refs/*'
+out3=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env "$bin/code-archive" demo 2>&1); rc3=$?
+u3=$(git --git-dir="$T/repos/demo.git" config --get remote.gitlab.url)
+m3=$(git --git-dir="$T/repos/demo.git" config --get remote.gitlab.mirror)
+f3=$(git --git-dir="$T/repos/demo.git" config --get-all remote.gitlab.fetch)
+c3=$(grep -c glpat- "$T/repos/demo.git/config" || true)
+if [[ $rc3 == 0 ]] && [[ -z $m3 ]] \
+   && ! grep -Fq '+refs/*:refs/*' <<<"$f3" \
+   && [[ $u3 == 'https://gitlab.com/x/demo.git' ]] \
+   && [[ $c3 == 0 ]] \
+   && ! grep -q glpat- <<<"$out3" \
+   && ! grep -q glpat- "$T/log/code-archive.log"; then
+  p 3
+else
+  f 3
+fi
+echo "PASS $ok FAIL $((3-ok))"
+[[ $ok == 3 ]]

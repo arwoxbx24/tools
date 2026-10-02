@@ -3,23 +3,43 @@ set -euo pipefail
 CA_ENV_FILE="${CA_ENV_FILE:-/root/workspaces/secrets/gitmirror.env}"
 set -a; . "$CA_ENV_FILE"; set +a
 [[ -n "${GITLAB_MIRROR_TOKEN:-}" ]] || { echo "err:no-key" >&2; exit 2; }
+# Askpass mode: git invokes this script as GIT_ASKPASS with a single prompt arg.
+if [[ ${CA_ASKPASS:-} == 1 && $# -eq 1 ]]; then
+  if [[ "$1" == *Username* ]]; then
+    echo oauth2
+  else
+    echo "$GITLAB_MIRROR_TOKEN"
+  fi
+  exit 0
+fi
+export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS="$0" CA_ASKPASS=1
 CA_GITHUB_BASE="${CA_GITHUB_BASE:-git@github.com:arwoxbx24}"
 CA_REPOS_DIR="${CA_REPOS_DIR:-/home/gitmirror/repos}"
 CA_LOG="${CA_LOG:-/root/workspaces/system/services/gitmirror/code-archive.log}"
 CA_STATE_DIR="${CA_STATE_DIR:-/home/gitmirror/state}"
+mask(){ sed -E 's#(ghp_|gho_|github_pat_|glpat-|oauth2:)[^@ ]*#***#g'; }
 mkdir -p "$CA_REPOS_DIR" "$(dirname "$CA_LOG")" "$CA_STATE_DIR"
 for name; do
   src="$CA_GITHUB_BASE/$name.git"
   dst="$CA_REPOS_DIR/$name.git"
   if [[ -d "$dst" ]]; then
     result=ok
+    # U2: clean leaked credentials / mirror refspec from every remote of an existing copy.
+    for r in $(git --git-dir="$dst" remote); do
+      git --git-dir="$dst" config --unset-all "remote.$r.mirror" || true
+      git --git-dir="$dst" config --unset-all "remote.$r.fetch" '^\+refs/\*:refs/\*$' || true
+      u=$(git --git-dir="$dst" config --get "remote.$r.url" || true)
+      if [[ "$u" == https://*"@"* ]]; then
+        git --git-dir="$dst" remote set-url "$r" "https://${u##https://*@}"
+      fi
+    done
   else
     git init -q --bare "$dst"
     git --git-dir="$dst" remote add github "$src"
     result="ok:created"
   fi
   git --git-dir="$dst" fetch -q github 'refs/heads/*:refs/heads/*' 'refs/tags/*:refs/tags/*' 2>/dev/null
-  line="$(date +%F_%T) $name $result"
+  line="$(printf '%s %s %s\n' "$(date +%F_%T)" "$name" "$result" | mask)"
   printf '%s\n' "$line"
   printf '%s\n' "$line" >> "$CA_LOG"
 done
