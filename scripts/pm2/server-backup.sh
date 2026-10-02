@@ -179,7 +179,7 @@ run_step unlock "${NICE_PREFIX[@]}" "$RESTIC" unlock --retry-lock 30m
 
 run_step backup "${NICE_PREFIX[@]}" "$RESTIC" backup --tag server --group-by host,tags --one-file-system \
   --exclude-caches --exclude node_modules --exclude .venv --exclude venv \
-  --exclude __pycache__ --exclude .cache --exclude .worktrees --exclude .repowise \
+  --exclude __pycache__ --exclude .cache --exclude .repowise \
   --exclude '*.pyc' --exclude /root/workspaces/system/archives --exclude /root/.pm2/logs \
   --exclude /root/.claude/file-history --exclude /root/.claude/paste-cache \
   --exclude /root/.claude/projects --exclude /root/.claude/jobs \
