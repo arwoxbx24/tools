@@ -16,6 +16,14 @@ CA_REPOS_DIR="${CA_REPOS_DIR:-/home/gitmirror/repos}"
 CA_LOG="${CA_LOG:-/root/workspaces/system/services/gitmirror/code-archive.log}"
 CA_STATE_DIR="${CA_STATE_DIR:-/home/gitmirror/state}"
 mask(){ sed -E 's#(ghp_|gho_|github_pat_|glpat-|oauth2:)[^@ ]*#***#g'; }
+# Short masked reason (first `!`/`error:`/`fatal:` line, <=200 chars) for
+# err:gitlab journal lines, so a failed push/API call is diagnosable.
+gitlab_err(){
+  local out="$1" line
+  line="$(printf '%s\n' "$out" | mask | grep -m1 -E '!|error:|fatal:' || true)"
+  [[ -n "$line" ]] || line="$(printf '%s\n' "$out" | mask | grep -m1 . || true)"
+  printf '%s' "${line:0:200}"
+}
 # U8b: ensure the GitLab target project exists and is private, creating it in
 # its group if missing. Sets $result and returns 1 on any failure. The token is
 # fed on stdin (`-H @-`) so it never appears in the process args.
@@ -35,7 +43,7 @@ gitlab_ensure_project(){
     return 0
   fi
   if [[ "$code" != 404 ]]; then
-    rm -f "$body"; result=err:gitlab; return 1
+    rm -f "$body"; result="err:gitlab http=$code"; return 1
   fi
   rm -f "$body"
   # Project missing: resolve the group id once per run, then create the project.
@@ -44,7 +52,7 @@ gitlab_ensure_project(){
     code=$(printf 'PRIVATE-TOKEN: %s\n' "$GITLAB_MIRROR_TOKEN" | curl -s --max-time 60 -o "$body" -w '%{http_code}' -H @- "$api/groups/$group")
     if [[ "$code" == 200 ]]; then gitlab_group_id="$(jq -r '.id' "$body")"; fi
     rm -f "$body"
-    if [[ -z "${gitlab_group_id:-}" ]]; then result=err:gitlab; return 1; fi
+    if [[ -z "${gitlab_group_id:-}" ]]; then result="err:gitlab http=$code"; return 1; fi
   fi
   body="$(mktemp)"
   code=$(printf 'PRIVATE-TOKEN: %s\n' "$GITLAB_MIRROR_TOKEN" | curl -s --max-time 60 -o "$body" -w '%{http_code}' -H @- \
@@ -52,7 +60,7 @@ gitlab_ensure_project(){
       --data-urlencode "namespace_id=$gitlab_group_id" --data-urlencode "visibility=private" \
       "$api/projects")
   rm -f "$body"
-  if [[ "$code" != 201 ]]; then result=err:gitlab; return 1; fi
+  if [[ "$code" != 201 ]]; then result="err:gitlab http=$code"; return 1; fi
   return 0
 }
 # Mirror one repo. On success sets $result (ok|ok:created) and returns 0; on
@@ -147,16 +155,16 @@ mirror_name(){
     # Local path mode: create bare repo if missing
     gl_path="$CA_GITLAB_BASE/$name.git"
     if [[ ! -d "$gl_path" ]]; then
-      git init -q --bare "$gl_path" || { result=err:gitlab; return 1; }
+      if ! gl_out="$(git init -q --bare "$gl_path" 2>&1)"; then result="err:gitlab $(gitlab_err "$gl_out")"; return 1; fi
     fi
     gl_dest="$gl_path"
   else
     # HTTPS mode: set up gitlab remote
     gl_dest="$CA_GITLAB_BASE/$name.git"
     if git --git-dir="$dst" config --get remote.gitlab.url >/dev/null 2>&1; then
-      git --git-dir="$dst" remote set-url gitlab "$gl_dest" || { result=err:gitlab; return 1; }
+      if ! gl_out="$(git --git-dir="$dst" remote set-url gitlab "$gl_dest" 2>&1)"; then result="err:gitlab $(gitlab_err "$gl_out")"; return 1; fi
     else
-      git --git-dir="$dst" remote add gitlab "$gl_dest" || { result=err:gitlab; return 1; }
+      if ! gl_out="$(git --git-dir="$dst" remote add gitlab "$gl_dest" 2>&1)"; then result="err:gitlab $(gitlab_err "$gl_out")"; return 1; fi
     fi
     gl_dest="gitlab"
     # U8b: verify the target project exists and is private (creating it if
@@ -188,7 +196,7 @@ mirror_name(){
       rewritten_ref="refs/$ref_category/rewritten/$ts/$ref_name"
       retry_out=$(git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 --git-dir="$dst" push --porcelain "$gl_dest" "$ref_src:$rewritten_ref" 2>&1); retry_rc=$?
       printf '%s\n' "$retry_out" | mask
-      if [[ "$retry_rc" != 0 ]]; then result=err:gitlab; return 1; fi
+      if [[ "$retry_rc" != 0 ]]; then result="err:gitlab $(gitlab_err "$retry_out")"; return 1; fi
       if [[ -z "$rewritten_first" ]]; then
         rewritten_first="rewritten/$ts/$ref_name"
       fi
@@ -197,7 +205,7 @@ mirror_name(){
   # U8b: a push that neither produced a handled rejection nor succeeded (e.g.
   # the remote is unreachable) is an error.
   if [[ -z "$rewritten_first" && "$push_rc" != 0 ]]; then
-    result=err:gitlab; return 1
+    result="err:gitlab $(gitlab_err "$push_out")"; return 1
   fi
   if [[ -n "$rewritten_first" ]]; then
     result="ok:gitlab-rewritten $rewritten_first"

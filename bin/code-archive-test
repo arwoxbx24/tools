@@ -427,5 +427,19 @@ else
   f 25
 fi
 
-echo "PASS $ok FAIL $((25-ok))"
-[[ $ok == 25 ]]
+# Check 26: a GitLab API error surfaces the HTTP code in the journal (no body).
+mkdir -p "$T/stub403"
+printf '%s\n' '#!/usr/bin/env bash' "printf '403'" > "$T/stub403/curl"
+chmod +x "$T/stub403/curl"
+rm -f "$T/log26.log"
+out26=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log26.log CA_ENV_FILE=$T/env CA_LAST_OK=$T/last-ok CA_FREE_MIN_KB=1 CA_GITLAB_BASE=https://example.invalid/arwox24-group PATH="$T/stub403:$PATH" "$bin/code-archive" demo 2>&1); rc26=$?
+if [[ $rc26 == 1 ]] \
+   && grep -qF 'demo err:gitlab http=403' <<<"$out26" \
+   && grep -qF 'demo err:gitlab http=403' "$T/log26.log"; then
+  p 26
+else
+  f 26
+fi
+
+echo "PASS $ok FAIL $((26-ok))"
+[[ $ok == 26 ]]
