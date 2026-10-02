@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 set -u
+# U7b-fix2: no test run may reach the real Telegram channel. Both env vars are
+# exported for every code-archive invocation inherited from this script; a
+# failed check without these would otherwise send a live owner notification.
+export CA_NO_NOTIFY=1
+export CA_NOTIFY_ENV=/nonexistent/code-archive-test
 bin=$(cd -- "$(dirname -- "$0")" && pwd)
 T="${T:-/tmp/test-code-archive-$$}"
 export CA_GITLAB_BASE="$T/gitlab-early"
@@ -618,5 +623,32 @@ else
   f 37
 fi
 
-echo "PASS $ok FAIL $((37-ok))"
-[[ $ok == 37 ]]
+# Check 38: a failing run with NO CA_NO_NOTIFY on the command line (only the
+# inherited test-env export) still routes the owner message to notify.out and
+# never calls the Telegram curl stub. A stub curl at the head of PATH records
+# every real curl invocation so a live api.telegram.org send cannot hide.
+mkdir -p "$T/stub38"
+cat > "$T/stub38/curl" <<'STUB'
+#!/usr/bin/env bash
+printf 'curl %s\n' "$*" >> "${CURL38_LOG:?}"
+printf '500'
+STUB
+chmod +x "$T/stub38/curl"
+mkgh "no38"; git -C "$T/seed" push -q "$T/github/no38.git" main
+rm -f "$T/state/notify.out" "$T/curl38.log"
+gitlab_fail
+out38=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state \
+        CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_GITLAB_BASE=$T/gitlab \
+        CURL38_LOG="$T/curl38.log" PATH="$T/stub38:$PATH" \
+        "$bin/code-archive" no38 2>&1); rc38=$?
+gitlab_ok
+if [[ $rc38 == 1 ]] \
+   && grep -qF 'no38' "$T/state/notify.out" \
+   && ( [[ ! -e "$T/curl38.log" ]] || ! grep -q 'api.telegram.org' "$T/curl38.log" ); then
+  p 38
+else
+  f 38
+fi
+
+echo "PASS $ok FAIL $((38-ok))"
+[[ $ok == 38 ]]
