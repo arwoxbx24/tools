@@ -136,4 +136,13 @@ env -u SAFE_DELETE_GH PATH="$d/fakebin:$PATH" "$bin/safe-delete" --bk "$bk" bran
 tb16on=$(refs | grep -F 'refs/heads/tb16' || true)
 if [[ $rc == 1 && -n $tb16on ]]; then echo 'PASS T16'; ok=$((ok+1)); else echo "FAIL T16: rc=$rc"; fi
 
-[[ $ok == 19 ]]
+# T17: default roots include sandbox + gitmirror/state, not workspaces/system
+if [[ $(grep -c '/root/workspaces/projects' "$bin/safe-delete") -ge 1 \
+   && $(grep -c '/root/workspaces/tools' "$bin/safe-delete") -ge 1 \
+   && $(grep -c '/root/workspaces/sandbox' "$bin/safe-delete") -ge 1 \
+   && $(grep -c '/home/gitmirror/state' "$bin/safe-delete") -ge 1 \
+   && $(grep -c 'workspaces/system' "$bin/safe-delete") -eq 0 ]]; then
+  echo 'PASS T17'; ok=$((ok+1))
+else echo 'FAIL T17: roots'; fi
+
+[[ $ok == 20 ]]
