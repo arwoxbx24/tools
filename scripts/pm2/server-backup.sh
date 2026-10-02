@@ -191,7 +191,7 @@ date +%s >"$LAST_OK"
 
 # Сверка числа bare-репозиториев зеркала в S3 с локальным каталогом.
 mirror_local=$(ls -d "$BK_MIRROR_DIR"/*.git 2>/dev/null | wc -l)
-mirror_s3=$(timeout 3600 "${NICE_PREFIX[@]}" "$RESTIC" ls latest "$BK_MIRROR_DIR" 2>>"$LOG" \
+mirror_s3=$(timeout 3600 "${NICE_PREFIX[@]}" "$RESTIC" ls --recursive latest "$BK_MIRROR_DIR" 2>>"$LOG" \
   | grep -Ec '(\.git)?/HEAD$')
 log "mirror-check s3=$mirror_s3 local=$mirror_local"
 if [ "$mirror_s3" -lt "$mirror_local" ]; then

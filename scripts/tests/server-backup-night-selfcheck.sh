@@ -43,7 +43,7 @@ if [ "$mode" = backup ]; then
   } >>"$STUB_ARGV"
   exit 0
 fi
-if [ "$mode" = ls ]; then cat "$STUB_LS_FILE" 2>/dev/null; exit 0; fi
+if [ "$mode" = ls ]; then for a in "$@"; do [ "$a" = --recursive ] && { cat "$STUB_LS_FILE" 2>/dev/null; break; }; done; exit 0; fi
 if [ "$mode" = stats ]; then printf "Total Size: 100 MiB\n"; exit 0; fi
 if [ "$mode" = check ]; then exit "${STUB_CHECK_RC:-0}"; fi
 exit 0
