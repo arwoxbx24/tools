@@ -204,7 +204,7 @@ case "$forget_rc" in 0|3) ;; *) fail forget "$forget_rc" ;; esac
 
 check_rc=0
 if [ "$(date +%u)" = 7 ]; then
-  run_step check "${NICE_PREFIX[@]}" "$RESTIC" check --read-data-subset=5% --retry-lock 30m
+  run_step check "${NICE_PREFIX[@]}" "$RESTIC" check --read-data-subset="$(( ($(date +%-d) - 1) / 7 % 4 + 1 ))/4" --retry-lock 30m
   check_rc=$?
   case "$check_rc" in 0|3) ;; *) fail check "$check_rc" ;; esac
 
