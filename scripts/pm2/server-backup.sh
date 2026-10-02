@@ -6,7 +6,7 @@ RESTIC=${RESTIC:-/root/workspaces/tools/bin/restic}
 S3_ENV=${S3_ENV:-/root/workspaces/secrets/yandex-s3.env}
 PW_ENV=${PW_ENV:-/root/workspaces/secrets/restic.env}
 LOG=${LOG:-/root/workspaces/system/tools/scripts/logs/server-backup.log}
-NOTIFY_ENV=${NOTIFY_ENV:-/root/workspaces/projects/hh-scoring/data/notify.env}
+NOTIFY_ENV=${NOTIFY_ENV:-/root/workspaces/secrets/services/pm2-notify.env}
 STAGE=${STAGE:-/root/workspaces/system/tools/scripts/data/server-backup-stage}
 LAST_OK=${LAST_OK:-/root/workspaces/system/tools/scripts/data/server-backup.last-ok}
 ALERT_PENDING=${ALERT_PENDING:-/root/workspaces/system/tools/scripts/data/server-backup.alert-pending}
@@ -35,7 +35,7 @@ send_telegram() { # text
   fi
   if [ -z "$token" ] || [ -z "$chat" ]; then
     log "telegram skipped (no token/chat): $1"
-    return 0
+    return 1
   fi
   curl -s --max-time 10 "https://api.telegram.org/bot${token}/sendMessage" \
     -d "chat_id=${chat}" --data-urlencode "text=$1" >/dev/null 2>&1
