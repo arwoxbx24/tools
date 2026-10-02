@@ -10,6 +10,7 @@ if [[ ${CA_ASKPASS:-} == 1 && $# -eq 1 ]]; then
 fi
 export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS="$0" CA_ASKPASS=1
 CA_GITHUB_BASE="${CA_GITHUB_BASE:-git@github.com:arwoxbx24}"
+CA_GITLAB_BASE="${CA_GITLAB_BASE:-https://gitlab.com/arwox24-group}"
 CA_REPOS_DIR="${CA_REPOS_DIR:-/home/gitmirror/repos}"
 CA_LOG="${CA_LOG:-/root/workspaces/system/services/gitmirror/code-archive.log}"
 CA_STATE_DIR="${CA_STATE_DIR:-/home/gitmirror/state}"
@@ -89,6 +90,55 @@ mirror_name(){
     fi
   done < <(git --git-dir="$dst" for-each-ref --format='%(refname) %(objectname)' refs/incoming/)
   while read -r ref _; do git --git-dir="$dst" update-ref -d "$ref"; done < <(git --git-dir="$dst" for-each-ref --format='%(refname)' refs/incoming/)
+  # U8a: push to GitLab without rewrite; on rejection, retry with rewritten/<timestamp>/<name>
+  if [[ "$CA_GITLAB_BASE" == /* ]]; then
+    # Local path mode: create bare repo if missing
+    gl_path="$CA_GITLAB_BASE/$name.git"
+    if [[ ! -d "$gl_path" ]]; then
+      git init -q --bare "$gl_path" || { result=err:gitlab; return 1; }
+    fi
+    gl_dest="$gl_path"
+  else
+    # HTTPS mode: set up gitlab remote
+    gl_dest="$CA_GITLAB_BASE/$name.git"
+    if git --git-dir="$dst" config --get remote.gitlab.url >/dev/null 2>&1; then
+      git --git-dir="$dst" remote set-url gitlab "$gl_dest" || { result=err:gitlab; return 1; }
+    else
+      git --git-dir="$dst" remote add gitlab "$gl_dest" || { result=err:gitlab; return 1; }
+    fi
+    gl_dest="gitlab"
+  fi
+  # Push all refs without force; collect rejections
+  push_out=$(git --git-dir="$dst" push --porcelain "$gl_dest" 'refs/heads/*:refs/heads/*' 'refs/tags/*:refs/tags/*' 2>&1) || true
+  rewritten_first=""
+  while read -r line; do
+    [[ "$line" == "!"* ]] || continue
+    # Extract refspec (format: "! refs/heads/main:refs/heads/main [rejected] (reason)")
+    refspec=$(echo "$line" | awk '{print $2}')
+    reason_part=$(echo "$line" | awk '{$1=$2=""; print $0}' | sed 's/^ //')
+    # Get the source ref (left side of refspec)
+    ref_src="${refspec%:*}"
+    if [[ "$reason_part" == *"non-fast-forward"* || "$reason_part" == *"fetch first"* || "$reason_part" == *"already exists"* ]]; then
+      # Retry with rewritten/<timestamp>/<name>
+      ts="$(date +%Y%m%d-%H%M%S)"
+      # Parse the ref to extract kind and name (e.g., refs/heads/main -> heads/main)
+      ref_kind="${ref_src%%/*}"  # "refs"
+      ref_rest="${ref_src#*/}"   # "heads/main"
+      ref_category="${ref_rest%%/*}"  # "heads" or "tags"
+      ref_name="${ref_rest#*/}"  # "main"
+      rewritten_ref="refs/$ref_category/rewritten/$ts/$ref_name"
+      git --git-dir="$dst" push --porcelain "$gl_dest" "$ref_src:$rewritten_ref" 2>&1 | mask || true
+      if [[ -z "$rewritten_first" ]]; then
+        rewritten_first="rewritten/$ts/$ref_name"
+      fi
+    else
+      # Any other rejection is an error
+      result=err:gitlab; return 1
+    fi
+  done < <(echo "$push_out" | mask)
+  if [[ -n "$rewritten_first" ]]; then
+    result="ok:gitlab-rewritten $rewritten_first"
+  fi
   return 0
 }
 # Mirror one name under a free-space floor `min` (KB); prints and logs its

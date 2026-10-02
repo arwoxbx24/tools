@@ -3,8 +3,9 @@ set -u
 bin=$(cd -- "$(dirname -- "$0")" && pwd)
 T="${T:-/tmp/test-code-archive-$$}"
 trap 'rm -rf "$T"' EXIT
-mkdir -p "$T/github" "$T/repos" "$T/state" "$T/log"
+mkdir -p "$T/github" "$T/repos" "$T/state" "$T/log" "$T/gitlab"
 export CA_LAST_OK="$T/last-ok"
+export CA_GITLAB_BASE="$T/gitlab"
 git init -q --bare "$T/github/demo.git"
 git init -q "$T/work"
 git -C "$T/work" config user.email t@t
@@ -263,5 +264,31 @@ else
   f 17
 fi
 
-echo "PASS $ok FAIL $((17-ok))"
-[[ $ok == 17 ]]
+# Check 18: after code-archive demo, GitLab has same refs as copy (excluding archive refs)
+out18=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_GITLAB_BASE=$T/gitlab CA_LAST_OK=$T/last-ok CA_FREE_MIN_KB=1 "$bin/code-archive" demo 2>&1); rc18=$?
+gl_heads=$(git --git-dir="$T/gitlab/demo.git" for-each-ref refs/heads refs/tags 2>/dev/null | grep -v '/archive/' | sort) || gl_heads=""
+cpy_heads=$(git --git-dir="$T/repos/demo.git" for-each-ref refs/heads refs/tags | grep -v '/archive/' | sort)
+if [[ $rc18 == 0 ]] && [[ "$gl_heads" == "$cpy_heads" ]]; then
+  p 18
+else
+  f 18
+fi
+
+# Check 19: main rewritten in source -> old in GitLab unchanged, new under rewritten/<ts>/main
+old_main_src=$(git --git-dir="$T/github/demo.git" rev-parse main)
+git -C "$T/rewrite" checkout -q main
+git -C "$T/rewrite" commit -q --amend --allow-empty -m rewritten
+git -C "$T/rewrite" push -qf origin main
+out19=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_GITLAB_BASE=$T/gitlab CA_LAST_OK=$T/last-ok CA_FREE_MIN_KB=1 "$bin/code-archive" demo 2>&1); rc19=$?
+gl_main=$(git --git-dir="$T/gitlab/demo.git" rev-parse refs/heads/main 2>/dev/null) || gl_main=""
+gl_rewritten=$(git --git-dir="$T/gitlab/demo.git" for-each-ref 'refs/heads/rewritten/*/main' --format='%(objectname)' 2>/dev/null | head -1) || gl_rewritten=""
+if [[ $rc19 == 0 ]] && [[ "$gl_main" == "$old_main_src" ]] \
+   && [[ -n "$gl_rewritten" ]] \
+   && grep -qF 'ok:gitlab-rewritten rewritten/' "$T/log/code-archive.log"; then
+  p 19
+else
+  f 19
+fi
+
+echo "PASS $ok FAIL $((19-ok))"
+[[ $ok == 19 ]]
