@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -u
 bin=$(cd -- "$(dirname -- "$0")" && pwd)
-T=/root/workspaces/sandbox/test-code-archive-$$
+T="${T:-/tmp/test-code-archive-$$}"
 trap 'rm -rf "$T"' EXIT
-mkdir -p "$T/github" "$T/repos" "$T/state" "$T/log"
+mkdir -p "$T/github" "$T/repos" "$T/state" "$T/log" "$T/gitlab"
+export CA_LAST_OK="$T/last-ok"
 git init -q --bare "$T/github/demo.git"
 git init -q "$T/work"
 git -C "$T/work" config user.email t@t
@@ -129,6 +130,14 @@ if [[ $rc10 == 0 ]] && [[ $url10 == "$T/github/demo.git" ]]; then p 10; else f 1
 mkgh(){ git init -q --bare "$T/github/$1.git"; }
 # Check 11: --changed mirrors new/changed, skips the unchanged copy, writes pushed_at
 for r in alpha bravo charlie delta; do mkgh "$r"; done
+# U7: seed the sources with a commit so a fresh mirror is a real clone and
+# reports ok rather than skip:empty (an actually empty source is covered by check 17).
+git -C "$T" init -q seed
+git -C "$T/seed" config user.email t@t
+git -C "$T/seed" config user.name t
+git -C "$T/seed" checkout -q -b main
+git -C "$T/seed" commit -q --allow-empty -m init
+for r in alpha bravo charlie delta; do git -C "$T/seed" push -q "$T/github/$r.git" main; done
 cp -rf "$T/github/alpha.git" "$T/repos/alpha.git"
 printf '%s\n' '2026-09-30T10:00:00Z' > "$T/state/alpha.pushed_at"
 printf '%s\t%s\t%s\t%s\n' \
@@ -178,5 +187,186 @@ else
   f 13
 fi
 
-echo "PASS $ok FAIL $((13-ok))"
-[[ $ok == 13 ]]
+# Check 14: tag v1 deleted in source stays in copy; a rewritten tag v2 is archived
+v1_keep=$(git --git-dir="$T/repos/demo.git" rev-parse v1)
+git -C "$T/rewrite" checkout -q main
+git -C "$T/rewrite" tag v2
+git -C "$T/rewrite" push -q origin v2
+out14a=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_LAST_OK=$T/last-ok CA_FREE_MIN_KB=1 "$bin/code-archive" demo 2>&1); rc14a=$?
+old_v2=$(git --git-dir="$T/repos/demo.git" rev-parse v2)
+git -C "$T/rewrite" commit -q --amend --allow-empty -m moved
+git -C "$T/rewrite" tag -f v2
+git -C "$T/rewrite" push -qf origin v2
+git -C "$T/rewrite" push -q origin --delete v1
+out14b=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_LAST_OK=$T/last-ok CA_FREE_MIN_KB=1 "$bin/code-archive" demo 2>&1); rc14b=$?
+v2_src=$(git --git-dir="$T/github/demo.git" rev-parse v2)
+v2_cpy=$(git --git-dir="$T/repos/demo.git" rev-parse v2)
+v1_cpy=$(git --git-dir="$T/repos/demo.git" rev-parse v1 2>/dev/null) || v1_cpy=""
+arch_v2_obj=$(git --git-dir="$T/repos/demo.git" for-each-ref 'refs/tags/archive/*/v2' --format='%(objectname)')
+arch_v2_name=$(git --git-dir="$T/repos/demo.git" for-each-ref 'refs/tags/archive/*/v2' --format='%(refname)')
+if [[ $rc14a == 0 ]] && [[ $rc14b == 0 ]] \
+   && [[ "$v1_cpy" == "$v1_keep" ]] \
+   && [[ "$v2_cpy" == "$v2_src" ]] \
+   && [[ "$arch_v2_obj" == "$old_v2" ]] \
+   && [[ "$arch_v2_name" == refs/tags/archive/*/v2 ]]; then
+  p 14
+else
+  f 14
+fi
+
+# Check 15: source turns branch foo into foo/bar — name conflict archived
+git -C "$T/rewrite" checkout -q -b foo
+git -C "$T/rewrite" commit -q --allow-empty -m fooc
+git -C "$T/rewrite" push -q origin foo
+out15a=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_LAST_OK=$T/last-ok CA_FREE_MIN_KB=1 "$bin/code-archive" demo 2>&1); rc15a=$?
+foo_src=$(git --git-dir="$T/github/demo.git" rev-parse foo)
+foo_cpy=$(git --git-dir="$T/repos/demo.git" rev-parse foo)
+git -C "$T/rewrite" push -q origin --delete foo
+git -C "$T/rewrite" checkout -q main
+git -C "$T/rewrite" branch -D foo
+git -C "$T/rewrite" update-ref refs/heads/foo/bar "$(git -C "$T/rewrite" rev-parse refs/heads/main)"
+git -C "$T/rewrite" push -q origin refs/heads/foo/bar:refs/heads/foo/bar
+out15b=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_LAST_OK=$T/last-ok CA_FREE_MIN_KB=1 "$bin/code-archive" demo 2>&1); rc15b=$?
+foo_bar_src=$(git --git-dir="$T/github/demo.git" rev-parse refs/heads/foo/bar)
+foo_bar_cpy=$(git --git-dir="$T/repos/demo.git" rev-parse refs/heads/foo/bar)
+arc_foo_obj=$(git --git-dir="$T/repos/demo.git" for-each-ref 'refs/heads/archive/*/foo' --format='%(objectname)')
+if [[ $rc15a == 0 ]] && [[ $rc15b == 0 ]] \
+   && [[ "$foo_cpy" == "$foo_src" ]] \
+   && grep -qF 'demo ok:ref-conflict archive/' <<<"$out15b" \
+   && [[ "$foo_bar_cpy" == "$foo_bar_src" ]] \
+   && [[ "$arc_foo_obj" == "$foo_src" ]]; then
+  p 15
+else
+  f 15
+fi
+
+# Check 16: source of an existing copy disappears -> kept:source-gone, refs unchanged
+refs16_before=$(git --git-dir="$T/repos/demo.git" for-each-ref)
+mv -f "$T/github/demo.git" "$T/github/demo.git.hidden"
+out16=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_LAST_OK=$T/last-ok CA_FREE_MIN_KB=1 "$bin/code-archive" demo 2>&1); rc16=$?
+refs16_after=$(git --git-dir="$T/repos/demo.git" for-each-ref)
+mv -f "$T/github/demo.git.hidden" "$T/github/demo.git"
+if [[ $rc16 == 0 ]] && grep -qF 'demo kept:source-gone' <<<"$out16" \
+   && [[ "$refs16_before" == "$refs16_after" ]]; then
+  p 16
+else
+  f 16
+fi
+
+# Check 17: empty source -> skip:empty
+git init -q --bare "$T/github/empty0.git"
+out17=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_LAST_OK=$T/last-ok CA_FREE_MIN_KB=1 "$bin/code-archive" empty0 2>&1); rc17=$?
+if [[ $rc17 == 0 ]] && grep -qF 'empty0 skip:empty' <<<"$out17" \
+   && grep -qF 'ok=0 err=0 skipped=1' <<<"$out17"; then
+  p 17
+else
+  f 17
+fi
+
+# Check 18: after code-archive demo, GitLab has same refs as copy (excluding archive refs)
+out18=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_GITLAB_BASE=$T/gitlab CA_LAST_OK=$T/last-ok CA_FREE_MIN_KB=1 "$bin/code-archive" demo 2>&1); rc18=$?
+gl_heads=$(git --git-dir="$T/gitlab/demo.git" for-each-ref refs/heads refs/tags 2>/dev/null | grep -v '/archive/' | sort) || gl_heads=""
+cpy_heads=$(git --git-dir="$T/repos/demo.git" for-each-ref refs/heads refs/tags | grep -v '/archive/' | sort)
+if [[ $rc18 == 0 ]] && [[ "$gl_heads" == "$cpy_heads" ]]; then
+  p 18
+else
+  f 18
+fi
+
+# Check 19: main rewritten in source -> old in GitLab unchanged, new under rewritten/<ts>/main
+old_main_src=$(git --git-dir="$T/github/demo.git" rev-parse main)
+git -C "$T/rewrite" checkout -q main
+git -C "$T/rewrite" commit -q --amend --allow-empty -m rewritten
+git -C "$T/rewrite" push -qf origin main
+out19=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_GITLAB_BASE=$T/gitlab CA_LAST_OK=$T/last-ok CA_FREE_MIN_KB=1 "$bin/code-archive" demo 2>&1); rc19=$?
+gl_main=$(git --git-dir="$T/gitlab/demo.git" rev-parse refs/heads/main 2>/dev/null) || gl_main=""
+gl_rewritten=$(git --git-dir="$T/gitlab/demo.git" for-each-ref 'refs/heads/rewritten/*/main' --format='%(objectname)' 2>/dev/null | head -1) || gl_rewritten=""
+if [[ $rc19 == 0 ]] && [[ "$gl_main" == "$old_main_src" ]] \
+   && [[ -n "$gl_rewritten" ]] \
+   && grep -qF 'ok:gitlab-rewritten rewritten/' "$T/log/code-archive.log"; then
+  p 19
+else
+  f 19
+fi
+
+# U8b: stub curl that logs its args and the value-free auth header, then
+# answers per the requested URL. The token is only ever passed via `-H @-` on
+# stdin, so it never appears in the logged args.
+mkdir -p "$T/stub"
+cat > "$T/stub/curl" <<'STUB'
+#!/usr/bin/env bash
+# Test-only curl stub: log args + value-free auth header, answer per URL.
+log="${CURL_LOG:?}"
+printf 'ARGS: %s\n' "$*" >> "$log"
+if [[ ! -t 0 ]]; then
+  while IFS= read -r line; do
+    case "$line" in
+      PRIVATE-TOKEN:*) printf 'PRIVATE-TOKEN:\n' >> "$log";;
+    esac
+  done
+fi
+url=""; for a in "$@"; do case "$a" in http://*|https://*) url="$a"; break;; esac; done
+out=""; prev=""
+for a in "$@"; do if [[ "$prev" == "-o" ]]; then out="$a"; fi; prev="$a"; done
+code=500; body='{}'
+if [[ "$url" == *"/projects/"* && "$*" != *"-X POST"* ]]; then
+  if [[ "$url" == *"%2Fdemo3"* ]]; then code=404
+  else code=200; body='{"visibility":"public"}'; fi
+elif [[ "$url" == *"/projects"* && "$*" == *"-X POST"* ]]; then
+  code=201; body='{"id":99}'
+elif [[ "$url" == *"/groups/"* ]]; then
+  code=200; body='{"id":42}'
+fi
+if [[ -n "$out" ]]; then printf '%s' "$body" > "$out"; fi
+printf '%s' "$code"
+STUB
+chmod +x "$T/stub/curl"
+printf '%s\n' 'GITLAB_MIRROR_TOKEN=glpat-TESTONLY000' > "$T/envU8b"
+
+# Check 20: GitLab project already public -> err:visibility, no POST, no key leak
+rm -f "$T/curl.log"
+out20=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/envU8b CA_LAST_OK=$T/last-ok CA_FREE_MIN_KB=1 CA_GITLAB_BASE=https://example.invalid/arwox24-group CURL_LOG="$T/curl.log" PATH="$T/stub:$PATH" "$bin/code-archive" demo 2>&1); rc20=$?
+if [[ $rc20 == 1 ]] \
+   && grep -qF 'demo err:visibility' <<<"$out20" \
+   && ! grep -q 'POST' "$T/curl.log" \
+   && ! grep -q 'glpat-TESTONLY000' "$T/curl.log" \
+   && ! grep -q 'glpat-TESTONLY000' <<<"$out20"; then
+  p 20
+else
+  f 20
+fi
+
+# Check 21: GitLab project missing -> group id + create private project, then
+# the push to example.invalid fails (no network) -> err:gitlab
+git init -q --bare "$T/github/demo3.git"
+git -C "$T/seed" push -q "$T/github/demo3.git" main
+rm -f "$T/curl.log"
+out21=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/envU8b CA_LAST_OK=$T/last-ok CA_FREE_MIN_KB=1 CA_GITLAB_BASE=https://example.invalid/arwox24-group CURL_LOG="$T/curl.log" PATH="$T/stub:$PATH" "$bin/code-archive" demo3 2>&1); rc21=$?
+if [[ $rc21 == 1 ]] \
+   && grep -qF 'demo3 err:gitlab' <<<"$out21" \
+   && grep -q 'POST' "$T/curl.log" \
+   && grep -q 'namespace_id=42' "$T/curl.log" \
+   && grep -q 'visibility=private' "$T/curl.log" \
+   && grep -q 'path=demo3' "$T/curl.log" \
+   && ! grep -q 'glpat-TESTONLY000' "$T/curl.log"; then
+  p 21
+else
+  f 21
+fi
+
+# Check 22: --changed runs the Monday drill only on the configured day.
+printf '#!/usr/bin/env bash\ntouch "$T/drill-called"\n' > "$T/stub-drill"
+chmod +x "$T/stub-drill"
+rm -f "$T/drill-called"
+out22=$(T="$T" CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_LAST_OK=$T/last-ok CA_LIST_FILE=$T/list11.tsv CA_DRILL_CMD=$T/stub-drill CA_DRILL_DOW="$(date +%u)" "$bin/code-archive" --changed 2>&1); rc22=$?
+called22=$([[ -e "$T/drill-called" ]] && echo yes || echo no)
+rm -f "$T/drill-called"
+out22b=$(T="$T" CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_LAST_OK=$T/last-ok CA_LIST_FILE=$T/list11.tsv CA_DRILL_CMD=$T/stub-drill CA_DRILL_DOW=8 "$bin/code-archive" --changed 2>&1); rc22b=$?
+if [[ $rc22 == 0 && $called22 == yes && $rc22b == 0 && ! -e "$T/drill-called" ]]; then
+  p 22
+else
+  f 22
+fi
+
+echo "PASS $ok FAIL $((22-ok))"
+[[ $ok == 22 ]]

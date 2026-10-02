@@ -14,14 +14,54 @@ CA_REPOS_DIR="${CA_REPOS_DIR:-/home/gitmirror/repos}"
 CA_LOG="${CA_LOG:-/root/workspaces/system/services/gitmirror/code-archive.log}"
 CA_STATE_DIR="${CA_STATE_DIR:-/home/gitmirror/state}"
 mask(){ sed -E 's#(ghp_|gho_|github_pat_|glpat-|oauth2:)[^@ ]*#***#g'; }
+# U8b: ensure the GitLab target project exists and is private, creating it in
+# its group if missing. Sets $result and returns 1 on any failure. The token is
+# fed on stdin (`-H @-`) so it never appears in the process args.
+gitlab_group_id=""
+gitlab_ensure_project(){
+  local name="$1" code body vis
+  local group="${CA_GITLAB_BASE##*/}"
+  local api="${CA_GITLAB_API:-https://gitlab.com/api/v4}"
+  body="$(mktemp)"
+  code=$(printf 'PRIVATE-TOKEN: %s\n' "$GITLAB_MIRROR_TOKEN" | curl -s -o "$body" -w '%{http_code}' -H @- "$api/projects/$group%2F$name")
+  if [[ "$code" == 200 ]]; then
+    vis=$(jq -r '.visibility // ""' "$body")
+    rm -f "$body"
+    if [[ "$vis" != "private" ]]; then
+      result=err:visibility; return 1
+    fi
+    return 0
+  fi
+  if [[ "$code" != 404 ]]; then
+    rm -f "$body"; result=err:gitlab; return 1
+  fi
+  rm -f "$body"
+  # Project missing: resolve the group id once per run, then create the project.
+  if [[ -z "${gitlab_group_id:-}" ]]; then
+    body="$(mktemp)"
+    code=$(printf 'PRIVATE-TOKEN: %s\n' "$GITLAB_MIRROR_TOKEN" | curl -s -o "$body" -w '%{http_code}' -H @- "$api/groups/$group")
+    if [[ "$code" == 200 ]]; then gitlab_group_id="$(jq -r '.id' "$body")"; fi
+    rm -f "$body"
+    if [[ -z "${gitlab_group_id:-}" ]]; then result=err:gitlab; return 1; fi
+  fi
+  body="$(mktemp)"
+  code=$(printf 'PRIVATE-TOKEN: %s\n' "$GITLAB_MIRROR_TOKEN" | curl -s -o "$body" -w '%{http_code}' -H @- \
+      -X POST --data-urlencode "path=$name" --data-urlencode "name=$name" \
+      --data-urlencode "namespace_id=$gitlab_group_id" --data-urlencode "visibility=private" \
+      "$api/projects")
+  rm -f "$body"
+  if [[ "$code" != 201 ]]; then result=err:gitlab; return 1; fi
+  return 0
+}
 # Mirror one repo. On success sets $result (ok|ok:created) and returns 0; on
 # failure sets $result (err:<why>) and returns non-zero. Called in an if
 # condition so a failure doesn't abort the whole pass.
 mirror_name(){
-  local name="$1" src dst
+  local name="$1" src dst existing=0 ferr
   src="$CA_GITHUB_BASE/$name.git"; dst="$CA_REPOS_DIR/$name.git"
   result=ok
   if [[ -d "$dst" ]]; then
+    existing=1
     # U2: clean leaked credentials / mirror refspec from every remote of an existing copy.
     for r in $(git --git-dir="$dst" remote); do
       git --git-dir="$dst" config --unset-all "remote.$r.mirror" || true
@@ -36,7 +76,18 @@ mirror_name(){
     result=ok:created
   fi
   # U3: only accumulate — fetch into temp space, propagate to real refs, archiving rewrites.
-  git --git-dir="$dst" fetch -q github '+refs/heads/*:refs/incoming/heads/*' '+refs/tags/*:refs/incoming/tags/*' 2>/dev/null || { result=err:fetch; return 1; }
+  ferr="$(git --git-dir="$dst" fetch -q --refmap= github '+refs/heads/*:refs/incoming/heads/*' '+refs/tags/*:refs/incoming/tags/*' 2>&1)" || {
+    # U7: if an existing copy's source is gone, keep the copy untouched and report kept.
+    if (( existing )) && [[ -n "$(git --git-dir="$dst" for-each-ref --count=1 --format='%(refname)' refs/heads refs/tags)" ]] \
+       && { [[ "$ferr" == *"Repository not found"* || "$ferr" == *"does not appear to be a git repository"* ]]; }; then
+      result=kept:source-gone; return 0
+    fi
+    result=err:fetch; return 1
+  }
+  # U7: an empty source produces no incoming refs — nothing to mirror.
+  if [[ -z "$(git --git-dir="$dst" for-each-ref --count=1 --format='%(refname)' refs/incoming/)" ]]; then
+    result=skip:empty; return 0
+  fi
   while read -r ref obj; do
     case "$ref" in
       refs/incoming/heads/*) kind=heads; leaf="${ref#refs/incoming/heads/}";;
@@ -56,10 +107,88 @@ mirror_name(){
         git --git-dir="$dst" update-ref "$real" "$obj"
       fi
     else
-      git --git-dir="$dst" update-ref "$real" "$obj"
+      if ! git --git-dir="$dst" update-ref "$real" "$obj" 2>/dev/null; then
+        # U7: the new ref is blocked because an ancestor name is already a ref
+        # (e.g. foo/bar arrives while foo exists). Archive every occupying
+        # ancestor under archive/<ts>/<name>, remove it, then retry.
+        p="$leaf"
+        while [[ "$p" == */* ]]; do
+          p="${p%/*}"
+          if git --git-dir="$dst" rev-parse -q --verify "refs/$kind/$p" >/dev/null 2>&1; then
+            ts="$(date +%Y%m%d-%H%M%S)"; base="refs/$kind/archive/$ts"
+            rn="$base/$p"; n=0
+            while git --git-dir="$dst" rev-parse -q --verify "$rn" >/dev/null 2>&1; do n=$((n+1)); rn="${base}-${n}/$p"; done
+            git --git-dir="$dst" update-ref "$rn" "$(git --git-dir="$dst" rev-parse "refs/$kind/$p")"
+            git --git-dir="$dst" update-ref -d "refs/$kind/$p"
+            result="ok:ref-conflict archive/$ts/$p"
+          fi
+        done
+        git --git-dir="$dst" update-ref "$real" "$obj"
+      fi
     fi
   done < <(git --git-dir="$dst" for-each-ref --format='%(refname) %(objectname)' refs/incoming/)
   while read -r ref _; do git --git-dir="$dst" update-ref -d "$ref"; done < <(git --git-dir="$dst" for-each-ref --format='%(refname)' refs/incoming/)
+  # U8a: push to GitLab without rewrite; on rejection, retry with rewritten/<timestamp>/<name>
+  # Only push to GitLab if CA_GITLAB_BASE is explicitly set
+  [[ -n "${CA_GITLAB_BASE:-}" ]] || return 0
+  if [[ "$CA_GITLAB_BASE" == /* ]]; then
+    # Local path mode: create bare repo if missing
+    gl_path="$CA_GITLAB_BASE/$name.git"
+    if [[ ! -d "$gl_path" ]]; then
+      git init -q --bare "$gl_path" || { result=err:gitlab; return 1; }
+    fi
+    gl_dest="$gl_path"
+  else
+    # HTTPS mode: set up gitlab remote
+    gl_dest="$CA_GITLAB_BASE/$name.git"
+    if git --git-dir="$dst" config --get remote.gitlab.url >/dev/null 2>&1; then
+      git --git-dir="$dst" remote set-url gitlab "$gl_dest" || { result=err:gitlab; return 1; }
+    else
+      git --git-dir="$dst" remote add gitlab "$gl_dest" || { result=err:gitlab; return 1; }
+    fi
+    gl_dest="gitlab"
+    # U8b: verify the target project exists and is private (creating it if
+    # missing) before pushing.
+    if [[ "$CA_GITLAB_BASE" == https://* ]] && ! gitlab_ensure_project "$name"; then
+      return 1
+    fi
+  fi
+  # Push all refs without force; collect rejections
+  push_out=$(git --git-dir="$dst" push --porcelain "$gl_dest" 'refs/heads/*:refs/heads/*' 'refs/tags/*:refs/tags/*' 2>&1); push_rc=$?
+  rewritten_first=""
+  while read -r line; do
+    [[ "$line" == "!"* ]] || continue
+    # Extract refspec (format: "! refs/heads/main:refs/heads/main [rejected] (reason)")
+    refspec=$(echo "$line" | awk '{print $2}')
+    reason_part=$(echo "$line" | awk '{$1=$2=""; print $0}' | sed 's/^ //')
+    # Get the source ref (left side of refspec)
+    ref_src="${refspec%:*}"
+    if [[ "$reason_part" == *"non-fast-forward"* || "$reason_part" == *"fetch first"* || "$reason_part" == *"already exists"* ]]; then
+      # Retry with rewritten/<timestamp>/<name>
+      ts="$(date +%Y%m%d-%H%M%S)"
+      # Parse the ref to extract kind and name (e.g., refs/heads/main -> heads/main)
+      ref_kind="${ref_src%%/*}"  # "refs"
+      ref_rest="${ref_src#*/}"   # "heads/main"
+      ref_category="${ref_rest%%/*}"  # "heads" or "tags"
+      ref_name="${ref_rest#*/}"  # "main"
+      rewritten_ref="refs/$ref_category/rewritten/$ts/$ref_name"
+      git --git-dir="$dst" push --porcelain "$gl_dest" "$ref_src:$rewritten_ref" 2>&1 | mask || true
+      if [[ -z "$rewritten_first" ]]; then
+        rewritten_first="rewritten/$ts/$ref_name"
+      fi
+    else
+      # Any other rejection is an error
+      result=err:gitlab; return 1
+    fi
+  done < <(echo "$push_out" | mask)
+  # U8b: a push that neither produced a handled rejection nor succeeded (e.g.
+  # the remote is unreachable) is an error.
+  if [[ -z "$rewritten_first" && "$push_rc" != 0 ]]; then
+    result=err:gitlab; return 1
+  fi
+  if [[ -n "$rewritten_first" ]]; then
+    result="ok:gitlab-rewritten $rewritten_first"
+  fi
   return 0
 }
 # Mirror one name under a free-space floor `min` (KB); prints and logs its
@@ -71,7 +200,14 @@ process_one(){
   flock "$lockfd"
   avail=$(df --output=avail -k "$CA_REPOS_DIR" 2>/dev/null | tail -n1 | tr -d '[:space:]' || true)
   if [[ "$avail" =~ ^[0-9]+$ ]] && (( avail >= min )); then
-    if mirror_name "$name"; then ok=$((ok+1)); else err=$((err+1)); fi
+    if mirror_name "$name"; then
+      case "$result" in
+        skip:*) skipped=$((skipped+1));;
+        *) ok=$((ok+1));;
+      esac
+    else
+      err=$((err+1))
+    fi
   else
     result=err:no-space; err=$((err+1))
   fi
@@ -81,7 +217,9 @@ process_one(){
 }
 mkdir -p "$CA_REPOS_DIR" "$(dirname "$CA_LOG")" "$CA_STATE_DIR"
 ok=0; err=0; skipped=0
+changed=0
 if [[ "${1:-}" == "--changed" ]]; then
+  changed=1
   shift
   # D5 source: list of "<name>\t<pushed_at>\t<size_kb>\t<archived>" rows. Use a
   # provided file (tests) or fetch the org's repos from GitHub via gh api.
@@ -135,4 +273,9 @@ sum="=== pass $(date +%F_%T) | ok=$ok err=$err skipped=$skipped ==="
 printf '%s\n' "$sum"
 printf '%s\n' "$sum" >> "$CA_LOG"
 if (( err == 0 )); then date +%s > "${CA_LAST_OK:-/root/workspaces/system/services/gitmirror/last-ok}"; fi
-exit $(( err > 0 ? 1 : 0 ))
+pass_rc=$(( err > 0 ? 1 : 0 ))
+drill_rc=0
+if (( changed )) && [[ $(date +%u) == "${CA_DRILL_DOW:-1}" ]]; then
+  if "${CA_DRILL_CMD:-$(dirname "$0")/code-archive-drill}"; then :; else drill_rc=$?; fi
+fi
+exit $(( pass_rc > drill_rc ? pass_rc : drill_rc ))
