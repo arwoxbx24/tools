@@ -17,6 +17,8 @@ NICE_PREFIX=(nice -n 19)
 if command -v ionice >/dev/null 2>&1; then
   NICE_PREFIX=(nice -n 19 ionice -c3)
 fi
+renice --priority 19 -p $$ >/dev/null 2>&1 || true
+printf '[%s] nice=%s\n' "$(date '+%F %T')" "$(ps -o ni= -p $$ | tr -d '[:space:]')" >>"$LOG"
 
 if [ -f "$LOG" ] && [ "$(stat -c%s "$LOG")" -gt $((5 * 1024 * 1024)) ]; then
   mv -f "$LOG" "$LOG.1"
@@ -177,7 +179,7 @@ run_step unlock "${NICE_PREFIX[@]}" "$RESTIC" unlock --retry-lock 30m
 
 run_step backup "${NICE_PREFIX[@]}" "$RESTIC" backup --tag server --group-by host,tags --one-file-system \
   --exclude-caches --exclude node_modules --exclude .venv --exclude venv \
-  --exclude __pycache__ --exclude .cache --exclude .worktrees --exclude .repowise \
+  --exclude __pycache__ --exclude .cache --exclude .repowise \
   --exclude '*.pyc' --exclude /root/workspaces/system/archives --exclude /root/.pm2/logs \
   --exclude /root/.claude/file-history --exclude /root/.claude/paste-cache \
   --exclude /root/.claude/projects --exclude /root/.claude/jobs \

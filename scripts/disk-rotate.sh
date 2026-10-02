@@ -602,8 +602,8 @@ gate_process() { # class listfile -> 0, либо RC_GATE_CLOSED при закр�
     fix_candidates "$class" "$tmp" || GATE_RC=$?
   fi
   rm -f "$tmp"
-  # срок хранения снимков predelete: 31 день (spec:055); неудача не блокирует прогон
-  if ! "$RESTIC" forget --tag predelete --group-by host,tags --keep-within 31d >>"$DR_LOG" 2>&1; then
+  # срок хранения снимков predelete: 10 дней (владелец 02.10, CR-02 §6 п.4); неудача не блокирует прогон
+  if ! "$RESTIC" forget --tag predelete --group-by host,tags --keep-within 10d >>"$DR_LOG" 2>&1; then
     journal_row gate forget-skipped - 0 - - forget-locked
   fi
   # при занятости >=95% свежие снимки проходят правило 24 ч сразу
