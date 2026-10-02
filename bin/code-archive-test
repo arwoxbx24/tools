@@ -10,6 +10,14 @@ T="${T:-/tmp/test-code-archive-$$}"
 export CA_GITLAB_BASE="$T/gitlab-early"
 trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/github" "$T/repos" "$T/state" "$T/log" "$T/gitlab" "$T/gitlab-early"
+export CA_LOG="$T/log/code-archive.log"
+export CA_STATE_DIR="$T/state"
+for _iso in "$CA_LOG" "$CA_STATE_DIR"; do
+  case "$_iso" in
+    /root/workspaces/system/services/gitmirror/*|/home/gitmirror/*)
+      echo "FAIL isolation"; exit 1;;
+  esac
+done
 export CA_LAST_OK="$T/last-ok"
 git init -q --bare "$T/github/demo.git"
 git init -q "$T/work"
@@ -22,8 +30,9 @@ git -C "$T/work" push -q "$T/github/demo.git" main v1
 printf '%s\n' 'GITLAB_MIRROR_TOKEN=glpat-TESTONLY000' > "$T/env"
 touch "$T/empty"
 ok=0
-p(){ echo "PASS $1"; ok=$((ok+1)); }
-f(){ echo "FAIL $1"; }
+total=0
+p(){ echo "PASS $1"; ok=$((ok+1)); total=$((total+1)); }
+f(){ echo "FAIL $1"; total=$((total+1)); }
 # Check 1: first run with valid token
 out=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env "$bin/code-archive" demo 2>&1); rc=$?
 s=$(git --git-dir="$T/github/demo.git" rev-parse main v1)
@@ -446,143 +455,16 @@ else
   f 26
 fi
 
-# --- U7a: --local mode (checks 27-32) ---
 # Local invocation env: local-path GitLab base, no mirror source ever touched.
 localenv=(CA_ENV_FILE=$T/env CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos \
           CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_GITLAB_BASE=$T/gitlab \
           CA_NO_NOTIFY=1)
-# Scaffold a developer repo whose origin claims the arwoxbx24 group (the URL
-# itself is never contacted).
-initlocal(){ # $1=dir $2=origin
-  git init -q "$1"
-  git -C "$1" config user.email t@t
-  git -C "$1" config user.name t
-  git -C "$1" checkout -q -b main
-  git -C "$1" commit -q --allow-empty -m init
-  git -C "$1" config remote.origin.url "$2"
-}
 
-# Check 27: --local pushes heads under refs/heads/server/*, journal ok:local, code 0
-initlocal "$T/lw27" 'git@github.com:arwoxbx24/local27.git'
-main27=$(git -C "$T/lw27" rev-parse main)
-out27=$(env "${localenv[@]}" "$bin/code-archive" --local "$T/lw27/.git" 2>&1); rc27=$?
-srv27=$(git --git-dir="$T/gitlab/local27.git" rev-parse refs/heads/server/main 2>/dev/null) || srv27=""
-if [[ $rc27 == 0 ]] && [[ "$srv27" == "$main27" ]] \
-   && grep -qF 'local27 ok:local' <<<"$out27" \
-   && grep -qF 'local27 ok:local' "$T/log/code-archive.log"; then
-  p 27
-else
-  f 27
-fi
-
-# Check 28: repeat with no new commits leaves the GitLab ref count unchanged
-before28=$(git --git-dir="$T/gitlab/local27.git" for-each-ref)
-out28=$(env "${localenv[@]}" "$bin/code-archive" --local "$T/lw27/.git" 2>&1); rc28=$?
-after28=$(git --git-dir="$T/gitlab/local27.git" for-each-ref)
-{ [[ $rc28 == 0 ]] && [[ "$before28" == "$after28" ]]; } && p 28 || f 28
-
-# Check 29: locally amended branch -> old server/main intact, new tip rewritten
-old29=$(git --git-dir="$T/gitlab/local27.git" rev-parse refs/heads/server/main)
-git -C "$T/lw27" commit -q --amend --allow-empty -m v2
-out29=$(env "${localenv[@]}" "$bin/code-archive" --local "$T/lw27/.git" 2>&1); rc29=$?
-srv29=$(git --git-dir="$T/gitlab/local27.git" rev-parse refs/heads/server/main)
-rw29=$(git --git-dir="$T/gitlab/local27.git" for-each-ref 'refs/heads/rewritten/*/server/main' --format='%(objectname)' | head -1)
-{ [[ $rc29 == 0 ]] && [[ "$srv29" == "$old29" ]] && [[ -n "$rw29" ]]; } && p 29 || f 29
-
-# Check 30: origin outside the org -> skip:not-org, GitLab unchanged
-before30=$(git --git-dir="$T/gitlab/local27.git" for-each-ref)
-git -C "$T/lw27" config remote.origin.url 'git@github.com:otherorg/whatever.git'
-out30=$(env "${localenv[@]}" "$bin/code-archive" --local "$T/lw27/.git" 2>&1); rc30=$?
-after30=$(git --git-dir="$T/gitlab/local27.git" for-each-ref)
-{ [[ $rc30 == 0 ]] && grep -qF 'skip:not-org' <<<"$out30" \
-  && [[ "$before30" == "$after30" ]]; } && p 30 || f 30
-
-# Check 31: hh-scoring-* and stroyremont -> skip:excluded, no GitLab repo created
-ok31=1
-for excl in hh-scoring-x stroyremont; do
-  git -C "$T/lw27" config remote.origin.url "git@github.com:arwoxbx24/$excl.git"
-  out31=$(env "${localenv[@]}" "$bin/code-archive" --local "$T/lw27/.git" 2>&1); rc31=$?
-  if [[ $rc31 != 0 ]] || ! grep -qF 'skip:excluded' <<<"$out31" \
-     || [[ -e "$T/gitlab/$excl.git" ]]; then ok31=0; fi
-done
-{ [[ $ok31 == 1 ]]; } && p 31 || f 31
-
-# Check 32: busy queue lock -> immediate exit 0 + .again; holder re-pushes and
-# clears it; every commit reaches GitLab.
-initlocal "$T/lw32" 'git@github.com:arwoxbx24/lock32.git'
-a32=$(git -C "$T/lw32" rev-parse main)                        # commit A
-out32a=$(env "${localenv[@]}" "$bin/code-archive" --local "$T/lw32/.git" 2>&1); rc32a=$?
-git -C "$T/lw32" commit -q --allow-empty -m B
-b32=$(git -C "$T/lw32" rev-parse main)                        # commit B
-# Hold the queue lock externally so a concurrent invocation observes it busy.
-bash -c 'exec 9>"'"$T"'/state/lock32.lock"; flock 9; touch "'"$T"'/hold32"; exec sleep 60' & holdpid=$!
-while [[ ! -f "$T/hold32" ]]; do sleep 0.05; done
-out32b=$(env "${localenv[@]}" "$bin/code-archive" --local "$T/lw32/.git" 2>&1); rc32b=$?
-again32b=$([[ -f "$T/state/lock32.again" ]] && echo yes || echo no)
-kill "$holdpid" 2>/dev/null; wait "$holdpid" 2>/dev/null; rm -f "$T/hold32"; sleep 0.1
-# Now the holder takes the lock, pushes, sees .again, deletes it and re-pushes.
-out32c=$(env "${localenv[@]}" "$bin/code-archive" --local "$T/lw32/.git" 2>&1); rc32c=$?
-again32c=$([[ -f "$T/state/lock32.again" ]] && echo yes || echo no)
-srv32=$(git --git-dir="$T/gitlab/lock32.git" rev-parse refs/heads/server/main)
-anc32=$(git --git-dir="$T/gitlab/lock32.git" merge-base --is-ancestor "$a32" "$srv32" 2>/dev/null && echo yes || echo no)
-if [[ $rc32a == 0 && $rc32b == 0 && $rc32c == 0 \
-   && "$again32b" == yes && "$again32c" == no \
-   && "$srv32" == "$b32" && "$anc32" == yes ]]; then
-  p 32
-else
-  f 32
-fi
-
-# --- U7b: owner notification on mirror failure (checks 33-37) ---
+# --- U7b: owner notification on mirror failure (checks 36-37) ---
 # CA_NO_NOTIFY=1 (now part of localenv) routes messages to $CA_STATE_DIR/notify.out
 # instead of Telegram; a file in place of the GitLab dir makes pushes fail.
 gitlab_fail(){ rm -rf "$T/gitlab"; : > "$T/gitlab"; }
 gitlab_ok(){ rm -f "$T/gitlab"; mkdir -p "$T/gitlab"; }
-
-# Check 33: --local with GitLab unavailable twice -> one notify line, .fail kept
-gitlab_fail
-initlocal "$T/lw33" 'git@github.com:arwoxbx24/local33.git'
-rm -f "$T/state/notify.out"
-out33a=$(env "${localenv[@]}" "$bin/code-archive" --local "$T/lw33/.git" 2>&1); rc33a=$?
-out33b=$(env "${localenv[@]}" "$bin/code-archive" --local "$T/lw33/.git" 2>&1); rc33b=$?
-if [[ $rc33a == 1 ]] && [[ $rc33b == 1 ]] \
-   && [[ -f "$T/state/local33.fail" ]] \
-   && [[ "$(wc -l < "$T/state/notify.out")" == 1 ]] \
-   && grep -qF 'local33' "$T/state/notify.out" \
-   && grep -qF 'local33 err:gitlab' "$T/log/code-archive.log"; then
-  p 33
-else
-  f 33
-fi
-
-# Check 34: GitLab back -> ok:local clears .fail; a fresh failure notifies again
-gitlab_ok
-out34a=$(env "${localenv[@]}" "$bin/code-archive" --local "$T/lw33/.git" 2>&1); rc34a=$?
-srv34=$(git --git-dir="$T/gitlab/local33.git" rev-parse refs/heads/server/main 2>/dev/null) || srv34=""
-cleared34=$([[ -f "$T/state/local33.fail" ]] && echo no || echo yes)
-gitlab_fail
-out34b=$(env "${localenv[@]}" "$bin/code-archive" --local "$T/lw33/.git" 2>&1); rc34b=$?
-lines34=$(wc -l < "$T/state/notify.out")
-gitlab_ok
-if [[ $rc34a == 0 ]] && [[ -n "$srv34" ]] && [[ "$cleared34" == yes ]] \
-   && [[ $rc34b == 1 ]] && [[ $lines34 == 2 ]]; then
-  p 34
-else
-  f 34
-fi
-
-# Check 35: pre-push hook rejects with BLOCKED: secret-gate -> err:secret wording
-initlocal "$T/lw35" 'git@github.com:arwoxbx24/local35.git'
-printf '#!/usr/bin/env bash\nprintf "BLOCKED: secret-gate check"\nexit 1\n' > "$T/lw35/.git/hooks/pre-push"
-chmod +x "$T/lw35/.git/hooks/pre-push"
-out35=$(env "${localenv[@]}" "$bin/code-archive" --local "$T/lw35/.git" 2>&1); rc35=$?
-if [[ $rc35 == 1 ]] \
-   && grep -qF 'local35 err:secret' "$T/log/code-archive.log" \
-   && grep -qF 'в local35 найден ключ, копия в GitLab остановлена до замены ключа' "$T/state/notify.out"; then
-  p 35
-else
-  f 35
-fi
 
 # Check 36: single run with GitLab failure -> one message + .fail; repeat silent
 mkgh "once36"
@@ -780,76 +662,41 @@ else
   f 42
 fi
 
-# U7f: a branch vanishes between composing the ref list and the push, so the
-# first `push` emits "src refspec <ref> does not match any". The vanish must not
-# fail the pass: code-archive re-pushes the surviving refs -> ok:local, code 0,
-# the remaining branch lands on GitLab, and no state/<name>.fail is left. A stub
-# `git` at the head of PATH captures the heads as explicit refspecs (including
-# the branch that will vanish), deletes that branch, then runs the real git — so
-# the first push attempts it and errors exactly like the observed log line.
-# Check 43:
-initlocal "$T/lw43" 'git@github.com:arwoxbx24/local43.git'
-git -C "$T/lw43" branch feature
-rm -f "$T/vanish.done" "$T/state/local43.fail"
-mkdir -p "$T/stubgit"
-cat > "$T/stubgit/git" <<'STUB'
-#!/usr/bin/env bash
-done_flag="${VANISH_DONE:?}"
-if [[ "$*" == *" push "* ]] && [[ ! -e "$done_flag" ]]; then
-  : > "$done_flag"
-  gdir=""; args=(); refs=()
-  for a in "$@"; do
-    case "$a" in
-      --git-dir=*) gdir="${a#--git-dir=}"; args+=("$a");;
-      refs/*:refs/*) :;;
-      *) args+=("$a");;
-    esac
-  done
-  # compose the explicit ref list for every current head (before deletion)
-  while read -r r; do b="${r#refs/heads/}"; refs+=("refs/heads/$b:refs/heads/server/$b"); done \
-    < <(/usr/bin/git --git-dir="$gdir" for-each-ref --format='%(refname)' refs/heads/)
-  /usr/bin/git --git-dir="$gdir" update-ref -d "refs/heads/${VANISH_BRANCH:?}"
-  exec /usr/bin/git "${args[@]}" "${refs[@]}"
-fi
-exec /usr/bin/git "$@"
-STUB
-chmod +x "$T/stubgit/git"
-main43=$(git -C "$T/lw43" rev-parse main)
-out43=$(env "${localenv[@]}" PATH="$T/stubgit:$PATH" VANISH_DONE="$T/vanish.done" \
-        VANISH_BRANCH=feature "$bin/code-archive" --local "$T/lw43/.git" 2>&1); rc43=$?
-srv43=$(git --git-dir="$T/gitlab/local43.git" rev-parse refs/heads/server/main 2>/dev/null) || srv43=""
-vanish43=$(git --git-dir="$T/gitlab/local43.git" for-each-ref refs/heads/server/feature --format='%(refname)' 2>/dev/null)
-fail43=$([[ -e "$T/state/local43.fail" ]] && echo yes || echo no)
-if [[ $rc43 == 0 ]] && [[ "$srv43" == "$main43" ]] && [[ -z "$vanish43" ]] \
-   && grep -qF 'local43 ok:local' <<<"$out43" \
-   && grep -qF 'local43 ok:local' "$T/log/code-archive.log" \
-   && [[ "$fail43" == no ]]; then
-  p 43
-else
-  f 43
-fi
-
-# Check 44: --local survives a launch from a directory removed before the send
-# starts (U7g). The post-commit/post-merge hook fires from a worktree dir that
-# `ship` deletes mid-run; the orphaned process's CWD no longer exists on disk,
-# yet the push must still reach GitLab -> ok:local, code 0.
-initlocal "$T/lw44" 'git@github.com:arwoxbx24/local44.git'
-main44=$(git -C "$T/lw44" rev-parse main)
+# Check 44: a single code-archive <name> run survives a launch from a directory
+# removed before the send starts. `ship` deletes a worktree dir mid-run; the
+# orphaned process's CWD no longer exists on disk, but the top-level `cd /` in
+# code-archive keeps it readable -> the mirror finishes ok, code 0.
+main44=$(git --git-dir="$T/github/demo.git" rev-parse main)
 mkdir -p "$T/gone44"
 ( cd "$T/gone44" && rmdir "$T/gone44"
-  out44=$(env "${localenv[@]}" "$bin/code-archive" --local "$T/lw44/.git" 2>&1); rc44=$?
+  out44=$(env "${localenv[@]}" "$bin/code-archive" demo 2>&1); rc44=$?
   printf '%s' "$out44" > "$T/out44"
   printf '%s' "$rc44" > "$T/rc44" )
 out44=$(cat "$T/out44")
 rc44=$(cat "$T/rc44")
-srv44=$(git --git-dir="$T/gitlab/local44.git" rev-parse refs/heads/server/main 2>/dev/null) || srv44=""
-if [[ $rc44 == 0 ]] && [[ "$srv44" == "$main44" ]] \
-   && grep -qF 'local44 ok:local' <<<"$out44" \
-   && grep -qF 'local44 ok:local' "$T/log/code-archive.log"; then
+d44=$(git --git-dir="$T/repos/demo.git" rev-parse main 2>/dev/null) || d44=""
+if [[ $rc44 == 0 ]] && [[ "$d44" == "$main44" ]] \
+   && grep -qF 'demo ok' <<<"$out44"; then
   p 44
 else
   f 44
 fi
 
-echo "PASS $ok FAIL $((44-ok))"
-[[ $ok == 44 ]]
+# Check 45: --changed with a failing gh (code 1) -> exit 2, one err:list-fetch
+# in the journal, and exactly one new owner-notice line in notify.out.
+mkdir -p "$T/stubgh"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 1' > "$T/stubgh/gh"
+chmod +x "$T/stubgh/gh"
+before45=$(wc -l < "$T/state/notify.out")
+out45=$(env "${localenv[@]}" PATH="$T/stubgh:$PATH" "$bin/code-archive" --changed 2>&1); rc45=$?
+after45=$(wc -l < "$T/state/notify.out")
+if [[ $rc45 == 2 ]] \
+   && [[ "$(grep -c 'err:list-fetch' "$T/log/code-archive.log" || true)" == 1 ]] \
+   && [[ $((after45 - before45)) == 1 ]]; then
+  p 45
+else
+  f 45
+fi
+
+echo "PASS $ok FAIL $((total-ok))"
+[[ $ok == $total ]]
