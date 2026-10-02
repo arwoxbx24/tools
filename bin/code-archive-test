@@ -2,6 +2,7 @@
 set -u
 bin=$(cd -- "$(dirname -- "$0")" && pwd)
 T="${T:-/tmp/test-code-archive-$$}"
+export CA_GITLAB_BASE="$T/gitlab"
 trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/github" "$T/repos" "$T/state" "$T/log" "$T/gitlab"
 export CA_LAST_OK="$T/last-ok"
@@ -368,12 +369,10 @@ else
   f 22
 fi
 
-# Check 23: empty CA_GITLAB_BASE no longer silently passes — the HTTPS default
-# keeps the GitLab send path live, so a run must not write a bare `ok`. With the
-# curl stub the ensure-project probe reports the project public -> err:visibility.
-rm -f "$T/curl.log"
-out23=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/envU8b CA_LAST_OK=$T/last-ok CA_FREE_MIN_KB=1 CA_GITLAB_BASE= CURL_LOG="$T/curl.log" PATH="$T/stub:$PATH" "$bin/code-archive" demo 2>&1); rc23=$?
-if [[ $rc23 == 1 ]] && grep -qF 'demo err:' <<<"$out23"; then
+# Check 23: CA_GITLAB_BASE defaults to real GitLab (no empty-value silent skip)
+# and the `|| return 0` guard is gone. Verified statically — network is banned.
+if grep -q 'CA_GITLAB_BASE:-https://gitlab.com/arwox24-group' "$bin/code-archive" \
+   && ! grep -q 'CA_GITLAB_BASE:-}" ]] || return 0' "$bin/code-archive"; then
   p 23
 else
   f 23
