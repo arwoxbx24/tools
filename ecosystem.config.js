@@ -346,24 +346,6 @@ module.exports = {
       out_file: '/root/.pm2/logs/code-archive-out.log'
     },
     {
-      // Сторож архива кода (spec:089 T016)
-      name: 'code-archive-watch',
-      time: true,
-      merge_logs: true,
-      script: '/root/workspaces/tools/scripts/pm2/code-archive-watch.sh',
-      cwd: '/root/workspaces/projects',
-      interpreter: 'bash',
-      exec_mode: 'fork_mode',
-      instances: 1,
-      autorestart: false,
-      min_uptime: 1000,
-      max_restarts: 10,
-      exp_backoff_restart_delay: 1000,
-      cron_restart: '20 16 * * *',
-      error_file: '/root/.pm2/logs/code-archive-watch-error.log',
-      out_file: '/root/.pm2/logs/code-archive-watch-out.log'
-    },
-    {
       name: 'docker-log-rotation',
       time: true,
       merge_logs: true,
