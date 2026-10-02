@@ -44,6 +44,9 @@ branch=$(git -C "$wtr" symbolic-ref --short -q HEAD 2>/dev/null) || leave 10 pre
 name=$(ga_repo_of "$wtr") || leave 10 preflight
 [[ -z $(ga_skip_reason "$name") ]] || leave 10 preflight
 
+hp=$(git -C "$wtr" config --get-all core.hooksPath)
+[[ $hp == /root/workspaces/tools/git-hooks ]] || { echo 'hooksPath подменён' >&2; leave 10 preflight; }
+
 g(){ git -C "$wtr" "$@"; }
 g add -A
 if g diff --cached --quiet; then

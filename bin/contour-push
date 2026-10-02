@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# contour-push: push текущей ветки bare-репозитория контура.
+set -e
+git -C /root --git-dir=/root/workspaces/system/contour-config.git push origin "$(git -C /root --git-dir=/root/workspaces/system/contour-config.git branch --show-current)"

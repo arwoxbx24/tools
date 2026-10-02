@@ -1,16 +1,28 @@
 #!/bin/sh
-# gitleaks-диспетчер git-хуков: сканирование секретов + цепочка хуков репо.
+# gitleaks/secret-gate диспетчер git-хуков: сканирование секретов + цепочка хуков.
 name=$(basename "$0")
 Z=0000000000000000000000000000000000000000
+SG=/root/workspaces/tools/bin/secret-gate
+
+if [ "$name" = "pre-commit" ]; then
+  if ! "$SG" check --staged; then
+    echo "BLOCKED: secret-gate check --staged" >&2
+    exit 1
+  fi
+fi
 
 if [ "$name" = "pre-push" ]; then
   tmp=$(mktemp) || exit 1
   trap 'rm -f "$tmp"' EXIT HUP INT TERM
   cat > "$tmp"
+  if [ ! -x "$SG" ]; then
+    echo "BLOCKED: secret-gate недоступен" >&2
+    exit 1
+  fi
   while read -r local_ref local_sha remote_ref remote_sha; do
     [ "$local_sha" = "$Z" ] && continue      # удаление ветки — пропуск
     if [ "$remote_sha" = "$Z" ]; then
-      range="$local_sha --not --remotes"     # новая ветка
+      range="$local_sha --not --remotes=$1/*"     # новая ветка
     else
       range="$remote_sha..$local_sha"
     fi
@@ -18,6 +30,25 @@ if [ "$name" = "pre-push" ]; then
       echo "BLOCKED: gitleaks нашёл секрет в отправляемых коммитах ($range)" >&2
       exit 1
     fi
+    if [ "$remote_sha" = "$Z" ]; then
+      if ! "$SG" check "$local_sha" --not "--remotes=$1/*"; then
+        echo "BLOCKED: secret-gate check $range" >&2
+        exit 1
+      fi
+    elif ! "$SG" check "$remote_sha..$local_sha"; then
+      echo "BLOCKED: secret-gate check $range" >&2
+      exit 1
+    fi
+    case "$local_ref" in
+      refs/tags/*)
+        if [ "$(git cat-file -t "$local_sha" 2>/dev/null)" = "tag" ]; then
+          if ! "$SG" check --tag "$local_sha"; then
+            echo "BLOCKED: secret-gate check --tag ($local_sha)" >&2
+            exit 1
+          fi
+        fi
+        ;;
+    esac
   done < "$tmp"
 fi
 
@@ -27,6 +58,15 @@ if [ -x "$hook" ]; then
     exec "$hook" "$@" < "$tmp"
   else
     exec "$hook" "$@"
+  fi
+elif [ "$(git rev-parse --is-bare-repository 2>/dev/null)" = "false" ]; then
+  hook="$(git rev-parse --show-toplevel)/.beads/hooks/$name"
+  if [ -x "$hook" ]; then
+    if [ "$name" = "pre-push" ]; then
+      exec "$hook" "$@" < "$tmp"
+    else
+      exec "$hook" "$@"
+    fi
   fi
 fi
 exit 0
