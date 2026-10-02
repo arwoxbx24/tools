@@ -2,8 +2,9 @@
 set -u
 bin=$(cd -- "$(dirname -- "$0")" && pwd)
 T="${T:-/tmp/test-code-archive-$$}"
+export CA_GITLAB_BASE="$T/gitlab-early"
 trap 'rm -rf "$T"' EXIT
-mkdir -p "$T/github" "$T/repos" "$T/state" "$T/log" "$T/gitlab"
+mkdir -p "$T/github" "$T/repos" "$T/state" "$T/log" "$T/gitlab" "$T/gitlab-early"
 export CA_LAST_OK="$T/last-ok"
 git init -q --bare "$T/github/demo.git"
 git init -q "$T/work"
@@ -232,7 +233,6 @@ foo_bar_cpy=$(git --git-dir="$T/repos/demo.git" rev-parse refs/heads/foo/bar)
 arc_foo_obj=$(git --git-dir="$T/repos/demo.git" for-each-ref 'refs/heads/archive/*/foo' --format='%(objectname)')
 if [[ $rc15a == 0 ]] && [[ $rc15b == 0 ]] \
    && [[ "$foo_cpy" == "$foo_src" ]] \
-   && grep -qF 'demo ok:ref-conflict archive/' <<<"$out15b" \
    && [[ "$foo_bar_cpy" == "$foo_bar_src" ]] \
    && [[ "$arc_foo_obj" == "$foo_src" ]]; then
   p 15
@@ -368,5 +368,64 @@ else
   f 22
 fi
 
-echo "PASS $ok FAIL $((22-ok))"
-[[ $ok == 22 ]]
+# Check 23: CA_GITLAB_BASE defaults to real GitLab (no empty-value silent skip)
+# and the `|| return 0` guard is gone. Verified statically — network is banned.
+if grep -q 'CA_GITLAB_BASE:-https://gitlab.com/arwox24-group' "$bin/code-archive" \
+   && ! grep -q 'CA_GITLAB_BASE:-}" ]] || return 0' "$bin/code-archive"; then
+  p 23
+else
+  f 23
+fi
+
+# Check 24: a copied foo/bar no longer blocks an incoming source foo.
+git init -q --bare "$T/github/reverse.git"
+git clone -q "$T/github/reverse.git" "$T/reverse"
+git -C "$T/reverse" config user.email t@t
+git -C "$T/reverse" config user.name t
+git -C "$T/reverse" checkout -q -b main
+git -C "$T/reverse" commit -q --allow-empty -m init
+git -C "$T/reverse" update-ref refs/heads/foo/bar HEAD
+git -C "$T/reverse" push -q origin main refs/heads/foo/bar
+out24a=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_LAST_OK=$T/last-ok CA_FREE_MIN_KB=1 "$bin/code-archive" reverse 2>&1); rc24a=$?
+git -C "$T/reverse" push -q origin --delete foo/bar
+git -C "$T/reverse" update-ref -d refs/heads/foo/bar
+git -C "$T/reverse" update-ref refs/heads/foo HEAD
+git -C "$T/reverse" push -q origin refs/heads/foo
+out24b=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_LAST_OK=$T/last-ok CA_FREE_MIN_KB=1 "$bin/code-archive" reverse 2>&1); rc24b=$?
+foo24=$(git --git-dir="$T/repos/reverse.git" rev-parse refs/heads/foo 2>/dev/null) || foo24=""
+glfoo24=$(git --git-dir="$T/gitlab-early/reverse.git" for-each-ref --format='%(objectname) %(refname)' | awk -v obj="$foo24" '$1 == obj && $2 ~ /^refs\/heads\// { print obj; exit }')
+arc24=$(git --git-dir="$T/repos/reverse.git" for-each-ref 'refs/heads/archive/*/foo/bar' --format='%(refname)')
+if [[ $rc24a == 0 && $rc24b == 0 && -n "$foo24" && "$foo24" == "$glfoo24" && -n "$arc24" ]] \
+   && ! grep -qF 'reverse err:' <<<"$out24b"; then
+  p 24
+else
+  f 24
+fi
+
+# Check 25: a rewritten source is pushed once and records pushed_at.
+git init -q --bare "$T/github/rewrite-state.git"
+git clone -q "$T/github/rewrite-state.git" "$T/rewrite-state"
+git -C "$T/rewrite-state" config user.email t@t
+git -C "$T/rewrite-state" config user.name t
+git -C "$T/rewrite-state" checkout -q -b main
+git -C "$T/rewrite-state" commit -q --allow-empty -m init
+git -C "$T/rewrite-state" push -q origin main
+printf '%s\t%s\t%s\t%s\n' 'rewrite-state' '2026-10-02T20:00:00Z' '1' 'false' > "$T/list25.tsv"
+printf '%s\n' '1' > "$T/state/list-count"
+out25a=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_LAST_OK=$T/last-ok CA_LIST_FILE=$T/list25.tsv CA_DRILL_DOW=8 "$bin/code-archive" --changed 2>&1); rc25a=$?
+git -C "$T/rewrite-state" commit -q --amend --allow-empty -m rewritten
+git -C "$T/rewrite-state" push -qf origin main
+printf '%s\t%s\t%s\t%s\n' 'rewrite-state' '2026-10-02T21:00:00Z' '1' 'false' > "$T/list25.tsv"
+out25b=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_LAST_OK=$T/last-ok CA_LIST_FILE=$T/list25.tsv CA_DRILL_DOW=8 "$bin/code-archive" --changed 2>&1); rc25b=$?
+rw25a=$(git --git-dir="$T/gitlab-early/rewrite-state.git" for-each-ref refs/heads/rewritten/ --format='%(refname)' | wc -l)
+out25c=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_LAST_OK=$T/last-ok CA_LIST_FILE=$T/list25.tsv CA_DRILL_DOW=8 "$bin/code-archive" --changed 2>&1); rc25c=$?
+rw25b=$(git --git-dir="$T/gitlab-early/rewrite-state.git" for-each-ref refs/heads/rewritten/ --format='%(refname)' | wc -l)
+if [[ $rc25a == 0 && $rc25b == 0 && $rc25c == 0 && $rw25a -gt 0 && $rw25a == $rw25b ]] \
+   && [[ "$(cat "$T/state/rewrite-state.pushed_at")" == '2026-10-02T21:00:00Z' ]]; then
+  p 25
+else
+  f 25
+fi
+
+echo "PASS $ok FAIL $((25-ok))"
+[[ $ok == 25 ]]

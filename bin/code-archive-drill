@@ -19,6 +19,7 @@ drill_dir="${CA_DRILL_DIR:-/root/workspaces/sandbox/test-archive-drill}"
 name="${CA_DRILL_NAME:-}"
 
 mask() { sed -E 's#(ghp_|gho_|github_pat_|glpat-|oauth2:)[^@ ]*#***#g'; }
+log() { printf '%s %s\n' "$(date -Is)" "$*" | tee -a "$CA_LOG"; }
 
 # Build URL based on base (supports file://, https://, or git@)
 build_url() {
@@ -31,7 +32,7 @@ build_url() {
     echo "${base%/}/$name.git"
   elif [[ "$base" == git@* ]]; then
     # SSH URL
-    echo "$base:$name.git"
+    echo "$base/$name.git"
   else
     # Treat as local path
     echo "$base/$name.git"
@@ -40,32 +41,20 @@ build_url() {
 
 # Select name: explicit CA_DRILL_NAME or random from state/*.pushed_at
 if [[ -z "$name" ]]; then
-  mapfile -t pushed_at < <(ls -1 "$CA_STATE_DIR"/*.pushed_at 2>/dev/null | xargs -n1 basename -s .pushed_at || true)
+  mapfile -t pushed_at < <(ls -1 "$CA_STATE_DIR"/*.pushed_at 2>/dev/null | xargs -r -n1 basename -s .pushed_at || true)
   (( ${#pushed_at[@]} > 0 )) && name="$(printf '%s\n' "${pushed_at[@]}" | shuf -n1)" || true
 fi
 
-[[ -z "$name" ]] && { echo "drill:mismatch restore unknown" | mask; exit 1; }
-
 # Cleanup trap
-trap 'rm -rf "$drill_dir"' EXIT INT TERM
+trap 'rm -rf "$drill_dir"' EXIT
+trap 'exit 130' INT TERM
 
-# Clone from GitLab
-gitlab_url=$(build_url "$CA_GITLAB_BASE" "$name")
-if ! git clone -q --bare "$gitlab_url" "$drill_dir" 2>/dev/null; then
-  echo "drill:mismatch restore $name" | mask
-  exit 1
+# HTTPS GitLab is a private project: prime askpass so clone/ls-remote read it non-interactively.
+if [[ "$CA_GITLAB_BASE" == https://* ]]; then
+  export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS="${CA_ASKPASS_CMD:-$(dirname "$0")/code-archive}" CA_ASKPASS=1
 fi
 
-# Verify HEAD matches GitHub
-github_url=$(build_url "$CA_GITHUB_BASE" "$name")
-gh_head=$(git ls-remote "$github_url" HEAD 2>/dev/null | awk '{print $1}' || true)
-drill_head=$(git --git-dir="$drill_dir" rev-parse HEAD 2>/dev/null || true)
-if [[ -z "$gh_head" ]] || [[ "$gh_head" != "$drill_head" ]]; then
-  echo "drill:mismatch head $name" | mask
-  exit 1
-fi
-
-# Check refs for each state entry
+# Check refs for every state entry before restoring a random one.
 exit_code=0
 for state_file in "$CA_STATE_DIR"/*.pushed_at; do
   [[ -f "$state_file" ]] || continue
@@ -74,7 +63,7 @@ for state_file in "$CA_STATE_DIR"/*.pushed_at; do
 
   # Check if local copy exists
   if [[ ! -d "$copy_dir" ]]; then
-    echo "drill:missing $repo_name local" | mask
+    log "drill:missing $repo_name local"
     rm -f "$state_file"
     exit_code=1
     continue
@@ -83,34 +72,63 @@ for state_file in "$CA_STATE_DIR"/*.pushed_at; do
   # Count refs in local copy
   local_refs=$(( $(git --git-dir="$copy_dir" for-each-ref refs/heads 2>/dev/null | wc -l) + $(git --git-dir="$copy_dir" for-each-ref refs/tags 2>/dev/null | wc -l) ))
 
-  # Count refs in GitLab (heads and tags, no ^{})
+  # Fetch GitLab refs once. A missing project clears pushed_at; a transient
+  # failure preserves state for the next drill.
   repo_gitlab_url=$(build_url "$CA_GITLAB_BASE" "$repo_name")
-  gitlab_refs=$(git ls-remote --heads --tags "$repo_gitlab_url" 2>/dev/null | grep -v '\^{}' | wc -l)
+  ls_out=$(git ls-remote --heads --tags "$repo_gitlab_url" 2>&1); ls_rc=$?
+  if [[ "$ls_rc" != 0 ]]; then
+    if [[ "$ls_out" == *'not found'* || "$ls_out" == *'does not appear to be a git repository'* ]]; then
+      log "drill:missing $repo_name gitlab"
+      rm -f "$state_file"
+    else
+      log "drill:error gitlab $repo_name"
+    fi
+    exit_code=1
+    continue
+  fi
+  gitlab_refs=$(grep -v '\^{}' <<<"$ls_out" | wc -l)
 
-  # Compare with recorded refs
-  recorded_refs=0
+  # Compare with recorded refs: two numbers "<local> <gitlab>". An old file
+  # holding a single number is treated as the gitlab baseline.
+  past_local=-1; past_gitlab=-1
   if [[ -f "$CA_STATE_DIR/$repo_name.refs" ]]; then
-    recorded_refs=$(cat "$CA_STATE_DIR/$repo_name.refs")
+    read -r past_local past_gitlab <<< "$(cat "$CA_STATE_DIR/$repo_name.refs")"
+    if [[ -z "$past_gitlab" ]]; then past_gitlab="$past_local"; past_local=-1; fi
   fi
 
-  if (( recorded_refs > 0 && local_refs < recorded_refs )); then
-    echo "drill:mismatch refs-shrunk $repo_name" | mask
+  if (( gitlab_refs < local_refs )) \
+     || (( past_gitlab >= 0 && gitlab_refs < past_gitlab )) \
+     || (( past_local >= 0 && local_refs < past_local )); then
+    log "drill:mismatch refs-shrunk $repo_name"
     exit_code=1
   fi
 
-  # Update recorded refs
-  echo "$gitlab_refs" > "$CA_STATE_DIR/$repo_name.refs"
-
-  # Check if project exists in GitLab
-  if ! git ls-remote --heads --tags "$repo_gitlab_url" >/dev/null 2>&1; then
-    echo "drill:missing $repo_name gitlab" | mask
-    rm -f "$state_file"
-    exit_code=1
-  fi
+  # Update the baseline only after a successful listing.
+  echo "$local_refs $gitlab_refs" > "$CA_STATE_DIR/$repo_name.refs"
 done
 
+# Restore one selected project after all state markers have been reconciled.
+if [[ -z "$name" ]]; then
+  log "drill:mismatch restore unknown"
+  exit_code=1
+else
+  rm -rf "$drill_dir"
+  gitlab_url=$(build_url "$CA_GITLAB_BASE" "$name")
+  if ! git clone -q --bare "$gitlab_url" "$drill_dir" 2>/dev/null; then
+    log "drill:mismatch restore $name"
+    exit_code=1
+  else
+    github_url=$(build_url "$CA_GITHUB_BASE" "$name")
+    gh_head=$(git ls-remote "$github_url" HEAD 2>/dev/null | awk '{print $1}' || true)
+    if [[ -z "$gh_head" ]] || ! git --git-dir="$drill_dir" cat-file -e "$gh_head" 2>/dev/null; then
+      log "drill:mismatch head $name"
+      exit_code=1
+    fi
+  fi
+fi
+
 if (( exit_code == 0 )); then
-  echo "drill:ok" | mask
+  log "drill:ok"
 fi
 
 exit "$exit_code"

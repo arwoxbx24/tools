@@ -5,11 +5,13 @@ set -a; . "$CA_ENV_FILE"; set +a
 [[ -n "${GITLAB_MIRROR_TOKEN:-}" ]] || { echo "err:no-key" >&2; exit 2; }
 # Askpass mode: git invokes this script as GIT_ASKPASS with a single prompt arg.
 if [[ ${CA_ASKPASS:-} == 1 && $# -eq 1 ]]; then
+  [[ "$1" == *gitlab* ]] || exit 1
   if [[ "$1" == *Username* ]]; then echo oauth2; else echo "$GITLAB_MIRROR_TOKEN"; fi
   exit 0
 fi
 export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS="$0" CA_ASKPASS=1
 CA_GITHUB_BASE="${CA_GITHUB_BASE:-git@github.com:arwoxbx24}"
+CA_GITLAB_BASE="${CA_GITLAB_BASE:-https://gitlab.com/arwox24-group}"
 CA_REPOS_DIR="${CA_REPOS_DIR:-/home/gitmirror/repos}"
 CA_LOG="${CA_LOG:-/root/workspaces/system/services/gitmirror/code-archive.log}"
 CA_STATE_DIR="${CA_STATE_DIR:-/home/gitmirror/state}"
@@ -23,7 +25,7 @@ gitlab_ensure_project(){
   local group="${CA_GITLAB_BASE##*/}"
   local api="${CA_GITLAB_API:-https://gitlab.com/api/v4}"
   body="$(mktemp)"
-  code=$(printf 'PRIVATE-TOKEN: %s\n' "$GITLAB_MIRROR_TOKEN" | curl -s -o "$body" -w '%{http_code}' -H @- "$api/projects/$group%2F$name")
+  code=$(printf 'PRIVATE-TOKEN: %s\n' "$GITLAB_MIRROR_TOKEN" | curl -s --max-time 60 -o "$body" -w '%{http_code}' -H @- "$api/projects/$group%2F$name")
   if [[ "$code" == 200 ]]; then
     vis=$(jq -r '.visibility // ""' "$body")
     rm -f "$body"
@@ -39,13 +41,13 @@ gitlab_ensure_project(){
   # Project missing: resolve the group id once per run, then create the project.
   if [[ -z "${gitlab_group_id:-}" ]]; then
     body="$(mktemp)"
-    code=$(printf 'PRIVATE-TOKEN: %s\n' "$GITLAB_MIRROR_TOKEN" | curl -s -o "$body" -w '%{http_code}' -H @- "$api/groups/$group")
+    code=$(printf 'PRIVATE-TOKEN: %s\n' "$GITLAB_MIRROR_TOKEN" | curl -s --max-time 60 -o "$body" -w '%{http_code}' -H @- "$api/groups/$group")
     if [[ "$code" == 200 ]]; then gitlab_group_id="$(jq -r '.id' "$body")"; fi
     rm -f "$body"
     if [[ -z "${gitlab_group_id:-}" ]]; then result=err:gitlab; return 1; fi
   fi
   body="$(mktemp)"
-  code=$(printf 'PRIVATE-TOKEN: %s\n' "$GITLAB_MIRROR_TOKEN" | curl -s -o "$body" -w '%{http_code}' -H @- \
+  code=$(printf 'PRIVATE-TOKEN: %s\n' "$GITLAB_MIRROR_TOKEN" | curl -s --max-time 60 -o "$body" -w '%{http_code}' -H @- \
       -X POST --data-urlencode "path=$name" --data-urlencode "name=$name" \
       --data-urlencode "namespace_id=$gitlab_group_id" --data-urlencode "visibility=private" \
       "$api/projects")
@@ -76,7 +78,7 @@ mirror_name(){
     result=ok:created
   fi
   # U3: only accumulate — fetch into temp space, propagate to real refs, archiving rewrites.
-  ferr="$(git --git-dir="$dst" fetch -q --refmap= github '+refs/heads/*:refs/incoming/heads/*' '+refs/tags/*:refs/incoming/tags/*' 2>&1)" || {
+  ferr="$(git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 --git-dir="$dst" fetch -q --refmap= github '+refs/heads/*:refs/incoming/heads/*' '+refs/tags/*:refs/incoming/tags/*' 2>&1)" || {
     # U7: if an existing copy's source is gone, keep the copy untouched and report kept.
     if (( existing )) && [[ -n "$(git --git-dir="$dst" for-each-ref --count=1 --format='%(refname)' refs/heads refs/tags)" ]] \
        && { [[ "$ferr" == *"Repository not found"* || "$ferr" == *"does not appear to be a git repository"* ]]; }; then
@@ -108,6 +110,18 @@ mirror_name(){
       fi
     else
       if ! git --git-dir="$dst" update-ref "$real" "$obj" 2>/dev/null; then
+        # A child ref blocks its parent (foo/bar blocks foo): archive all
+        # children first, then retry the parent ref.
+        ts="$(date +%Y%m%d-%H%M%S)"; base="refs/$kind/archive/$ts"
+        while read -r occupied; do
+          occupied_leaf="${occupied#refs/$kind/}"
+          rn="$base/$occupied_leaf"; n=0
+          while git --git-dir="$dst" rev-parse -q --verify "$rn" >/dev/null 2>&1; do n=$((n+1)); rn="${base}-${n}/$occupied_leaf"; done
+          git --git-dir="$dst" update-ref "$rn" "$(git --git-dir="$dst" rev-parse "$occupied")" \
+            && git --git-dir="$dst" update-ref -d "$occupied" \
+            || { result=err:ref; return 1; }
+          result="ok:ref-conflict archive/$ts/$occupied_leaf"
+        done < <(git --git-dir="$dst" for-each-ref --format='%(refname)' "$real/")
         # U7: the new ref is blocked because an ancestor name is already a ref
         # (e.g. foo/bar arrives while foo exists). Archive every occupying
         # ancestor under archive/<ts>/<name>, remove it, then retry.
@@ -123,14 +137,12 @@ mirror_name(){
             result="ok:ref-conflict archive/$ts/$p"
           fi
         done
-        git --git-dir="$dst" update-ref "$real" "$obj"
+        git --git-dir="$dst" update-ref "$real" "$obj" || { result=err:ref; return 1; }
       fi
     fi
   done < <(git --git-dir="$dst" for-each-ref --format='%(refname) %(objectname)' refs/incoming/)
   while read -r ref _; do git --git-dir="$dst" update-ref -d "$ref"; done < <(git --git-dir="$dst" for-each-ref --format='%(refname)' refs/incoming/)
   # U8a: push to GitLab without rewrite; on rejection, retry with rewritten/<timestamp>/<name>
-  # Only push to GitLab if CA_GITLAB_BASE is explicitly set
-  [[ -n "${CA_GITLAB_BASE:-}" ]] || return 0
   if [[ "$CA_GITLAB_BASE" == /* ]]; then
     # Local path mode: create bare repo if missing
     gl_path="$CA_GITLAB_BASE/$name.git"
@@ -154,7 +166,7 @@ mirror_name(){
     fi
   fi
   # Push all refs without force; collect rejections
-  push_out=$(git --git-dir="$dst" push --porcelain "$gl_dest" 'refs/heads/*:refs/heads/*' 'refs/tags/*:refs/tags/*' 2>&1); push_rc=$?
+  push_out=$(git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 --git-dir="$dst" push --porcelain "$gl_dest" 'refs/heads/*:refs/heads/*' 'refs/tags/*:refs/tags/*' 2>&1); push_rc=$?
   rewritten_first=""
   while read -r line; do
     [[ "$line" == "!"* ]] || continue
@@ -163,8 +175,10 @@ mirror_name(){
     reason_part=$(echo "$line" | awk '{$1=$2=""; print $0}' | sed 's/^ //')
     # Get the source ref (left side of refspec)
     ref_src="${refspec%:*}"
-    if [[ "$reason_part" == *"non-fast-forward"* || "$reason_part" == *"fetch first"* || "$reason_part" == *"already exists"* ]]; then
-      # Retry with rewritten/<timestamp>/<name>
+    if git ls-remote "$gl_dest" 'refs/*/rewritten/*' 2>/dev/null | awk -v obj="$obj" '$1 == obj { found=1 } END { exit !found }'; then
+      rewritten_first="rewritten/existing"
+    else
+      # Retry every rejected ref with rewritten/<timestamp>/<name>.
       ts="$(date +%Y%m%d-%H%M%S)"
       # Parse the ref to extract kind and name (e.g., refs/heads/main -> heads/main)
       ref_kind="${ref_src%%/*}"  # "refs"
@@ -172,15 +186,14 @@ mirror_name(){
       ref_category="${ref_rest%%/*}"  # "heads" or "tags"
       ref_name="${ref_rest#*/}"  # "main"
       rewritten_ref="refs/$ref_category/rewritten/$ts/$ref_name"
-      git --git-dir="$dst" push --porcelain "$gl_dest" "$ref_src:$rewritten_ref" 2>&1 | mask || true
+      retry_out=$(git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 --git-dir="$dst" push --porcelain "$gl_dest" "$ref_src:$rewritten_ref" 2>&1); retry_rc=$?
+      printf '%s\n' "$retry_out" | mask
+      if [[ "$retry_rc" != 0 ]]; then result=err:gitlab; return 1; fi
       if [[ -z "$rewritten_first" ]]; then
         rewritten_first="rewritten/$ts/$ref_name"
       fi
-    else
-      # Any other rejection is an error
-      result=err:gitlab; return 1
     fi
-  done < <(echo "$push_out" | mask)
+  done <<< "$push_out"
   # U8b: a push that neither produced a handled rejection nor succeeded (e.g.
   # the remote is unreachable) is an error.
   if [[ -z "$rewritten_first" && "$push_rc" != 0 ]]; then
@@ -214,6 +227,7 @@ process_one(){
   line="$(printf '%s %s %s\n' "$(date +%F_%T)" "$name" "$result" | mask)"
   printf '%s\n' "$line"
   printf '%s\n' "$line" >> "$CA_LOG"
+  exec {lockfd}>&-
 }
 mkdir -p "$CA_REPOS_DIR" "$(dirname "$CA_LOG")" "$CA_STATE_DIR"
 ok=0; err=0; skipped=0
@@ -260,13 +274,17 @@ if [[ "${1:-}" == "--changed" ]]; then
     fi
     # D10: keep at least 2 GiB + this repo's size free before mirroring it.
     process_one "$name" "$(( 2097152 + ${size:-0} ))"
-    if [[ "$result" == ok || "$result" == ok:created ]]; then
+    if [[ "$result" == ok* ]]; then
       printf '%s\n' "$pushed" > "$CA_STATE_DIR/$name.pushed_at"
     fi
   done
 else
   for name; do
     process_one "$name" "${CA_FREE_MIN_KB:-2097152}"
+    if [[ "$result" == ok* && -n "${CA_LIST_FILE:-}" && -f "$CA_LIST_FILE" ]]; then
+      pushed=$(awk -F '\t' -v wanted="$name" '$1 == wanted { print $2; exit }' "$CA_LIST_FILE")
+      [[ -n "$pushed" ]] && printf '%s\n' "$pushed" > "$CA_STATE_DIR/$name.pushed_at"
+    fi
   done
 fi
 sum="=== pass $(date +%F_%T) | ok=$ok err=$err skipped=$skipped ==="
