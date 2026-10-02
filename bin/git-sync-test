@@ -126,12 +126,15 @@ out=$(cd "$GA_PROJECTS/p-lock" && "$bin/git-sync" p-lock 2>&1)
 wait
 grep -qF 'skip:locked' <<<"$out" && p 10 || f 10
 
-# 11: err:fetch — unreadable origin
+# 11: err:fetch — origin/main ref present, origin url dead
 repo "$GA_PROJECTS/p-fetch"
-git -C "$GA_PROJECTS/p-fetch" commit -q --allow-empty -m base
-git -C "$GA_PROJECTS/p-fetch" remote add origin "$d/no-such-origin.git"
-out=$(cd "$GA_PROJECTS/p-fetch" && "$bin/git-sync" p-fetch 2>&1)
-grep -qF 'err:fetch' <<<"$out" && p 11 || f 11
+git init -q --bare "$d/origin-p-fetch.git"
+git -C "$GA_PROJECTS/p-fetch" remote add origin "$d/origin-p-fetch.git"
+git -C "$GA_PROJECTS/p-fetch" push -q -u origin main
+git -C "$GA_PROJECTS/p-fetch" fetch -q origin
+git -C "$GA_PROJECTS/p-fetch" remote set-url origin "$d/no-such-origin.git"
+out=$(cd "$GA_PROJECTS/p-fetch" && "$bin/git-sync" p-fetch 2>&1); rc=$?
+{ grep -qF 'err:fetch' <<<"$out" && [[ $rc == 1 ]]; } && p 11 || f 11
 
 # 12: err:ctx — not in registry
 out=$("$bin/git-sync" no-such-repo 2>&1)
@@ -344,4 +347,20 @@ out=$(cd "$GA_PROJECTS/p-22" && "$bin/git-sync" p-22 2>&1)
 	&& [[ $(git -C "$GA_PROJECTS/p-22" rev-parse HEAD) == "$(git -C "$d/origin-22.git" rev-parse main)" ]] \
 	&& [[ -z $(git -C "$GA_PROJECTS/p-22" status --porcelain -uno) ]]; } && p 22 || f 22
 
-[[ $ok == 23 ]]
+# 24: skip:no-remote — repo without origin
+repo "$GA_PROJECTS/p-noremote"
+out=$(cd "$GA_PROJECTS/p-noremote" && "$bin/git-sync" p-noremote 2>&1); rc=$?
+{ grep -qF 'skip:no-remote' <<<"$out" && [[ $rc == 0 ]]; } && p 24 || f 24
+
+# 25: skip:no-main — origin has only master
+repo "$GA_PROJECTS/p-nomain"
+git -C "$GA_PROJECTS/p-nomain" commit -q --allow-empty -m base
+git -C "$GA_PROJECTS/p-nomain" branch -M master
+git init -q --bare "$d/origin-nomain.git"
+git -C "$GA_PROJECTS/p-nomain" remote add origin "$d/origin-nomain.git"
+git -C "$GA_PROJECTS/p-nomain" push -q -u origin master
+git -C "$GA_PROJECTS/p-nomain" fetch -q origin
+out=$(cd "$GA_PROJECTS/p-nomain" && "$bin/git-sync" p-nomain 2>&1); rc=$?
+{ grep -qF 'skip:no-main' <<<"$out" && [[ $rc == 0 ]]; } && p 25 || f 25
+
+[[ $ok == 25 ]]

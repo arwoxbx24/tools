@@ -136,4 +136,20 @@ ok=1
 [[ -z $(ga_skip_reason projects) ]] || ok=0
 [[ $ok == 1 ]] && pass T8c || fail T8c
 
-[[ $sum == 13 ]]
+# T9: submodule root skipped, parent listed
+git init -q -b main "$d/subsrc"
+git -C "$d/subsrc" config user.email t@t
+git -C "$d/subsrc" config user.name t
+git -C "$d/subsrc" commit -q --allow-empty -m init
+git init -q -b main "$proj/sup"
+git -C "$proj/sup" config user.email t@t
+git -C "$proj/sup" config user.name t
+git -C "$proj/sup" commit -q --allow-empty -m init
+git -C "$proj/sup" -c protocol.file.allow=always submodule add -q "$d/subsrc" sub
+names=$(ga_roots | cut -f1)
+ok=1
+grep -qx sup <<<"$names" || ok=0
+grep -qx 'sup/sub' <<<"$names" && ok=0
+[[ $ok == 1 ]] && pass T9 || fail "T9: $names"
+
+[[ $sum == 14 ]]

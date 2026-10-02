@@ -27,7 +27,11 @@ sync_one(){ # <name> — одно репо под ga_ctx; гейты до спа
 	reason=$(ga_skip_reason "$name")
 	[[ -z $reason ]] || { emit "$name" "skip:$reason"; return $?; }
 	ga_ctx "$name" 2>/dev/null || { emit "$name" err:ctx; return $?; }
-	timeout 20 git fetch --quiet origin main 2>/dev/null || { emit "$name" err:fetch; return $?; }
+	git remote get-url origin >/dev/null 2>&1 || { emit "$name" skip:no-remote; return $?; }
+	timeout 20 git fetch --quiet origin main 2>/dev/null \
+		|| { git rev-parse -q --verify refs/remotes/origin/main >/dev/null 2>&1 \
+			|| { emit "$name" skip:no-main; return $?; }
+			emit "$name" err:fetch; return $?; }
 	branch=$(git symbolic-ref --short -q HEAD 2>/dev/null) || branch=detached
 	dirty=$(git status --porcelain -uno 2>/dev/null | wc -l)
 	if [[ $branch == main && $dirty == 0 ]]; then
