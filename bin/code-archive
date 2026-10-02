@@ -29,6 +29,7 @@ mirror_name(){
       u=$(git --git-dir="$dst" config --get "remote.$r.url" || true)
       if [[ "$u" == https://*"@"* ]]; then git --git-dir="$dst" remote set-url "$r" "https://${u##https://*@}"; fi
     done
+    git --git-dir="$dst" remote set-url github "$src"
   else
     git init -q --bare "$dst" || { result=err:init; return 1; }
     git --git-dir="$dst" remote add github "$src" || { result=err:add; return 1; }

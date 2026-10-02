@@ -119,6 +119,12 @@ out9b=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_
 { [[ $rc9 == 0 ]] && [[ -f "$T/last-ok" ]] \
   && [[ $rc9b == 1 ]] && grep -qF 'err:no-space' <<<"$out9b"; } && p 9 || f 9
 
+# Check 10: existing copy with a leaked-credential github url is set to SSH
+git --git-dir="$T/repos/demo.git" remote set-url github 'https://ghp_TESTONLY000@example.invalid/x/demo.git'
+out10=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env "$bin/code-archive" demo 2>&1); rc10=$?
+url10=$(git --git-dir="$T/repos/demo.git" remote get-url github)
+if [[ $rc10 == 0 ]] && [[ $url10 == "$T/github/demo.git" ]]; then p 10; else f 10; fi
+
 # Scaffold a bare source repo so --changed can mirror it without the network.
 mkgh(){ git init -q --bare "$T/github/$1.git"; }
 # Check 11: --changed mirrors new/changed, skips the unchanged copy, writes pushed_at
@@ -172,5 +178,5 @@ else
   f 13
 fi
 
-echo "PASS $ok FAIL $((12-ok))"
-[[ $ok == 12 ]]
+echo "PASS $ok FAIL $((13-ok))"
+[[ $ok == 13 ]]
