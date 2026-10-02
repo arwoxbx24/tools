@@ -11,7 +11,7 @@ min_idle=${GA_MIN_IDLE:-30}
 bd_mark(){ local n=$1 r=$2 md=${GA_LOG_DIR:-/root/workspaces/tools/logs}/bd-sent
 	[[ -n ${GA_NO_BD:-} ]] && return; mk="$md/${n//\//_}.$r"; mkdir -p "$md"
 	[[ -f $mk && -n $(find "$mk" -mmin -1440 2>/dev/null) ]] && return
-	bd create "[GIT-SYNC] $n $r ${3:-}" -l git-sync; touch "$mk"; }
+	bd create -t chore -d "## Acceptance Criteria"$'\n'"Ссылка $r в каталоге $n проверена и разобрана (git show <ref>), запись закрыта с выводом команды." "[GIT-SYNC] $n $r ${3:-}" -l git-sync && touch "$mk"; }
 
 emit(){ # <name> <status> [ref...] — печать + журнал; rc по status
 	local line
