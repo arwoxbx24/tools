@@ -5,11 +5,7 @@ set -a; . "$CA_ENV_FILE"; set +a
 [[ -n "${GITLAB_MIRROR_TOKEN:-}" ]] || { echo "err:no-key" >&2; exit 2; }
 # Askpass mode: git invokes this script as GIT_ASKPASS with a single prompt arg.
 if [[ ${CA_ASKPASS:-} == 1 && $# -eq 1 ]]; then
-  if [[ "$1" == *Username* ]]; then
-    echo oauth2
-  else
-    echo "$GITLAB_MIRROR_TOKEN"
-  fi
+  if [[ "$1" == *Username* ]]; then echo oauth2; else echo "$GITLAB_MIRROR_TOKEN"; fi
   exit 0
 fi
 export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS="$0" CA_ASKPASS=1
@@ -18,28 +14,28 @@ CA_REPOS_DIR="${CA_REPOS_DIR:-/home/gitmirror/repos}"
 CA_LOG="${CA_LOG:-/root/workspaces/system/services/gitmirror/code-archive.log}"
 CA_STATE_DIR="${CA_STATE_DIR:-/home/gitmirror/state}"
 mask(){ sed -E 's#(ghp_|gho_|github_pat_|glpat-|oauth2:)[^@ ]*#***#g'; }
-mkdir -p "$CA_REPOS_DIR" "$(dirname "$CA_LOG")" "$CA_STATE_DIR"
-for name; do
-  src="$CA_GITHUB_BASE/$name.git"
-  dst="$CA_REPOS_DIR/$name.git"
+# Mirror one repo. On success sets $result (ok|ok:created) and returns 0; on
+# failure sets $result (err:<why>) and returns non-zero. Called in an if
+# condition so a failure doesn't abort the whole pass.
+mirror_name(){
+  local name="$1" src dst
+  src="$CA_GITHUB_BASE/$name.git"; dst="$CA_REPOS_DIR/$name.git"
+  result=ok
   if [[ -d "$dst" ]]; then
-    result=ok
     # U2: clean leaked credentials / mirror refspec from every remote of an existing copy.
     for r in $(git --git-dir="$dst" remote); do
       git --git-dir="$dst" config --unset-all "remote.$r.mirror" || true
       git --git-dir="$dst" config --unset-all "remote.$r.fetch" '^\+refs/\*:refs/\*$' || true
       u=$(git --git-dir="$dst" config --get "remote.$r.url" || true)
-      if [[ "$u" == https://*"@"* ]]; then
-        git --git-dir="$dst" remote set-url "$r" "https://${u##https://*@}"
-      fi
+      if [[ "$u" == https://*"@"* ]]; then git --git-dir="$dst" remote set-url "$r" "https://${u##https://*@}"; fi
     done
   else
-    git init -q --bare "$dst"
-    git --git-dir="$dst" remote add github "$src"
-    result="ok:created"
+    git init -q --bare "$dst" || { result=err:init; return 1; }
+    git --git-dir="$dst" remote add github "$src" || { result=err:add; return 1; }
+    result=ok:created
   fi
-  git --git-dir="$dst" fetch -q github '+refs/heads/*:refs/incoming/heads/*' '+refs/tags/*:refs/incoming/tags/*' 2>/dev/null
   # U3: only accumulate — fetch into temp space, propagate to real refs, archiving rewrites.
+  git --git-dir="$dst" fetch -q github '+refs/heads/*:refs/incoming/heads/*' '+refs/tags/*:refs/incoming/tags/*' 2>/dev/null || { result=err:fetch; return 1; }
   while read -r ref obj; do
     case "$ref" in
       refs/incoming/heads/*) kind=heads; leaf="${ref#refs/incoming/heads/}";;
@@ -52,12 +48,9 @@ for name; do
       if git --git-dir="$dst" merge-base --is-ancestor "$old" "$obj" 2>/dev/null; then
         git --git-dir="$dst" update-ref "$real" "$obj"
       else
-        ts="$(date +%Y%m%d-%H%M%S)"
-        base="refs/$kind/archive/$ts"
+        ts="$(date +%Y%m%d-%H%M%S)"; base="refs/$kind/archive/$ts"
         rn="$base/$leaf"; n=0
-        while git --git-dir="$dst" rev-parse -q --verify "$rn" >/dev/null 2>&1; do
-          n=$((n+1)); rn="${base}-${n}/$leaf"
-        done
+        while git --git-dir="$dst" rev-parse -q --verify "$rn" >/dev/null 2>&1; do n=$((n+1)); rn="${base}-${n}/$leaf"; done
         git --git-dir="$dst" update-ref "$rn" "$old"
         git --git-dir="$dst" update-ref "$real" "$obj"
       fi
@@ -65,10 +58,28 @@ for name; do
       git --git-dir="$dst" update-ref "$real" "$obj"
     fi
   done < <(git --git-dir="$dst" for-each-ref --format='%(refname) %(objectname)' refs/incoming/)
-  while read -r ref _; do
-    git --git-dir="$dst" update-ref -d "$ref"
-  done < <(git --git-dir="$dst" for-each-ref --format='%(refname)' refs/incoming/)
+  while read -r ref _; do git --git-dir="$dst" update-ref -d "$ref"; done < <(git --git-dir="$dst" for-each-ref --format='%(refname)' refs/incoming/)
+  return 0
+}
+mkdir -p "$CA_REPOS_DIR" "$(dirname "$CA_LOG")" "$CA_STATE_DIR"
+ok=0; err=0; skipped=0
+for name; do
+  mkdir -p "$CA_STATE_DIR"
+  exec {lockfd}>"$CA_STATE_DIR/$name.lock"
+  flock "$lockfd"
+  min="${CA_FREE_MIN_KB:-2097152}"
+  avail=$(df --output=avail -k "$CA_REPOS_DIR" 2>/dev/null | tail -n1 | tr -d '[:space:]' || true)
+  if [[ "$avail" =~ ^[0-9]+$ ]] && (( avail >= min )); then
+    if mirror_name "$name"; then ok=$((ok+1)); else err=$((err+1)); fi
+  else
+    result=err:no-space; err=$((err+1))
+  fi
   line="$(printf '%s %s %s\n' "$(date +%F_%T)" "$name" "$result" | mask)"
   printf '%s\n' "$line"
   printf '%s\n' "$line" >> "$CA_LOG"
 done
+sum="=== pass $(date +%F_%T) | ok=$ok err=$err skipped=$skipped ==="
+printf '%s\n' "$sum"
+printf '%s\n' "$sum" >> "$CA_LOG"
+if (( err == 0 )); then date +%s > "${CA_LAST_OK:-/root/workspaces/system/services/gitmirror/last-ok}"; fi
+exit $(( err > 0 ? 1 : 0 ))

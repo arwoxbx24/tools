@@ -91,6 +91,33 @@ refs_before=$(git --git-dir="$T/github/demo.git" for-each-ref)
 out6=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env "$bin/code-archive" demo 2>&1); rc6=$?
 refs_after=$(git --git-dir="$T/github/demo.git" for-each-ref)
 { [[ $rc6 == 0 ]] && [[ $refs_before == $refs_after ]]; } && p 6 || f 6
+# Check 7: per-name isolation — a missing source errs without aborting the pass
+rm -f "$T/last-ok"
+out7=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_LAST_OK=$T/last-ok CA_FREE_MIN_KB=1 "$bin/code-archive" demo broken 2>&1); rc7=$?
+if [[ $rc7 == 1 ]] \
+   && grep -qF 'demo ok' <<<"$out7" \
+   && grep -qF 'broken err:' <<<"$out7" \
+   && grep -qF '=== pass ' <<<"$out7" \
+   && grep -qF 'ok=1 err=1 skipped=0' <<<"$out7" \
+   && grep -qF '=== pass ' "$T/log/code-archive.log" \
+   && [[ ! -e "$T/last-ok" ]]; then
+  p 7
+else
+  f 7
+fi
+# Check 8: two concurrent runs by the same new name serialize via flock
+CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_LAST_OK=$T/last-ok CA_FREE_MIN_KB=1 "$bin/code-archive" demo2 >"$T/out8a" 2>&1 & pid8a=$!
+CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_LAST_OK=$T/last-ok CA_FREE_MIN_KB=1 "$bin/code-archive" demo2 >"$T/out8b" 2>&1 & pid8b=$!
+wait $pid8a; rc8a=$?
+wait $pid8b; rc8b=$?
+git --git-dir="$T/repos/demo2.git" fsck >/dev/null 2>&1; fsck8=$?
+{ [[ $rc8a == 1 && $rc8b == 1 && $fsck8 == 0 ]]; } && p 8 || f 8
+# Check 9: successful pass writes last-ok; insufficient space -> err:no-space
+rm -f "$T/last-ok"
+out9=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_LAST_OK=$T/last-ok CA_FREE_MIN_KB=1 "$bin/code-archive" demo 2>&1); rc9=$?
+out9b=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_LAST_OK=$T/last-ok CA_FREE_MIN_KB=999999999999 "$bin/code-archive" demo 2>&1); rc9b=$?
+{ [[ $rc9 == 0 ]] && [[ -f "$T/last-ok" ]] \
+  && [[ $rc9b == 1 ]] && grep -qF 'err:no-space' <<<"$out9b"; } && p 9 || f 9
 
-echo "PASS $ok FAIL $((6-ok))"
-[[ $ok == 6 ]]
+echo "PASS $ok FAIL $((9-ok))"
+[[ $ok == 9 ]]
