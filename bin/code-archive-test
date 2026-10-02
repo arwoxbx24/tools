@@ -444,7 +444,8 @@ fi
 # --- U7a: --local mode (checks 27-32) ---
 # Local invocation env: local-path GitLab base, no mirror source ever touched.
 localenv=(CA_ENV_FILE=$T/env CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos \
-          CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_GITLAB_BASE=$T/gitlab)
+          CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_GITLAB_BASE=$T/gitlab \
+          CA_NO_NOTIFY=1)
 # Scaffold a developer repo whose origin claims the arwoxbx24 group (the URL
 # itself is never contacted).
 initlocal(){ # $1=dir $2=origin
@@ -527,5 +528,95 @@ else
   f 32
 fi
 
-echo "PASS $ok FAIL $((32-ok))"
-[[ $ok == 32 ]]
+# --- U7b: owner notification on mirror failure (checks 33-37) ---
+# CA_NO_NOTIFY=1 (now part of localenv) routes messages to $CA_STATE_DIR/notify.out
+# instead of Telegram; a file in place of the GitLab dir makes pushes fail.
+gitlab_fail(){ rm -rf "$T/gitlab"; : > "$T/gitlab"; }
+gitlab_ok(){ rm -f "$T/gitlab"; mkdir -p "$T/gitlab"; }
+
+# Check 33: --local with GitLab unavailable twice -> one notify line, .fail kept
+gitlab_fail
+initlocal "$T/lw33" 'git@github.com:arwoxbx24/local33.git'
+rm -f "$T/state/notify.out"
+out33a=$(env "${localenv[@]}" "$bin/code-archive" --local "$T/lw33/.git" 2>&1); rc33a=$?
+out33b=$(env "${localenv[@]}" "$bin/code-archive" --local "$T/lw33/.git" 2>&1); rc33b=$?
+if [[ $rc33a == 1 ]] && [[ $rc33b == 1 ]] \
+   && [[ -f "$T/state/local33.fail" ]] \
+   && [[ "$(wc -l < "$T/state/notify.out")" == 1 ]] \
+   && grep -qF 'local33' "$T/state/notify.out" \
+   && grep -qF 'local33 err:gitlab' "$T/log/code-archive.log"; then
+  p 33
+else
+  f 33
+fi
+
+# Check 34: GitLab back -> ok:local clears .fail; a fresh failure notifies again
+gitlab_ok
+out34a=$(env "${localenv[@]}" "$bin/code-archive" --local "$T/lw33/.git" 2>&1); rc34a=$?
+srv34=$(git --git-dir="$T/gitlab/local33.git" rev-parse refs/heads/server/main 2>/dev/null) || srv34=""
+cleared34=$([[ -f "$T/state/local33.fail" ]] && echo no || echo yes)
+gitlab_fail
+out34b=$(env "${localenv[@]}" "$bin/code-archive" --local "$T/lw33/.git" 2>&1); rc34b=$?
+lines34=$(wc -l < "$T/state/notify.out")
+gitlab_ok
+if [[ $rc34a == 0 ]] && [[ -n "$srv34" ]] && [[ "$cleared34" == yes ]] \
+   && [[ $rc34b == 1 ]] && [[ $lines34 == 2 ]]; then
+  p 34
+else
+  f 34
+fi
+
+# Check 35: pre-push hook rejects with BLOCKED: secret-gate -> err:secret wording
+initlocal "$T/lw35" 'git@github.com:arwoxbx24/local35.git'
+printf '#!/usr/bin/env bash\nprintf "BLOCKED: secret-gate check"\nexit 1\n' > "$T/lw35/.git/hooks/pre-push"
+chmod +x "$T/lw35/.git/hooks/pre-push"
+out35=$(env "${localenv[@]}" "$bin/code-archive" --local "$T/lw35/.git" 2>&1); rc35=$?
+if [[ $rc35 == 1 ]] \
+   && grep -qF 'local35 err:secret' "$T/log/code-archive.log" \
+   && grep -qF 'в local35 найден ключ, копия в GitLab остановлена до замены ключа' "$T/state/notify.out"; then
+  p 35
+else
+  f 35
+fi
+
+# Check 36: single run with GitLab failure -> one message + .fail; repeat silent
+mkgh "once36"
+git -C "$T/seed" push -q "$T/github/once36.git" main
+rm -f "$T/state/notify.out"
+gitlab_fail
+out36a=$(env "${localenv[@]}" "$bin/code-archive" once36 2>&1); rc36a=$?
+out36b=$(env "${localenv[@]}" "$bin/code-archive" once36 2>&1); rc36b=$?
+gitlab_ok
+if [[ $rc36a == 1 ]] && [[ $rc36b == 1 ]] \
+   && [[ -f "$T/state/once36.fail" ]] \
+   && [[ "$(wc -l < "$T/state/notify.out")" == 1 ]] \
+   && grep -qF 'once36' "$T/state/notify.out"; then
+  p 36
+else
+  f 36
+fi
+
+# Check 37: --changed with two repos -> one consolidated notify line with both
+mkgh "night37a"; git -C "$T/seed" push -q "$T/github/night37a.git" main
+mkgh "night37b"; git -C "$T/seed" push -q "$T/github/night37b.git" main
+rm -f "$T/state/notify.out" "$T/state/night37a.fail" "$T/state/night37b.fail"
+printf '%s\t%s\t%s\t%s\n' \
+  'night37a' '2026-10-02T22:00:00Z' '10' 'false' \
+  'night37b' '2026-10-02T22:01:00Z' '10' 'false' > "$T/list37.tsv"
+printf '%s\n' '2' > "$T/state/list-count"
+gitlab_fail
+out37=$(env "${localenv[@]}" CA_LIST_FILE=$T/list37.tsv CA_DRILL_DOW=8 "$bin/code-archive" --changed 2>&1); rc37=$?
+gitlab_ok
+if [[ $rc37 == 1 ]] \
+   && [[ -f "$T/state/night37a.fail" ]] \
+   && [[ -f "$T/state/night37b.fail" ]] \
+   && [[ "$(wc -l < "$T/state/notify.out")" == 1 ]] \
+   && grep -qF 'night37a' "$T/state/notify.out" \
+   && grep -qF 'night37b' "$T/state/notify.out"; then
+  p 37
+else
+  f 37
+fi
+
+echo "PASS $ok FAIL $((37-ok))"
+[[ $ok == 37 ]]
