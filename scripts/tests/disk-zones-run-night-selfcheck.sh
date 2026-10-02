@@ -105,8 +105,9 @@ printf '%s %s\n' "$(date -u +%F)" docker-backup >>"$TMP/state-b"
 env "${BASE_ENV[@]}" DZ_ZONES_TSV="$TMP/tsv-b" DZ_STATE="$TMP/state-b" DZ_LOCK="$TMP/lock-b" \
     bash "$RUN" >/dev/null 2>&1
 RCB=$?
-SKIP=$(grep -c 'state=skipped-done' "$TMP/tsv-b" || true)
-NCODE=$(grep -c $'\tcodex\t' "$TMP/tsv-b" || true)
+SKIP=$(grep -c $'\tskipped-done' "$TMP/tsv-b" || true)
+# codex не выполнялся: нет строки кода исполнения codex-зоны (нет state run-done).
+NCODE=$(grep -c $'\tcodex\t.*\trun-done$' "$TMP/tsv-b" || true)
 [ "$RCB" -eq 0 ] && [ "$SKIP" -ge 2 ] && [ "$NCODE" -eq 0 ]
 rep "b повтор в те же сутки -> зоны пропущены" $?
 
@@ -117,10 +118,31 @@ env "${BASE_ENV[@]}" DZ_ZONES_TSV="$TMP/tsv-c" DZ_STATE="$TMP/state-c" DZ_LOCK="
     bash "$RUN" >/dev/null 2>&1
 RCC=$?
 flock -u 10; exec 10>&-
-grep -q 'state=locked' "$TMP/tsv-c"; GC=$?
+grep -q $'\tlocked$' "$TMP/tsv-c"; GC=$?
 [ "$RCC" -eq 0 ] && [ "$GC" -eq 0 ]
 rep "c удержанный flock -> state=locked, rc 0" $?
 
-echo "PASS $PASS/8"
+# --- сценарий 5 (d): ZONE_MODE=enforce, зона codex получает dry-run (контур
+# Codex), итог rc 0. claude и docker-backup помечаем выполненными сегодня,
+# чтобы не включать их enforce-поведение; codex-зона (реальный скрипт, dry-run
+# только) при enforce-режиме завершилась бы rc 2 без строк -> rc 0 и строки
+# codex доказывают, что она получила dry-run.
+printf '%s %s\n' "$(date -u +%F)" claude         >"$TMP/state-d"
+printf '%s %s\n' "$(date -u +%F)" docker-backup >>"$TMP/state-d"
+env "${BASE_ENV[@]}" ZONE_MODE=enforce \
+    DZ_ZONES_TSV="$TMP/tsv-d" DZ_STATE="$TMP/state-d" DZ_LOCK="$TMP/lock-d" \
+    bash "$RUN" >/dev/null 2>&1
+RCD=$?
+CODEX_ROWS=$(grep -c $'\tcodex\t' "$TMP/tsv-d" || true)
+[ "$RCD" -eq 0 ] && [ "$CODEX_ROWS" -ge 1 ]
+rep "d enforce: codex получил dry-run, rc 0" $?
+
+# --- сценарий 6 (e): все строки журнала — 9 полей TAB, ни одной строки zone=.
+BFIELDS=$(awk -F'\t' 'NF>0 && NF!=9 {c++} END{print c+0}' "$TSV")
+NZONE=$(grep -c '^zone=' "$TSV" || true)
+[ "$BFIELDS" -eq 0 ] && [ "$NZONE" -eq 0 ]
+rep "e журнал: 9 полей TAB, нет строк zone=" $?
+
+echo "PASS $PASS/10"
 [ "$FAIL" -eq 0 ] && exit 0
 exit 1

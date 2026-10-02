@@ -22,6 +22,13 @@ DIR="$(cd "$(dirname "$0")" && pwd -P)"
 
 mkdir -p "$(dirname "$DZ_ZONES_TSV")" "$(dirname "$DZ_LOCK")" "$(dirname "$DZ_STATE")"
 
+# Журнал зон (общий DZ_ZONES_TSV):
+#   ts zone path class size_before_mb size_after_mb freed_mb rc state
+wlog() { # zone path class sb sa fr rc state
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$(date -u +%FT%TZ)" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" >>"$DZ_ZONES_TSV"
+}
+
 # ADR-090-9: весь прогон под пониженным приоритетом; ionice нет -> без него.
 if [ "${DZ_NICE_DONE:-0}" != 1 ]; then
   export DZ_NICE_DONE=1
@@ -35,7 +42,7 @@ fi
 # Один прогон за раз: неблокирующий flock; занят -> строка locked, выход 0.
 exec 9>"$DZ_LOCK" || exit 1
 if ! flock -n 9; then
-  printf 'state=locked\n' >>"$DZ_ZONES_TSV"
+  wlog lock - И 0 0 0 0 locked
   exit 0
 fi
 
@@ -53,7 +60,7 @@ need_resources() { # name -> 0 ресурсы есть; 1 не дождалис�
     waited=$((waited + DZ_WAIT_STEP))
     dz_resources_ok && return 0
   done
-  printf 'zone=%s state=deferred-resources\n' "$name" >>"$DZ_ZONES_TSV"
+  wlog "$name" - И 0 0 0 0 deferred-resources
   return 1
 }
 
@@ -68,17 +75,16 @@ zone_docker_backup() {
       \( -name '*.gz' -o -name '*.zst' -o -name '*.xz' -o -name '*.tgz' \) \
       2>/dev/null | wc -l)
     ncomp=${ncomp//[[:space:]]/}
-    printf 'zone=docker-backup class=И state=compressed-%s/%s\n' \
-      "$ncomp" "$total" >>"$DZ_ZONES_TSV"
+    wlog docker-backup - И 0 0 0 0 "compressed-$ncomp/$total"
   fi
 }
 
 RC=0
 DEFER=0
-run_zone() { # name cmd — ресурсы, выполнение, состояние
-  local name=$1 cmd=$2 rc
+run_zone() { # name cmd [zone_mode] — ресурсы, выполнение, состояние
+  local name=$1 cmd=$2 mode=${3:-} rc
   if zone_done_today "$name"; then
-    printf 'zone=%s state=skipped-done\n' "$name" >>"$DZ_ZONES_TSV"
+    wlog "$name" - И 0 0 0 0 skipped-done
     return 0
   fi
   if ! need_resources "$name"; then
@@ -88,8 +94,11 @@ run_zone() { # name cmd — ресурсы, выполнение, состоян
   if [ "$name" = docker-backup ]; then
     zone_docker_backup
     rc=$?
-  else
+  elif [ -z "$mode" ]; then
     bash "$cmd"
+    rc=$?
+  else
+    ZONE_MODE="$mode" bash "$cmd"
     rc=$?
   fi
   if [ "$rc" -eq 0 ]; then
@@ -102,6 +111,9 @@ for z in codex claude docker-backup; do
   [ "$DEFER" -eq 1 ] && break
   if [ "$z" = docker-backup ]; then
     run_zone docker-backup zone_docker_backup
+  elif [ "$z" = codex ]; then
+    # Удаление в зоне Codex — контур Codex; сюда зона приходит всегда dry-run.
+    run_zone codex "$DIR/codex-zone.sh" dry-run
   else
     run_zone "$z" "$DIR/$z-zone.sh"
   fi
