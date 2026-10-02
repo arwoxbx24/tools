@@ -145,4 +145,10 @@ if [[ $(grep -c '/root/workspaces/projects' "$bin/safe-delete") -ge 1 \
   echo 'PASS T17'; ok=$((ok+1))
 else echo 'FAIL T17: roots'; fi
 
-[[ $ok == 20 ]]
+# T18: default roots include claude memory root, not whole .claude
+if [[ $(grep -c '/root/.claude/projects/-root-workspaces-projects/memory' "$bin/safe-delete") -ge 1 \
+   && $(grep -cE 'roots=.*:/root/\.claude(:|\})' "$bin/safe-delete") -eq 0 ]]; then
+  echo 'PASS T18'; ok=$((ok+1))
+else echo 'FAIL T18: roots'; fi
+
+[[ $ok == 21 ]]
