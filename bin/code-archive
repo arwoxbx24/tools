@@ -173,43 +173,111 @@ mirror_name(){
       return 1
     fi
   fi
-  # Push all refs without force; collect rejections
-  push_out=$(git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 --git-dir="$dst" push --porcelain "$gl_dest" 'refs/heads/*:refs/heads/*' 'refs/tags/*:refs/tags/*' 2>&1); push_rc=$?
-  rewritten_first=""
-  while read -r line; do
-    [[ "$line" == "!"* ]] || continue
-    # Extract refspec (format: "! refs/heads/main:refs/heads/main [rejected] (reason)")
-    refspec=$(echo "$line" | awk '{print $2}')
-    reason_part=$(echo "$line" | awk '{$1=$2=""; print $0}' | sed 's/^ //')
-    # Get the source ref (left side of refspec)
-    ref_src="${refspec%:*}"
-    if git ls-remote "$gl_dest" 'refs/*/rewritten/*' 2>/dev/null | awk -v obj="$obj" '$1 == obj { found=1 } END { exit !found }'; then
-      rewritten_first="rewritten/existing"
-    else
-      # Retry every rejected ref with rewritten/<timestamp>/<name>.
-      ts="$(date +%Y%m%d-%H%M%S)"
-      # Parse the ref to extract kind and name (e.g., refs/heads/main -> heads/main)
-      ref_kind="${ref_src%%/*}"  # "refs"
-      ref_rest="${ref_src#*/}"   # "heads/main"
-      ref_category="${ref_rest%%/*}"  # "heads" or "tags"
-      ref_name="${ref_rest#*/}"  # "main"
-      rewritten_ref="refs/$ref_category/rewritten/$ts/$ref_name"
-      retry_out=$(git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 --git-dir="$dst" push --porcelain "$gl_dest" "$ref_src:$rewritten_ref" 2>&1); retry_rc=$?
-      printf '%s\n' "$retry_out" | mask
-      if [[ "$retry_rc" != 0 ]]; then result="err:gitlab $(gitlab_err "$retry_out")"; return 1; fi
-      if [[ -z "$rewritten_first" ]]; then
-        rewritten_first="rewritten/$ts/$ref_name"
-      fi
-    fi
-  done <<< "$push_out"
-  # U8b: a push that neither produced a handled rejection nor succeeded (e.g.
-  # the remote is unreachable) is an error.
-  if [[ -z "$rewritten_first" && "$push_rc" != 0 ]]; then
-    result="err:gitlab $(gitlab_err "$push_out")"; return 1
-  fi
+  # U8a: push all heads+tags without force; on a "not fast-forward" rejection
+  # archive the rejected ref under rewritten/<ts>/<dest-name> and keep going.
+  gl_push "$dst" 'refs/heads/*:refs/heads/*' 'refs/tags/*:refs/tags/*' || return 1
   if [[ -n "$rewritten_first" ]]; then
     result="ok:gitlab-rewritten $rewritten_first"
   fi
+  return 0
+}
+# U8a: push refspecs (`$@`) from repo $1 to $gl_dest without force. A rejected
+# ref that is not a fast-forward is archived under rewritten/<ts>/<dest-name>
+# (the name is taken from the destination side, so `refs/heads/server/*`
+# becomes server/<branch>) rather than failing the pass. On a hard unhandled
+# failure sets $result to err:gitlab and returns 1; $rewritten_first is '' after
+# a clean push.
+gl_push(){
+  local repo="$1"; shift
+  local line refspec ref_src ref_dest ref_category dest_name ts rewritten_ref retry_out retry_rc obj
+  push_out=$(git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 --git-dir="$repo" push --porcelain "$gl_dest" "$@" 2>&1); push_rc=$?
+  rewritten_first=""
+  while read -r line; do
+    [[ "$line" == "!"* ]] || continue
+    refspec=$(printf '%s\n' "$line" | awk '{print $2}')
+    ref_src="${refspec%%:*}"
+    ref_dest="${refspec#*:}"
+    # Already archived the exact object? Then a re-push must not add a second
+    # rewritten ref — mark it handled and keep going (idempotent retries).
+    obj="$(git --git-dir="$repo" rev-parse "$ref_src" 2>/dev/null || true)"
+    if git ls-remote "$gl_dest" 'refs/*/rewritten/*' 2>/dev/null | awk -v o="$obj" '$1 == o { found=1 } END { exit !found }'; then
+      rewritten_first="rewritten/existing"
+      continue
+    fi
+    dest_rest="${ref_dest#refs/}"    # heads/main | heads/server/main
+    ref_category="${dest_rest%%/*}"  # heads|tags
+    dest_name="${dest_rest#*/}"      # main | server/main
+    ts="$(date +%Y%m%d-%H%M%S)"
+    rewritten_ref="refs/$ref_category/rewritten/$ts/$dest_name"
+    retry_out=$(git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 --git-dir="$repo" push --porcelain "$gl_dest" "$ref_src:$rewritten_ref" 2>&1); retry_rc=$?
+    printf '%s\n' "$retry_out" | mask
+    if [[ "$retry_rc" != 0 ]]; then result="err:gitlab $(gitlab_err "$retry_out")"; return 1; fi
+    if [[ -z "$rewritten_first" ]]; then rewritten_first="rewritten/$ts/$dest_name"; fi
+  done <<< "$push_out"
+  if [[ -z "$rewritten_first" && "$push_rc" != 0 ]]; then
+    result="err:gitlab $(gitlab_err "$push_out")"; return 1
+  fi
+  return 0
+}
+# Journal one --local result line: `<time> <name> <result>` (global $result may
+# carry a masked reason, e.g. `err:gitlab <why>`).
+journal_local(){
+  local line
+  line="$(printf '%s %s %s\n' "$(date +%F_%T)" "$name" "$result" | mask)"
+  printf '%s\n' "$line"
+  printf '%s\n' "$line" >> "$CA_LOG"
+}
+# U7a/D13: --local <git-dir> — a developer repo that just committed/merged
+# pushes its own heads to GitLab under refs/heads/server/*. Runs detached from
+# the hook so it never blocks the commit and never touches the mirror. Journal
+# line is ok:local|skip:not-org|skip:excluded|err:gitlab (the busy-lock case
+# drops a `.again` marker for the holder and exits 0 with no journal line).
+local_mode(){
+  local gdir="$1" url gl_path gl_out attempt
+  url="$(git --git-dir="$gdir" config --get remote.origin.url 2>/dev/null || true)"
+  name="$(printf '%s\n' "$url" | sed -nE 's#.*github\.com[:/]arwoxbx24/([^/]+)$#\1#p')"
+  name="${name%.git}"
+  if [[ -z "$name" ]]; then result=skip:not-org; journal_local; return 0; fi
+  if [[ "$name" == hh-scoring* || "$name" == stroyremont ]]; then result=skip:excluded; journal_local; return 0; fi
+  mkdir -p "$CA_STATE_DIR"
+  exec {lockfd}>"$CA_STATE_DIR/$name.lock"
+  if ! flock -n "$lockfd"; then
+    : > "$CA_STATE_DIR/$name.again"
+    exec {lockfd}>&-
+    return 0
+  fi
+  if [[ "$CA_GITLAB_BASE" == /* ]]; then
+    # Local path mode (tests): create the bare target if missing.
+    gl_path="$CA_GITLAB_BASE/$name.git"
+    if [[ ! -d "$gl_path" ]]; then
+      if ! gl_out="$(git init -q --bare "$gl_path" 2>&1)"; then
+        result="err:gitlab $(gitlab_err "$gl_out")"; exec {lockfd}>&-; journal_local; return 1
+      fi
+    fi
+    gl_dest="$gl_path"
+  else
+    gl_dest="$CA_GITLAB_BASE/$name.git"
+    if [[ "$CA_GITLAB_BASE" == https://* ]] && ! gitlab_ensure_project "$name"; then
+      exec {lockfd}>&-; journal_local; return 1
+    fi
+  fi
+  # Holder: push, and while a `.again` marker signals a queued follow-up, drop
+  # it and re-push — at most 3 pushes.
+  attempt=0
+  while (( attempt < 3 )); do
+    attempt=$((attempt+1))
+    if ! gl_push "$gdir" 'refs/heads/*:refs/heads/server/*'; then
+      exec {lockfd}>&-; journal_local; return 1
+    fi
+    if [[ -f "$CA_STATE_DIR/$name.again" ]]; then
+      rm -f "$CA_STATE_DIR/$name.again"
+    else
+      break
+    fi
+  done
+  exec {lockfd}>&-
+  result=ok:local
+  journal_local
   return 0
 }
 # Mirror one name under a free-space floor `min` (KB); prints and logs its
@@ -238,6 +306,10 @@ process_one(){
   exec {lockfd}>&-
 }
 mkdir -p "$CA_REPOS_DIR" "$(dirname "$CA_LOG")" "$CA_STATE_DIR"
+if [[ "${1:-}" == "--local" ]]; then
+  local_mode "${2:?}" && exit 0
+  exit $?
+fi
 ok=0; err=0; skipped=0
 changed=0
 if [[ "${1:-}" == "--changed" ]]; then
