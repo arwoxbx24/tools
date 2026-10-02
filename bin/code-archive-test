@@ -650,5 +650,135 @@ else
   f 38
 fi
 
-echo "PASS $ok FAIL $((38-ok))"
-[[ $ok == 38 ]]
+# --- U7c: branch protection `*` on the GitLab project (checks 39-42) ---
+# Stub for the GitLab REST API. Behaviour is tuned per-test via env:
+#   SP_LIST       group-project rows (JSON array of {id,path})
+#   SP_BAD_POST   project id whose protect POST must error
+#   SP_NO_LIST    project id whose protected-branches list lacks `*`
+#   SP_NEW        project path that must be treated as missing (create path)
+mkdir -p "$T/stubP"
+cat > "$T/stubP/curl" <<'STUB'
+#!/usr/bin/env bash
+log="${CURLP_LOG:?}"
+printf 'ARGS: %s\n' "$*" >> "$log"
+if [[ ! -t 0 ]]; then
+  while IFS= read -r line; do
+    case "$line" in
+      PRIVATE-TOKEN:*) printf 'PRIVATE-TOKEN:\n' >> "$log";;
+    esac
+  done
+fi
+url=""; for a in "$@"; do case "$a" in http://*|https://*) url="$a"; break;; esac; done
+out=""; prev=""
+for a in "$@"; do if [[ "$prev" == "-o" ]]; then out="$a"; fi; prev="$a"; done
+is_post=no; case "$*" in *"-X POST"*) is_post=yes;; esac
+is_protect=no; case "$url" in */protected_branches*) is_protect=yes;; esac
+is_grouplist=no; case "$url" in *"/groups/"*"/projects"*) is_grouplist=yes;; esac
+is_groupresolve=no; if [[ "$url" == *"/groups/"* && "$is_grouplist" == no ]]; then is_groupresolve=yes; fi
+is_create=no; if [[ "$is_post" == yes && "$url" == *"/api/v4/projects" && "$url" != *"/projects/"* ]]; then is_create=yes; fi
+is_single=no; if [[ "$is_protect" == no && "$is_post" == no && "$is_create" == no && "$url" == *"/projects/"* ]]; then is_single=yes; fi
+code=500; body='{}'
+if [[ "$is_protect" == yes ]]; then
+  if [[ "$is_post" == yes ]]; then
+    if [[ -n "${SP_BAD_POST:-}" && "$url" == *"/$SP_BAD_POST/"* ]]; then
+      code=400; body='{"message":"already exists"}'
+    else
+      code=201; body='{"id":1,"name":"*"}'
+    fi
+  else
+    code=200
+    if [[ -n "${SP_NO_LIST:-}" && "$url" == *"/$SP_NO_LIST/"* ]]; then body='[]'
+    else body='[{"name":"*"}]'; fi
+  fi
+elif [[ "$is_grouplist" == yes ]]; then
+  code=200; body="${SP_LIST:-[]}"
+elif [[ "$is_single" == yes ]]; then
+  if [[ -n "${SP_NEW:-}" && "$url" == *"%2F$SP_NEW"* ]]; then code=404; body='{}'
+  else code=200; body='{"id":77,"visibility":"private"}'; fi
+elif [[ "$is_create" == yes ]]; then
+  code=201; body='{"id":99}'
+elif [[ "$is_groupresolve" == yes ]]; then
+  code=200; body='{"id":42}'
+fi
+if [[ -n "$out" ]]; then printf '%s' "$body" > "$out"; fi
+printf '%s' "$code"
+STUB
+chmod +x "$T/stubP/curl"
+
+# Check 39: creating a NEW project mirrors it, then protects `*` — the run
+# POSTs to protected_branches with name=*, push/merge=40 and allow_force_push=false.
+# (The later push to the fake https base fails, so the pass reports err:gitlab.)
+git init -q --bare "$T/github/newproj.git"
+git -C "$T/seed" push -q "$T/github/newproj.git" main
+rm -f "$T/curlp.log"
+out39=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state \
+        CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_LAST_OK=$T/last-ok \
+        CA_FREE_MIN_KB=1 CA_GITLAB_BASE=https://example.invalid/arwox24-group \
+        SP_NEW=newproj CURLP_LOG="$T/curlp.log" PATH="$T/stubP:$PATH" \
+        "$bin/code-archive" newproj 2>&1); rc39=$?
+if [[ $rc39 == 1 ]] \
+   && grep -q -- '-X POST.*protected_branches' "$T/curlp.log" \
+   && grep -qF 'name=*' "$T/curlp.log" \
+   && grep -qF 'push_access_level=40' "$T/curlp.log" \
+   && grep -qF 'merge_access_level=40' "$T/curlp.log" \
+   && grep -qF 'allow_force_push=false' "$T/curlp.log" \
+   && ! grep -q 'glpat-TESTONLY000' "$T/curlp.log" \
+   && grep -qF 'newproj err:gitlab' "$T/log/code-archive.log"; then
+  p 39
+else
+  f 39
+fi
+
+# Check 40: --protect-all — a protect POST errors but the list already holds `*`
+# -> project counts as protected, code 0 and no `err` anywhere.
+rm -f "$T/curlp.log"
+out40=$(CA_ENV_FILE=$T/env CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log \
+        CA_LAST_OK=$T/last-ok CA_GITLAB_BASE=https://example.invalid/arwox24-group \
+        SP_LIST='[{"id":7,"path":"proj-seven"}]' SP_BAD_POST=7 \
+        CURLP_LOG="$T/curlp.log" PATH="$T/stubP:$PATH" \
+        "$bin/code-archive" --protect-all 2>&1); rc40=$?
+if [[ $rc40 == 0 ]] \
+   && ! grep -q 'err:' <<<"$out40" \
+   && grep -qF 'ok=1 err=0' <<<"$out40"; then
+  p 40
+else
+  f 40
+fi
+
+# Check 41: --protect-all over two projects -> two protect POSTs, no err, code 0.
+rm -f "$T/curlp.log"
+out41=$(CA_ENV_FILE=$T/env CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log \
+        CA_LAST_OK=$T/last-ok CA_GITLAB_BASE=https://example.invalid/arwox24-group \
+        SP_LIST='[{"id":1,"path":"p-one"},{"id":2,"path":"p-two"}]' \
+        CURLP_LOG="$T/curlp.log" PATH="$T/stubP:$PATH" \
+        "$bin/code-archive" --protect-all 2>&1); rc41=$?
+posts41=$(grep -c -- '-X POST' "$T/curlp.log" || true)
+if [[ $rc41 == 0 ]] && [[ "$posts41" == 2 ]] \
+   && ! grep -q 'err:' <<<"$out41" \
+   && grep -qF 'ok=2 err=0' <<<"$out41"; then
+  p 41
+else
+  f 41
+fi
+
+# Check 42: --protect-all — one project's POST errors AND its list lacks `*`
+# -> err:gitlab line names it, code 1, and the second project is still processed.
+rm -f "$T/curlp.log"
+out42=$(CA_ENV_FILE=$T/env CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log \
+        CA_LAST_OK=$T/last-ok CA_GITLAB_BASE=https://example.invalid/arwox24-group \
+        SP_LIST='[{"id":1,"path":"bad1"},{"id":2,"path":"good2"}]' \
+        SP_BAD_POST=1 SP_NO_LIST=1 \
+        CURLP_LOG="$T/curlp.log" PATH="$T/stubP:$PATH" \
+        "$bin/code-archive" --protect-all 2>&1); rc42=$?
+if [[ $rc42 == 1 ]] \
+   && grep -qF 'bad1 err:gitlab' "$T/log/code-archive.log" \
+   && grep -qF 'bad1 err:gitlab' <<<"$out42" \
+   && grep -qF 'good2 ok' <<<"$out42" \
+   && grep -qF 'ok=1 err=1' <<<"$out42"; then
+  p 42
+else
+  f 42
+fi
+
+echo "PASS $ok FAIL $((42-ok))"
+[[ $ok == 42 ]]
