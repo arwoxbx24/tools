@@ -217,7 +217,9 @@ process_one(){
 }
 mkdir -p "$CA_REPOS_DIR" "$(dirname "$CA_LOG")" "$CA_STATE_DIR"
 ok=0; err=0; skipped=0
+changed=0
 if [[ "${1:-}" == "--changed" ]]; then
+  changed=1
   shift
   # D5 source: list of "<name>\t<pushed_at>\t<size_kb>\t<archived>" rows. Use a
   # provided file (tests) or fetch the org's repos from GitHub via gh api.
@@ -271,4 +273,9 @@ sum="=== pass $(date +%F_%T) | ok=$ok err=$err skipped=$skipped ==="
 printf '%s\n' "$sum"
 printf '%s\n' "$sum" >> "$CA_LOG"
 if (( err == 0 )); then date +%s > "${CA_LAST_OK:-/root/workspaces/system/services/gitmirror/last-ok}"; fi
-exit $(( err > 0 ? 1 : 0 ))
+pass_rc=$(( err > 0 ? 1 : 0 ))
+drill_rc=0
+if (( changed )) && [[ $(date +%u) == "${CA_DRILL_DOW:-1}" ]]; then
+  if "${CA_DRILL_CMD:-$(dirname "$0")/code-archive-drill}"; then :; else drill_rc=$?; fi
+fi
+exit $(( pass_rc > drill_rc ? pass_rc : drill_rc ))

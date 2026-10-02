@@ -354,5 +354,19 @@ else
   f 21
 fi
 
-echo "PASS $ok FAIL $((21-ok))"
-[[ $ok == 21 ]]
+# Check 22: --changed runs the Monday drill only on the configured day.
+printf '#!/usr/bin/env bash\ntouch "$T/drill-called"\n' > "$T/stub-drill"
+chmod +x "$T/stub-drill"
+rm -f "$T/drill-called"
+out22=$(T="$T" CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_LAST_OK=$T/last-ok CA_LIST_FILE=$T/list11.tsv CA_DRILL_CMD=$T/stub-drill CA_DRILL_DOW="$(date +%u)" "$bin/code-archive" --changed 2>&1); rc22=$?
+called22=$([[ -e "$T/drill-called" ]] && echo yes || echo no)
+rm -f "$T/drill-called"
+out22b=$(T="$T" CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_LAST_OK=$T/last-ok CA_LIST_FILE=$T/list11.tsv CA_DRILL_CMD=$T/stub-drill CA_DRILL_DOW=8 "$bin/code-archive" --changed 2>&1); rc22b=$?
+if [[ $rc22 == 0 && $called22 == yes && $rc22b == 0 && ! -e "$T/drill-called" ]]; then
+  p 22
+else
+  f 22
+fi
+
+echo "PASS $ok FAIL $((22-ok))"
+[[ $ok == 22 ]]
