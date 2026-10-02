@@ -17,6 +17,8 @@ NICE_PREFIX=(nice -n 19)
 if command -v ionice >/dev/null 2>&1; then
   NICE_PREFIX=(nice -n 19 ionice -c3)
 fi
+renice --priority 19 -p $$ >/dev/null 2>&1 || true
+printf '[%s] nice=%s\n' "$(date '+%F %T')" "$(ps -o ni= -p $$ | tr -d '[:space:]')" >>"$LOG"
 
 if [ -f "$LOG" ] && [ "$(stat -c%s "$LOG")" -gt $((5 * 1024 * 1024)) ]; then
   mv -f "$LOG" "$LOG.1"
