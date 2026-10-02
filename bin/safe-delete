@@ -25,7 +25,7 @@ case "$cmd" in
   file)
     [[ $# -ge 1 ]] || refuse 'usage'
     p=$(realpath -e "$1") || refuse "нет файла: $1"; [[ -f $p ]] || refuse "не обычный файл: $p"
-    roots=${SAFE_DELETE_ROOTS:-/root/workspaces/projects:/root/workspaces/tools:/root/workspaces/sandbox:/home/gitmirror/state}
+    roots=${SAFE_DELETE_ROOTS:-/root/workspaces/projects:/root/workspaces/tools:/root/workspaces/sandbox:/home/gitmirror/state:/root/.claude/projects/-root-workspaces-projects/memory}
     if [[ -n ${SAFE_DELETE_ROOTS:-} ]]; then
       IFS=: read -ra rts <<< "$roots"
       for r in "${rts[@]}"; do [[ $r == /tmp/* ]] || refuse "корень не под /tmp: $r"; done
