@@ -715,7 +715,7 @@ for a in "${us46[@]}"; do env "${localenv[@]}" "$bin/code-archive" "$a" >/dev/nu
 env "${localenv[@]}" "$bin/code-archive" >/dev/null 2>&1; rc46n=$?
 out46m=$(env "${localenv[@]}" "$bin/code-archive" nosuchrepo46 2>&1); rc46m=$?
 after46b=$(wc -l < "$T/state/notify.out" 2>/dev/null || echo 0)
-errusage46=$(grep -c 'err:usage' "$T/log/code-archive.log" || true)
+errusage46=$(tail -n +$((before46a+1)) "$T/log/code-archive.log" | grep -c 'err:usage' || true)
 mkgh ".github46"; mkgh "a-b_c.d46"
 git -C "$T/seed" push -q "$T/github/.github46.git" main
 git -C "$T/seed" push -q "$T/github/a-b_c.d46.git" main
@@ -739,6 +739,49 @@ if [[ $rc46h == 0 && $rc46i == 0 && $rc46x == 0 \
   p 46
 else
   f 46
+fi
+
+# Check 47 (U1-fix1): SSH's "Repository not found" is only treated as
+# err:not-found when the GitHub API confirms it (HTTP 404); a revoked key
+# (403) still notifies, and --drill x is usable under CA_ASKPASS=1 with 2 args.
+mkdir -p "$T/stub47"
+realgit47="$(command -v git)"
+cat > "$T/stub47/git" <<'STUB'
+#!/usr/bin/env bash
+realgit="${REALGIT47:?}"
+for a in "$@"; do
+  if [[ "$a" == "ls-remote" ]]; then
+    printf '%s\n' 'ERROR: Repository not found.' >&2
+    exit 128
+  fi
+done
+exec "$realgit" "$@"
+STUB
+cat > "$T/stub47/gh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "${GH47_OUT:?}" >&2
+exit 1
+STUB
+chmod +x "$T/stub47/git" "$T/stub47/gh"
+before47=$(wc -l < "$T/state/notify.out" 2>/dev/null || echo 0)
+out47m=$(env "${localenv[@]}" PATH="$T/stub47:$PATH" REALGIT47="$realgit47" \
+         GH47_OUT='gh: Not Found (HTTP 404)' "$bin/code-archive" newmiss47 2>&1); rc47m=$?
+mid47=$(wc -l < "$T/state/notify.out" 2>/dev/null || echo 0)
+out47d=$(env "${localenv[@]}" PATH="$T/stub47:$PATH" REALGIT47="$realgit47" \
+         GH47_OUT='gh: Forbidden (HTTP 403)' "$bin/code-archive" newdeny47 2>&1); rc47d=$?
+after47=$(wc -l < "$T/state/notify.out" 2>/dev/null || echo 0)
+out47a=$(env "${localenv[@]}" CA_ASKPASS=1 PATH="$T/stub47:$PATH" REALGIT47="$realgit47" \
+         "$bin/code-archive" --drill x 2>&1); rc47a=$?
+nf47=no; grep -Fq 'newmiss47 err:not-found' "$T/log/code-archive.log" && nf47=yes
+nd47=no; grep -qF 'newdeny47 err:' "$T/log/code-archive.log" && \
+  ! grep -qF 'newdeny47 err:not-found' "$T/log/code-archive.log" && nd47=yes
+if [[ $rc47m == 1 && $nf47 == yes && $mid47 == $before47 \
+   && ! -e "$T/repos/newmiss47.git" && ! -e "$T/state/newmiss47.fail" \
+   && $rc47d == 1 && $nd47 == yes && $((after47 - before47)) == 1 \
+   && $rc47a == 64 ]]; then
+  p 47
+else
+  f 47
 fi
 
 echo "PASS $ok FAIL $((total-ok))"

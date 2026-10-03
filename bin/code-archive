@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # U1 (ADR-1): validate before reading secrets; askpass (git single-prompt) skips.
-if [[ ${CA_ASKPASS:-} != 1 ]]; then
+if ! [[ ${CA_ASKPASS:-} == 1 && $# -eq 1 ]]; then
   usage(){ printf '%s\n' 'code-archive <repo>...' 'code-archive --changed' 'code-archive --protect-all' 'code-archive --help'; }
   [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]] && { usage; exit 0; }
   [[ $# -eq 0 ]] && { usage >&2; exit 64; }
@@ -10,7 +10,7 @@ if [[ ${CA_ASKPASS:-} != 1 ]]; then
     for a in "$@"; do
       if ! [[ $a =~ $re && $a != . && $a != .. ]]; then
         printf 'err:usage %s\n' "$a" >&2; usage >&2
-        printf '%s %s err:usage\n' "$(date +%F_%T)" "$a" >> "${CA_LOG:-/root/workspaces/system/services/gitmirror/code-archive.log}" 2>/dev/null || true
+        printf '%s %s err:usage\n' "$(date +%F_%T)" "${a//[^[:print:]]/?}" >> "${CA_LOG:-/root/workspaces/system/services/gitmirror/code-archive.log}" 2>/dev/null || true
         exit 64
       fi
     done
@@ -174,9 +174,17 @@ mirror_name(){
     git --git-dir="$dst" remote set-url github "$src"
   else
     # U1 (ADR-3): probe a new source first; a missing one is err:not-found.
-    if ! lr="$(git ls-remote "$src" 2>&1)"; then
-      if [[ "$lr" == *"Repository not found"* || "$lr" == *"does not appear to be a git repository"* ]]; then
+    # SSH denies (revoked key / lost access) print the same "Repository not
+    # found" text, so confirm via the GitHub API's HTTP 404 before silencing.
+    if ! lr="$(LC_ALL=C timeout 30 git -c core.sshCommand='ssh -o BatchMode=yes -o ConnectTimeout=10' ls-remote "$src" 2>&1)"; then
+      if [[ "$lr" == *"does not appear to be a git repository"* ]]; then
         result=err:not-found; return 1
+      fi
+      if [[ "$lr" == *"Repository not found"* ]]; then
+        org="${CA_GITHUB_BASE##*[:/]}"
+        if ! gho="$(gh api "repos/$org/$name" 2>&1)" && [[ "$gho" == *"HTTP 404"* ]]; then
+          result=err:not-found; return 1
+        fi
       fi
     fi
     git init -q --bare "$dst" || { result=err:init; return 1; }
@@ -465,7 +473,7 @@ if [[ "${1:-}" == "--changed" ]]; then
   else
     list_file="$(mktemp)"
     trap 'rm -f "$list_file"' EXIT
-    org="${CA_GITHUB_BASE##*:}"
+    org="${CA_GITHUB_BASE##*[:/]}"
     if ! gh api --paginate "/orgs/$org/repos?per_page=100" \
          -q '.[] | [.name, .pushed_at, (.size|tostring), (.archived|tostring)] | @tsv' > "$list_file"; then
       line="$(date +%F_%T) err:list-fetch"
