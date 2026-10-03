@@ -10,7 +10,7 @@ if ! [[ ${CA_ASKPASS:-} == 1 && $# -eq 1 ]]; then
     for a in "$@"; do
       if ! [[ $a =~ $re && $a != . && $a != .. ]]; then
         printf 'err:usage %s\n' "$a" >&2; usage >&2
-        printf '%s %s err:usage\n' "$(date +%F_%T)" "${a//[^[:print:]]/?}" >> "${CA_LOG:-/root/workspaces/system/services/gitmirror/code-archive.log}" 2>/dev/null || true
+        printf '%s %s err:usage layer=config invalid-name\n' "$(date +%F_%T)" "${a//[^[:print:]]/?}" >> "${CA_LOG:-/root/workspaces/system/services/gitmirror/code-archive.log}" 2>/dev/null || true
         exit 64
       fi
     done
@@ -34,6 +34,39 @@ CA_LOG="${CA_LOG:-/root/workspaces/system/services/gitmirror/code-archive.log}"
 CA_STATE_DIR="${CA_STATE_DIR:-/home/gitmirror/state}"
 CA_NOTIFY_ENV="${CA_NOTIFY_ENV:-/root/workspaces/secrets/services/pm2-notify.env}"
 mask(){ sed -E 's#(ghp_|gho_|github_pat_|glpat-|oauth2:)[^@ ]*#***#g'; }
+reason(){
+  local text="$1" line
+  line="$(printf '%s\n' "$text" | mask | LC_ALL=C tr -cd '[:print:]\n' | sed -n '1p')"
+  printf '%s' "${line:0:200}"
+}
+err_layer(){
+  local class="$1" why="$2"
+  case "$why" in
+    *'Could not resolve host'*|*'timed out'*|*'Connection refused'*|*'Connection reset'*) printf network; return;;
+  esac
+  case "$class" in
+    usage|no-key) printf config;;
+    fetch|not-found|list-fetch|list-shrunk)
+      case "$why" in *'Permission denied'*|*'Authentication failed'*|*'HTTP 403'*|*'HTTP 401'*|*'Repository not found'*) printf auth;; *) printf github;; esac;;
+    gitlab|secret|visibility|incomplete)
+      case "$why" in *'HTTP 403'*|*'HTTP 401'*|*'http=403'*|*'http=401'*) printf auth;; *) printf gitlab;; esac;;
+    init|add|ref|no-space) printf disk;;
+    *) printf config;;
+  esac
+}
+state_write(){
+  local file="$1" value="$2" tmp="$1.tmp.$$"
+  printf '%s\n' "$value" > "$tmp" && mv -f "$tmp" "$file"
+}
+cleanup_state_tmp(){ rm -f "$CA_STATE_DIR"/*.tmp.$$ "${list_tmp:-}"; }
+trap cleanup_state_tmp EXIT
+source_gone(){
+  local name="$1" org gho
+  org="${CA_GITHUB_BASE##*[:/]}"
+  gho="$(gh api "repos/$org/$name" 2>&1)" || true
+  source_gone_reason="$gho"
+  [[ "$gho" == *'HTTP 404'* ]]
+}
 # Short masked reason (first `!`/`error:`/`fatal:` line, <=200 chars) for
 # err:gitlab journal lines, so a failed push/API call is diagnosable.
 gitlab_err(){
@@ -50,7 +83,7 @@ gitlab_err(){
 notify_send(){
   local text="$1" token chat
   if [[ "${CA_NO_NOTIFY:-0}" == 1 ]]; then
-    printf '%s\n' "$text" >> "$CA_STATE_DIR/notify.out" 2>/dev/null || true
+    printf '%s\n' "$text" >> "${CA_STATE_DIR}/notify.out" 2>/dev/null || true
     return 0
   fi
   (
@@ -104,12 +137,12 @@ gitlab_ensure_project(){
     vis=$(jq -r '.visibility // ""' "$body")
     rm -f "$body"
     if [[ "$vis" != "private" ]]; then
-      result=err:visibility; return 1
+      result=err:visibility; error_reason="visibility=$vis"; return 1
     fi
     return 0
   fi
   if [[ "$code" != 404 ]]; then
-    rm -f "$body"; result="err:gitlab http=$code"; return 1
+    rm -f "$body"; result=err:gitlab; error_reason="http=$code"; return 1
   fi
   rm -f "$body"
   # Project missing: resolve the group id once per run, then create the project.
@@ -118,7 +151,7 @@ gitlab_ensure_project(){
     code=$(printf 'PRIVATE-TOKEN: %s\n' "$GITLAB_MIRROR_TOKEN" | curl -s --max-time 60 -o "$body" -w '%{http_code}' -H @- "$api/groups/$group")
     if [[ "$code" == 200 ]]; then gitlab_group_id="$(jq -r '.id' "$body")"; fi
     rm -f "$body"
-    if [[ -z "${gitlab_group_id:-}" ]]; then result="err:gitlab http=$code"; return 1; fi
+    if [[ -z "${gitlab_group_id:-}" ]]; then result=err:gitlab; error_reason="http=$code"; return 1; fi
   fi
   body="$(mktemp)"
   code=$(printf 'PRIVATE-TOKEN: %s\n' "$GITLAB_MIRROR_TOKEN" | curl -s --max-time 60 -o "$body" -w '%{http_code}' -H @- \
@@ -130,7 +163,7 @@ gitlab_ensure_project(){
     gitlab_created=1
   fi
   rm -f "$body"
-  if [[ "$code" != 201 ]]; then result="err:gitlab http=$code"; return 1; fi
+  if [[ "$code" != 201 ]]; then result=err:gitlab; error_reason="http=$code"; return 1; fi
   return 0
 }
 # U7c/D15: protect the `*` branch (no delete / no force-push) on a GitLab
@@ -153,7 +186,7 @@ gitlab_protect_branches(){
   if jq -e --arg n '*' '.[] | select(.name == $n)' "$body" >/dev/null 2>&1; then
     rm -f "$body"; return 0
   fi
-  rm -f "$body"; result="err:gitlab protect http=$code"; return 1
+  rm -f "$body"; result=err:gitlab; error_reason="protect http=$code"; return 1
 }
 # Mirror one repo. On success sets $result (ok|ok:created) and returns 0; on
 # failure sets $result (err:<why>) and returns non-zero. Called in an if
@@ -161,7 +194,7 @@ gitlab_protect_branches(){
 mirror_name(){
   local name="$1" src dst existing=0 ferr
   src="$CA_GITHUB_BASE/$name.git"; dst="$CA_REPOS_DIR/$name.git"
-  result=ok
+  result=ok; error_reason=""
   if [[ -d "$dst" ]]; then
     existing=1
     # U2: clean leaked credentials / mirror refspec from every remote of an existing copy.
@@ -181,14 +214,14 @@ mirror_name(){
         result=err:not-found; return 1
       fi
       if [[ "$lr" == *"Repository not found"* ]]; then
-        org="${CA_GITHUB_BASE##*[:/]}"
-        if ! gho="$(gh api "repos/$org/$name" 2>&1)" && [[ "$gho" == *"HTTP 404"* ]]; then
+        if source_gone "$name"; then
+          error_reason="$lr"
           result=err:not-found; return 1
         fi
       fi
     fi
-    git init -q --bare "$dst" || { result=err:init; return 1; }
-    git --git-dir="$dst" remote add github "$src" || { result=err:add; return 1; }
+    git init -q --bare "$dst" || { result=err:init; error_reason='git init failed'; return 1; }
+    git --git-dir="$dst" remote add github "$src" || { result=err:add; error_reason='git remote add failed'; return 1; }
     result=ok:created
   fi
   # U3: only accumulate — fetch into temp space, propagate to real refs, archiving rewrites.
@@ -196,7 +229,12 @@ mirror_name(){
     # U7: if an existing copy's source is gone, keep the copy untouched and report kept.
     if (( existing )) && [[ -n "$(git --git-dir="$dst" for-each-ref --count=1 --format='%(refname)' refs/heads refs/tags)" ]] \
        && { [[ "$ferr" == *"Repository not found"* || "$ferr" == *"does not appear to be a git repository"* ]]; }; then
-      result=kept:source-gone; return 0
+      if source_gone "$name"; then
+        result=kept:source-gone; return 0
+      fi
+      error_reason="$ferr${source_gone_reason:+$'\n'$source_gone_reason}"
+    else
+      error_reason="$ferr"
     fi
     result=err:fetch; return 1
   }
@@ -233,7 +271,7 @@ mirror_name(){
           while git --git-dir="$dst" rev-parse -q --verify "$rn" >/dev/null 2>&1; do n=$((n+1)); rn="${base}-${n}/$occupied_leaf"; done
           git --git-dir="$dst" update-ref "$rn" "$(git --git-dir="$dst" rev-parse "$occupied")" \
             && git --git-dir="$dst" update-ref -d "$occupied" \
-            || { result=err:ref; return 1; }
+            || { result=err:ref; error_reason='update-ref failed'; return 1; }
           result="ok:ref-conflict archive/$ts/$occupied_leaf"
         done < <(git --git-dir="$dst" for-each-ref --format='%(refname)' "$real/")
         # U7: the new ref is blocked because an ancestor name is already a ref
@@ -251,7 +289,7 @@ mirror_name(){
             result="ok:ref-conflict archive/$ts/$p"
           fi
         done
-        git --git-dir="$dst" update-ref "$real" "$obj" || { result=err:ref; return 1; }
+        git --git-dir="$dst" update-ref "$real" "$obj" || { result=err:ref; error_reason='update-ref failed'; return 1; }
       fi
     fi
   done < <(git --git-dir="$dst" for-each-ref --format='%(refname) %(objectname)' refs/incoming/)
@@ -261,16 +299,16 @@ mirror_name(){
     # Local path mode: create bare repo if missing
     gl_path="$CA_GITLAB_BASE/$name.git"
     if [[ ! -d "$gl_path" ]]; then
-      if ! gl_out="$(git init -q --bare "$gl_path" 2>&1)"; then result="err:gitlab $(gitlab_err "$gl_out")"; return 1; fi
+      if ! gl_out="$(git init -q --bare "$gl_path" 2>&1)"; then result=err:gitlab; error_reason="$gl_out"; return 1; fi
     fi
     gl_dest="$gl_path"
   else
     # HTTPS mode: set up gitlab remote
     gl_dest="$CA_GITLAB_BASE/$name.git"
     if git --git-dir="$dst" config --get remote.gitlab.url >/dev/null 2>&1; then
-      if ! gl_out="$(git --git-dir="$dst" remote set-url gitlab "$gl_dest" 2>&1)"; then result="err:gitlab $(gitlab_err "$gl_out")"; return 1; fi
+      if ! gl_out="$(git --git-dir="$dst" remote set-url gitlab "$gl_dest" 2>&1)"; then result=err:gitlab; error_reason="$gl_out"; return 1; fi
     else
-      if ! gl_out="$(git --git-dir="$dst" remote add gitlab "$gl_dest" 2>&1)"; then result="err:gitlab $(gitlab_err "$gl_out")"; return 1; fi
+      if ! gl_out="$(git --git-dir="$dst" remote add gitlab "$gl_dest" 2>&1)"; then result=err:gitlab; error_reason="$gl_out"; return 1; fi
     fi
     gl_dest="gitlab"
     # U8b: verify the target project exists and is private (creating it if
@@ -288,6 +326,19 @@ mirror_name(){
   # U8a: push all heads+tags without force; on a "not fast-forward" rejection
   # archive the rejected ref under rewritten/<ts>/<dest-name> and keep going.
   gl_push "$dst" 'refs/heads/*:refs/heads/*' 'refs/tags/*:refs/tags/*' || return 1
+  if ! gl_refs="$(git ls-remote --heads --tags "$gl_dest" 2>&1)"; then
+    result=err:gitlab; error_reason="$gl_refs"; return 1
+  fi
+  missing=()
+  while read -r ref obj; do
+    [[ -n "$ref" ]] || continue
+    if ! awk -v obj="$obj" '$1 == obj { found=1 } END { exit !found }' <<<"$gl_refs"; then
+      missing+=("$ref")
+    fi
+  done < <(git --git-dir="$dst" for-each-ref --format='%(refname) %(objectname)' refs/heads refs/tags)
+  if (( ${#missing[@]} )); then
+    result=err:incomplete; error_reason="${#missing[@]} missing"; return 1
+  fi
   if [[ -n "$rewritten_first" ]]; then
     result="ok:gitlab-rewritten $rewritten_first"
   fi
@@ -335,7 +386,7 @@ gl_push(){
     push_out=$(git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 --git-dir="$repo" push --porcelain "$gl_dest" "${retry_refs[@]}" 2>&1); push_rc=$?
   fi
   # U7b: a rejected push whose barrier reports a leaked secret fails as err:secret.
-  if [[ "$push_out" == *"BLOCKED: secret-gate"* ]]; then result="err:secret"; return 1; fi
+  if [[ "$push_out" == *"BLOCKED: secret-gate"* ]]; then result="err:secret"; error_reason="$push_out"; return 1; fi
   rewritten_first=""
   while read -r line; do
     [[ "$line" == "!"* ]] || continue
@@ -355,20 +406,25 @@ gl_push(){
     ts="$(date +%Y%m%d-%H%M%S)"
     rewritten_ref="refs/$ref_category/rewritten/$ts/$dest_name"
     retry_out=$(git -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=60 --git-dir="$repo" push --porcelain "$gl_dest" "$ref_src:$rewritten_ref" 2>&1); retry_rc=$?
-    if [[ "$retry_out" == *"BLOCKED: secret-gate"* ]]; then result="err:secret"; return 1; fi
+    if [[ "$retry_out" == *"BLOCKED: secret-gate"* ]]; then result="err:secret"; error_reason="$retry_out"; return 1; fi
     printf '%s\n' "$retry_out" | mask
-    if [[ "$retry_rc" != 0 ]]; then result="err:gitlab $(gitlab_err "$retry_out")"; return 1; fi
+    if [[ "$retry_rc" != 0 ]]; then result="err:gitlab"; error_reason="$retry_out"; return 1; fi
     if [[ -z "$rewritten_first" ]]; then rewritten_first="rewritten/$ts/$dest_name"; fi
   done <<< "$push_out"
   if [[ -z "$rewritten_first" && "$push_rc" != 0 ]]; then
-    result="err:gitlab $(gitlab_err "$push_out")"; return 1
+    result="err:gitlab"; error_reason="$push_out"; return 1
   fi
   return 0
 }
 # Journal one result line for the current `name`.
 journal_local(){
-  local line
-  line="$(printf '%s %s %s\n' "$(date +%F_%T)" "$name" "$result" | mask)"
+  local line class why
+  if [[ "$result" == err:* ]]; then
+    class="${result#err:}"; why="$(reason "${error_reason:-$result}")"
+    line="$(printf '%s %s %s layer=%s %s\n' "$(date +%F_%T)" "$name" "$result" "$(err_layer "$class" "${error_reason:-$why}")" "$why" | mask)"
+  else
+    line="$(printf '%s %s %s\n' "$(date +%F_%T)" "$name" "$result" | mask)"
+  fi
   printf '%s\n' "$line"
   printf '%s\n' "$line" >> "$CA_LOG"
 }
@@ -388,7 +444,7 @@ protect_all(){
         "$api/groups/$group/projects?per_page=100&page=$page")
     if [[ "$code" != 200 ]]; then
       rm -f "$body"
-      name="$group"; result="err:gitlab list http=$code"; journal_local
+      name="$group"; result=err:gitlab; error_reason="list http=$code"; journal_local
       err=$((err+1)); break
     fi
     mapfile -t rows < <(jq -r '.[] | [.id, .path] | @tsv' "$body")
@@ -417,7 +473,7 @@ protect_all(){
 process_one(){
   local name="$1" min="$2" failed=0
   mkdir -p "$CA_STATE_DIR"
-  exec {lockfd}>"$CA_STATE_DIR/$name.lock"
+  exec {lockfd}>"${CA_STATE_DIR}/$name.lock"
   flock "$lockfd"
   avail=$(df --output=avail -k "$CA_REPOS_DIR" 2>/dev/null | tail -n1 | tr -d '[:space:]' || true)
   if [[ "$avail" =~ ^[0-9]+$ ]] && (( avail >= min )); then
@@ -430,7 +486,7 @@ process_one(){
       err=$((err+1)); failed=1
     fi
   else
-    result=err:no-space; err=$((err+1)); failed=1
+    result=err:no-space; error_reason="available=${avail:-unknown}KB minimum=${min}KB"; err=$((err+1)); failed=1
   fi
   # U7b: first failure creates state/<name>.fail and notifies; --changed
   # collects names for one pass summary).
@@ -449,12 +505,17 @@ process_one(){
   else
     notify_ok "$name"
   fi
-  line="$(printf '%s %s %s\n' "$(date +%F_%T)" "$name" "$result" | mask)"
-  printf '%s\n' "$line"
-  printf '%s\n' "$line" >> "$CA_LOG"
+  journal_local
   exec {lockfd}>&-
 }
 mkdir -p "$CA_REPOS_DIR" "$(dirname "$CA_LOG")" "$CA_STATE_DIR"
+if [[ "${1:-}" == "--changed" || "${1:-}" == "--protect-all" ]]; then
+  exec {passfd}>"${CA_STATE_DIR}/pass.lock"
+  if ! flock -n "$passfd"; then
+    printf '%s pass busy\n' "$(date +%F_%T)" >> "$CA_LOG"
+    exit 0
+  fi
+fi
 if [[ "${1:-}" == "--protect-all" ]]; then
   mkdir -p "$(dirname "$CA_LOG")" "$CA_STATE_DIR"
   protect_all
@@ -466,18 +527,16 @@ changed_failed=()
 if [[ "${1:-}" == "--changed" ]]; then
   changed=1
   shift
+  org="${CA_GITHUB_BASE##*[:/]}"
   # D5 source: list of "<name>\t<pushed_at>\t<size_kb>\t<archived>" rows. Use a
   # provided file (tests) or fetch the org's repos from GitHub via gh api.
   if [[ -n "${CA_LIST_FILE:-}" ]]; then
     list_file="$CA_LIST_FILE"
   else
-    list_file="$(mktemp)"
-    trap 'rm -f "$list_file"' EXIT
-    org="${CA_GITHUB_BASE##*[:/]}"
+    list_file="$(mktemp)"; list_tmp="$list_file"
     if ! gh api --paginate "/orgs/$org/repos?per_page=100" \
          -q '.[] | [.name, .pushed_at, (.size|tostring), (.archived|tostring)] | @tsv' > "$list_file"; then
-      line="$(date +%F_%T) err:list-fetch"
-      printf '%s\n' "$line" >> "$CA_LOG"
+      name="$org"; result=err:list-fetch; error_reason='gh api failed'; journal_local
       notify_send "не удалось получить список репозиториев GitHub — ночной проход сорван"
       echo "err:list-fetch" >&2
       exit 2
@@ -492,13 +551,11 @@ if [[ "${1:-}" == "--changed" ]]; then
   fi
   cur=$(wc -l < "$list_file")
   if [[ -n "$prev" ]] && (( cur < prev - 1 )); then
-    line="err:list-shrunk $prev→$cur"
-    printf '%s\n' "$line"
-    printf '%s\n' "$line" >> "$CA_LOG"
+    name="$org"; result=err:list-shrunk; error_reason="$prev to $cur"; journal_local
     notify_send "список репозиториев GitHub сократился ($prev→$cur) — ночной проход остановлен"
     exit 2
   fi
-  printf '%s\n' "$cur" > "$CA_STATE_DIR/list-count"
+  state_write "$CA_STATE_DIR/list-count" "$cur"
   mapfile -t rows < "$list_file"
   for row in "${rows[@]}"; do
     IFS=$'\t' read -r name pushed size archived <<< "$row"
@@ -512,7 +569,7 @@ if [[ "${1:-}" == "--changed" ]]; then
     # D10: keep at least 2 GiB + this repo's size free before mirroring it.
     process_one "$name" "$(( ${CA_FREE_MIN_KB:-2097152} + ${size:-0} ))"
     if [[ "$result" == ok* ]]; then
-      printf '%s\n' "$pushed" > "$CA_STATE_DIR/$name.pushed_at"
+      state_write "$CA_STATE_DIR/$name.pushed_at" "$pushed"
     fi
   done
   # U7b: one consolidated owner message per night pass listing repos that moved
@@ -525,17 +582,25 @@ else
     process_one "$name" "${CA_FREE_MIN_KB:-2097152}"
     if [[ "$result" == ok* && -n "${CA_LIST_FILE:-}" && -f "$CA_LIST_FILE" ]]; then
       pushed=$(awk -F '\t' -v wanted="$name" '$1 == wanted { print $2; exit }' "$CA_LIST_FILE")
-      [[ -n "$pushed" ]] && printf '%s\n' "$pushed" > "$CA_STATE_DIR/$name.pushed_at"
+      [[ -n "$pushed" ]] && state_write "$CA_STATE_DIR/$name.pushed_at" "$pushed"
     fi
   done
 fi
 sum="=== pass $(date +%F_%T) | ok=$ok err=$err skipped=$skipped ==="
 printf '%s\n' "$sum"
 printf '%s\n' "$sum" >> "$CA_LOG"
-if (( err == 0 )); then date +%s > "${CA_LAST_OK:-/root/workspaces/system/services/gitmirror/last-ok}"; fi
+if (( err == 0 )); then state_write "${CA_LAST_OK:-/root/workspaces/system/services/gitmirror/last-ok}" "$(date +%s)"; fi
 pass_rc=$(( err > 0 ? 1 : 0 ))
 drill_rc=0
 if (( changed )) && [[ $(date +%u) == "${CA_DRILL_DOW:-1}" ]]; then
   if "${CA_DRILL_CMD:-$(dirname "$0")/code-archive-drill}"; then :; else drill_rc=$?; fi
+  if [[ -s "$CA_STATE_DIR/drill.mismatch" ]]; then
+    if [[ ! -f "$CA_STATE_DIR/drill.fail" ]]; then
+      : > "$CA_STATE_DIR/drill.fail"
+      notify_send "недельная проверка архива: в GitLab неполные копии: $(tr '\n' ' ' < "$CA_STATE_DIR/drill.mismatch")"
+    fi
+  else
+    rm -f "$CA_STATE_DIR/drill.fail"
+  fi
 fi
 exit $(( pass_rc > drill_rc ? pass_rc : drill_rc ))
