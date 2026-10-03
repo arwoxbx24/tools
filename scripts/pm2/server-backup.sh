@@ -223,7 +223,7 @@ if [ "$mirror_s3" -lt "$mirror_local" ]; then
   fail mirror-check "$((mirror_local - mirror_s3))"
 fi
 
-run_step forget "${NICE_PREFIX[@]}" "$RESTIC" forget --tag server --group-by host,tags --keep-daily 7 --keep-weekly 4 --keep-monthly 3 --prune --retry-lock 30m
+run_step forget "${NICE_PREFIX[@]}" "$RESTIC" forget --tag server --group-by host,tags --keep-daily 14 --prune --retry-lock 30m
 forget_rc=$?
 case "$forget_rc" in 0|3) ;; *) fail forget "$forget_rc" ;; esac
 
