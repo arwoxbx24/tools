@@ -186,7 +186,7 @@ printf '%s\n' '10' > "$T/state/list-count"
 last12=$(cat "$T/last-ok")
 out12=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_LAST_OK=$T/last-ok CA_LIST_FILE=$T/list11.tsv "$bin/code-archive" --changed 2>&1); rc12=$?
 if [[ $rc12 == 2 ]] \
-   && grep -qF 'err:list-shrunk 10→4' <<<"$out12" \
+   && grep -qF 'err:list-shrunk layer=github 10 to 4' <<<"$out12" \
    && [[ "$(cat "$T/last-ok")" == "$last12" ]]; then
   p 12
 else
@@ -258,10 +258,13 @@ else
   f 15
 fi
 
-# Check 16: source of an existing copy disappears -> kept:source-gone, refs unchanged
+# Check 16: a 404-confirmed missing source of an existing copy is kept.
+mkdir -p "$T/stub16"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\\n" "gh: Not Found (HTTP 404)" >&2' 'exit 1' > "$T/stub16/gh"
+chmod +x "$T/stub16/gh"
 refs16_before=$(git --git-dir="$T/repos/demo.git" for-each-ref)
 mv -f "$T/github/demo.git" "$T/github/demo.git.hidden"
-out16=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_LAST_OK=$T/last-ok CA_FREE_MIN_KB=1 "$bin/code-archive" demo 2>&1); rc16=$?
+out16=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_LAST_OK=$T/last-ok CA_FREE_MIN_KB=1 PATH="$T/stub16:$PATH" "$bin/code-archive" demo 2>&1); rc16=$?
 refs16_after=$(git --git-dir="$T/repos/demo.git" for-each-ref)
 mv -f "$T/github/demo.git.hidden" "$T/github/demo.git"
 if [[ $rc16 == 0 ]] && grep -qF 'demo kept:source-gone' <<<"$out16" \
@@ -269,6 +272,21 @@ if [[ $rc16 == 0 ]] && grep -qF 'demo kept:source-gone' <<<"$out16" \
   p 16
 else
   f 16
+fi
+
+# Check 16b: an unconfirmed missing source is err:fetch/auth and notifies once.
+mkdir -p "$T/stub16b"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\\n" "gh: Forbidden (HTTP 403)" >&2' 'exit 1' > "$T/stub16b/gh"
+chmod +x "$T/stub16b/gh"
+rm -f "$T/state/demo.fail" "$T/state/notify.out"
+mv -f "$T/github/demo.git" "$T/github/demo.git.hidden"
+out16b=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_LAST_OK=$T/last-ok CA_FREE_MIN_KB=1 PATH="$T/stub16b:$PATH" "$bin/code-archive" demo 2>&1); rc16b=$?
+mv -f "$T/github/demo.git.hidden" "$T/github/demo.git"
+if [[ $rc16b == 1 ]] && grep -qF 'demo err:fetch layer=auth' <<<"$out16b" \
+   && [[ "$(wc -l < "$T/state/notify.out")" == 1 ]]; then
+  p 16b
+else
+  f 16b
 fi
 
 # Check 17: empty source -> skip:empty
@@ -452,8 +470,8 @@ chmod +x "$T/stub403/curl"
 rm -f "$T/log26.log"
 out26=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log26.log CA_ENV_FILE=$T/env CA_LAST_OK=$T/last-ok CA_FREE_MIN_KB=1 CA_GITLAB_BASE=https://example.invalid/arwox24-group PATH="$T/stub403:$PATH" "$bin/code-archive" demo 2>&1); rc26=$?
 if [[ $rc26 == 1 ]] \
-   && grep -qF 'demo err:gitlab http=403' <<<"$out26" \
-   && grep -qF 'demo err:gitlab http=403' "$T/log26.log"; then
+   && grep -qF 'demo err:gitlab layer=auth http=403' <<<"$out26" \
+   && grep -qF 'demo err:gitlab layer=auth http=403' "$T/log26.log"; then
   p 26
 else
   f 26
@@ -463,6 +481,79 @@ fi
 localenv=(CA_ENV_FILE=$T/env CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos \
           CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_GITLAB_BASE=$T/gitlab \
           CA_NO_NOTIFY=1)
+
+# Check 48: a post-receive hook deleting one accepted ref is err:incomplete and
+# leaves pushed_at absent after a changed pass.
+mkgh "incomplete48"
+git -C "$T/seed" push -q "$T/github/incomplete48.git" main
+git -C "$T/seed" checkout -q -b extra48
+git -C "$T/seed" commit -q --allow-empty -m extra48
+git -C "$T/seed" push -q "$T/github/incomplete48.git" extra48
+git -C "$T/seed" checkout -q main
+git -C "$T/seed" branch -D extra48
+git init -q --bare "$T/gitlab/incomplete48.git"
+git --git-dir="$T/gitlab/incomplete48.git" config core.hooksPath "$T/gitlab/incomplete48.git/hooks"
+printf '#!/usr/bin/env bash\ngit --git-dir=%q update-ref -d refs/heads/extra48\n' "$T/gitlab/incomplete48.git" > "$T/gitlab/incomplete48.git/hooks/post-receive"
+chmod +x "$T/gitlab/incomplete48.git/hooks/post-receive"
+printf '%s\t%s\t%s\t%s\n' incomplete48 2026-10-03T00:00:00Z 1 false > "$T/list48.tsv"
+rm -f "$T/state/incomplete48.pushed_at"
+out48=$(env "${localenv[@]}" CA_LIST_FILE=$T/list48.tsv CA_DRILL_DOW=8 "$bin/code-archive" --changed 2>&1); rc48=$?
+if [[ $rc48 == 1 ]] && grep -qF 'incomplete48 err:incomplete layer=gitlab 1 missing' <<<"$out48" \
+   && [[ ! -e "$T/state/incomplete48.pushed_at" ]]; then
+  p 48
+else
+  f 48
+fi
+
+# Check 49: a held pass lock makes --changed a successful no-op with a journal receipt.
+exec {busy49}>"$T/state/pass.lock"
+flock "$busy49"
+out49=$(env "${localenv[@]}" CA_LIST_FILE=$T/list48.tsv "$bin/code-archive" --changed 2>&1 {busy49}>&-); rc49=$?
+exec {busy49}>&-
+if [[ $rc49 == 0 ]] && grep -qF 'pass busy' "$T/log/code-archive.log"; then
+  p 49
+else
+  f 49
+fi
+
+# Check 50: weekly drill reports an incomplete GitLab pair once, then clears the
+# marker after the remote ref is restored.
+mkgh "weekly50"
+git -C "$T/seed" push -q "$T/github/weekly50.git" main
+git --git-dir="$T/github/weekly50.git" symbolic-ref HEAD refs/heads/main
+git -C "$T/seed" checkout -q -b extra50
+git -C "$T/seed" commit -q --allow-empty -m extra50
+git -C "$T/seed" push -q "$T/github/weekly50.git" extra50
+git -C "$T/seed" checkout -q main
+git -C "$T/seed" branch -D extra50
+printf '%s\t%s\t%s\t%s\n' weekly50 2026-10-03T01:00:00Z 1 false > "$T/list50.tsv"
+mkdir -p "$T/state50"
+env "${localenv[@]}" CA_STATE_DIR=$T/state50 CA_LIST_FILE=$T/list50.tsv CA_DRILL_DOW=8 "$bin/code-archive" --changed >/dev/null 2>&1
+git --git-dir="$T/gitlab/weekly50.git" update-ref -d refs/heads/extra50
+printf '%s\n' 2026-10-03T01:00:00Z > "$T/state50/weekly50.pushed_at"
+rm -f "$T/state50/drill.fail" "$T/state50/notify.out"
+out50a=$(env "${localenv[@]}" CA_STATE_DIR=$T/state50 CA_DRILL_DIR=$T/drill50 CA_LIST_FILE=$T/list50.tsv CA_DRILL_DOW="$(date +%u)" "$bin/code-archive" --changed 2>&1); rc50a=$?
+first50=$(wc -l < "$T/state50/notify.out" 2>/dev/null || echo 0)
+printf '%s\n' 2026-10-03T01:00:00Z > "$T/state50/weekly50.pushed_at"
+out50b=$(env "${localenv[@]}" CA_STATE_DIR=$T/state50 CA_DRILL_DIR=$T/drill50 CA_LIST_FILE=$T/list50.tsv CA_DRILL_DOW="$(date +%u)" "$bin/code-archive" --changed 2>&1); rc50b=$?
+second50=$(wc -l < "$T/state50/notify.out" 2>/dev/null || echo 0)
+git --git-dir="$T/gitlab/weekly50.git" update-ref refs/heads/extra50 "$(git --git-dir="$T/repos/weekly50.git" rev-parse refs/heads/extra50)"
+printf '%s\n' 2026-10-03T01:00:00Z > "$T/state50/weekly50.pushed_at"
+out50c=$(env "${localenv[@]}" CA_STATE_DIR=$T/state50 CA_DRILL_DIR=$T/drill50 CA_LIST_FILE=$T/list50.tsv CA_DRILL_DOW="$(date +%u)" "$bin/code-archive" --changed 2>&1); rc50c=$?
+if [[ $rc50a == 1 && $rc50b == 1 && $rc50c == 0 && $first50 == 1 && $second50 == 1 ]] \
+   && grep -qF 'drill:mismatch incomplete weekly50 layer=gitlab 1 missing' <<<"$out50a" \
+   && [[ -e "$T/state50/weekly50.pushed_at" ]] && [[ ! -e "$T/state50/drill.fail" ]]; then
+  p 50
+else
+  f 50
+fi
+
+# Check 51: every archive journal failure carries a diagnostic layer.
+if [[ "$(grep 'err:' "$T/log/code-archive.log" | grep -vc 'layer=' || true)" == 0 ]]; then
+  p 51
+else
+  f 51
+fi
 
 # --- U7b: owner notification on mirror failure (checks 36-37) ---
 # CA_NO_NOTIFY=1 (now part of localenv) routes messages to $CA_STATE_DIR/notify.out
@@ -618,7 +709,7 @@ fi
 # Check 40: --protect-all — a protect POST errors but the list already holds `*`
 # -> project counts as protected, code 0 and no `err` anywhere.
 rm -f "$T/curlp.log"
-out40=$(CA_ENV_FILE=$T/env CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log \
+out40=$(CA_ENV_FILE=$T/env CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log \
         CA_LAST_OK=$T/last-ok CA_GITLAB_BASE=https://example.invalid/arwox24-group \
         SP_LIST='[{"id":7,"path":"proj-seven"}]' SP_BAD_POST=7 \
         CURLP_LOG="$T/curlp.log" PATH="$T/stubP:$PATH" \
@@ -633,7 +724,7 @@ fi
 
 # Check 41: --protect-all over two projects -> two protect POSTs, no err, code 0.
 rm -f "$T/curlp.log"
-out41=$(CA_ENV_FILE=$T/env CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log \
+out41=$(CA_ENV_FILE=$T/env CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log \
         CA_LAST_OK=$T/last-ok CA_GITLAB_BASE=https://example.invalid/arwox24-group \
         SP_LIST='[{"id":1,"path":"p-one"},{"id":2,"path":"p-two"}]' \
         CURLP_LOG="$T/curlp.log" PATH="$T/stubP:$PATH" \
@@ -650,7 +741,7 @@ fi
 # Check 42: --protect-all — one project's POST errors AND its list lacks `*`
 # -> err:gitlab line names it, code 1, and the second project is still processed.
 rm -f "$T/curlp.log"
-out42=$(CA_ENV_FILE=$T/env CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log \
+out42=$(CA_ENV_FILE=$T/env CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log \
         CA_LAST_OK=$T/last-ok CA_GITLAB_BASE=https://example.invalid/arwox24-group \
         SP_LIST='[{"id":1,"path":"bad1"},{"id":2,"path":"good2"}]' \
         SP_BAD_POST=1 SP_NO_LIST=1 \
