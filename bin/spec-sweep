@@ -66,13 +66,12 @@ fi
 
 if [[ $apply == 1 ]]; then
   mkdir -p "$ARCH" "$RUN" "$TOOLS/logs"
-  # Закрытые раньше <сегодня-30d>: архив, затем удаление без --cascade (ok/failed).
+  # Закрытые раньше <сегодня-30d>: архив, затем vendor-native prune (ok/failed).
   mapfile -t ids < <(bd list --status closed --closed-before "$d30" --json 2>/dev/null | jq -r '.[].id')
-  printf '%s\n' "${ids[@]}" > "$RUN/closed-$today.txt"
   arch=$ARCH/$today.jsonl
   bd export --all -o "$arch" >>"$LOG" 2>&1
   if [[ -s $arch && ${#ids[@]} -gt 0 ]]; then
-    bd delete --from-file "$RUN/closed-$today.txt" --force >>"$LOG" 2>&1 || true
+    bd prune --older-than 30d --force >>"$LOG" 2>&1 || true
     bd_fail=$(bd list --status closed --closed-before "$d30" --json 2>/dev/null | jq 'length' || echo 0)
     bd_ok=$(( ${#ids[@]} - bd_fail )); [[ $bd_ok -lt 0 ]] && bd_ok=0
   elif [[ ! -s $arch ]]; then
