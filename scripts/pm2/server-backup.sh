@@ -115,6 +115,19 @@ fail() { # step rc [exit]
   exit "$code"
 }
 
+drill() { # проба: каталог ~100 МБ из снимка server в mktemp, restic сверяет со снимком
+  local dir=${BK_DRILL_DIR:-/root/workspaces/tools/bin} d rc mb
+  d=$(mktemp -d /tmp/restic-drill.XXXXXX) || fail drill 1
+  run_step drill "${NICE_PREFIX[@]}" "$RESTIC" restore latest --tag server --target "$d" --include "$dir" --verify --retry-lock 30m
+  rc=$?
+  mb=$(du -sm --apparent-size "$d" | cut -f1)
+  log "restore-drill rc=$rc size=${mb}M dir=$dir"
+  [ "$rc" -eq 0 ] && [ ! -d "$d$dir" ] && rc=2
+  [ "$rc" -eq 0 ] && [ "$mb" -lt "${BK_DRILL_MIN_MB:-50}" ] && rc=3
+  rm -rf "$d"
+  [ "$rc" -eq 0 ] || fail drill "$rc"
+}
+
 set -a
 # shellcheck disable=SC1090
 source "$S3_ENV"
@@ -129,6 +142,8 @@ set -a
 # shellcheck disable=SC1090
 source "$PW_ENV"
 set +a
+
+[ "${1:-}" = --drill ] && { drill; exit 0; }
 
 # Снимок cron и свежий docker-бэкап.
 crontab -l >"$STAGE/crontab-root.txt" 2>>"$LOG" || :
@@ -157,8 +172,7 @@ else
 fi
 
 paths=(
-  /root/workspaces/projects /root/workspaces/tools /root/workspaces/system
-  /root/workspaces/secrets /root/workspaces/sandbox /root/.claude /root/.config
+  /root/workspaces /root/.claude /root/.config
   /root/.pm2 /root/.codex/config.toml /root/.codex/AGENTS.md /root/.codex/hooks.json
   /root/CLAUDE.md /root/AGENTS.md /root/GEMINI.md /etc /data/minio
   /root/nginx-proxy-manager "$STAGE"
@@ -191,7 +205,7 @@ date +%s >"$LAST_OK"
 
 # Сверка числа bare-репозиториев зеркала в S3 с локальным каталогом.
 mirror_local=$(ls -d "$BK_MIRROR_DIR"/*.git 2>/dev/null | wc -l)
-mirror_s3=$(timeout 3600 "${NICE_PREFIX[@]}" "$RESTIC" ls --recursive latest "$BK_MIRROR_DIR" 2>>"$LOG" \
+mirror_s3=$(timeout 3600 "${NICE_PREFIX[@]}" "$RESTIC" ls --recursive latest --tag server "$BK_MIRROR_DIR" 2>>"$LOG" \
   | grep -Ec '(\.git)?/HEAD$')
 log "mirror-check s3=$mirror_s3 local=$mirror_local"
 if [ "$mirror_s3" -lt "$mirror_local" ]; then
@@ -210,7 +224,7 @@ if [ "$(date +%u)" = 7 ]; then
 
   DRILL=/tmp/restic-drill
   rm -rf "$DRILL"
-  run_step restore "${NICE_PREFIX[@]}" "$RESTIC" restore latest --target "$DRILL" \
+  run_step restore "${NICE_PREFIX[@]}" "$RESTIC" restore latest --tag server --target "$DRILL" \
     --include /root/CLAUDE.md --include /root/workspaces/tools/ecosystem.config.js --retry-lock 30m
   restore_rc=$?
   if [ "$restore_rc" -ne 0 ]; then
@@ -224,11 +238,12 @@ if [ "$(date +%u)" = 7 ]; then
   fi
   log "restore-drill ok (2 files)"
   rm -rf "$DRILL"
+  [ "$(date +%-d)" -le 7 ] && drill
 else
   log "check rc=0 (не воскресенье)"
 fi
 
-stats_output=$(timeout 3600 "${NICE_PREFIX[@]}" "$RESTIC" stats --mode raw-data latest --retry-lock 30m 2>&1)
+stats_output=$(timeout 3600 "${NICE_PREFIX[@]}" "$RESTIC" stats --mode raw-data latest --tag server --retry-lock 30m 2>&1)
 stats_rc=$?
 printf '%s\n' "$stats_output" >>"$LOG"
 log "stats rc=$stats_rc"
