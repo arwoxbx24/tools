@@ -33,6 +33,7 @@ done
 [[ -n $wt && -n $atom && -n $tz ]] || usage
 
 root=${GA_WT_ROOT:-/root/workspaces/projects/.worktrees}
+[[ -z ${GA_WT_ROOT:-} && $wt == */.worktrees/* ]] && root=${wt%%/.worktrees/*}/.worktrees
 wtr=$(realpath -m "$wt")
 [[ $wtr == "$root"/* ]] || leave 10 preflight
 agent=${wtr#"$root"/}; agent=${agent%%/*}

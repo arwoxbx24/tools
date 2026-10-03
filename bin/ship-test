@@ -272,4 +272,12 @@ done
 [[ $rc == 0 && $calls == 'archive-name' ]] && pos=0 || pos=1
 [[ $neg == 0 && $pos == 0 ]] && p 19 || f 19
 
-[[ $ok == 19 ]] && exit 0 || exit 1
+mkrepo t1; t1wt="$d/tools/.worktrees/claude/t1w"
+mkdir -p "$d/tools/.worktrees/claude"
+git -C "$GA_PROJECTS/t1" worktree add -q -b claude/t1w "$t1wt" origin/main
+unset GA_WT_ROOT
+ship "$t1wt" >/dev/null 2>&1; rc=$?
+export GA_WT_ROOT="$d/wts"
+[[ $rc == 0 ]] && p 20 || f 20
+
+[[ $ok == 20 ]] && exit 0 || exit 1
