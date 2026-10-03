@@ -255,7 +255,7 @@ ln -sf "$bin/git-state" "$d/bin/git-state"
 # отрицательный: локальный origin (slug не из arwoxbx24/) -> вызова нет
 mkrepo r20; w20=$(mkwt r20 claude/c20); printf 's20\n' >> "$w20/f.txt"
 rm -f "$d/code-archive-calls"
-( cd "$w20" && GH_ORIGIN="$(git -C "$w20" config remote.origin.url)" "$d/bin/ship" "$w20" --atom "$atom" --tz "$tz#U1" ) >/dev/null 2>&1; rc=$?
+( cd "$w20" && GH_ORIGIN="$(git -C "$w20" config remote.origin.url)" GA_ARCHIVE_ORG=arwoxbx24 "$d/bin/ship" "$w20" --atom "$atom" --tz "$tz#U1" ) >/dev/null 2>&1; rc=$?
 [[ $rc == 0 && ! -e "$d/code-archive-calls" ]] && neg=0 || neg=1
 
 # положительный: slug arwoxbx24/<имя>; git-fetch переписан на локальный bare
@@ -263,7 +263,7 @@ mkrepo r19; w19=$(mkwt r19 claude/c19); printf 's19\n' >> "$w19/f.txt"
 git -C "$GA_PROJECTS/r19" remote set-url origin 'git@github.com:arwoxbx24/archive-name'
 git -C "$GA_PROJECTS/r19" config "url.$d/origin-r19.git.insteadOf" 'git@github.com:arwoxbx24/archive-name'
 rm -f "$d/code-archive-calls"
-( cd "$w19" && GH_ORIGIN="$d/origin-r19.git" "$d/bin/ship" "$w19" --atom "$atom" --tz "$tz#U1" ) >/dev/null 2>&1; rc=$?
+( cd "$w19" && GH_ORIGIN="$d/origin-r19.git" GA_ARCHIVE_ORG=arwoxbx24 "$d/bin/ship" "$w19" --atom "$atom" --tz "$tz#U1" ) >/dev/null 2>&1; rc=$?
 calls=''
 for _ in $(seq 1 50); do
 	[[ -s "$d/code-archive-calls" ]] && { calls=$(<"$d/code-archive-calls"); break; }

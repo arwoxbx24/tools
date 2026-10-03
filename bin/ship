@@ -133,7 +133,9 @@ if [[ -n $reload ]]; then
 	[[ ${up:-0} -gt $merge_ms ]] || leave 60 reload
 fi
 
-[[ $slug == arwoxbx24/* ]] && setsid -f timeout 300 "$bin/code-archive" "${slug#*/}" >/dev/null 2>&1 || true
+org=${GA_ARCHIVE_ORG:-$(git -C "$bin" config --get remote.origin.url 2>/dev/null)}
+org=${org%/*}; org=${org##*[:/]}
+[[ -n $org && $slug == "$org"/* ]] && setsid -f timeout 300 "$bin/code-archive" "${slug#*/}" >/dev/null 2>&1 || true
 
 live=$(ga_ctx "$name" && echo "$GA_LIVE")
 cd "$live"
