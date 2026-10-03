@@ -16,6 +16,11 @@ if [ "$name" = "pre-commit" ]; then
   if ! "$SG" check --staged; then
     warn "secret-gate check --staged"
   fi
+  if [ "$(git rev-parse --is-bare-repository 2>/dev/null)" = "false" ]; then
+    if [ -f "$(git rev-parse --show-toplevel)/.pre-commit-config.yaml" ]; then
+      /root/.local/bin/pre-commit run --config "$(git rev-parse --show-toplevel)/.pre-commit-config.yaml" --hook-stage pre-commit || exit 1
+    fi
+  fi
 fi
 
 if [ "$name" = "pre-push" ]; then
