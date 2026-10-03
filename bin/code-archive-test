@@ -875,5 +875,22 @@ else
   f 47
 fi
 
+# Check 52: a non-local GitLab destination is named by the `gitlab` remote
+# inside the bare copy.  From /, ls-remote must resolve that name through $dst.
+mkgh "remote52"
+git -C "$T/seed" push -q "$T/github/remote52.git" main
+mkdir -p "$T/gitlab-remote52"
+git init -q --bare "$T/gitlab-remote52/remote52.git"
+remote52="file://$T/gitlab-remote52"
+out52=$(cd / && env "${localenv[@]}" CA_GITLAB_BASE="$remote52" "$bin/code-archive" remote52 2>&1); rc52=$?
+url52=$(git --git-dir="$T/repos/remote52.git" remote get-url gitlab 2>/dev/null) || url52=""
+if [[ $rc52 == 0 && "$url52" == "$remote52/remote52.git" ]] \
+   && grep -qF 'remote52 ok' <<<"$out52" \
+   && ! grep -qF 'does not appear to be a git repository' <<<"$out52"; then
+  p 52
+else
+  f 52
+fi
+
 echo "PASS $ok FAIL $((total-ok))"
 [[ $ok == $total ]]
