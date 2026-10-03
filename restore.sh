@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-RESTIC=/root/workspaces/tools/bin/restic
+RESTIC=${RESTIC:-/root/workspaces/tools/bin/restic}
 TARGET=/
 SNAP=latest
 PHASE=
@@ -44,29 +44,68 @@ case "$PHASE" in 0|1|2|3|4|5|6|all) ;; *) usage >&2; exit 1 ;; esac
 STAGE="$TARGET/root/workspaces/system/tools/scripts/data/server-backup-stage"
 MANIFESTS="$STAGE/manifests"
 
+try() { if "$@"; then ok=$((ok+1)); else failed=$((failed+1)); echo "FAIL: $*" >&2; fi; }
+node_path() {
+  ver=$(sed -n '1s#.*/node/\(v[0-9.]*\)/lib$#\1#p' "$MANIFESTS/npm-global.txt")
+  NODE_DIR=/root/.nvm/versions/node/$ver
+  export PATH="$NODE_DIR/bin:$PATH"
+}
+
 run_phase() {
   local phase=$1 compose latest_volume_backup archive volume package
 
   case "$phase" in
     1)
       echo '== Фаза 1: пакеты'
-      echo "apt-get update; DEBIAN_FRONTEND=noninteractive xargs -r -a $MANIFESTS/apt-manual.txt apt-get install -y -o Dpkg::Options::=--force-confold"
-      echo "pip3 install -r $MANIFESTS/pip-freeze.txt; pipx install из pipx.json"
-      echo "npm install -g из npm-global.txt; snap install из snap.txt"
+      echo 'apt: ядро, манифесты по одному с подсчётом ok/failed; node до npm'
+      ok=0 failed=0
       apt-get update
-      DEBIAN_FRONTEND=noninteractive xargs -r -a "$MANIFESTS/apt-manual.txt" apt-get install -y -o Dpkg::Options::=--force-confold
-      pip3 install -r "$MANIFESTS/pip-freeze.txt"
+      if DEBIAN_FRONTEND=noninteractive apt-get install -y python3-pip pipx jq curl xz-utils; then
+        ok=$((ok+1))
+      else
+        failed=$((failed+1)); echo 'FAIL: apt-get install ядра' >&2
+      fi
+      if DEBIAN_FRONTEND=noninteractive xargs -r -a "$MANIFESTS/apt-manual.txt" apt-get install -y -o Dpkg::Options::=--force-confold; then
+        ok=$((ok+1))
+      else
+        failed=$((failed+1)); echo 'FAIL: apt-get install батч apt-manual.txt' >&2
+        while read -r package; do
+          [[ -n "$package" ]] || continue
+          try env DEBIAN_FRONTEND=noninteractive apt-get install -y -o Dpkg::Options::=--force-confold "$package"
+        done < "$MANIFESTS/apt-manual.txt"
+      fi
+      node_path
+      if [[ ! -x "$NODE_DIR/bin/node" ]]; then
+        tmpdir=$(mktemp -d)
+        if ! (
+          cd "$tmpdir" && \
+            curl -fsSLO "https://nodejs.org/dist/$ver/node-$ver-linux-x64.tar.xz" && \
+            curl -fsSLO "https://nodejs.org/dist/$ver/SHASUMS256.txt" && \
+            grep " node-$ver-linux-x64.tar.xz$" SHASUMS256.txt | sha256sum -c - && \
+            mkdir -p "$NODE_DIR" && \
+            tar -xJf "node-$ver-linux-x64.tar.xz" --strip-components=1 -C "$NODE_DIR"
+        ); then return 1; fi
+        rm -rf "$tmpdir"
+      fi
       while IFS= read -r package; do
-        [[ -n "$package" ]] && pipx install "$package"
+        [[ -n "$package" ]] || continue
+        try pip3 install --break-system-packages "$package"
+      done < "$MANIFESTS/pip-freeze.txt"
+      while IFS= read -r package; do
+        [[ -n "$package" ]] && try pipx install "$package"
       done < <(jq -r 'if type == "object" and has("venvs") then .venvs | keys[] elif type == "array" then .[] | if type == "string" then . else .package // .name // empty end else empty end' "$MANIFESTS/pipx.json")
-      awk '$0 !~ /^(npm|corepack)$/' "$MANIFESTS/npm-global.txt" | xargs -r npm install -g
       while IFS= read -r package; do
-        [[ -n "$package" ]] && snap install "$package"
-      done < <(awk '$0 !~ /^(core.*|snapd|bare)$/' "$MANIFESTS/snap.txt")
+        [[ -n "$package" ]] || continue
+        try npm install -g "$package"
+      done < <(sed -n 's/^[├└]── //p' "$MANIFESTS/npm-global.txt" | grep -vE '^(npm|corepack)@')
+      while IFS= read -r package; do
+        [[ -n "$package" ]] && try snap install "$package"
+      done < <(awk 'NR>1 && $1 !~ /^(core[0-9]*|snapd|bare)$/ {print $1}' "$MANIFESTS/snap.txt")
+      echo "Фаза 1: ok=$ok failed=$failed"
       ;;
     2)
       echo '== Фаза 2: restic'
-      echo "source $REPO_ENV; source $PW_ENV; $RESTIC restore $SNAP --tag server --target $TARGET"
+      echo "source $REPO_ENV; source $PW_ENV; $RESTIC restore $SNAP --tag server --target $TARGET --exclude /etc/fstab --exclude /etc/netplan --exclude /etc/hostname --exclude /etc/hosts --exclude /etc/machine-id --exclude /etc/ssh --exclude /etc/cloud --exclude /etc/resolv.conf"
       if [[ ! -x "$RESTIC" ]]; then
         echo "RESTIC не найден: $RESTIC" >&2
         echo 'Скачайте restic 0.19.1 из GitHub Releases, затем сверяйте архив с SHA256SUMS:' >&2
@@ -79,7 +118,7 @@ run_phase() {
       source "$REPO_ENV"
       source "$PW_ENV"
       set +a
-      "$RESTIC" restore "$SNAP" --tag server --target "$TARGET"
+      "$RESTIC" restore "$SNAP" --tag server --target "$TARGET" --exclude /etc/fstab --exclude /etc/netplan --exclude /etc/hostname --exclude /etc/hosts --exclude /etc/machine-id --exclude /etc/ssh --exclude /etc/cloud --exclude /etc/resolv.conf
       ;;
     3)
       echo '== Фаза 3: хост-БД'
@@ -98,15 +137,7 @@ run_phase() {
       ;;
     4)
       echo '== Фаза 4: docker'
-      echo "docker compose up -d для $TARGET/root/workspaces/system/services/*/"
       echo "тома из $TARGET/root/backups/docker/<последний>/*.tar.gz"
-      for compose in "$TARGET"/root/workspaces/system/services/*/; do
-        if [[ -f "${compose}docker-compose.yml" ]]; then
-          docker compose -f "${compose}docker-compose.yml" up -d
-        elif [[ -f "${compose}compose.yml" ]]; then
-          docker compose -f "${compose}compose.yml" up -d
-        fi
-      done
       latest_volume_backup=$(find "$TARGET/root/backups/docker" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | sort | tail -n 1)
       [[ -n "$latest_volume_backup" ]] || { echo 'Не найден снимок docker-томов.' >&2; return 1; }
       for archive in "$TARGET/root/backups/docker/$latest_volume_backup"/*.tar.gz; do
@@ -116,9 +147,18 @@ run_phase() {
         docker volume create "$volume"
         tar -xzf "$archive" -C "/var/lib/docker/volumes/$volume/_data"
       done
+      echo "docker compose up -d для $TARGET/root/workspaces/system/services/*/"
+      for compose in "$TARGET"/root/workspaces/system/services/*/; do
+        if [[ -f "${compose}docker-compose.yml" ]]; then
+          docker compose -f "${compose}docker-compose.yml" up -d
+        elif [[ -f "${compose}compose.yml" ]]; then
+          docker compose -f "${compose}compose.yml" up -d
+        fi
+      done
       ;;
     5)
       echo '== Фаза 5: pm2'
+      node_path
       echo "pm2 resurrect $TARGET/root/.pm2/dump.pm2"
       pm2 resurrect "$TARGET/root/.pm2/dump.pm2"
       ;;
