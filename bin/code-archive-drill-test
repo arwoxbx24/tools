@@ -64,6 +64,19 @@ else
   ((failed++))
 fi
 
+# TEST 1b: an extra local ref with unchanged GitLab and unchanged prior counts
+# is local-ahead, not a shrink (D11 regression): must return drill:ok.
+extra_sha=$(git --git-dir="$T/repos/demo.git" rev-parse HEAD)
+git --git-dir="$T/repos/demo.git" update-ref refs/heads/extra "$extra_sha"
+output=$(run_drill demo 2>&1)
+rc=$?
+git --git-dir="$T/repos/demo.git" update-ref -d refs/heads/extra
+if [[ $rc -eq 0 ]] && echo "$output" | grep -q "drill:ok" && ! echo "$output" | grep -q "refs-shrunk"; then
+  ((passed++))
+else
+  ((failed++))
+fi
+
 # TEST 2: drill:mismatch refs-shrunk
 ref_to_del=$(git --git-dir="$T/repos/demo.git" for-each-ref --format='%(refname)' | head -1)
 if [[ -n "$ref_to_del" ]]; then

@@ -96,8 +96,7 @@ for state_file in "$CA_STATE_DIR"/*.pushed_at; do
     if [[ -z "$past_gitlab" ]]; then past_gitlab="$past_local"; past_local=-1; fi
   fi
 
-  if (( gitlab_refs < local_refs )) \
-     || (( past_gitlab >= 0 && gitlab_refs < past_gitlab )) \
+  if (( past_gitlab >= 0 && gitlab_refs < past_gitlab )) \
      || (( past_local >= 0 && local_refs < past_local )); then
     log "drill:mismatch refs-shrunk $repo_name"
     exit_code=1
