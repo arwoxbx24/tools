@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+set -u
+# spec-sweep (spec:094 U1): еженедельная автоуборка реализованных спек,
+# старых ТЗ/планов/исследований и закрытых задач. По умолчанию --dry-run.
+ROOT=/root/workspaces/projects
+TOOLS=/root/workspaces/tools
+RUN=$ROOT/.agent-work/spec-sweep
+ARCH=$ROOT/.agent-work/bd-archive
+TZREF='docs/tz/2026-10-03-094-spec-sweep.md#U1'
+LOG=$TOOLS/logs/spec-sweep.log
+
+apply=0
+case ${1:-} in --apply) apply=1 ;; ''|--dry-run) ;; *) echo "spec-sweep: usage: ${0##*/} [--apply]" >&2; exit 2 ;; esac
+mode=dry; [[ $apply == 1 ]] && mode=apply
+
+today=$(date +%F); epoch=$(date +%s); d14=$((epoch-14*86400)); cut_bd=$((epoch-30*86400)); d30=$(date -d @$cut_bd +%F); nl=$'\n'
+bd(){ command bd -C "$ROOT" "$@"; }
+specs=0; docs=0; bd_ok=0; bd_fail=0; stale=0
+spec_dirs=(); doc_files=(); stale_ids=()
+
+# Живые ссылки на спеки -> такие спеки не трогаем.
+live=$(
+  { grep -rhoE 'spec:[0-9]{3}|specs/[0-9]{3}-' "$ROOT/.claude" 2>/dev/null
+    grep -hoE 'spec:[0-9]{3}|specs/[0-9]{3}-' "$ROOT/CLAUDE.md" /root/CLAUDE.md "$ROOT"/docs/LAWS-*.md 2>/dev/null; } \
+  | grep -oE '[0-9]{3}' | sort -u
+)
+
+# Реализованные спеки: >=1 атом, все закрыты, нет незакрытых задач.
+for d in "$ROOT"/specs/[0-9][0-9][0-9]-*/; do
+  [[ -d $d ]] || continue
+  n=${d#$ROOT/specs/}; n=${n%%-*}
+  [[ $n == [0-9][0-9][0-9] ]] || continue
+  [[ $(printf '%s\n' "$ROOT"/specs/$n-* | wc -l) -eq 1 ]] || continue # неоднозначно
+  grep -Fxq "$n" <<<"$live" && continue
+  json=$(bd search "spec:$n" --status all --json 2>/dev/null)
+  total=$(jq 'if type=="array" then length else 1 end' <<<"$json")
+  non=$(jq 'if type=="array" then [.[]|select(.status!="closed")]|length else (if .status=="closed" then 0 else 1 end) end' <<<"$json")
+  [[ ${total:-0} -ge 1 && ${non:-0} -eq 0 ]] || continue
+  file=$d/tasks.md; [[ -e $file ]] || file=$d/spec.md; [[ -e $file ]] || continue
+  [[ $(grep -cE '^[[:space:]]*- \[ \]' "$file" 2>/dev/null || true) -eq 0 ]] || continue
+  spec_dirs+=("${d#$ROOT/specs/}"); spec_dirs[-1]=${spec_dirs[-1]%/}; specs=$((specs+1))
+done
+
+# Старые документы (tz/plans/research), не упомянутые в открытых атомах.
+open_text=$(bd list --status open,in_progress,blocked --json 2>/dev/null \
+  | jq -r '.[] | ((.description//"")+"\n"+(.notes//""))')
+for base in tz plans research; do
+  for f in "$ROOT"/docs/$base/*.md; do
+    [[ -e $f ]] || continue
+    rel=docs/$base/${f##*/}
+    ct=$(git -C "$ROOT" log -1 --format=%ct -- "$rel" 2>/dev/null)
+    [[ -n $ct && $ct -lt $d14 ]] || continue
+    grep -Fq "${f##*/}" <<<"$open_text" && continue
+    doc_files+=("$rel"); docs=$((docs+1))
+  done
+done
+
+mapfile -t stale_ids < <(bd stale -d 14 --json 2>/dev/null | jq -r '.[].id')
+stale=${#stale_ids[@]}
+
+# 7a: Кандидаты в dry-run.
+if [[ $apply == 0 ]]; then
+  for d in "${spec_dirs[@]}"; do printf 'spec %s\n' "$d"; done
+  for f in "${doc_files[@]}"; do printf 'doc %s\n' "$f"; done
+fi
+
+if [[ $apply == 1 ]]; then
+  mkdir -p "$ARCH" "$RUN" "$TOOLS/logs"
+  # Закрытые раньше <сегодня-30d>: архив, затем удаление без --cascade (ok/failed).
+  mapfile -t ids < <(bd list --status closed --closed-before "$d30" --json 2>/dev/null | jq -r '.[].id')
+  printf '%s\n' "${ids[@]}" > "$RUN/closed-$today.txt"
+  arch=$ARCH/$today.jsonl
+  bd export --all -o "$arch" >>"$LOG" 2>&1
+  if [[ -s $arch && ${#ids[@]} -gt 0 ]]; then
+    bd delete --from-file "$RUN/closed-$today.txt" --force >>"$LOG" 2>&1 || true
+    bd_fail=$(bd list --status closed --closed-before "$d30" --json 2>/dev/null | jq 'length' || echo 0)
+    bd_ok=$(( ${#ids[@]} - bd_fail )); [[ $bd_ok -lt 0 ]] && bd_ok=0
+  elif [[ ! -s $arch ]]; then
+    bd_fail=${#ids[@]}
+  fi
+  # Недельный атом: застой и раздел критериев приёмки.
+  desc="Застой (>=14 дн без обновления): ${stale_ids[*]}$nl$nl## Acceptance Criteria"
+  atom=$(bd create "[SWEEP] $today: спеки $specs, документы $docs, задачи $bd_ok" -d "$desc" --silent 2>>"$LOG")
+  if [[ ${#spec_dirs[@]} -gt 0 || ${#doc_files[@]} -gt 0 ]]; then
+    wt=$ROOT/.worktrees/claude/sweep-$today
+    git -C "$ROOT" worktree add "$wt" -b "claude/sweep-$today" origin/main >>"$LOG" 2>&1
+    for d in "${spec_dirs[@]}"; do git -C "$wt" rm -r --quiet -- "specs/$d"; done
+    for rel in "${doc_files[@]}"; do git -C "$wt" rm --quiet "$rel"; done
+    out=$("$TOOLS/bin/ship" "$wt" --atom "$atom" --tz "$TZREF" 2>&1); rc=$?
+    pr=$(printf '%s\n' "$out" | grep -oE '^pr:[0-9]+$' | head -1 | tr -dc '0-9')
+    printf '%s\n' "$out" >>"$LOG"
+    if [[ $rc -eq 0 ]]; then
+      bd close "$atom" -r "spec-sweep: спек $specs, документов $docs, задач $bd_ok → PR ${pr:-?}" >>"$LOG" 2>&1
+    fi
+  else
+    bd close "$atom" -r "spec-sweep: спек 0, документов 0, задач $bd_ok → без PR" >>"$LOG" 2>&1
+  fi
+fi
+
+printf 'spec-sweep: specs=%d docs=%d bd_deleted=%d bd_failed=%d stale=%d mode=%s\n' "$specs" "$docs" "$bd_ok" "$bd_fail" "$stale" "$mode"
