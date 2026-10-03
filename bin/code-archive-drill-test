@@ -8,7 +8,7 @@ failed=0
 # Create temp directory
 T="/root/workspaces/sandbox/test-code-archive-drill-$$"
 trap 'rm -rf "$T"' EXIT INT TERM
-mkdir -p "$T"/{github,repos,gitlab,state,work}
+mkdir -p "$T"/{github,repos,gitlab,state,work} || exit 1
 
 # Get script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -27,7 +27,7 @@ EOF
 
 # Create initial repo with commits
 (
-  cd "$T/work"
+  cd "$T/work" || exit 1
   git init >/dev/null 2>&1
   git config user.email "test@test.com"
   git config user.name "Test User"
