@@ -1,5 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# U1 (ADR-1): validate before reading secrets; askpass (git single-prompt) skips.
+if [[ ${CA_ASKPASS:-} != 1 ]]; then
+  usage(){ printf '%s\n' 'code-archive <repo>...' 'code-archive --changed' 'code-archive --protect-all' 'code-archive --help'; }
+  [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]] && { usage; exit 0; }
+  [[ $# -eq 0 ]] && { usage >&2; exit 64; }
+  if [[ "${1:-}" != "--changed" && "${1:-}" != "--protect-all" ]]; then
+    re='^[A-Za-z0-9._][A-Za-z0-9._-]*$'
+    for a in "$@"; do
+      if ! [[ $a =~ $re && $a != . && $a != .. ]]; then
+        printf 'err:usage %s\n' "$a" >&2; usage >&2
+        printf '%s %s err:usage\n' "$(date +%F_%T)" "$a" >> "${CA_LOG:-/root/workspaces/system/services/gitmirror/code-archive.log}" 2>/dev/null || true
+        exit 64
+      fi
+    done
+  fi
+fi
 CA_ENV_FILE="${CA_ENV_FILE:-/root/workspaces/secrets/gitmirror.env}"
 set -a; . "$CA_ENV_FILE"; set +a
 [[ -n "${GITLAB_MIRROR_TOKEN:-}" ]] || { echo "err:no-key" >&2; exit 2; }
@@ -157,6 +173,12 @@ mirror_name(){
     done
     git --git-dir="$dst" remote set-url github "$src"
   else
+    # U1 (ADR-3): probe a new source first; a missing one is err:not-found.
+    if ! lr="$(git ls-remote "$src" 2>&1)"; then
+      if [[ "$lr" == *"Repository not found"* || "$lr" == *"does not appear to be a git repository"* ]]; then
+        result=err:not-found; return 1
+      fi
+    fi
     git init -q --bare "$dst" || { result=err:init; return 1; }
     git --git-dir="$dst" remote add github "$src" || { result=err:add; return 1; }
     result=ok:created
@@ -405,13 +427,16 @@ process_one(){
   # U7b: first failure creates state/<name>.fail and notifies; --changed
   # collects names for one pass summary).
   if (( failed )); then
-    if (( changed )); then
-      if [[ ! -f "$CA_STATE_DIR/$name.fail" ]]; then
-        : > "$CA_STATE_DIR/$name.fail"
-        changed_failed+=("$name")
+    # U1 (ADR-3): err:not-found never notifies the owner nor leaves a .fail.
+    if [[ "$result" != err:not-found ]]; then
+      if (( changed )); then
+        if [[ ! -f "$CA_STATE_DIR/$name.fail" ]]; then
+          : > "$CA_STATE_DIR/$name.fail"
+          changed_failed+=("$name")
+        fi
+      else
+        notify_fail "$name" "$result"
       fi
-    else
-      notify_fail "$name" "$result"
     fi
   else
     notify_ok "$name"
@@ -440,7 +465,8 @@ if [[ "${1:-}" == "--changed" ]]; then
   else
     list_file="$(mktemp)"
     trap 'rm -f "$list_file"' EXIT
-    if ! gh api --paginate '/orgs/arwoxbx24/repos?per_page=100' \
+    org="${CA_GITHUB_BASE##*:}"
+    if ! gh api --paginate "/orgs/$org/repos?per_page=100" \
          -q '.[] | [.name, .pushed_at, (.size|tostring), (.archived|tostring)] | @tsv' > "$list_file"; then
       line="$(date +%F_%T) err:list-fetch"
       printf '%s\n' "$line" >> "$CA_LOG"
@@ -476,7 +502,7 @@ if [[ "${1:-}" == "--changed" ]]; then
       skipped=$((skipped+1)); continue
     fi
     # D10: keep at least 2 GiB + this repo's size free before mirroring it.
-    process_one "$name" "$(( 2097152 + ${size:-0} ))"
+    process_one "$name" "$(( ${CA_FREE_MIN_KB:-2097152} + ${size:-0} ))"
     if [[ "$result" == ok* ]]; then
       printf '%s\n' "$pushed" > "$CA_STATE_DIR/$name.pushed_at"
     fi

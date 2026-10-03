@@ -122,12 +122,16 @@ else
   f 7
 fi
 # Check 8: two concurrent runs by the same new name serialize via flock
-CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_LAST_OK=$T/last-ok CA_FREE_MIN_KB=1 "$bin/code-archive" demo2 >"$T/out8a" 2>&1 & pid8a=$!
-CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_LAST_OK=$T/last-ok CA_FREE_MIN_KB=1 "$bin/code-archive" demo2 >"$T/out8b" 2>&1 & pid8b=$!
+# a nonexistent source now reports err:not-found and creates no copy, so demo2
+# gets a real local source to keep the flock test meaningful.
+git init -q --bare "$T/github/demo2.git"
+git -C "$T/work" push -q "$T/github/demo2.git" main
+CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_LAST_OK=$T/last-ok CA_FREE_MIN_KB=1 CA_GITLAB_BASE=$T/gitlab "$bin/code-archive" demo2 >"$T/out8a" 2>&1 & pid8a=$!
+CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_LAST_OK=$T/last-ok CA_FREE_MIN_KB=1 CA_GITLAB_BASE=$T/gitlab "$bin/code-archive" demo2 >"$T/out8b" 2>&1 & pid8b=$!
 wait $pid8a; rc8a=$?
 wait $pid8b; rc8b=$?
 git --git-dir="$T/repos/demo2.git" fsck >/dev/null 2>&1; fsck8=$?
-{ [[ $rc8a == 1 && $rc8b == 1 && $fsck8 == 0 ]]; } && p 8 || f 8
+{ [[ $rc8a == 0 && $rc8b == 0 && $fsck8 == 0 ]]; } && p 8 || f 8
 # Check 9: successful pass writes last-ok; insufficient space -> err:no-space
 rm -f "$T/last-ok"
 out9=$(CA_GITHUB_BASE=$T/github CA_REPOS_DIR=$T/repos CA_STATE_DIR=$T/state CA_LOG=$T/log/code-archive.log CA_ENV_FILE=$T/env CA_LAST_OK=$T/last-ok CA_FREE_MIN_KB=1 "$bin/code-archive" demo 2>&1); rc9=$?
@@ -696,6 +700,45 @@ if [[ $rc45 == 2 ]] \
   p 45
 else
   f 45
+fi
+
+# Check 46 (U1): invocation validation — --help/usage and refusal work with no
+# secrets, bad or bare invocations exit 64 with no side effects, and a
+# nonexistent source is err:not-found without notifying or leaving state.
+before46a=$(wc -l < "$T/log/code-archive.log")
+before46b=$(wc -l < "$T/state/notify.out" 2>/dev/null || echo 0)
+out46h=$(env "${localenv[@]}" "$bin/code-archive" --help 2>&1); rc46h=$?
+out46i=$(env "${localenv[@]}" "$bin/code-archive" -h 2>&1); rc46i=$?
+out46x=$(env "${localenv[@]}" CA_ENV_FILE=$T/nonexistent "$bin/code-archive" --help 2>&1); rc46x=$?
+us46=("--drill" "-x" "" ".."); rc46u=()
+for a in "${us46[@]}"; do env "${localenv[@]}" "$bin/code-archive" "$a" >/dev/null 2>&1; rc46u+=("$?"); done
+env "${localenv[@]}" "$bin/code-archive" >/dev/null 2>&1; rc46n=$?
+out46m=$(env "${localenv[@]}" "$bin/code-archive" nosuchrepo46 2>&1); rc46m=$?
+after46b=$(wc -l < "$T/state/notify.out" 2>/dev/null || echo 0)
+errusage46=$(grep -c 'err:usage' "$T/log/code-archive.log" || true)
+mkgh ".github46"; mkgh "a-b_c.d46"
+git -C "$T/seed" push -q "$T/github/.github46.git" main
+git -C "$T/seed" push -q "$T/github/a-b_c.d46.git" main
+out46g=$(env "${localenv[@]}" "$bin/code-archive" .github46 a-b_c.d46 2>&1); rc46g=$?
+gh46=no; grep -qF -- '--changed' <<<"$out46h" && gh46=yes
+gnf46=no; grep -Fq 'nosuchrepo46 err:not-found' "$T/log/code-archive.log" && gnf46=yes
+gg146=no; grep -Fq '.github46 ok' "$T/log/code-archive.log" && gg146=yes
+gg246=no; grep -Fq 'a-b_c.d46 ok' "$T/log/code-archive.log" && gg246=yes
+sf46=no; compgen -G "$T/state/-*" >/dev/null 2>&1 || sf46=yes
+rf46=no; compgen -G "$T/repos/-*" >/dev/null 2>&1 || rf46=yes
+if [[ $rc46h == 0 && $rc46i == 0 && $rc46x == 0 \
+   && $gh46 == yes \
+   && $rc46n == 64 \
+   && ${rc46u[0]} == 64 && ${rc46u[1]} == 64 && ${rc46u[2]} == 64 && ${rc46u[3]} == 64 \
+   && $rc46m == 1 && $gnf46 == yes \
+   && $after46b == $before46b \
+   && ! -e "$T/repos/nosuchrepo46.git" \
+   && ! -e "$T/state/nosuchrepo46.fail" \
+   && $rc46g == 0 && $gg146 == yes && $gg246 == yes \
+   && $errusage46 == 4 && $sf46 == yes && $rf46 == yes ]]; then
+  p 46
+else
+  f 46
 fi
 
 echo "PASS $ok FAIL $((total-ok))"
