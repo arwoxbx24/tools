@@ -139,7 +139,10 @@ cd "$live"
 head=$(git -C "$wtr" rev-parse HEAD)
 git -C "$live" worktree remove "$wtr"
 git -C "$live" update-ref -d "refs/heads/$branch" "$head"
-git -C "$live" push -q origin --delete "$branch" || true
+# PR head may already be gone if GitHub deleted it on merge; only try if it exists.
+if git -C "$live" ls-remote --exit-code origin "refs/heads/$branch" >/dev/null 2>&1; then
+	git -C "$live" push -q origin --delete "$branch" || true
+fi
 
 "$bin/git-state" --no-fetch | grep -F "$name"
 leave 0 live

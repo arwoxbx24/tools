@@ -90,6 +90,7 @@ ga_branch_unmerged(){ # <branch> in current GIT_DIR — 0 if unmerged vs origin/
 	for ref in $(git for-each-ref --format='%(refname)' refs/delivered/); do
 		git merge-base --is-ancestor "$branch" "$ref" && return 1
 	done
+	git rev-parse -q --verify refs/remotes/origin/main >/dev/null 2>&1 || return 1
 	mb=$(git merge-base origin/main "$branch") || return 1
 	changed=$(git diff --name-only "$mb" "$branch") || return 1
 	[[ -n $changed ]] || return 1
