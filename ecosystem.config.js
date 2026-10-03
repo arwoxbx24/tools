@@ -1273,6 +1273,25 @@ module.exports = {
       cron_restart: '*/5 * * * *',
       error_file: '/root/.pm2/logs/git-sync-loop-error.log',
       out_file: '/root/.pm2/logs/git-sync-loop-out.log'
+    },
+    {
+      // spec:094 U1 еженедельная автоуборка реализованных спек, старых ТЗ/планов/исследований и закрытых задач
+      name: 'spec-sweep',
+      time: true,
+      merge_logs: true,
+      script: '/root/workspaces/tools/bin/spec-sweep',
+      args: '--apply',
+      cwd: '/root/workspaces/projects',
+      interpreter: 'bash',
+      exec_mode: 'fork_mode',
+      instances: 1,
+      autorestart: false,
+      min_uptime: 1000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
+      cron_restart: '0 4 * * 1',
+      error_file: '/root/.pm2/logs/spec-sweep-error.log',
+      out_file: '/root/.pm2/logs/spec-sweep-out.log'
     }
   ]
 };
