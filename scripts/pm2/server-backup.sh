@@ -173,7 +173,10 @@ fi
 
 paths=(
   /root/workspaces /root/.claude /root/.config
-  /root/.pm2 /root/.codex/config.toml /root/.codex/AGENTS.md /root/.codex/hooks.json
+  /root/.pm2 /root/.codex
+  /root/.gemini /root/.kimi /root/.kimi-code /root/.mcp-auth /root/.clasprc.json /root/.twcrc /root/.railway
+  /root/.northflank /root/.copilot /root/.azure-devops /root/.git-templates /root/.holmes /root/.semgrep /root/.vim
+  /root/.dbclient /root/bin /root/netplan-backup
   /root/CLAUDE.md /root/AGENTS.md /root/GEMINI.md /etc /data/minio
   /root/nginx-proxy-manager "$STAGE"
   /root/.claude.json /root/.bashrc /root/.profile /root/.gitconfig /root/.gitignore_global
@@ -197,6 +200,14 @@ run_step backup "${NICE_PREFIX[@]}" "$RESTIC" backup --tag server --group-by hos
   --exclude '*.pyc' --exclude /root/workspaces/system/archives --exclude /root/.pm2/logs \
   --exclude /root/.claude/file-history --exclude /root/.claude/paste-cache \
   --exclude /root/.claude/projects --exclude /root/.claude/jobs \
+  --exclude /root/.codex/sessions --exclude /root/.codex/archived_sessions --exclude /root/.codex/.tmp \
+  --exclude /root/.codex/tmp --exclude /root/.codex/packages --exclude /root/.codex/cache \
+  --exclude /root/.codex/mcp-runners --exclude /root/.codex/generated_images \
+  --exclude '/root/.codex/thread_history_*.sqlite*' \
+  --exclude '/root/.codex/logs_*.sqlite*' \
+  --exclude '/root/.codex/state_*.sqlite*' \
+  --exclude /root/.gemini/tmp --exclude /root/.kimi-code/bin --exclude /root/.kimi-code/cache \
+  --exclude /root/.kimi-code/logs --exclude /root/.kimi-code/sessions --exclude /root/.kimi-code/search-index \
   --read-concurrency 1 --limit-upload "${BK_LIMIT_UPLOAD:-5120}" --retry-lock 30m \
   "${backup_paths[@]}"
 backup_rc=$?
