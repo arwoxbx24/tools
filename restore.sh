@@ -16,7 +16,7 @@ usage() {
   --snapshot <id>    снимок restic (по умолчанию latest)
   --target <dir>     каталог восстановления (по умолчанию /)
   --phase <0-6|all>  0: dry; 1: пакеты; 2: restic; 3: хост-БД;
-                     4: docker; 5: pm2; 6: crontab; all: фазы 1-6
+                     4: docker; 5: pm2; 6: crontab; all: фазы 2,1,3-6 (restic до пакетов)
 EOF
 }
 
@@ -50,11 +50,11 @@ run_phase() {
   case "$phase" in
     1)
       echo '== Фаза 1: пакеты'
-      echo "apt-get update; xargs -a $MANIFESTS/apt-manual.txt apt-get install -y"
+      echo "apt-get update; DEBIAN_FRONTEND=noninteractive xargs -r -a $MANIFESTS/apt-manual.txt apt-get install -y -o Dpkg::Options::=--force-confold"
       echo "pip3 install -r $MANIFESTS/pip-freeze.txt; pipx install из pipx.json"
       echo "npm install -g из npm-global.txt; snap install из snap.txt"
       apt-get update
-      xargs -r -a "$MANIFESTS/apt-manual.txt" apt-get install -y
+      DEBIAN_FRONTEND=noninteractive xargs -r -a "$MANIFESTS/apt-manual.txt" apt-get install -y -o Dpkg::Options::=--force-confold
       pip3 install -r "$MANIFESTS/pip-freeze.txt"
       while IFS= read -r package; do
         [[ -n "$package" ]] && pipx install "$package"
@@ -66,7 +66,7 @@ run_phase() {
       ;;
     2)
       echo '== Фаза 2: restic'
-      echo "source $REPO_ENV; source $PW_ENV; $RESTIC restore $SNAP --target $TARGET"
+      echo "source $REPO_ENV; source $PW_ENV; $RESTIC restore $SNAP --tag server --target $TARGET"
       if [[ ! -x "$RESTIC" ]]; then
         echo "RESTIC не найден: $RESTIC" >&2
         echo 'Скачайте restic 0.19.1 из GitHub Releases, затем сверяйте архив с SHA256SUMS:' >&2
@@ -79,7 +79,7 @@ run_phase() {
       source "$REPO_ENV"
       source "$PW_ENV"
       set +a
-      "$RESTIC" restore "$SNAP" --target "$TARGET"
+      "$RESTIC" restore "$SNAP" --tag server --target "$TARGET"
       ;;
     3)
       echo '== Фаза 3: хост-БД'
@@ -132,8 +132,8 @@ run_phase() {
 
 if [[ "$PHASE" == 0 ]]; then
   echo '== Фаза 0: dry'
-  echo '== Фаза 1: пакеты из manifests'
   echo '== Фаза 2: restic restore снимка'
+  echo '== Фаза 1: пакеты из manifests'
   echo '== Фаза 3: PostgreSQL, Redis и Grafana'
   echo '== Фаза 4: docker compose и тома'
   echo '== Фаза 5: pm2 resurrect'
@@ -145,7 +145,7 @@ CURRENT_PHASE=$PHASE
 trap 'exit "$CURRENT_PHASE"' ERR
 
 if [[ "$PHASE" == all ]]; then
-  for PHASE in 1 2 3 4 5 6; do
+  for PHASE in 2 1 3 4 5 6; do
     CURRENT_PHASE=$PHASE
     run_phase "$PHASE"
     [[ "$PHASE" == 6 ]] || read -r -p 'Продолжить следующую фазу? ' _
