@@ -105,6 +105,40 @@ ga_lock(){ # <name> <timeout_s> <cmd...>
 	return $?
 }
 
+ga_ci_wait(){ # pr <slug> <num> | sha <slug> <sha> <branch> — 0 ok, 40 fail/absent/timeout
+	local kind=$1 slug=$2 b ok bad
+	case $kind in
+		pr)
+			local num=$3 buckets
+			timeout "${GA_CI_CAP:-900}" gh pr checks "$num" -R "$slug" --watch >/dev/null 2>&1
+			[[ $? == 124 ]] && return 40
+			buckets=$(gh pr checks "$num" -R "$slug" --json bucket -q '.[].bucket' 2>/dev/null) || return 40
+			[[ -n $buckets ]] || return 40
+			ok=1
+			for b in $buckets; do
+				[[ $b == pass || $b == skipping ]] || { ok=0; break; }
+			done
+			[[ $ok == 1 ]] && return 0
+			bad=$(gh pr checks "$num" -R "$slug" --json name,bucket --jq '.[]|select(.bucket=="fail" or .bucket=="cancel")|.name' 2>/dev/null)
+			[[ -n $bad ]] && printf '%s\n' "$bad" >&2
+			return 40
+			;;
+		sha)
+			local sha=$3 branch=$4 deadline now runs
+			deadline=$(( $(date +%s) + ${GA_CI_CAP:-900} ))
+			while :; do
+				runs=$(gh run list -R "$slug" --commit "$sha" --branch "$branch" --json status,conclusion 2>/dev/null) || return 40
+				if jq -e 'length>0 and all(.[]; .status=="completed") and all(.[]; .conclusion=="success")' <<<"$runs" >/dev/null 2>&1; then
+					return 0
+				fi
+				now=$(date +%s)
+				(( now >= deadline )) && return 40
+				sleep "${GA_CI_POLL:-15}"
+			done
+			;;
+	esac
+}
+
 ga_branch_unmerged(){ # <branch> in current GIT_DIR — 0 if unmerged vs origin/main
 	local branch=$1 mb changed ref
 	for ref in $(git for-each-ref --format='%(refname)' refs/delivered/); do
