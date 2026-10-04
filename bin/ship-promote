@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+set -u
+bin=$(cd -- "$(dirname -- "$0")" && pwd)
+. "$bin/git-auto-lib"
+
+logdir=${GA_LOG_DIR:-/root/workspaces/tools/logs}
+mkdir -p "$logdir"
+ship_log="$logdir/ship.log"
+name='-'; branch='-'
+
+usage(){ cat >&2 <<'EOF'
+usage: ship-promote <repo> --atom <id> --quote "<цитата>"
+exit codes: 10 preflight/usage/quote/skip/atom/mode, 30 core
+EOF
+leave 10 usage
+}
+
+repo=''; atom=''; quote=''
+while [[ $# -gt 0 ]]; do
+	case $1 in
+		--atom) atom=${2:-}; shift 2 ;;
+		--quote) quote=${2:-}; shift 2 ;;
+		-*) usage ;;
+		*) repo=$1; shift ;;
+	esac
+done
+[[ -n $repo && -n $atom ]] || usage
+
+if [[ -z ${quote//[[:space:]]/} ]]; then
+	echo 'ship-promote: нужна дословная цитата владельца' >&2
+	leave 10 quote
+fi
+
+name=$(ga_repo_of "$repo") || name='-'
+[[ -z "$(ga_skip_reason "$name")" ]] || leave 10 skip
+
+st=$(bd show "$atom" --json 2>/dev/null) || st=''
+status=$(printf '%s' "$st" | jq -r '.status // empty' 2>/dev/null)
+case $status in open|in_progress) : ;; *)
+	echo 'ship-promote: атом закрыт или уже перенесён' >&2; leave 10 atom ;;
+esac
+if printf '%s' "$st" | jq -r '.notes | if type=="array" then .[] else . end' 2>/dev/null | grep -q '^promote:'; then
+	echo 'ship-promote: атом закрыт или уже перенесён' >&2; leave 10 atom
+fi
+
+read -r mode base prod <<< "$(ga_base "$repo")"
+[[ -n "$base" ]] || leave 10 preflight
+if [[ $mode == one ]]; then
+	echo 'ship-promote: режим одной ветки, переносить нечего' >&2
+	leave 10 mode
+fi
+
+gg_log 0 "quote: $quote"
+echo 'ship-promote: ядро переноса не подключено' >&2
+leave 30 core
