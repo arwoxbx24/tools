@@ -17,27 +17,20 @@ cat > "$d/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$GH_JOURNAL"
 case $1:$2 in
-	pr:list) [[ -f "$GH_CREATED" ]] && echo 7 || echo '' ;;
+	pr:list) [[ -f "$GH_TEST_DIR/pr-empty" ]] && echo '' || { [[ -f "$GH_CREATED" ]] && echo 7 || echo ''; } ;;
 	pr:create)
-		if [[ " $* " == *' --fill '* ]]; then
+		if [[ -f "$GH_TEST_DIR/pr-empty" ]]; then
+			echo 'https://github.com/x/y/pull/7'
+		elif [[ " $* " == *' --fill '* ]]; then
 			echo 'could not compute title' >&2; exit 1
-		fi
-		: > "$GH_CREATED"; echo 'https://github.com/x/y/pull/7' ;;
+		else
+			: > "$GH_CREATED"; echo 'https://github.com/x/y/pull/7'
+		fi ;;
 	pr:checks)
 		if [[ " $* " != *' --watch '* ]]; then
-			cnt=$(( $(cat "$GH_TEST_DIR/ci-poll" 2>/dev/null || echo 0) + 1 ))
-			echo "$cnt" > "$GH_TEST_DIR/ci-poll"
-			if [[ -f "$GH_TEST_DIR/checks-late" && $cnt -ge ${GH_CI_DELAY:-1} ]]; then
-				cf="$GH_TEST_DIR/checks-late"
-			else
-				cf="$GH_TEST_DIR/checks.json"
-			fi
-			if [[ " $* " == *'length'* ]]; then
-				jq length "$cf" 2>/dev/null || echo 0
-			else
-				jq -r '.[]|select(.bucket=="fail" or .bucket=="cancel")|.name' "$cf" 2>/dev/null
-			fi
+			cat "$GH_TEST_DIR/bucket" 2>/dev/null || echo pass
 		fi ;;
+	run:list) cat "$GH_TEST_DIR/runs" 2>/dev/null || echo '[]' ;;
 	pr:merge)
 		[[ ! -f "$GH_TEST_DIR/gh-401" ]] || { echo 'HTTP 401' >&2; exit 1; }
 		[[ ! -f "$GH_TEST_DIR/merge-fail" ]] || { echo 'merge refused' >&2; exit 1; }
@@ -216,16 +209,16 @@ rm -f "$d/checks.json" "$d/checks-late" "$d/ci-poll"
 [[ $rc == 0 && $out != *'ci:none'* ]] && p 10 || f 10
 
 mkrepo r11 1; w11=$(mkwt r11 claude/c11); printf 's11\n' >> "$w11/f.txt"
-printf '[{"name":"min-ci","bucket":"fail"}]\n' > "$d/checks.json"; rm -f "$d/checks-late" "$d/ci-poll"
-out=$(GA_CI_APPEAR=15 ship "$w11" 2>&1); rc=$?
-rm -f "$d/checks.json" "$d/checks-late" "$d/ci-poll"
+printf 'min-ci\n' > "$d/bucket"
+out=$(ship "$w11" 2>&1); rc=$?
+rm -f "$d/bucket"
 [[ $rc == 40 && $out == *'min-ci'* && -d "$w11" ]] && p 11 || f 11
 
 mkrepo r12 1; w12=$(mkwt r12 claude/c12); printf 's12\n' >> "$w12/f.txt"
-printf '[]\n' > "$d/checks.json"; rm -f "$d/checks-late" "$d/ci-poll"
-GA_CI_APPEAR=3 ship "$w12" >/dev/null 2>&1; rc=$?
-rm -f "$d/checks.json" "$d/ci-poll"
-[[ $rc == 30 ]] && p 12 || f 12
+: > "$d/bucket"
+ship "$w12" >/dev/null 2>&1; rc=$?
+rm -f "$d/bucket"
+[[ $rc == 40 ]] && p 12 || f 12
 
 mkrepo r13; w13=$(mkwt r13 claude/c13); printf 's13\n' >> "$w13/f.txt"
 : > "$d/merge-fail"

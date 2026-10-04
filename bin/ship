@@ -221,6 +221,7 @@ if [[ -z $num ]]; then
 		--title "$(g log -1 --format=%s)" --body "$body" >/dev/null || leave 30 pr
 	num=$(gh pr list -R "$slug" --head "$branch" --state open --json number --jq '.[0].number' 2>/dev/null)
 fi
+[[ -n $num ]] || { echo 'ship: номер PR не получен' >&2; leave 30 pr; }
 printf 'pr:%s\n' "$num"
 ci=none
 	for f in $(git -C "$wtr" ls-tree --name-only origin/$base:.github/workflows 2>/dev/null); do
@@ -235,16 +236,7 @@ if [[ $ci == none ]]; then
 	fi
 	echo ci:none
 else
-	it=$(( (${GA_CI_APPEAR:-60}) / 5 ))
-	for _ in $(seq 1 "$it"); do
-		n=$(gh pr checks "$num" -R "$slug" --json name,bucket --jq length 2>/dev/null)
-		[[ ${n:-0} -gt 0 ]] && break
-		sleep 5
-	done
-	[[ ${n:-0} -gt 0 ]] || leave 30 ci-absent
-	timeout "${GA_CI_CAP:-900}" gh pr checks "$num" -R "$slug" --watch >/dev/null 2>&1
-	bad=$(gh pr checks "$num" -R "$slug" --json name,bucket --jq '.[]|select(.bucket=="fail" or .bucket=="cancel")|.name' 2>/dev/null)
-	if [[ -n $bad ]]; then printf '%s\n' "$bad" >&2; leave 40 ci; fi
+	ga_ci_wait pr "$slug" "$num" || leave 40 ci
 fi
 
 gh_or70(){ local e; e=$("$@" 2>&1 >/dev/null) && return 0; grep -qiE 'HTTP 40[13]|authentication|could not connect|timeout' <<<"$e" && leave 70 gh; return 1; }
@@ -252,6 +244,7 @@ gh_or70(){ local e; e=$("$@" 2>&1 >/dev/null) && return 0; grep -qiE 'HTTP 40[13
 ga_lock "$name" 60
 gh_or70 gh pr merge "$num" -R "$slug" --squash --match-head-commit "$(git -C "$wtr" rev-parse HEAD)" || leave 50 merge
 merge_sha=$(gh pr view "$num" -R "$slug" --json mergeCommit --jq .mergeCommit.oid)
+gg_log 0 "merged $num $merge_sha"
 merge_ms=$(( $(date +%s) * 1000 ))
 rmot=$(sed '/^[[:space:]]*$/d' "$chk_out" | tail -n1)
 cmd=${tz_check#Проверка: }
