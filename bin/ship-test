@@ -17,7 +17,20 @@ cat > "$d/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$GH_JOURNAL"
 case $1:$2 in
-	pr:list) [[ -f "$GH_TEST_DIR/pr-empty" ]] && echo '' || { [[ -f "$GH_CREATED" ]] && echo 7 || echo ''; } ;;
+	pr:list)
+		if [[ -f "$GH_TEST_DIR/mk-dev-on-list" ]]; then
+			git -C "$PWD" push -q "$(git -C "$PWD" config remote.origin.url)" refs/remotes/origin/main:refs/heads/dev 2>/dev/null
+			rm -f "$GH_TEST_DIR/mk-dev-on-list"
+		fi
+		if [[ -f "$GH_TEST_DIR/pr-empty" ]]; then
+			echo ''
+		elif [[ -f "$GH_TEST_DIR/pr-base" ]]; then
+			printf '[{"number":7,"baseRefName":"%s"}]\n' "$(cat "$GH_TEST_DIR/pr-base")"
+		elif [[ -f "$GH_CREATED" ]]; then
+			echo 7
+		else
+			echo ''
+		fi ;;
 	pr:create)
 		if [[ -f "$GH_TEST_DIR/pr-empty" ]]; then
 			echo 'https://github.com/x/y/pull/7'
