@@ -84,7 +84,7 @@ git init -q --bare "$d/origin-tz.git"
 git clone -q "$d/origin-tz.git" "$d/tzrepo"
 git -C "$d/tzrepo" config user.email t@t
 git -C "$d/tzrepo" config user.name t
-( cd "$d/tzrepo" && printf 'Файлы: f.txt, x.txt\nПроверка: test -n "$(git diff --name-only origin/main...HEAD)"\n' > tz.md \
+( cd "$d/tzrepo" && printf 'Файлы: f.txt, x.txt\nПроверка: test -n "$(git diff --name-only origin/main...HEAD)" && echo 3\n' > tz.md \
 	&& git add . && git commit -q -m tz && git branch -M main \
 	&& git push -q -u origin main && git fetch -q origin )
 tz="$d/tzrepo/tz.md"
@@ -398,5 +398,13 @@ mkrepo r30; w30=$(mkwt r30 claude/c30); printf 's30\n' >> "$w30/f.txt"
 err=$(<"$d/s30.err")
 [[ $rc == 80 && $err == *'неверная маска'* ]] && p 30 || f 30
 
-if [[ $ok == 30 ]]; then echo 'PASS 30/30'; exit 0; fi
+# 31: тело PR (stub gh pr create) содержит вывод проверки
+mkrepo r31; w31=$(mkwt r31 claude/c31); printf 's31\n' >> "$w31/f.txt"
+rm -f "$GH_CREATED"
+ship "$w31" >/dev/null 2>&1; rc=$?
+last=$(grep -n '^pr create' "$GH_JOURNAL" | tail -n1 | cut -d: -f1)
+entry=$(tail -n +"$last" "$GH_JOURNAL" | awk 'NR==1{print; next} /^pr list/{exit} {print}')
+[[ $rc == 0 && $entry == *'3'* ]] && p 31 || f 31
+
+if [[ $ok == 31 ]]; then echo 'PASS 31/31'; exit 0; fi
 exit 1

@@ -68,9 +68,11 @@ tz_parse(){ # 0 — ок, 80 — ТЗ не принято
 	return 0
 }
 
-# Запуск команды Проверка: внутри $1; ничего не печатает; возвращает код команды.
+# Запуск команды Проверка: внутри $1; ветка — stdout+stderr в $chk_out, main — в /dev/null.
 run_check(){ # $1 каталог
-	( cd "$1" && env -i PATH="$PATH" HOME="$HOME" timeout -k 5 300 setsid bash -c "$cmd" ) >/dev/null 2>&1
+	local out=/dev/null
+	[[ $1 == "$wtr" && -n ${chk_out:-} ]] && out=$chk_out
+	( cd "$1" && env -i PATH="$PATH" HOME="$HOME" timeout -k 5 300 setsid bash -c "$cmd" ) >"$out" 2>&1
 }
 
 # Дифференциальная проверка: пустая/неразличимая проверка или изменение файлов — 90.
@@ -177,6 +179,8 @@ locked_core(){
 	fi
 	return 0
 }
+chk_out=$(mktemp)
+trap 'rm -f "$chk_out"' EXIT
 ga_lock "$name" 60 locked_core
 rc=$?
 if [[ $rc -ne 0 ]]; then
@@ -190,8 +194,12 @@ ga_ctx "$name" 2>/dev/null; slug=$GA_SLUG; unset GIT_DIR GIT_WORK_TREE GA_LIVE G
 [[ -n ${slug:-} && $slug != - ]] || slug=$(g config --get remote.origin.url)
 num=$(gh pr list -R "$slug" --head "$branch" --state open --json number --jq '.[0].number' 2>/dev/null)
 if [[ -z $num ]]; then
+	body="$(g log -1 --format=%b)"
+	if [[ -n ${chk_out:-} ]]; then
+		body+=$'\n\nПроверка: '"${tz_check#Проверка: }"$'\n```\n'"$(tail -n 20 "$chk_out")"$'\n```'
+	fi
 	gh pr create -R "$slug" --head "$branch" --base main \
-		--title "$(g log -1 --format=%s)" --body "$(g log -1 --format=%b)" >/dev/null || leave 30 pr
+		--title "$(g log -1 --format=%s)" --body "$body" >/dev/null || leave 30 pr
 	num=$(gh pr list -R "$slug" --head "$branch" --state open --json number --jq '.[0].number' 2>/dev/null)
 fi
 printf 'pr:%s\n' "$num"
