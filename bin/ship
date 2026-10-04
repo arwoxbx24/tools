@@ -211,29 +211,38 @@ fi
 
 ga_ctx "$name" 2>/dev/null; slug=$GA_SLUG; unset GIT_DIR GIT_WORK_TREE GA_LIVE GA_SLUG
 [[ -n ${slug:-} && $slug != - ]] || slug=$(g config --get remote.origin.url)
-num=$(gh pr list -R "$slug" --head "$branch" --state open --json number --jq '.[0].number' 2>/dev/null)
-if [[ -z $num ]]; then
+# D5: CI-определение и отказ ci-none в режиме two — до gh pr create, чтобы не оставить открытый PR.
+ci=none
+for f in $(git -C "$wtr" ls-tree --name-only origin/$base:.github/workflows 2>/dev/null); do
+	case $f in *.yml|*.yaml)
+		git -C "$wtr" show "origin/$base:.github/workflows/$f" 2>/dev/null | grep -q pull_request && { ci=ci; break; } ;;
+	esac
+done
+if [[ $ci == none && $mode == two ]]; then
+	echo 'ship: в dev нет CI pull_request' >&2
+	leave 30 ci-none
+fi
+# D3: сверить базу открытого PR — чужой (не в $base) не должен влиться в prod мимо dev.
+pr=$(gh pr list -R "$slug" --head "$branch" --state open --json number,baseRefName --jq '.[0]' 2>/dev/null)
+if [[ -z $pr ]]; then
 	body="$(g log -1 --format=%b)"
 	if [[ -n ${chk_out:-} ]]; then
 		body+=$'\n\nПроверка: '"${tz_check#Проверка: }"$'\n```\n'"$(tail -n 20 "$chk_out")"$'\n```'
 	fi
 	gh pr create -R "$slug" --head "$branch" --base "$base" \
 		--title "$(g log -1 --format=%s)" --body "$body" >/dev/null || leave 30 pr
-	num=$(gh pr list -R "$slug" --head "$branch" --state open --json number --jq '.[0].number' 2>/dev/null)
+	pr=$(gh pr list -R "$slug" --head "$branch" --state open --json number,baseRefName --jq '.[0]' 2>/dev/null)
+fi
+num=$(printf '%s' "$pr" | sed -n 's/.*"number": *\([0-9][0-9]*\).*/\1/p')
+[[ -n $num ]] || num=$pr
+pbase=$(printf '%s' "$pr" | sed -n 's/.*"baseRefName":"\([^"]*\)".*/\1/p')
+if [[ -n $num && -n $pbase && $pbase != "$base" ]]; then
+	echo "ship: открытый PR #$num направлен в $pbase, нужен $base" >&2
+	leave 10 pr-base
 fi
 [[ -n $num ]] || { echo 'ship: номер PR не получен' >&2; leave 30 pr; }
 printf 'pr:%s\n' "$num"
-ci=none
-	for f in $(git -C "$wtr" ls-tree --name-only origin/$base:.github/workflows 2>/dev/null); do
-		case $f in *.yml|*.yaml)
-		git -C "$wtr" show "origin/$base:.github/workflows/$f" 2>/dev/null | grep -q pull_request && { ci=ci; break; } ;;
-		esac
-	done
 if [[ $ci == none ]]; then
-	if [[ $mode == two ]]; then
-		echo 'ship: в dev нет CI pull_request' >&2
-		leave 30 ci-none
-	fi
 	echo ci:none
 else
 	ga_ci_wait pr "$slug" "$num"
