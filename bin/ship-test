@@ -78,6 +78,13 @@ cat > "$d/bin/code-archive" <<'EOF'
 printf '%s\n' "$*" >> "$GH_TEST_DIR/code-archive-calls"
 EOF
 chmod +x "$d/bin/code-archive"
+cat > "$d/bin/bd" <<'EOF'
+#!/usr/bin/env bash
+printf 'bd %s\n' "$*" >> "$GH_TEST_DIR/bd.log"
+[[ ${BD_FAIL:-0} == 1 ]] && exit 1
+exit 0
+EOF
+chmod +x "$d/bin/bd"
 
 # ТЗ-репо с bare-origin; общий ТЗ закоммичен в origin/main, Файлы: покрывает существующие сценарии
 git init -q --bare "$d/origin-tz.git"
@@ -406,5 +413,19 @@ last=$(grep -n '^pr create' "$GH_JOURNAL" | tail -n1 | cut -d: -f1)
 entry=$(tail -n +"$last" "$GH_JOURNAL" | awk 'NR==1{print; next} /^pr list/{exit} {print}')
 [[ $rc == 0 && $entry == *'3'* ]] && p 31 || f 31
 
-if [[ $ok == 31 ]]; then echo 'PASS 31/31'; exit 0; fi
+# 32: успешная доставка — bd close залогирован с выводом проверки и ссылкой на PR
+mkrepo r32; w32=$(mkwt r32 claude/c32); printf 's32\n' >> "$w32/f.txt"
+: > "$d/bd.log"
+out=$(ship "$w32" 2>&1); rc=$?
+log=$(<"$d/bd.log")
+[[ $rc == 0 && $log == *close* && $log == *'3'* && $log == *'/pull/'* ]] && p 32 || f 32
+
+# 33: сбой bd close -> rc != 0, stderr содержит готовую команду
+mkrepo r33; w33=$(mkwt r33 claude/c33); printf 's33\n' >> "$w33/f.txt"
+( cd "$w33" && GH_ORIGIN="$(git -C "$w33" config remote.origin.url)" BD_FAIL=1 "$bin/ship" "$w33" --atom "$atom" --tz "$tz#U1" --handover ) 2>"$d/s33.err" >/dev/null
+rc=$?
+err=$(<"$d/s33.err")
+[[ $rc != 0 && $err == *'bd close'* ]] && p 33 || f 33
+
+if [[ $ok == 33 ]]; then echo 'PASS 33/33'; exit 0; fi
 exit 1
