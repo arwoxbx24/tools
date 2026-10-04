@@ -125,12 +125,13 @@ merge_ms=$(( $(date +%s) * 1000 ))
 [[ $handover == 1 ]] && { echo 'live:deferred handover'; g update-ref "refs/delivered/$branch" HEAD; leave 0 handover; }
 
 "$bin/git-sync" "$name"
-"$bin/git-state" --live "$name" "$merge_sha" >/dev/null || { echo err:live >&2; leave 60 live; }
+post_rc=0; post_step=''
+"$bin/git-state" --live "$name" "$merge_sha" >/dev/null || { echo err:live >&2; post_rc=60; post_step=live; }
 
 if [[ -n $reload ]]; then
 	pm2 startOrReload "${GA_ECOSYSTEM:-/root/workspaces/tools/ecosystem.config.js}" --only "$reload" >/dev/null
 	up=$(pm2 jlist | jq -r --arg n "$reload" '.[]|select(.name==$n)|.pm2_env.pm_uptime')
-	[[ ${up:-0} -gt $merge_ms ]] || leave 60 reload
+	[[ ${up:-0} -gt $merge_ms ]] || { post_rc=60; post_step=reload; }
 fi
 
 org=${GA_ARCHIVE_ORG:-$(git -C "$bin" config --get remote.origin.url 2>/dev/null)}
@@ -148,4 +149,4 @@ if git -C "$live" ls-remote --exit-code origin "refs/heads/$branch" >/dev/null 2
 fi
 
 "$bin/git-state" --no-fetch | grep -F "$name"
-leave 0 live
+leave "${post_rc:-0}" "${post_step:-live}"
