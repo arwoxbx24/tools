@@ -60,7 +60,7 @@ tz_parse(){ # 0 — ок, 80 — ТЗ не принято
 	IFS=',' read -ra arr <<< "$mline"
 	for m in "${arr[@]}"; do
 		m=${m#"${m%%[![:space:]]*}"}; m=${m%"${m##*[![:space:]]}"}
-		[[ -n $m && $m != '*' && $m != '**' && $m != '**/*' ]] \
+		[[ -n $m && ${m%%/*} != *'*'* ]] \
 			|| { echo "ship: ТЗ не принято — неверная маска '$m'" >&2; return 80; }
 		tz_regex+=("$(mask_re "$m")")
 	done
@@ -151,17 +151,21 @@ locked_core(){
 		g rebase -q origin/main || { g rebase --abort; return 50; }
 	fi
 	# граница: пути в диффе ветки обязаны лежать внутри Файлы: ТЗ
-	local wtroot changed p re matched found=0
-	wtroot=$(g rev-parse --show-toplevel 2>/dev/null)
-	changed=$(g diff --name-only --no-renames origin/main...HEAD 2>/dev/null)
-	for p in $changed; do
-		[[ $tz_repo == "$wtroot" && $p == "$tz_rel" ]] && { echo 'ship: ТЗ не принято' >&2; return 80; }
+	local df p re matched found=0 tzcd wtcd
+	tzcd=$( cd "$tz_repo" && d=$(git rev-parse --git-common-dir) && cd "$d" && pwd -P 2>/dev/null )
+	wtcd=$( cd "$wtr" && d=$(git rev-parse --git-common-dir) && cd "$d" && pwd -P 2>/dev/null )
+	df=$(mktemp) || { echo 'ship: дифф не прочитан' >&2; return 80; }
+	g diff -z --name-only --no-renames origin/main...HEAD > "$df" \
+		|| { rm -f "$df"; echo 'ship: дифф не прочитан' >&2; return 80; }
+	while IFS= read -r -d '' p; do
+		[[ $tzcd == "$wtcd" && $p == "$tz_rel" ]] && { rm -f "$df"; echo 'ship: ТЗ не принято' >&2; return 80; }
 		matched=0
 		for re in "${tz_regex[@]}"; do
 			[[ $p =~ ^$re$ ]] && { matched=1; break; }
 		done
 		[[ $matched == 1 ]] || { echo "ship: $p вне Файлы:" >&2; found=1; }
-	done
+	done < "$df"
+	rm -f "$df"
 	[[ $found == 0 ]] || return 80
 	check_gate || return $?
 	( cd "$wtr" && gitleaks git --redact --no-banner --log-opts "origin/main..HEAD" >/dev/null 2>&1 ) || return 20
