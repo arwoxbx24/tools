@@ -427,5 +427,23 @@ rc=$?
 err=$(<"$d/s33.err")
 [[ $rc != 0 && $err == *'bd close'* ]] && p 33 || f 33
 
-if [[ $ok == 33 ]]; then echo 'PASS 33/33'; exit 0; fi
+# 34: успешная доставка — reason содержит команду Проверки и main exit <цифра>
+mkrepo r34; w34=$(mkwt r34 claude/c34); printf 's34\n' >> "$w34/f.txt"
+: > "$d/bd.log"
+ship "$w34" >/dev/null 2>&1; rc=$?
+closeline=$(grep 'close' "$d/bd.log" | tail -n1)
+has34=$(grep -cE 'main exit [0-9]' <<<"$closeline" || true)
+[[ $rc == 0 && $closeline == *'git diff'* && $closeline == *'echo 3'* && ${has34:-0} -gt 0 ]] && p 34 || f 34
+
+# 35: ТЗ с файлом TZ-DOCS-DELIVERY.md — bd close не вызывается вовсе
+git -C "$d/tzrepo" checkout -q main
+( cd "$d/tzrepo" && printf 'Файлы: f.txt\nПроверка: test -n "$(git diff --name-only origin/main...HEAD)" && echo 3\n' > TZ-DOCS-DELIVERY.md \
+	&& git add . && git commit -q -m tzdoc && git push -q origin main && git fetch -q origin )
+mkrepo r35; w35=$(mkwt r35 claude/c35); printf 's35\n' >> "$w35/f.txt"
+: > "$d/bd.log"
+( cd "$w35" && GH_ORIGIN="$(git -C "$w35" config remote.origin.url)" "$bin/ship" "$w35" --atom "$atom" --tz "$d/tzrepo/TZ-DOCS-DELIVERY.md#U1" ) >/dev/null 2>&1; rc=$?
+log=$(<"$d/bd.log")
+[[ $rc == 0 && $log != *'close'* ]] && p 35 || f 35
+
+if [[ $ok == 35 ]]; then echo 'PASS 35/35'; exit 0; fi
 exit 1

@@ -93,6 +93,7 @@ check_gate(){ # 0 — ок, 90 — проверка не прошла/измен
 	g worktree add -q --detach "$tmp/m" origin/main \
 		|| { echo 'ship: не удалось поднять main' >&2; return 90; }
 	run_check "$tmp/m"; mrc=$?; main_rc=$mrc
+	printf '%s\n' "$mrc" > "$chk_out.rc"
 	g worktree remove --force "$tmp/m" 2>/dev/null; rmdir "$tmp" 2>/dev/null
 	case $mrc in
 		0) echo 'ship: проверка не отличает изменение' >&2; return 90 ;;
@@ -180,7 +181,7 @@ locked_core(){
 	return 0
 }
 chk_out=$(mktemp)
-trap 'rm -f "$chk_out"' EXIT
+trap 'rm -f "$chk_out" "$chk_out.rc"' EXIT
 ga_lock "$name" 60 locked_core
 rc=$?
 if [[ $rc -ne 0 ]]; then
@@ -231,11 +232,15 @@ gh_or70 gh pr merge "$num" -R "$slug" --squash --match-head-commit "$(git -C "$w
 merge_sha=$(gh pr view "$num" -R "$slug" --json mergeCommit --jq .mergeCommit.oid)
 merge_ms=$(( $(date +%s) * 1000 ))
 rmot=$(sed '/^[[:space:]]*$/d' "$chk_out" | tail -n1)
+cmd=${tz_check#Проверка: }
+main_rc=$(<"$chk_out.rc") || main_rc='?'
 reason="Проверка: $cmd | ветка exit 0, main exit $main_rc | $rmot | https://github.com/$slug/pull/$num"
-if ! bd close "$atom" --reason "$reason" >/dev/null 2>&1; then
-	echo "ship: закрой вручную: bd close \"$atom\" --reason \"$reason\"" >&2
-	post_rc=60; post_step=close
-	[[ $handover == 1 ]] && leave 60 close
+if [[ ${tz%%#*} != */TZ-DOCS-DELIVERY.md ]]; then
+	if ! bd close "$atom" --reason "$reason" >/dev/null 2>&1; then
+		echo "ship: закрой вручную: bd close \"$atom\" --reason \"$reason\"" >&2
+		post_rc=60; post_step=close
+		[[ $handover == 1 ]] && leave 60 close
+	fi
 fi
 [[ $handover == 1 ]] && { echo 'live:deferred handover'; g update-ref "refs/delivered/$branch" HEAD; leave 0 handover; }
 
