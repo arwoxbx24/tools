@@ -472,14 +472,16 @@ err=$(<"$d/s37.err"); git -C "$d/tzrepo" checkout -q -- .
 [[ $rc == 80 && $err == *'отличается от origin/main'* ]] && p 37 || f 37
 
 # 38 (AE1): dev-ветка на origin -> режим two; PR в dev, живая копия отложена, main без нового
-mkrepo r38
+mkrepo r38 1
 git -C "$GA_PROJECTS/r38" branch dev
 git -C "$GA_PROJECTS/r38" push -q -u origin dev
 git -C "$GA_PROJECTS/r38" fetch -q origin
 w38=$(mkwt r38 claude/c38); printf 's38\n' >> "$w38/f.txt"
 before38=$(git -C "$GA_PROJECTS/r38" rev-parse refs/remotes/origin/main)
 rm -f "$GH_CREATED"
+printf '[{"name":"min-ci","bucket":"pass"}]\n' > "$d/checks.json"; rm -f "$d/checks-late" "$d/ci-poll"
 ( cd "$w38" && GH_ORIGIN="$d/origin-r38.git" "$bin/ship" "$w38" --atom "$atom" --tz "$tz#U1" ) >/dev/null 2>&1; rc38=$?
+rm -f "$d/checks.json" "$d/ci-poll"
 git -C "$GA_PROJECTS/r38" fetch -q origin
 new38=$(git -C "$GA_PROJECTS/r38" rev-list --count "$before38"..refs/remotes/origin/main 2>/dev/null || echo 999)
 core38=$(grep '^pr create' "$GH_JOURNAL" | tail -n1)
