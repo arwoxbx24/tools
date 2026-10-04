@@ -84,7 +84,7 @@ if [[ $apply == 1 ]]; then
   atom=$(bd create "[SWEEP] $today: спеки $specs, документы $docs, задачи $bd_ok" -d "$desc" --silent 2>>"$LOG")
   if [[ ${#spec_dirs[@]} -gt 0 || ${#doc_files[@]} -gt 0 ]]; then
     wt=$ROOT/.worktrees/claude/sweep-$today
-    prod=main; read -r _ _ prod <<< "$(ga_base "$ROOT" 2>/dev/null)" 2>/dev/null || prod=main
+    prod=main; read -r _ _ prod <<< "$(ga_base "$ROOT" local 2>/dev/null)" 2>/dev/null || prod=main
     [[ -n ${prod:-} ]] || prod=main
     git -C "$ROOT" worktree add "$wt" -b "claude/sweep-$today" origin/$prod >>"$LOG" 2>&1
     for d in "${spec_dirs[@]}"; do git -C "$wt" rm -r --quiet -- "specs/$d"; done
