@@ -27,7 +27,15 @@ case $1:$2 in
 			: > "$GH_CREATED"; echo 'https://github.com/x/y/pull/7'
 		fi ;;
 	pr:checks)
-		if [[ " $* " != *' --watch '* ]]; then
+		if [[ " $* " == *' --watch '* ]]; then
+			b=$(cat "$GH_TEST_DIR/bucket" 2>/dev/null || echo pass)
+			[[ -n "$b" ]] || exit 1
+		else
+			if [[ -n "${GH_CI_DELAY:-}" ]]; then
+				[[ -f "$GH_TEST_DIR/ci-start" ]] || date +%s > "$GH_TEST_DIR/ci-start"
+				now=$(date +%s); st=$(cat "$GH_TEST_DIR/ci-start")
+				(( now - st < GH_CI_DELAY )) && exit 0
+			fi
 			cat "$GH_TEST_DIR/bucket" 2>/dev/null || echo pass
 		fi ;;
 	run:list) cat "$GH_TEST_DIR/runs" 2>/dev/null || echo '[]' ;;
@@ -216,9 +224,9 @@ rm -f "$d/bucket"
 
 mkrepo r12 1; w12=$(mkwt r12 claude/c12); printf 's12\n' >> "$w12/f.txt"
 : > "$d/bucket"
-ship "$w12" >/dev/null 2>&1; rc=$?
+GA_CI_APPEAR=2 ship "$w12" >/dev/null 2>&1; rc=$?
 rm -f "$d/bucket"
-[[ $rc == 40 ]] && p 12 || f 12
+[[ $rc == 30 ]] && p 12 || f 12
 
 mkrepo r13; w13=$(mkwt r13 claude/c13); printf 's13\n' >> "$w13/f.txt"
 : > "$d/merge-fail"
