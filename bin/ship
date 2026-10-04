@@ -236,7 +236,14 @@ if [[ $ci == none ]]; then
 	fi
 	echo ci:none
 else
-	ga_ci_wait pr "$slug" "$num" || leave 40 ci
+	ga_ci_wait pr "$slug" "$num"
+	ci_rc=$?
+	if [[ $ci_rc == 30 ]]; then
+		echo 'ship: CI не появился' >&2
+		leave 30 ci-absent
+	elif [[ $ci_rc != 0 ]]; then
+		leave 40 ci
+	fi
 fi
 
 gh_or70(){ local e; e=$("$@" 2>&1 >/dev/null) && return 0; grep -qiE 'HTTP 40[13]|authentication|could not connect|timeout' <<<"$e" && leave 70 gh; return 1; }

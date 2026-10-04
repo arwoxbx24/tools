@@ -32,3 +32,18 @@ printf '[]\n' > "$d/runs"
 GA_CI_CAP=2 GA_CI_POLL=1 ga_ci_wait sha x/rep sha1 br >/dev/null 2>&1; rc3=$?
 rm -f "$d/runs"
 [[ $rc1 == 0 && $rc2 == 40 && $rc3 == 40 ]] && p u4a-4 || f u4a-4
+
+# u4a-5: проверки появляются через GH_CI_DELAY=2 -> 0.
+mkrepo k40e 1; w40e=$(mkwt k40e claude/k40e); printf 's\n' >> "$w40e/f.txt"
+rm -f "$d/ci-start"
+GA_CI_APPEAR=10 GA_CI_POLL=1 GH_CI_DELAY=2 ship "$w40e" >/dev/null 2>&1; rc=$?
+rm -f "$d/ci-start"
+[[ $rc == 0 ]] && p u4a-5 || f u4a-5
+
+# u4a-6: проверок нет -> 30 ci-absent.
+mkrepo k40f 1; w40f=$(mkwt k40f claude/k40f); printf 's\n' >> "$w40f/f.txt"
+: > "$d/bucket"
+GA_CI_APPEAR=2 GA_CI_POLL=1 ship "$w40f" >/dev/null 2>&1; rc=$?
+rm -f "$d/bucket"
+grep -q 'ci-absent' "$GA_LOG_DIR/ship.log" && absent=0 || absent=1
+[[ $rc == 30 && $absent == 0 ]] && p u4a-6 || f u4a-6
