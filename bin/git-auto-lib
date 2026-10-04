@@ -53,7 +53,7 @@ ga_ctx(){ # <name> — export GIT_DIR/GIT_WORK_TREE/GA_LIVE/GA_SLUG; missing -> 
 ga_repo_of(){ # <path> — registry name of containing repo; none -> 2
 	local p=$1 gd name gd2 wt slug
 	[[ -n $p ]] || return 2
-	gd=$(git -C "$p" rev-parse --git-common-dir --path-format=absolute 2>/dev/null) || return 2
+	gd=$(git -C "$p" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 2
 	while IFS=$'\t' read -r name gd2 wt slug; do
 		[[ $gd == "$gd2" ]] && { echo "$name"; return 0; }
 	done < <(ga_roots)
@@ -80,7 +80,7 @@ ga_base(){ # <path> [local] — one line "<mode> <base> <prod>"; origin main/bas
 	sym=${sym%%$'\n'*}
 	[[ $sym == 'ref: refs/heads/'*$'\t'HEAD ]] || return 2
 	prod=${sym#'ref: refs/heads/'}; prod=${prod%%$'\t'*}
-	git -C "$p" ls-remote --exit-code --heads origin dev >/dev/null 2>&1
+	git -C "$p" ls-remote --exit-code origin refs/heads/dev >/dev/null 2>&1
 	case $? in
 		0) printf 'two dev %s\n' "$prod"; return 0 ;;
 		2) printf 'one %s %s\n' "$prod" "$prod"; return 0 ;;

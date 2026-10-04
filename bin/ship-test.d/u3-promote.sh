@@ -6,7 +6,7 @@ nopush(){ git -C "$GA_PROJECTS/$1" ls-remote origin "refs/heads/claude/$1" 2>/de
 cat > "$d/bin/bd" <<'EOF'
 #!/usr/bin/env bash
 printf 'bd %s\n' "$*" >> "$GH_TEST_DIR/bd.log"
-[[ ${1:-} == show && ${3:-} == --json ]] && printf '{"status":"%s","notes":"%s"}\n' "$(cat "$GH_TEST_DIR/bd-status" 2>/dev/null || echo open)" "$(cat "$GH_TEST_DIR/bd-notes" 2>/dev/null || echo '')"
+[[ ${1:-} == show && ${3:-} == --json ]] && printf '[{"status":"%s","notes":"%s"}]\n' "$(cat "$GH_TEST_DIR/bd-status" 2>/dev/null || echo open)" "$(cat "$GH_TEST_DIR/bd-notes" 2>/dev/null || echo '')"
 [[ ${BD_FAIL:-0} == 1 ]] && exit 1
 exit 0
 EOF
