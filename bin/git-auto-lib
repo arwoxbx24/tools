@@ -84,6 +84,11 @@ ga_skip_reason(){ # <name> -> allowlist|hh-scoring|''
 	return 0
 }
 
+gg_log(){ # $1 code $2 step
+	printf '%s %s %s %s %s\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" "$name" "$branch" "$1" "$2" >> "$ship_log"
+}
+leave(){ gg_log "$1" "$2"; exit "$1"; }
+
 ga_lock(){ # <name> <timeout_s> <cmd...>
 	local name=$1 timeout=$2 hash lock
 	shift 2

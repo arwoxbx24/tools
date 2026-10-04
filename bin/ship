@@ -8,10 +8,6 @@ mkdir -p "$logdir"
 ship_log="$logdir/ship.log"
 
 name='-'; branch='-'
-gg_log(){ # $1 code $2 step
-	printf '%s %s %s %s %s\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" "$name" "$branch" "$1" "$2" >> "$ship_log"
-}
-leave(){ gg_log "$1" "$2"; exit "$1"; }
 
 usage(){ cat >&2 <<'EOF'
 usage: ship <worktree> --atom <id> --tz <path#U> [--reload <pm2-name>] [--handover]
