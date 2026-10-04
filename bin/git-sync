@@ -23,47 +23,49 @@ emit(){ # <name> <status> [ref...] — печать + журнал; rc по stat
 }
 
 sync_one(){ # <name> — одно репо под ga_ctx; гейты до спасения
-	local name=$1 reason branch dirty s ref r refs active now ht p h obj dif cof savedmain
+	local name=$1 reason branch dirty s ref r refs active now ht p h obj dif cof savedmain prod=main
 	reason=$(ga_skip_reason "$name")
 	[[ -z $reason ]] || { emit "$name" "skip:$reason"; return $?; }
 	ga_ctx "$name" 2>/dev/null || { emit "$name" err:ctx; return $?; }
+	read -r _ _ prod <<< "$(ga_base "$GA_LIVE" 2>/dev/null)" 2>/dev/null || prod=main
+	[[ -n ${prod:-} ]] || prod=main
 	git remote get-url origin >/dev/null 2>&1 || { emit "$name" skip:no-remote; return $?; }
-	timeout 20 git fetch --quiet origin main 2>/dev/null \
-		|| { git rev-parse -q --verify refs/remotes/origin/main >/dev/null 2>&1 \
+	timeout 20 git fetch --quiet origin $prod 2>/dev/null \
+		|| { git rev-parse -q --verify refs/remotes/origin/$prod >/dev/null 2>&1 \
 			|| { emit "$name" skip:no-main; return $?; }
 			emit "$name" err:fetch; return $?; }
 	branch=$(git symbolic-ref --short -q HEAD 2>/dev/null) || branch=detached
 	dirty=$(git status --porcelain -uno 2>/dev/null | wc -l)
-	if [[ $branch == main && $dirty == 0 ]]; then
+	if [[ $branch == $prod && $dirty == 0 ]]; then
 		head0=$(git rev-parse HEAD)
-		if git merge --ff-only -q origin/main 2>/dev/null; then
+		if git merge --ff-only -q origin/$prod 2>/dev/null; then
 			[[ $(git rev-parse HEAD) == "$head0" ]] && emit "$name" ok || emit "$name" ff
 			return $?
 		fi
-		# локальный main впереди origin — спасение main-local
-		ref="refs/rescue/$stamp/main-local"
+		# локальный $prod впереди origin — спасение prod-local
+		ref="refs/rescue/$stamp/$prod-local"
 		git update-ref "$ref" HEAD || { emit "$name" err:main-local; return $?; }
 		[[ $(git rev-parse --verify -q "$ref" 2>/dev/null) == "$(git rev-parse HEAD)" ]] \
 			|| { emit "$name" err:main-local; return $?; }
-		git reset --hard -q origin/main 2>/dev/null || { emit "$name" err:reset; return $?; }
+		git reset --hard -q origin/$prod 2>/dev/null || { emit "$name" err:reset; return $?; }
 		emit "$name" rescued "$ref"; return $?
 	fi
 	now=$(date +%s); active=""
 	[[ $dirty -gt 0 ]] && active=$(git diff --name-only HEAD 2>/dev/null | xargs -r -d '\n' stat -c %Y 2>/dev/null | awk -v c=$((now-min_idle*60)) '$1>c{print 1; exit}')
-	[[ -z $active && $dirty == 0 && $branch != main ]] && { ht=$(git show -s --format=%ct HEAD 2>/dev/null); (( now-${ht:-0} < min_idle*60 )) && active=1; }
+	[[ -z $active && $dirty == 0 && $branch != $prod ]] && { ht=$(git show -s --format=%ct HEAD 2>/dev/null); (( now-${ht:-0} < min_idle*60 )) && active=1; }
 	[[ -z $active ]] || { emit "$name" skip:active; return $?; }
-	[[ $branch != main ]] && ga_branch_unmerged "$branch" && { emit "$name" skip:unmerged-branch; return $?; }
-	# двойники: файлы, добавленные в origin/main, уже лежат на диске неотслеживаемо
-	dif=$(git diff --name-only --diff-filter=A HEAD origin/main 2>/dev/null)
+	[[ $branch != $prod ]] && ga_branch_unmerged "$branch" && { emit "$name" skip:unmerged-branch; return $?; }
+	# двойники: файлы, добавленные в origin/$prod, уже лежат на диске неотслеживаемо
+	dif=$(git diff --name-only --diff-filter=A HEAD origin/$prod 2>/dev/null)
 	cof=""
 	while IFS= read -r p; do
 		[[ -n $p && -e $p ]] || continue
 		cof="-f"
 		h=$(git hash-object -- "$p" 2>/dev/null)
-		obj=$(git rev-parse "origin/main:$p" 2>/dev/null)
+		obj=$(git rev-parse "origin/$prod:$p" 2>/dev/null)
 		[[ $h == "$obj" ]] || { emit "$name" err:untracked; return $?; }
 	done <<<"$dif"
-	# изменения отслеживаемых или ветка не main — спасение wip/tip
+	# изменения отслеживаемых или ветка не $prod — спасение wip/tip
 	refs=""
 	s=$(git stash create) || { emit "$name" err:rescue; return $?; }
 	if [[ -n $s ]]; then
@@ -72,29 +74,29 @@ sync_one(){ # <name> — одно репо под ga_ctx; гейты до спа
 		[[ $(git rev-parse --verify -q "$r" 2>/dev/null) == "$s" ]] || { emit "$name" err:rescue; return $?; }
 		refs="$refs $r"
 	fi
-	if [[ $branch != main ]]; then
+	if [[ $branch != $prod ]]; then
 		r="refs/rescue/$stamp/$branch-tip"
 		git update-ref "$r" HEAD || { emit "$name" err:rescue; return $?; }
 		[[ $(git rev-parse --verify -q "$r" 2>/dev/null) == "$(git rev-parse HEAD)" ]] \
 			|| { emit "$name" err:rescue; return $?; }
 		refs="$refs $r"
 	fi
-	# локальный main разошёлся с origin — спасение и выравнивание после checkout
+	# локальный $prod разошёлся с origin — спасение и выравнивание после checkout
 	savedmain=0
-	if git show-ref -q --verify refs/heads/main 2>/dev/null \
-		&& ! git merge-base --is-ancestor main origin/main 2>/dev/null; then
-		r="refs/rescue/$stamp/main-local"
-		git update-ref "$r" refs/heads/main || { emit "$name" err:main-local; return $?; }
-		[[ $(git rev-parse --verify -q "$r" 2>/dev/null) == "$(git rev-parse refs/heads/main)" ]] \
+	if git show-ref -q --verify refs/heads/$prod 2>/dev/null \
+		&& ! git merge-base --is-ancestor $prod origin/$prod 2>/dev/null; then
+		r="refs/rescue/$stamp/$prod-local"
+		git update-ref "$r" refs/heads/$prod || { emit "$name" err:main-local; return $?; }
+		[[ $(git rev-parse --verify -q "$r" 2>/dev/null) == "$(git rev-parse refs/heads/$prod)" ]] \
 			|| { emit "$name" err:main-local; return $?; }
 		savedmain=1
 	fi
-	if ! git reset --hard -q HEAD 2>/dev/null || ! git checkout -q $cof -B main origin/main 2>/dev/null; then
-		(( savedmain )) && git update-ref refs/heads/main "$r" 2>/dev/null
+	if ! git reset --hard -q HEAD 2>/dev/null || ! git checkout -q $cof -B $prod origin/$prod 2>/dev/null; then
+		(( savedmain )) && git update-ref refs/heads/$prod "$r" 2>/dev/null
 		git checkout -q "$branch" 2>/dev/null; [[ -n ${s:-} ]] && git stash apply -q "$s" 2>/dev/null
 		emit "$name" err:checkout; return $?
 	fi
-	git branch -q --set-upstream-to=origin/main main 2>/dev/null || true
+	git branch -q --set-upstream-to=origin/$prod $prod 2>/dev/null || true
 	emit "$name" rescued $refs
 	return $?
 }

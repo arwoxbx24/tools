@@ -13,21 +13,31 @@ done
 jnum(){ [[ $1 =~ ^-?[0-9]+$ ]] && printf '%s' "$1" || printf '"%s"' "$1"; }
 jqs(){ printf '%s' "$1" | sed 's/\\/\\\\/g;s/"/\\"/g'; }
 
-ba(){ # -> behind ahead vs origin/main
+prod_of(){ # $GA_LIVE — prod из ga_base, fallback main
+	local p=main
+	read -r _ _ p <<< "$(ga_base "$GA_LIVE" 2>/dev/null)" 2>/dev/null || p=main
+	[[ -n ${p:-} ]] || p=main
+	printf '%s\n' "$p"
+}
+
+ba(){ # -> behind ahead vs origin/prod
+	local prod
 	if ! git remote 2>/dev/null | grep -qx origin; then echo 'no-remote -'; return; fi
-	if ! git rev-parse --verify -q refs/remotes/origin/main >/dev/null 2>&1; then echo 'no-main -'; return; fi
-	[[ $GA_FETCH == 1 ]] && timeout 20 git fetch --quiet origin main 2>/dev/null || true
+	prod=$(prod_of)
+	if ! git rev-parse --verify -q refs/remotes/origin/$prod >/dev/null 2>&1; then echo 'no-main -'; return; fi
+	[[ $GA_FETCH == 1 ]] && timeout 20 git fetch --quiet origin $prod 2>/dev/null || true
 	local l
-	l=$(git rev-list --left-right --count origin/main...HEAD 2>/dev/null) || { echo '- -'; return; }
+	l=$(git rev-list --left-right --count origin/$prod...HEAD 2>/dev/null) || { echo '- -'; return; }
 	echo "${l%%$'\t'*} ${l##*$'\t'}"
 }
 
 unshipped(){ # 0 if a claude/codex/opencode branch is ahead and older than an hour, not in ship.log
-	local log br aheadb ct
+	local log br aheadb ct prod
 	log="${GA_LOG_DIR:-/root/workspaces/tools/logs}/ship.log"
+	prod=$(prod_of)
 	while IFS= read -r br; do
 		case $br in claude/*|codex/*|opencode/*) ;; *) continue ;; esac
-		aheadb=$(git rev-list --count origin/main.."$br" 2>/dev/null) || continue
+		aheadb=$(git rev-list --count origin/$prod.."$br" 2>/dev/null) || continue
 		ct=$(git log -1 --format=%ct "$br" 2>/dev/null)
 		[[ $aheadb -gt 0 && -n $ct && $ct -lt $((now-3600)) ]] || continue
 		[[ -f $log ]] && grep -qF "$br" "$log" && find "$log" -mmin -60 2>/dev/null | grep -q . && continue
@@ -37,8 +47,9 @@ unshipped(){ # 0 if a claude/codex/opencode branch is ahead and older than an ho
 }
 
 emit(){ # $1 name -> 8 space-separated columns (after name)
-	local name=$1 branch behind ahead dirty prs active7d rescue alarm r cut hc p mt d sync step
+	local name=$1 branch behind ahead dirty prs active7d rescue alarm r cut hc p mt d sync step prod
 	branch=$(git symbolic-ref --short -q HEAD 2>/dev/null) || branch=detached
+	prod=$(prod_of)
 	read -r behind ahead <<< "$(ba)"
 	dirty=$(git status --porcelain -uno 2>/dev/null | wc -l)
 	prs=-
@@ -60,7 +71,7 @@ emit(){ # $1 name -> 8 space-separated columns (after name)
 	alarm=-
 	r=$(ga_skip_reason "$name")
 	if [[ -n $r ]]; then alarm="skip:$r"
-	elif [[ $branch != main ]] && ga_branch_unmerged "$branch"; then alarm=skip:unmerged-branch
+	elif [[ $branch != $prod ]] && ga_branch_unmerged "$branch"; then alarm=skip:unmerged-branch
 	elif unshipped; then alarm=unshipped
 	else
 		sync="${GA_LOG_DIR:-/root/workspaces/tools/logs}/git-sync.log"
@@ -87,7 +98,7 @@ while IFS=$'\t' read -r name gd wt slug; do
 	read -r branch behind ahead dirty prs active7d rescue alarm <<< "$cols"
 	total=$((total+1))
 	if [[ $alarm == skip:* ]]; then skipped=$((skipped+1))
-	elif [[ $branch == main && $behind == 0 ]]; then main0=$((main0+1)); fi
+	elif [[ $branch == "$(prod_of)" && $behind == 0 ]]; then main0=$((main0+1)); fi
 	if [[ $json == 1 ]]; then
 		printf '%s{"name":"%s","branch":"%s","behind":%s,"ahead":%s,"dirty":%s,"prs":%s,"active7d":"%s","rescue":%s,"alarm":"%s"}' \
 			"$sep" "$(jqs "$name")" "$(jqs "$branch")" "$(jnum "$behind")" "$(jnum "$ahead")" \
