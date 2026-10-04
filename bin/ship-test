@@ -84,7 +84,7 @@ git init -q --bare "$d/origin-tz.git"
 git clone -q "$d/origin-tz.git" "$d/tzrepo"
 git -C "$d/tzrepo" config user.email t@t
 git -C "$d/tzrepo" config user.name t
-( cd "$d/tzrepo" && printf 'Файлы: f.txt, x.txt\nПроверка: true\n' > tz.md \
+( cd "$d/tzrepo" && printf 'Файлы: f.txt, x.txt\nПроверка: test -n "$(git diff --name-only origin/main...HEAD)"\n' > tz.md \
 	&& git add . && git commit -q -m tz && git branch -M main \
 	&& git push -q -u origin main && git fetch -q origin )
 tz="$d/tzrepo/tz.md"
@@ -345,5 +345,32 @@ git -C "$w24" mv a.txt b.txt; git -C "$w24" commit -q -m rename
 err=$(<"$d/s24.err")
 [[ $rc == 80 && $err == *a.txt* ]] && p 24 || f 24
 
-if [[ $ok == 24 ]]; then echo 'PASS 24/24'; exit 0; fi
+# 25: проверка падает на ветке -> 90, ветки на origin нет
+git -C "$d/tzrepo" checkout -q main
+( cd "$d/tzrepo" && printf 'Файлы: f.txt\nПроверка: test -f no-such-file\n' > tz-check1.md \
+	&& git add . && git commit -q -m tzc1 && git push -q origin main && git fetch -q origin )
+mkrepo r25; w25=$(mkwt r25 claude/c25); printf 's25\n' >> "$w25/f.txt"
+( cd "$w25" && GH_ORIGIN="$(git -C "$w25" config remote.origin.url)" "$bin/ship" "$w25" --atom "$atom" --tz "$d/tzrepo/tz-check1.md#U1" ) >/dev/null 2>&1; rc=$?
+lsr=$(git -C "$GA_PROJECTS/r25" ls-remote origin "refs/heads/claude/c25" 2>/dev/null)
+[[ $rc == 90 && -z $lsr ]] && p 25 || f 25
+
+# 26: проверка проходит и на ветке, и на main -> 90 'не отличает'
+git -C "$d/tzrepo" checkout -q main
+( cd "$d/tzrepo" && printf 'Файлы: f.txt\nПроверка: test -d .git -o -f .git\n' > tz-check2.md \
+	&& git add . && git commit -q -m tzc2 && git push -q origin main && git fetch -q origin )
+mkrepo r26; w26=$(mkwt r26 claude/c26); printf 's26\n' >> "$w26/f.txt"
+( cd "$w26" && GH_ORIGIN="$(git -C "$w26" config remote.origin.url)" "$bin/ship" "$w26" --atom "$atom" --tz "$d/tzrepo/tz-check2.md#U1" ) 2>"$d/s26.err" >/dev/null; rc=$?
+err=$(<"$d/s26.err")
+[[ $rc == 90 && $err == *'не отличает'* ]] && p 26 || f 26
+
+# 27: пустая проверка -> 90 'пустая проверка'
+git -C "$d/tzrepo" checkout -q main
+( cd "$d/tzrepo" && printf 'Файлы: f.txt\nПроверка: true\n' > tz-check3.md \
+	&& git add . && git commit -q -m tzc3 && git push -q origin main && git fetch -q origin )
+mkrepo r27; w27=$(mkwt r27 claude/c27); printf 's27\n' >> "$w27/f.txt"
+( cd "$w27" && GH_ORIGIN="$(git -C "$w27" config remote.origin.url)" "$bin/ship" "$w27" --atom "$atom" --tz "$d/tzrepo/tz-check3.md#U1" ) 2>"$d/s27.err" >/dev/null; rc=$?
+err=$(<"$d/s27.err")
+[[ $rc == 90 && $err == *пустая* ]] && p 27 || f 27
+
+if [[ $ok == 27 ]]; then echo 'PASS 27/27'; exit 0; fi
 exit 1
