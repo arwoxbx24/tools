@@ -64,7 +64,15 @@ case $1 in
 esac
 EOF
 chmod +x "$d/bin/pm2"
+cat > "$d/bin/gitleaks" <<'EOF'
+#!/usr/bin/env bash
+grep -rqs --exclude-dir=.git 'ghp_' . && exit 1; exit 0
+EOF
+chmod +x "$d/bin/gitleaks"
 export PATH="$d/bin:$PATH"
+printf '[core]\n\thooksPath = /root/workspaces/tools/git-hooks\n' > "$d/gitconfig"
+export GIT_CONFIG_NOSYSTEM=1
+export GIT_CONFIG_GLOBAL="$d/gitconfig"
 cat > "$d/bin/code-archive" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$GH_TEST_DIR/code-archive-calls"
@@ -214,7 +222,7 @@ mkrepo r15b; w15b=$(mkwt r15b claude/c15b); printf 's15b\n' >> "$w15b/f.txt"
 printf '1000\n' > "$d/uptime"
 ( cd "$w15b" && GH_ORIGIN="$(git -C "$w15b" config remote.origin.url)" "$bin/ship" "$w15b" --atom "$atom" --tz "$tz#U1" --reload app >/dev/null 2>&1 ); rc2=$?
 rm -f "$d/uptime"
-[[ $rc1 == 0 && $rc2 == 60 ]] && p 15 || f 15
+[[ $rc1 == 0 && $rc2 == 60 && ! -d $w15b ]] && p 15 || f 15
 
 mkrepo r16; w16=$(mkwt r16 claude/c16)
 printf 's16\n' >> "$w16/f.txt"; git -C "$w16" add -A; git -C "$w16" commit -q -m s16

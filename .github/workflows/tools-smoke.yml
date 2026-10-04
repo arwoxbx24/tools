@@ -14,3 +14,4 @@ jobs:
         with:
           python-version: "3.12"
       - run: python3 tests/test_agent_tools.py
+      - run: bash bin/ship-test
