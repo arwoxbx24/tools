@@ -52,11 +52,27 @@ case $1:$2 in
 			cat "$GH_TEST_DIR/bucket" 2>/dev/null || echo pass
 		fi ;;
 	run:list)
-		br=$(printf '%s\n' "$*" | sed -n 's/.*--branch \([^ ]*\).*/\1/p')
-		if [[ -n $br && -f "$GH_TEST_DIR/runs-$br" ]]; then
-			cat "$GH_TEST_DIR/runs-$br"
+		ev=$(printf '%s\n' "$*" | sed -n 's/.*--event \([^ ]*\).*/\1/p')
+		if [[ $ev == pull_request ]]; then
+			if [[ -f "$GH_TEST_DIR/runs-pr" ]]; then
+				cat "$GH_TEST_DIR/runs-pr"
+			elif [[ -n "${GH_CI_DELAY:-}" ]]; then
+				[[ -f "$GH_TEST_DIR/ci-start" ]] || date +%s > "$GH_TEST_DIR/ci-start"
+				now=$(date +%s); st=$(cat "$GH_TEST_DIR/ci-start")
+				(( now - st < GH_CI_DELAY )) && echo '[]' && exit 0
+				printf '[{"status":"completed","conclusion":"success"}]\n'
+			elif [[ -e "$GH_TEST_DIR/bucket" && ! -s "$GH_TEST_DIR/bucket" ]]; then
+				echo '[]'
+			else
+				printf '[{"status":"completed","conclusion":"success"}]\n'
+			fi
 		else
-			cat "$GH_TEST_DIR/runs" 2>/dev/null || echo '[]'
+			br=$(printf '%s\n' "$*" | sed -n 's/.*--branch \([^ ]*\).*/\1/p')
+			if [[ -n $br && -f "$GH_TEST_DIR/runs-$br" ]]; then
+				cat "$GH_TEST_DIR/runs-$br"
+			else
+				cat "$GH_TEST_DIR/runs" 2>/dev/null || echo '[]'
+			fi
 		fi ;;
 	pr:merge)
 		[[ ! -f "$GH_TEST_DIR/gh-401" ]] || { echo 'HTTP 401' >&2; exit 1; }
