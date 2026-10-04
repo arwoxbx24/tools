@@ -259,17 +259,12 @@ if [[ ${tz%%#*} != */TZ-DOCS-DELIVERY.md ]]; then
 fi
 [[ $handover == 1 ]] && { echo 'live:deferred handover'; g update-ref "refs/delivered/$branch" HEAD; leave 0 handover; }
 
+saved_close=''; [[ ${post_step:-} == close ]] && saved_close=close
 if [[ $mode == two ]]; then
 	gg_log 0 'live:deferred dev'
 else
-	"$bin/git-sync" "$name"
-	[[ ${post_step:-} == close ]] || { post_rc=0; post_step=''; }
-	"$bin/git-state" --live "$name" "$merge_sha" >/dev/null || { echo err:live >&2; post_rc=60; post_step=live; }
-	if [[ -n $reload ]]; then
-		pm2 startOrReload "${GA_ECOSYSTEM:-/root/workspaces/tools/ecosystem.config.js}" --only "$reload" >/dev/null
-		up=$(pm2 jlist | jq -r --arg n "$reload" '.[]|select(.name==$n)|.pm2_env.pm_uptime')
-		[[ ${up:-0} -gt $merge_ms ]] || { post_rc=60; post_step=reload; }
-	fi
+	read -r post_rc post_step <<< "$(ga_live_sync "$name" "$merge_sha" "$merge_ms" "$reload")"
+	[[ $saved_close == close && $post_rc == 0 ]] && { post_rc=60; post_step=close; }
 fi
 
 org=${GA_ARCHIVE_ORG:-$(git -C "$bin" config --get remote.origin.url 2>/dev/null)}
