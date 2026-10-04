@@ -60,6 +60,21 @@ ga_repo_of(){ # <path> — registry name of containing repo; none -> 2
 	return 2
 }
 
+ga_base(){ # <path> — one line "<mode> <base> <prod>"; origin main/base undetermined -> 2
+	local p=$1 sym prod
+	[[ -n $p ]] || return 2
+	sym=$(git -C "$p" ls-remote --symref origin HEAD 2>/dev/null) || return 2
+	sym=${sym%%$'\n'*}
+	[[ $sym == 'ref: refs/heads/'*$'\t'HEAD ]] || return 2
+	prod=${sym#'ref: refs/heads/'}; prod=${prod%%$'\t'*}
+	git -C "$p" ls-remote --exit-code --heads origin dev >/dev/null 2>&1
+	case $? in
+		0) printf 'two dev %s\n' "$prod"; return 0 ;;
+		2) printf 'one %s %s\n' "$prod" "$prod"; return 0 ;;
+		*) return 2 ;;
+	esac
+}
+
 ga_skip_reason(){ # <name> -> allowlist|hh-scoring|''
 	local seg=${1##*/}
 	case $seg in

@@ -38,20 +38,22 @@ mask_re(){ # $1 mask
 	printf '%s\n' "$out"
 }
 
-# Разбор ТЗ из origin/main: заполняет tz_regex (regex масок), tz_check, tz_repo, tz_rel.
+# Разбор ТЗ из origin/<base> репозитория ТЗ: заполняет tz_regex, tz_check, tz_repo, tz_rel.
 tz_regex=(); tz_check=''; tz_repo=''; tz_rel=''; cmd=''; main_rc=''
 tz_parse(){ # 0 — ок, 80 — ТЗ не принято
-	local path=${tz%%#*} repo rel o w nf np mline m i
+	local path=${tz%%#*} repo rel o w nf np mline m i tb
 	tz_regex=()
 	repo=$(git -C "$(dirname "$path")" rev-parse --show-toplevel 2>/dev/null) \
 		|| { echo "ship: ТЗ не принято — файл ТЗ не в git-репозитории: $path" >&2; return 80; }
-	git -C "$repo" fetch -q origin main \
-		|| { echo "ship: ТЗ не принято — git fetch origin main не прошёл в $repo" >&2; return 80; }
+	read -r _ tb _ <<< "$(ga_base "$repo")"
+	[[ -n $tb ]] || { echo 'ship: ТЗ не принято — основная ветка origin не определена' >&2; return 80; }
+	git -C "$repo" fetch -q origin "$tb" \
+		|| { echo "ship: ТЗ не принято — git fetch origin $tb не прошёл в $repo" >&2; return 80; }
 	rel=${path#"$repo"/}; [[ -n $rel ]] || { echo "ship: ТЗ не принято — путь ТЗ вне репозитория $repo" >&2; return 80; }
-	o=$(git -C "$repo" show "origin/main:$rel" 2>/dev/null) \
-		|| { echo "ship: ТЗ не принято — $rel нет в origin/main; сначала доставь ТЗ: ship $wt --atom $atom --tz $repo/docs/tz/TZ-DOCS-DELIVERY.md" >&2; return 80; }
+	o=$(git -C "$repo" show "origin/$tb:$rel" 2>/dev/null) \
+		|| { echo "ship: ТЗ не принято — $rel нет в origin/$tb; сначала доставь ТЗ: ship $wt --atom $atom --tz $repo/docs/tz/TZ-DOCS-DELIVERY.md" >&2; return 80; }
 	w=$(sed -n '1,$p' "$path" 2>/dev/null)
-	[[ "$o" == "$w" ]] || { echo "ship: ТЗ не принято — $rel в рабочем дереве отличается от origin/main; доставь правку ТЗ через TZ-DOCS-DELIVERY.md или верни файл к origin/main" >&2; return 80; }
+	[[ "$o" == "$w" ]] || { echo "ship: ТЗ не принято — $rel в рабочем дереве отличается от origin/$tb; доставь правку ТЗ через TZ-DOCS-DELIVERY.md или верни файл к origin/$tb" >&2; return 80; }
 	nf=$(grep -c '^Файлы: ' "$path"); np=$(grep -c '^Проверка: ' "$path")
 	[[ $nf == 1 ]] || { echo 'ship: ТЗ не принято — добавь строку "Файлы: ..."' >&2; return 80; }
 	[[ $np == 1 ]] || { echo 'ship: ТЗ не принято — добавь строку "Проверка: ..."' >&2; return 80; }
@@ -90,7 +92,7 @@ check_gate(){ # 0 — ок, 90 — проверка не прошла/измен
 	[[ $(g status --porcelain) == "$before" ]] \
 		|| { echo 'ship: проверка изменила файлы' >&2; return 90; }
 	tmp=$(mktemp -d) || { echo 'ship: не удалось поднять main' >&2; return 90; }
-	g worktree add -q --detach "$tmp/m" origin/main \
+	g worktree add -q --detach "$tmp/m" origin/$base \
 		|| { echo 'ship: не удалось поднять main' >&2; return 90; }
 	run_check "$tmp/m"; mrc=$?; main_rc=$mrc
 	printf '%s\n' "$mrc" > "$chk_out.rc"
@@ -131,12 +133,18 @@ name=$(ga_repo_of "$wtr") || leave 10 preflight
 hp=$(git -C "$wtr" config --get-all core.hooksPath)
 [[ $hp == /root/workspaces/tools/git-hooks ]] || { echo 'hooksPath подменён' >&2; leave 10 preflight; }
 
+read -r mode base prod <<< "$(ga_base "$wtr")"
+if [[ -z $base ]]; then
+	echo 'ship: основная ветка origin не определена' >&2
+	leave 10 preflight
+fi
+
 tz_parse || leave 80 tz
 
 g(){ git -C "$wtr" "$@"; }
 g add -A
 if g diff --cached --quiet; then
-	[[ $(g rev-list --count origin/main..HEAD 2>/dev/null) == 0 ]] && { echo 'ship: nothing'; leave 0 nothing; }
+	[[ $(g rev-list --count origin/$base..HEAD 2>/dev/null) == 0 ]] && { echo 'ship: nothing'; leave 0 nothing; }
 else
 	if ! ( cd "$wtr" && gitleaks git --pre-commit --staged --redact --no-banner ); then
 		leave 20 gitleaks
@@ -149,16 +157,16 @@ fi
 
 locked_core(){
 	local osha=''
-	g fetch -q origin main || return 70
-	if ! g merge-base --is-ancestor origin/main HEAD 2>/dev/null; then
-		g rebase -q origin/main || { g rebase --abort; return 50; }
+	g fetch -q origin "$base" || return 70
+	if ! g merge-base --is-ancestor origin/$base HEAD 2>/dev/null; then
+		g rebase -q origin/$base || { g rebase --abort; return 50; }
 	fi
 	# граница: пути в диффе ветки обязаны лежать внутри Файлы: ТЗ
 	local df p re matched found=0 tzcd wtcd
 	tzcd=$( cd "$tz_repo" && d=$(git rev-parse --git-common-dir) && cd "$d" && pwd -P 2>/dev/null )
 	wtcd=$( cd "$wtr" && d=$(git rev-parse --git-common-dir) && cd "$d" && pwd -P 2>/dev/null )
 	df=$(mktemp) || { echo 'ship: дифф не прочитан' >&2; return 80; }
-	g diff -z --name-only --no-renames origin/main...HEAD > "$df" \
+	g diff -z --name-only --no-renames origin/$base...HEAD > "$df" \
 		|| { rm -f "$df"; echo 'ship: дифф не прочитан' >&2; return 80; }
 	while IFS= read -r -d '' p; do
 		[[ $tzcd == "$wtcd" && $p == "$tz_rel" ]] && { rm -f "$df"; echo "ship: ТЗ не принято — ТЗ $tz_rel правится в ветке кода; доставь ТЗ отдельно через TZ-DOCS-DELIVERY.md" >&2; return 80; }
@@ -171,7 +179,7 @@ locked_core(){
 	rm -f "$df"
 	[[ $found == 0 ]] || return 80
 	check_gate || return $?
-	( cd "$wtr" && gitleaks git --redact --no-banner --log-opts "origin/main..HEAD" >/dev/null 2>&1 ) || return 20
+	( cd "$wtr" && gitleaks git --redact --no-banner --log-opts "origin/$base..HEAD" >/dev/null 2>&1 ) || return 20
 	osha=$(g rev-parse --verify -q refs/remotes/origin/"$branch" 2>/dev/null) || osha=''
 	if [[ -n $osha ]]; then
 		g push -q --force-with-lease="$branch:$osha" origin HEAD:refs/heads/"$branch" || return 30
@@ -199,17 +207,17 @@ if [[ -z $num ]]; then
 	if [[ -n ${chk_out:-} ]]; then
 		body+=$'\n\nПроверка: '"${tz_check#Проверка: }"$'\n```\n'"$(tail -n 20 "$chk_out")"$'\n```'
 	fi
-	gh pr create -R "$slug" --head "$branch" --base main \
+	gh pr create -R "$slug" --head "$branch" --base "$base" \
 		--title "$(g log -1 --format=%s)" --body "$body" >/dev/null || leave 30 pr
 	num=$(gh pr list -R "$slug" --head "$branch" --state open --json number --jq '.[0].number' 2>/dev/null)
 fi
 printf 'pr:%s\n' "$num"
 ci=none
-for f in $(git -C "$wtr" ls-tree --name-only origin/main:.github/workflows 2>/dev/null); do
-	case $f in *.yml|*.yaml)
-		git -C "$wtr" show "origin/main:.github/workflows/$f" 2>/dev/null | grep -q pull_request && { ci=ci; break; } ;;
-	esac
-done
+	for f in $(git -C "$wtr" ls-tree --name-only origin/$base:.github/workflows 2>/dev/null); do
+		case $f in *.yml|*.yaml)
+		git -C "$wtr" show "origin/$base:.github/workflows/$f" 2>/dev/null | grep -q pull_request && { ci=ci; break; } ;;
+		esac
+	done
 if [[ $ci == none ]]; then
 	echo ci:none
 else
@@ -244,14 +252,17 @@ if [[ ${tz%%#*} != */TZ-DOCS-DELIVERY.md ]]; then
 fi
 [[ $handover == 1 ]] && { echo 'live:deferred handover'; g update-ref "refs/delivered/$branch" HEAD; leave 0 handover; }
 
-"$bin/git-sync" "$name"
-[[ ${post_step:-} == close ]] || { post_rc=0; post_step=''; }
-"$bin/git-state" --live "$name" "$merge_sha" >/dev/null || { echo err:live >&2; post_rc=60; post_step=live; }
-
-if [[ -n $reload ]]; then
-	pm2 startOrReload "${GA_ECOSYSTEM:-/root/workspaces/tools/ecosystem.config.js}" --only "$reload" >/dev/null
-	up=$(pm2 jlist | jq -r --arg n "$reload" '.[]|select(.name==$n)|.pm2_env.pm_uptime')
-	[[ ${up:-0} -gt $merge_ms ]] || { post_rc=60; post_step=reload; }
+if [[ $mode == two ]]; then
+	gg_log 0 'live:deferred dev'
+else
+	"$bin/git-sync" "$name"
+	[[ ${post_step:-} == close ]] || { post_rc=0; post_step=''; }
+	"$bin/git-state" --live "$name" "$merge_sha" >/dev/null || { echo err:live >&2; post_rc=60; post_step=live; }
+	if [[ -n $reload ]]; then
+		pm2 startOrReload "${GA_ECOSYSTEM:-/root/workspaces/tools/ecosystem.config.js}" --only "$reload" >/dev/null
+		up=$(pm2 jlist | jq -r --arg n "$reload" '.[]|select(.name==$n)|.pm2_env.pm_uptime')
+		[[ ${up:-0} -gt $merge_ms ]] || { post_rc=60; post_step=reload; }
+	fi
 fi
 
 org=${GA_ARCHIVE_ORG:-$(git -C "$bin" config --get remote.origin.url 2>/dev/null)}

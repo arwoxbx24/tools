@@ -41,15 +41,17 @@ case $1:$2 in
 	pr:merge)
 		[[ ! -f "$GH_TEST_DIR/gh-401" ]] || { echo 'HTTP 401' >&2; exit 1; }
 		[[ ! -f "$GH_TEST_DIR/merge-fail" ]] || { echo 'merge refused' >&2; exit 1; }
+		base=$(grep '^pr create' "$GH_JOURNAL" | tail -n1 | sed -n 's/.*--base \([^ ]*\).*/\1/p')
 		origin=${GH_ORIGIN:-$(git -C "$PWD" config remote.origin.url)}
 		branch=$(git -C "$PWD" rev-parse --abbrev-ref HEAD)
 		tmp=$(mktemp -d "$GH_TEST_DIR/merge.XXXXXX")
 		git clone -q "$origin" "$tmp" && git -C "$tmp" config user.email t@t \
 			&& git -C "$tmp" config user.name t \
-			&& git -C "$tmp" fetch -q origin "main:refs/remotes/origin/main" "$branch:refs/remotes/origin/$branch" \
-			&& git -C "$tmp" checkout -q -B main origin/main && git -C "$tmp" merge --squash "origin/$branch" \
+			&& git -C "$tmp" fetch -q origin "refs/heads/$base:refs/remotes/origin/$base" "$branch:refs/remotes/origin/$branch" \
+			&& git -C "$tmp" checkout -q -B "$base" "origin/$base" && git -C "$tmp" merge --squash "origin/$branch" \
 			&& git -C "$tmp" commit -q -m squash \
-			&& git -C "$tmp" push -q origin HEAD:main && git -C "$tmp" rev-parse HEAD > "$GH_TEST_DIR/merge-sha" || exit 1
+			&& git -C "$tmp" push -q origin "HEAD:refs/heads/$base" && git -C "$tmp" rev-parse HEAD > "$GH_TEST_DIR/merge-sha" \
+			|| { echo "merge-fail base=$base branch=$branch" >> "$GH_TEST_DIR/merge-dbg"; git -C "$tmp" branch -a >> "$GH_TEST_DIR/merge-dbg" 2>&1; git -C "$tmp" merge --abort >/dev/null 2>&1; exit 1; }
 		rm -rf "$tmp" ;;
 	pr:view) cat "$GH_TEST_DIR/merge-sha" ;;
 esac
@@ -88,6 +90,7 @@ chmod +x "$d/bin/bd"
 
 # ТЗ-репо с bare-origin; общий ТЗ закоммичен в origin/main, Файлы: покрывает существующие сценарии
 git init -q --bare "$d/origin-tz.git"
+git -C "$d/origin-tz.git" symbolic-ref HEAD refs/heads/main
 git clone -q "$d/origin-tz.git" "$d/tzrepo"
 git -C "$d/tzrepo" config user.email t@t
 git -C "$d/tzrepo" config user.name t
@@ -98,12 +101,13 @@ tz="$d/tzrepo/tz.md"
 atom=dcfg-9jdfv.5
 ship(){ ( cd "$1" && GH_ORIGIN="$(git -C "$1" config remote.origin.url)" "$bin/ship" "$@" --atom "$atom" --tz "$tz#U1" --handover ); }
 p(){ echo "PASS $1"; ok=$((ok+1)); }
-f(){ echo "FAIL $1"; }
+f(){ echo "FAIL $1"; bad=1; }
 ok=0
 
 mkrepo(){ # name [ci] — bare+clone в GA_PROJECTS, main; [ci] добавляет workflow в origin/main
 	local n=$1 ci=${2:-0}
 	git init -q --bare "$d/origin-$n.git"
+	git -C "$d/origin-$n.git" symbolic-ref HEAD refs/heads/main
 	git clone -q "$d/origin-$n.git" "$GA_PROJECTS/$n"
 	git -C "$GA_PROJECTS/$n" config user.email t@t
 	git -C "$GA_PROJECTS/$n" config user.name t
@@ -120,6 +124,7 @@ mkwt(){ # project branch -> worktree path
 }
 
 git init -q --bare "$d/origin-r1.git"
+git -C "$d/origin-r1.git" symbolic-ref HEAD refs/heads/main
 git clone -q "$d/origin-r1.git" "$GA_PROJECTS/r1"
 git -C "$GA_PROJECTS/r1" config user.email t@t
 git -C "$GA_PROJECTS/r1" config user.name t
@@ -168,6 +173,7 @@ git -C "$GA_PROJECTS/stroyremont" config user.name t
 git -C "$GA_PROJECTS/stroyremont" checkout -q -b main
 git -C "$GA_PROJECTS/stroyremont" commit -q --allow-empty -m base
 git init -q --bare "$d/origin-sr.git"
+git -C "$d/origin-sr.git" symbolic-ref HEAD refs/heads/main
 git -C "$GA_PROJECTS/stroyremont" remote add origin "$d/origin-sr.git"
 git -C "$GA_PROJECTS/stroyremont" push -q -u origin main
 git -C "$GA_PROJECTS/stroyremont" fetch -q origin
@@ -175,6 +181,7 @@ git -C "$GA_PROJECTS/stroyremont" worktree add -q -b claude/z "$GA_WT_ROOT/claud
 ship "$GA_WT_ROOT/claude/sr-x" >/dev/null 2>&1; [[ $? == 10 ]] && p 7 || f 7
 
 git init -q --bare "$d/origin-r2.git"
+git -C "$d/origin-r2.git" symbolic-ref HEAD refs/heads/main
 git clone -q "$d/origin-r2.git" "$GA_PROJECTS/r2"
 git -C "$GA_PROJECTS/r2" config user.email t@t
 git -C "$GA_PROJECTS/r2" config user.name t
@@ -464,5 +471,57 @@ printf 'Файлы: f.txt\nПроверка: false\n' > "$d/tzrepo/tz37.md"
 err=$(<"$d/s37.err"); git -C "$d/tzrepo" checkout -q -- .
 [[ $rc == 80 && $err == *'отличается от origin/main'* ]] && p 37 || f 37
 
-if [[ $ok == 37 ]]; then echo 'PASS 37/37'; exit 0; fi
+# 38 (AE1): dev-ветка на origin -> режим two; PR в dev, живая копия отложена, main без нового
+mkrepo r38
+git -C "$GA_PROJECTS/r38" branch dev
+git -C "$GA_PROJECTS/r38" push -q -u origin dev
+git -C "$GA_PROJECTS/r38" fetch -q origin
+w38=$(mkwt r38 claude/c38); printf 's38\n' >> "$w38/f.txt"
+before38=$(git -C "$GA_PROJECTS/r38" rev-parse refs/remotes/origin/main)
+rm -f "$GH_CREATED"
+( cd "$w38" && GH_ORIGIN="$d/origin-r38.git" "$bin/ship" "$w38" --atom "$atom" --tz "$tz#U1" ) >/dev/null 2>&1; rc38=$?
+git -C "$GA_PROJECTS/r38" fetch -q origin
+new38=$(git -C "$GA_PROJECTS/r38" rev-list --count "$before38"..refs/remotes/origin/main 2>/dev/null || echo 999)
+core38=$(grep '^pr create' "$GH_JOURNAL" | tail -n1)
+def38=$(grep -c 'live:deferred dev' "$GA_LOG_DIR/ship.log" || true)
+[[ $rc38 == 0 && $core38 == *'--base dev'* && $new38 == 0 && $def38 -gt 0 ]] && p 38 || f 38
+
+# 39 (AE2): основная ветка master (без dev) -> режим one, PR в master
+git init -q --bare "$d/origin-r39.git"
+git -C "$d/origin-r39.git" symbolic-ref HEAD refs/heads/main
+git -C "$d/origin-r39.git" symbolic-ref HEAD refs/heads/master
+git clone -q "$d/origin-r39.git" "$GA_PROJECTS/r39"
+git -C "$GA_PROJECTS/r39" config user.email t@t
+git -C "$GA_PROJECTS/r39" config user.name t
+( cd "$GA_PROJECTS/r39" && printf 'x\n' > f.txt && git add . && git commit -q -m base \
+	&& git branch -M master && git push -q -u origin master && git fetch -q origin )
+git -C "$GA_PROJECTS/r39" worktree add -q -b claude/c39 "$GA_WT_ROOT/claude/r39-c" master
+w39="$GA_WT_ROOT/claude/r39-c"
+printf 's39\n' >> "$w39/f.txt"
+git -C "$d/tzrepo" checkout -q main
+( cd "$d/tzrepo" && printf 'Файлы: f.txt, x.txt\nПроверка: test -n "$(git diff --name-only origin/master...HEAD)" && echo 3\n' > tz39.md \
+	&& git add . && git commit -q -m tz39 && git push -q origin main && git fetch -q origin )
+rm -f "$GH_CREATED"
+( cd "$w39" && GH_ORIGIN="$d/origin-r39.git" "$bin/ship" "$w39" --atom "$atom" --tz "$d/tzrepo/tz39.md#U1" --handover ) 2>"$d/s39.err" >/dev/null; rc39=$?
+base39=$(grep '^pr create' "$GH_JOURNAL" | tail -n1)
+[[ $rc39 == 0 && $base39 == *'--base master'* ]] && p 39 || f 39
+
+# 40 (Edge): bare HEAD указывает на несуществующую ветку -> 10, PR не создан
+git init -q --bare "$d/origin-r40.git"
+git clone -q "$d/origin-r40.git" "$GA_PROJECTS/r40"
+git -C "$GA_PROJECTS/r40" config user.email t@t
+git -C "$GA_PROJECTS/r40" config user.name t
+( cd "$GA_PROJECTS/r40" && printf 'x\n' > f.txt && git add . && git commit -q -m base \
+	&& git branch -M main && git push -q -u origin main && git fetch -q origin )
+git -C "$GA_PROJECTS/r40" worktree add -q -b claude/c40 "$GA_WT_ROOT/claude/r40-c" origin/main
+w40="$GA_WT_ROOT/claude/r40-c"
+before40=$(grep -c '^pr create' "$GH_JOURNAL" || true)
+rm -f "$GH_CREATED"
+( cd "$w40" && GH_ORIGIN="$d/origin-r40.git" "$bin/ship" "$w40" --atom "$atom" --tz "$tz#U1" ) 2>"$d/s40.err" >/dev/null; rc40=$?
+after40=$(grep -c '^pr create' "$GH_JOURNAL" || true)
+err40=$(<"$d/s40.err")
+[[ $rc40 == 10 && $err40 == *'основная ветка origin не определена'* && $after40 == $before40 ]] && p 40 || f 40
+
+for t in "$(dirname "$0")"/ship-test.d/*.sh; do [[ -f $t ]] && . "$t"; done
+[[ -z ${bad:-} ]] && { echo "PASS $ok/$ok"; exit 0; }
 exit 1
