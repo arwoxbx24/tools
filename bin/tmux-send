@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -u
+
+t(){ tmux ${TMUX_SEND_SOCKET:+-L "$TMUX_SEND_SOCKET"} "$@"; }
+
+target=${1:-}
+text=${2:-}
+expect=Working
+[[ ${3:-} == --expect ]] && expect=${4:-Working}
+
+if [[ -z $target ]]; then
+	echo "tmux-send: no target" >&2
+	exit 2
+fi
+
+sleep_n=${TMUX_SEND_SLEEP:-2}
+err=$(mktemp)
+die(){ echo "tmux-send: $(<"$err")" >&2; exit 2; }
+trap 'rm -f "$err"' EXIT
+
+t send-keys -t "$target" -l "$text" 2>"$err" || die
+t send-keys -t "$target" Enter 2>>"$err" || die
+
+enters=0
+pane=""
+for i in 1 2 3; do
+	sleep "$sleep_n"
+	pane=$(t capture-pane -p -t "$target" 2>>"$err") || die
+	if grep -qE -- "$expect" <<<"$pane"; then
+		exit 0
+	fi
+	last=$(grep -v '^[[:space:]]*$' <<<"$pane" | tail -n1)
+	if [[ $enters -lt 2 && $last == *"$text"* ]]; then
+		t send-keys -t "$target" Enter 2>>"$err" || die
+		((enters++))
+	fi
+done
+
+echo "tmux-send: expect '$expect' not matched" >&2
+tail -n 5 <<<"$pane" >&2
+exit 1
