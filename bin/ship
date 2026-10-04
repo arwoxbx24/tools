@@ -39,7 +39,7 @@ mask_re(){ # $1 mask
 }
 
 # Разбор ТЗ из origin/main: заполняет tz_regex (regex масок), tz_check, tz_repo, tz_rel.
-tz_regex=(); tz_check=''; tz_repo=''; tz_rel=''; cmd=''
+tz_regex=(); tz_check=''; tz_repo=''; tz_rel=''; cmd=''; main_rc=''
 tz_parse(){ # 0 — ок, 80 — ТЗ не принято
 	local path=${tz%%#*} repo rel o w nf np mline m i
 	tz_regex=()
@@ -92,7 +92,7 @@ check_gate(){ # 0 — ок, 90 — проверка не прошла/измен
 	tmp=$(mktemp -d) || { echo 'ship: не удалось поднять main' >&2; return 90; }
 	g worktree add -q --detach "$tmp/m" origin/main \
 		|| { echo 'ship: не удалось поднять main' >&2; return 90; }
-	run_check "$tmp/m"; mrc=$?
+	run_check "$tmp/m"; mrc=$?; main_rc=$mrc
 	g worktree remove --force "$tmp/m" 2>/dev/null; rmdir "$tmp" 2>/dev/null
 	case $mrc in
 		0) echo 'ship: проверка не отличает изменение' >&2; return 90 ;;
@@ -230,10 +230,17 @@ ga_lock "$name" 60
 gh_or70 gh pr merge "$num" -R "$slug" --squash --match-head-commit "$(git -C "$wtr" rev-parse HEAD)" || leave 50 merge
 merge_sha=$(gh pr view "$num" -R "$slug" --json mergeCommit --jq .mergeCommit.oid)
 merge_ms=$(( $(date +%s) * 1000 ))
+rmot=$(sed '/^[[:space:]]*$/d' "$chk_out" | tail -n1)
+reason="Проверка: $cmd | ветка exit 0, main exit $main_rc | $rmot | https://github.com/$slug/pull/$num"
+if ! bd close "$atom" --reason "$reason" >/dev/null 2>&1; then
+	echo "ship: закрой вручную: bd close \"$atom\" --reason \"$reason\"" >&2
+	post_rc=60; post_step=close
+	[[ $handover == 1 ]] && leave 60 close
+fi
 [[ $handover == 1 ]] && { echo 'live:deferred handover'; g update-ref "refs/delivered/$branch" HEAD; leave 0 handover; }
 
 "$bin/git-sync" "$name"
-post_rc=0; post_step=''
+[[ ${post_step:-} == close ]] || { post_rc=0; post_step=''; }
 "$bin/git-state" --live "$name" "$merge_sha" >/dev/null || { echo err:live >&2; post_rc=60; post_step=live; }
 
 if [[ -n $reload ]]; then
