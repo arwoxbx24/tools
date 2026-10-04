@@ -75,7 +75,7 @@ run_check(){ # $1 каталог
 
 # Дифференциальная проверка: пустая/неразличимая проверка или изменение файлов — 90.
 check_gate(){ # 0 — ок, 90 — проверка не прошла/изменила/не отличает/пустая
-	local before tmp
+	local before tmp mrc
 	cmd=${tz_check#Проверка: }
 	case $cmd in
 		''|true|:|'exit 0') echo 'ship: пустая проверка' >&2; return 90 ;;
@@ -87,15 +87,15 @@ check_gate(){ # 0 — ок, 90 — проверка не прошла/измен
 	fi
 	[[ $(g status --porcelain) == "$before" ]] \
 		|| { echo 'ship: проверка изменила файлы' >&2; return 90; }
-	tmp=$(mktemp -d)
-	g worktree add -q --detach "$tmp/m" origin/main
-	if run_check "$tmp/m"; then
-		g worktree remove --force "$tmp/m" 2>/dev/null
-		rmdir "$tmp" 2>/dev/null
-		echo 'ship: проверка не отличает изменение' >&2; return 90
-	fi
-	g worktree remove --force "$tmp/m" 2>/dev/null
-	rmdir "$tmp" 2>/dev/null
+	tmp=$(mktemp -d) || { echo 'ship: не удалось поднять main' >&2; return 90; }
+	g worktree add -q --detach "$tmp/m" origin/main \
+		|| { echo 'ship: не удалось поднять main' >&2; return 90; }
+	run_check "$tmp/m"; mrc=$?
+	g worktree remove --force "$tmp/m" 2>/dev/null; rmdir "$tmp" 2>/dev/null
+	case $mrc in
+		0) echo 'ship: проверка не отличает изменение' >&2; return 90 ;;
+		124|126|127) echo "ship: main: проверка не исполнилась ($mrc)" >&2; return 90 ;;
+	esac
 	return 0
 }
 

@@ -372,5 +372,15 @@ mkrepo r27; w27=$(mkwt r27 claude/c27); printf 's27\n' >> "$w27/f.txt"
 err=$(<"$d/s27.err")
 [[ $rc == 90 && $err == *пустая* ]] && p 27 || f 27
 
-if [[ $ok == 27 ]]; then echo 'PASS 27/27'; exit 0; fi
+# 28: проверка на main не исполнилась (bash run.sh, файла нет) -> 90 'не исполнилась'
+git -C "$d/tzrepo" checkout -q main
+( cd "$d/tzrepo" && printf 'Файлы: f.txt, run.sh\nПроверка: bash run.sh\n' > tz-check4.md \
+	&& git add . && git commit -q -m tzc4 && git push -q origin main && git fetch -q origin )
+mkrepo r28; w28=$(mkwt r28 claude/c28)
+printf 'exit 0\n' > "$w28/run.sh"; git -C "$w28" add -A; git -C "$w28" commit -q -m run
+( cd "$w28" && GH_ORIGIN="$(git -C "$w28" config remote.origin.url)" "$bin/ship" "$w28" --atom "$atom" --tz "$d/tzrepo/tz-check4.md#U1" ) 2>"$d/s28.err" >/dev/null; rc=$?
+err=$(<"$d/s28.err")
+[[ $rc == 90 && $err == *'не исполнилась'* ]] && p 28 || f 28
+
+if [[ $ok == 28 ]]; then echo 'PASS 28/28'; exit 0; fi
 exit 1
