@@ -15,11 +15,12 @@ EOF
 leave 10 usage
 }
 
-repo=''; atom=''; quote=''
+repo=''; atom=''; quote=''; reload=''
 while [[ $# -gt 0 ]]; do
 	case $1 in
 		--atom) atom=${2:-}; shift 2 ;;
 		--quote) quote=${2:-}; shift 2 ;;
+		--reload) reload=${2:-}; shift 2 ;;
 		-*) usage ;;
 		*) repo=$1; shift ;;
 	esac
@@ -31,7 +32,9 @@ if [[ -z ${quote//[[:space:]]/} ]]; then
 	leave 10 quote
 fi
 
-name=$(ga_repo_of "$repo") || name='-'
+# ga_repo_of сверяет git-common-dir; для основного клона (не worktree) он отдаёт
+# относительный путь и совпадение не находится — тогда имя = имя каталога репо.
+name=$(ga_repo_of "$repo") || name="${repo##*/}"
 [[ -z "$(ga_skip_reason "$name")" ]] || leave 10 skip
 
 st=$(bd show "$atom" --json 2>/dev/null) || st=''
@@ -50,6 +53,27 @@ if [[ $mode == one ]]; then
 	leave 10 mode
 fi
 
+ga_ctx "$name" 2>/dev/null; slug=$GA_SLUG; unset GIT_DIR GIT_WORK_TREE GA_LIVE GA_SLUG
 gg_log 0 "quote: $quote"
-echo 'ship-promote: ядро переноса не подключено' >&2
-leave 30 core
+
+promote(){
+	git -C "$repo" fetch -q origin || leave 70 fetch
+	sha=$(git -C "$repo" rev-parse origin/dev)
+	ga_ci_wait sha "$slug" "$sha" dev || { echo "ship-promote: CI dev для $sha не зелёный" >&2; leave 40 dev-ci; }
+	git -C "$repo" merge-base --is-ancestor "origin/$prod" "$sha" \
+		|| { echo 'ship-promote: в prod есть коммиты вне dev — влей prod в dev' >&2; leave 50 ancestor; }
+	push_ms=$(( $(date +%s) * 1000 ))
+	git -C "$repo" push -q origin "$sha:refs/heads/$prod" || leave 30 push
+	bd note "$atom" "promote: $sha quote=$quote"
+	ga_ci_wait sha "$slug" "$sha" "$prod" || {
+		echo 'ship-promote: CI prod красный/нет' >&2
+		bd note "$atom" "prod-ci: red $sha"
+		leave 60 prod-ci
+	}
+	read -r prc pstep <<< "$(ga_live_sync "$name" "$sha" "$push_ms" "$reload")"
+	[[ $prc == 0 ]] || leave "$prc" "$pstep"
+	bd close "$atom" --reason "promote $sha: prod = dev, CI prod зелёный" || leave 60 close
+	leave 0 promoted
+}
+
+ga_lock "$name" 60 promote

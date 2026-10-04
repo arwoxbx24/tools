@@ -38,7 +38,13 @@ case $1:$2 in
 			fi
 			cat "$GH_TEST_DIR/bucket" 2>/dev/null || echo pass
 		fi ;;
-	run:list) cat "$GH_TEST_DIR/runs" 2>/dev/null || echo '[]' ;;
+	run:list)
+		br=$(printf '%s\n' "$*" | sed -n 's/.*--branch \([^ ]*\).*/\1/p')
+		if [[ -n $br && -f "$GH_TEST_DIR/runs-$br" ]]; then
+			cat "$GH_TEST_DIR/runs-$br"
+		else
+			cat "$GH_TEST_DIR/runs" 2>/dev/null || echo '[]'
+		fi ;;
 	pr:merge)
 		[[ ! -f "$GH_TEST_DIR/gh-401" ]] || { echo 'HTTP 401' >&2; exit 1; }
 		[[ ! -f "$GH_TEST_DIR/merge-fail" ]] || { echo 'merge refused' >&2; exit 1; }
@@ -84,6 +90,7 @@ chmod +x "$d/bin/code-archive"
 cat > "$d/bin/bd" <<'EOF'
 #!/usr/bin/env bash
 printf 'bd %s\n' "$*" >> "$GH_TEST_DIR/bd.log"
+[[ ${1:-} == show && ${3:-} == --json ]] && printf '{"status":"%s","notes":"%s"}\n' "$(cat "$GH_TEST_DIR/bd-status" 2>/dev/null || echo open)" "$(cat "$GH_TEST_DIR/bd-notes" 2>/dev/null || echo '')"
 [[ ${BD_FAIL:-0} == 1 ]] && exit 1
 exit 0
 EOF
@@ -123,6 +130,8 @@ mkwt(){ # project branch -> worktree path
 	git -C "$GA_PROJECTS/$p" worktree add -q -b "$br" "$GA_WT_ROOT/claude/$n" origin/main
 	echo "$GA_WT_ROOT/claude/$n"
 }
+
+if [[ -z ${SHIP_TEST_ONLY:-} ]]; then
 
 git init -q --bare "$d/origin-r1.git"
 git -C "$d/origin-r1.git" symbolic-ref HEAD refs/heads/main
@@ -525,6 +534,7 @@ after40=$(grep -c '^pr create' "$GH_JOURNAL" || true)
 err40=$(<"$d/s40.err")
 [[ $rc40 == 10 && $err40 == *'основная ветка origin не определена'* && $after40 == $before40 ]] && p 40 || f 40
 
-for t in "$(dirname "$0")"/ship-test.d/*.sh; do [[ -f $t ]] && . "$t"; done
+fi
+for t in "$(dirname "$0")"/ship-test.d/${SHIP_TEST_ONLY:-}*.sh; do [[ -f $t ]] && . "$t"; done
 [[ -z ${bad:-} ]] && { echo "PASS $ok/$ok"; exit 0; }
 exit 1

@@ -1,4 +1,5 @@
 # u3: ship-promote preflight — всё до сети; журнал gh пуст, 0 push в origin
+: > "$GH_JOURNAL"
 gj0(){ wc -l < "$GH_JOURNAL" 2>/dev/null || echo 0; }
 nopush(){ git -C "$GA_PROJECTS/$1" ls-remote origin "refs/heads/claude/$1" 2>/dev/null; }
 
@@ -27,7 +28,9 @@ rm -f "$d/bd-status"
 
 mkrepo p4
 git -C "$GA_PROJECTS/p4" branch dev; git -C "$GA_PROJECTS/p4" push -q -u origin dev; git -C "$GA_PROJECTS/p4" fetch -q origin
-quote='переносим ветку dev на prod'; b=$(gj0)
-( cd "$GA_PROJECTS/p4" && "$bin/ship-promote" "$GA_PROJECTS/p4" --atom a4 --quote "$quote" ) 2>"$d/u34" >/dev/null; r=$?
+quote='переносим ветку dev на prod'
+printf '[]\n' > "$d/runs"
+( cd "$GA_PROJECTS/p4" && GA_CI_CAP=2 GA_CI_POLL=1 "$bin/ship-promote" "$GA_PROJECTS/p4" --atom a4 --quote "$quote" ) 2>"$d/u34" >/dev/null; r=$?
+rm -f "$d/runs"
 grep -Fq "$quote" "$GA_LOG_DIR/ship.log" && j=1 || j=0
-[[ $r == 30 && $(<"$d/u34") == *'ядро переноса не подключено'* && $j == 1 && $(gj0) == "$b" && -z "$(nopush p4)" ]] && p u3-4 || f u3-4
+[[ $r == 40 && $(<"$d/u34") == *'не зелёный'* && $j == 1 && -z "$(nopush p4)" ]] && p u3-4 || f u3-4
