@@ -118,15 +118,20 @@ ga_lock(){ # <name> <timeout_s> <cmd...>
 	return $?
 }
 
-ga_ci_wait(){ # pr <slug> <num> | sha <slug> <sha> <branch> — 0 ok, 30 absent, 40 fail/timeout
+ga_ci_wait(){ # pr <slug> <num> [<sha>] | sha <slug> <sha> <branch> — 0 ok, 30 absent, 40 fail/timeout
 	local kind=$1 slug=$2 b ok bad
 	case $kind in
 		pr)
-			local num=$3 buckets deadline now
+			local num=$3 sha=${4:-} buckets deadline now runs
 			deadline=$(( $(date +%s) + ${GA_CI_APPEAR:-60} ))
 			while :; do
-				buckets=$(gh pr checks "$num" -R "$slug" --json bucket -q '.[].bucket' 2>/dev/null)
-				[[ -n $buckets ]] && break
+				if [[ -n $sha ]]; then
+					runs=$(gh run list -R "$slug" --commit "$sha" --event pull_request --json status 2>/dev/null) || return 40
+					[[ $runs != '[]' ]] && break
+				else
+					buckets=$(gh pr checks "$num" -R "$slug" --json bucket -q '.[].bucket' 2>/dev/null)
+					[[ -n $buckets ]] && break
+				fi
 				now=$(date +%s)
 				(( now >= deadline )) && return 30
 				sleep "${GA_CI_POLL:-15}"

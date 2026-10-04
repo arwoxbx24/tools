@@ -245,7 +245,7 @@ printf 'pr:%s\n' "$num"
 if [[ $ci == none ]]; then
 	echo ci:none
 else
-	ga_ci_wait pr "$slug" "$num"
+	ga_ci_wait pr "$slug" "$num" "$(git -C "$wtr" rev-parse HEAD)"
 	ci_rc=$?
 	if [[ $ci_rc == 30 ]]; then
 		echo 'ship: CI не появился' >&2
