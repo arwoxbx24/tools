@@ -32,7 +32,9 @@ if [[ -z ${quote//[[:space:]]/} ]]; then
 	leave 10 quote
 fi
 
-name=$(ga_repo_of "$repo") || name='-'
+# ga_repo_of сверяет git-common-dir; для основного клона (не worktree) он отдаёт
+# относительный путь и совпадение не находится — тогда имя = имя каталога репо.
+name=$(ga_repo_of "$repo") || name="${repo##*/}"
 [[ -z "$(ga_skip_reason "$name")" ]] || leave 10 skip
 
 st=$(bd show "$atom" --json 2>/dev/null) || st=''

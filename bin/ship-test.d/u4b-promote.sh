@@ -71,8 +71,11 @@ grep -q 'prod-ci: red' "$d/bd.log" && n5=1 || n5=0
 [[ $rc == 60 && $s5 == 1 && $n5 == 1 ]] && p u4b-5 || f u4b-5
 
 # u4b-6 (AE7): ship из codex-worktree атома — репо без dev и с dev; оба 0, bd close есть.
-pf b6m
+mkrepo b6m
 git -C "$GA_PROJECTS/b6m" worktree add -q -b "codex/$atom-x" "$GA_WT_ROOT/codex/$atom" origin/main
+printf 's\n' >> "$GA_WT_ROOT/codex/$atom/f.txt"
+git -C "$GA_WT_ROOT/codex/$atom" add -A
+git -C "$GA_WT_ROOT/codex/$atom" commit -q -m w
 : > "$d/bd.log"
 ship "$GA_WT_ROOT/codex/$atom" >/dev/null 2>&1; rc1=$?
 grep -q close "$d/bd.log" && o6=1 || o6=0
@@ -82,6 +85,9 @@ git -C "$GA_PROJECTS/b6d" branch dev
 git -C "$GA_PROJECTS/b6d" push -q -u origin dev
 git -C "$GA_PROJECTS/b6d" fetch -q origin
 git -C "$GA_PROJECTS/b6d" worktree add -q -b "codex/$atom-x" "$GA_WT_ROOT/codex/b6dw" origin/main
+printf 's\n' >> "$GA_WT_ROOT/codex/b6dw/f.txt"
+git -C "$GA_WT_ROOT/codex/b6dw" add -A
+git -C "$GA_WT_ROOT/codex/b6dw" commit -q -m w
 printf '[{"name":"min-ci","bucket":"pass"}]\n' > "$d/checks.json"; rm -f "$d/checks-late" "$d/ci-poll"
 : > "$d/bd.log"
 ship "$GA_WT_ROOT/codex/b6dw" >/dev/null 2>&1; rc2=$?

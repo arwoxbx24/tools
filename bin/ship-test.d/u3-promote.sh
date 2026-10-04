@@ -1,4 +1,5 @@
 # u3: ship-promote preflight — всё до сети; журнал gh пуст, 0 push в origin
+: > "$GH_JOURNAL"
 gj0(){ wc -l < "$GH_JOURNAL" 2>/dev/null || echo 0; }
 nopush(){ git -C "$GA_PROJECTS/$1" ls-remote origin "refs/heads/claude/$1" 2>/dev/null; }
 
