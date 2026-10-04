@@ -1,5 +1,15 @@
 # u4b (spec:099): ядро ship-promote — перенос dev→prod.
 
+# stub bd: show --json отдаёт массив (реальный bd, D1); note/close логирует.
+cat > "$d/bin/bd" <<'EOF'
+#!/usr/bin/env bash
+printf 'bd %s\n' "$*" >> "$GH_TEST_DIR/bd.log"
+[[ ${1:-} == show && ${3:-} == --json ]] && printf '[{"status":"%s","notes":"%s"}]\n' "$(cat "$GH_TEST_DIR/bd-status" 2>/dev/null || echo open)" "$(cat "$GH_TEST_DIR/bd-notes" 2>/dev/null || echo '')"
+[[ ${BD_FAIL:-0} == 1 ]] && exit 1
+exit 0
+EOF
+chmod +x "$d/bin/bd"
+
 # fixturera: bare main (prod) + dev впереди на 1 коммит; live-копия (клон) на main.
 pf(){ # <name> [1 добавить коммит в main вне dev]
 	local n=$1
