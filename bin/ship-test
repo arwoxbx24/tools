@@ -445,5 +445,24 @@ mkrepo r35; w35=$(mkwt r35 claude/c35); printf 's35\n' >> "$w35/f.txt"
 log=$(<"$d/bd.log")
 [[ $rc == 0 && $log != *'close'* ]] && p 35 || f 35
 
-if [[ $ok == 35 ]]; then echo 'PASS 35/35'; exit 0; fi
+# 36: ТЗ нет в origin/main -> 80, stderr содержит 'нет в origin/main' и TZ-DOCS-DELIVERY.md
+mkrepo r36; w36=$(mkwt r36 claude/c36); printf 's36\n' >> "$w36/f.txt"
+git -C "$d/tzrepo" checkout -q -b claude/tz36
+printf 'Файлы: f.txt\nПроверка: true\n' > "$d/tzrepo/tz36.md"
+git -C "$d/tzrepo" add -A; git -C "$d/tzrepo" commit -q -m tz36
+( cd "$w36" && GH_ORIGIN="$(git -C "$w36" config remote.origin.url)" "$bin/ship" "$w36" --atom "$atom" --tz "$d/tzrepo/tz36.md#U1" ) 2>"$d/s36.err" >/dev/null; rc=$?
+err=$(<"$d/s36.err"); git -C "$d/tzrepo" checkout -q main
+[[ $rc == 80 && $err == *'нет в origin/main'* && $err == *'TZ-DOCS-DELIVERY.md'* ]] && p 36 || f 36
+
+# 37: ТЗ в рабочем дереве отличается от origin/main -> 80, stderr содержит 'отличается от origin/main'
+git -C "$d/tzrepo" checkout -q main
+( cd "$d/tzrepo" && printf 'Файлы: f.txt\nПроверка: true\n' > tz37.md \
+	&& git add . && git commit -q -m tz37 && git push -q origin main && git fetch -q origin )
+mkrepo r37; w37=$(mkwt r37 claude/c37); printf 's37\n' >> "$w37/f.txt"
+printf 'Файлы: f.txt\nПроверка: false\n' > "$d/tzrepo/tz37.md"
+( cd "$w37" && GH_ORIGIN="$(git -C "$w37" config remote.origin.url)" "$bin/ship" "$w37" --atom "$atom" --tz "$d/tzrepo/tz37.md#U1" ) 2>"$d/s37.err" >/dev/null; rc=$?
+err=$(<"$d/s37.err"); git -C "$d/tzrepo" checkout -q -- .
+[[ $rc == 80 && $err == *'отличается от origin/main'* ]] && p 37 || f 37
+
+if [[ $ok == 37 ]]; then echo 'PASS 37/37'; exit 0; fi
 exit 1

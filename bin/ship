@@ -44,14 +44,14 @@ tz_parse(){ # 0 — ок, 80 — ТЗ не принято
 	local path=${tz%%#*} repo rel o w nf np mline m i
 	tz_regex=()
 	repo=$(git -C "$(dirname "$path")" rev-parse --show-toplevel 2>/dev/null) \
-		|| { echo 'ship: ТЗ не принято — сначала в origin/main' >&2; return 80; }
+		|| { echo "ship: ТЗ не принято — файл ТЗ не в git-репозитории: $path" >&2; return 80; }
 	git -C "$repo" fetch -q origin main \
-		|| { echo 'ship: ТЗ не принято — сначала в origin/main' >&2; return 80; }
-	rel=${path#"$repo"/}; [[ -n $rel ]] || { echo 'ship: ТЗ не принято' >&2; return 80; }
+		|| { echo "ship: ТЗ не принято — git fetch origin main не прошёл в $repo" >&2; return 80; }
+	rel=${path#"$repo"/}; [[ -n $rel ]] || { echo "ship: ТЗ не принято — путь ТЗ вне репозитория $repo" >&2; return 80; }
 	o=$(git -C "$repo" show "origin/main:$rel" 2>/dev/null) \
-		|| { echo 'ship: ТЗ не принято — сначала в origin/main' >&2; return 80; }
+		|| { echo "ship: ТЗ не принято — $rel нет в origin/main; сначала доставь ТЗ: ship $wt --atom $atom --tz $repo/docs/tz/TZ-DOCS-DELIVERY.md" >&2; return 80; }
 	w=$(sed -n '1,$p' "$path" 2>/dev/null)
-	[[ "$o" == "$w" ]] || { echo 'ship: ТЗ не принято — сначала в origin/main' >&2; return 80; }
+	[[ "$o" == "$w" ]] || { echo "ship: ТЗ не принято — $rel в рабочем дереве отличается от origin/main; доставь правку ТЗ через TZ-DOCS-DELIVERY.md или верни файл к origin/main" >&2; return 80; }
 	nf=$(grep -c '^Файлы: ' "$path"); np=$(grep -c '^Проверка: ' "$path")
 	[[ $nf == 1 ]] || { echo 'ship: ТЗ не принято — добавь строку "Файлы: ..."' >&2; return 80; }
 	[[ $np == 1 ]] || { echo 'ship: ТЗ не принято — добавь строку "Проверка: ..."' >&2; return 80; }
@@ -161,7 +161,7 @@ locked_core(){
 	g diff -z --name-only --no-renames origin/main...HEAD > "$df" \
 		|| { rm -f "$df"; echo 'ship: дифф не прочитан' >&2; return 80; }
 	while IFS= read -r -d '' p; do
-		[[ $tzcd == "$wtcd" && $p == "$tz_rel" ]] && { rm -f "$df"; echo 'ship: ТЗ не принято' >&2; return 80; }
+		[[ $tzcd == "$wtcd" && $p == "$tz_rel" ]] && { rm -f "$df"; echo "ship: ТЗ не принято — ТЗ $tz_rel правится в ветке кода; доставь ТЗ отдельно через TZ-DOCS-DELIVERY.md" >&2; return 80; }
 		matched=0
 		for re in "${tz_regex[@]}"; do
 			[[ $p =~ ^$re$ ]] && { matched=1; break; }
