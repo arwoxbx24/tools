@@ -16,7 +16,7 @@ leave(){ gg_log "$1" "$2"; exit "$1"; }
 usage(){ cat >&2 <<'EOF'
 usage: ship <worktree> --atom <id> --tz <path#U> [--reload <pm2-name>] [--handover]
 exit codes: 0 ok, 10 preflight/usage, 20 gitleaks, 30 commit/push/pr, 40 ci, 50 merge/rebase,
-            60 post, 70 gh/fetch, 75 lock, 80 ТЗ не принято (формат/граница)
+            60 post, 70 gh/fetch, 75 lock, 80 ТЗ не принято (формат/граница), 90 проверка
 EOF
 leave 10 usage
 }
@@ -39,7 +39,7 @@ mask_re(){ # $1 mask
 }
 
 # Разбор ТЗ из origin/main: заполняет tz_regex (regex масок), tz_check, tz_repo, tz_rel.
-tz_regex=(); tz_check=''; tz_repo=''; tz_rel=''
+tz_regex=(); tz_check=''; tz_repo=''; tz_rel=''; cmd=''
 tz_parse(){ # 0 — ок, 80 — ТЗ не принято
 	local path=${tz%%#*} repo rel o w nf np mline m i
 	tz_regex=()
@@ -65,6 +65,37 @@ tz_parse(){ # 0 — ок, 80 — ТЗ не принято
 		tz_regex+=("$(mask_re "$m")")
 	done
 	tz_repo=$repo; tz_rel=$rel
+	return 0
+}
+
+# Запуск команды Проверка: внутри $1; ничего не печатает; возвращает код команды.
+run_check(){ # $1 каталог
+	( cd "$1" && env -i PATH="$PATH" HOME="$HOME" timeout -k 5 300 setsid bash -c "$cmd" ) >/dev/null 2>&1
+}
+
+# Дифференциальная проверка: пустая/неразличимая проверка или изменение файлов — 90.
+check_gate(){ # 0 — ок, 90 — проверка не прошла/изменила/не отличает/пустая
+	local before tmp
+	cmd=${tz_check#Проверка: }
+	case $cmd in
+		''|true|:|'exit 0') echo 'ship: пустая проверка' >&2; return 90 ;;
+		echo*|printf*) [[ $cmd != *'|'* ]] && { echo 'ship: пустая проверка' >&2; return 90; } ;;
+	esac
+	before=$(g status --porcelain)
+	if ! run_check "$wtr"; then
+		echo 'ship: проверка не прошла' >&2; return 90
+	fi
+	[[ $(g status --porcelain) == "$before" ]] \
+		|| { echo 'ship: проверка изменила файлы' >&2; return 90; }
+	tmp=$(mktemp -d)
+	g worktree add -q --detach "$tmp/m" origin/main
+	if run_check "$tmp/m"; then
+		g worktree remove --force "$tmp/m" 2>/dev/null
+		rmdir "$tmp" 2>/dev/null
+		echo 'ship: проверка не отличает изменение' >&2; return 90
+	fi
+	g worktree remove --force "$tmp/m" 2>/dev/null
+	rmdir "$tmp" 2>/dev/null
 	return 0
 }
 
@@ -132,6 +163,7 @@ locked_core(){
 		[[ $matched == 1 ]] || { echo "ship: $p вне Файлы:" >&2; found=1; }
 	done
 	[[ $found == 0 ]] || return 80
+	check_gate || return $?
 	( cd "$wtr" && gitleaks git --redact --no-banner --log-opts "origin/main..HEAD" >/dev/null 2>&1 ) || return 20
 	osha=$(g rev-parse --verify -q refs/remotes/origin/"$branch" 2>/dev/null) || osha=''
 	if [[ -n $osha ]]; then
@@ -145,7 +177,7 @@ ga_lock "$name" 60 locked_core
 rc=$?
 if [[ $rc -ne 0 ]]; then
 	case $rc in
-		70) step=fetch;; 50) step=rebase;; 20) step=gitleaks;; 30) step=push;; 80) step=tz;; *) step=lock;;
+		70) step=fetch;; 50) step=rebase;; 20) step=gitleaks;; 30) step=push;; 80) step=tz;; 90) step=check;; *) step=lock;;
 	esac
 	leave "$rc" "$step"
 fi
