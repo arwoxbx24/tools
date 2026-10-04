@@ -38,7 +38,13 @@ case $1:$2 in
 			fi
 			cat "$GH_TEST_DIR/bucket" 2>/dev/null || echo pass
 		fi ;;
-	run:list) cat "$GH_TEST_DIR/runs" 2>/dev/null || echo '[]' ;;
+	run:list)
+		br=$(printf '%s\n' "$*" | sed -n 's/.*--branch \([^ ]*\).*/\1/p')
+		if [[ -n $br && -f "$GH_TEST_DIR/runs-$br" ]]; then
+			cat "$GH_TEST_DIR/runs-$br"
+		else
+			cat "$GH_TEST_DIR/runs" 2>/dev/null || echo '[]'
+		fi ;;
 	pr:merge)
 		[[ ! -f "$GH_TEST_DIR/gh-401" ]] || { echo 'HTTP 401' >&2; exit 1; }
 		[[ ! -f "$GH_TEST_DIR/merge-fail" ]] || { echo 'merge refused' >&2; exit 1; }
