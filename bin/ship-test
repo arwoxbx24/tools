@@ -548,6 +548,11 @@ err40=$(<"$d/s40.err")
 [[ $rc40 == 10 && $err40 == *'основная ветка origin не определена'* && $after40 == $before40 ]] && p 40 || f 40
 
 fi
-for t in "$(dirname "$0")"/ship-test.d/${SHIP_TEST_ONLY:-}*.sh; do [[ -f $t ]] && . "$t"; done
+for t in "$(dirname "$0")"/ship-test.d/${SHIP_TEST_ONLY:-}*.sh; do
+	[[ -f $t ]] || continue
+	cp -p "$d/bin/gh" "$d/bin/gh.save"; cp -p "$d/bin/bd" "$d/bin/bd.save"
+	. "$t"
+	cp -p "$d/bin/gh.save" "$d/bin/gh"; cp -p "$d/bin/bd.save" "$d/bin/bd"
+done
 [[ -z ${bad:-} ]] && { echo "PASS $ok/$ok"; exit 0; }
 exit 1
