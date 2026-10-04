@@ -15,7 +15,7 @@ jqs(){ printf '%s' "$1" | sed 's/\\/\\\\/g;s/"/\\"/g'; }
 
 prod_of(){ # $GA_LIVE — prod из ga_base, fallback main
 	local p=main
-	read -r _ _ p <<< "$(ga_base "$GA_LIVE" 2>/dev/null)" 2>/dev/null || p=main
+	read -r _ _ p <<< "$(ga_base "$GA_LIVE" local 2>/dev/null)" 2>/dev/null || p=main
 	[[ -n ${p:-} ]] || p=main
 	printf '%s\n' "$p"
 }

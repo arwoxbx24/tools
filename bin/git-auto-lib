@@ -60,9 +60,22 @@ ga_repo_of(){ # <path> — registry name of containing repo; none -> 2
 	return 2
 }
 
-ga_base(){ # <path> — one line "<mode> <base> <prod>"; origin main/base undetermined -> 2
-	local p=$1 sym prod
+ga_base(){ # <path> [local] — one line "<mode> <base> <prod>"; origin main/base undetermined -> 2
+	local p=$1 local=${2:-} sym prod b
 	[[ -n $p ]] || return 2
+	if [[ $local == local ]]; then
+		prod=$(git -C "$p" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null)
+		prod=${prod#origin/}
+		if [[ -z $prod ]]; then
+			for b in main master; do
+				git -C "$p" show-ref -q --verify refs/remotes/origin/$b 2>/dev/null && { prod=$b; break; }
+			done
+		fi
+		[[ -n $prod ]] || return 2
+		git -C "$p" show-ref -q --verify refs/remotes/origin/dev 2>/dev/null \
+			&& printf 'two dev %s\n' "$prod" || printf 'one %s %s\n' "$prod" "$prod"
+		return 0
+	fi
 	sym=$(git -C "$p" ls-remote --symref origin HEAD 2>/dev/null) || return 2
 	sym=${sym%%$'\n'*}
 	[[ $sym == 'ref: refs/heads/'*$'\t'HEAD ]] || return 2
@@ -152,7 +165,7 @@ ga_branch_unmerged(){ # <branch> in current GIT_DIR — 0 if unmerged vs prod (g
 	for ref in $(git for-each-ref --format='%(refname)' refs/delivered/); do
 		git merge-base --is-ancestor "$branch" "$ref" && return 1
 	done
-	read -r _ _ prod <<< "$(ga_base "${GA_LIVE:-}" 2>/dev/null)" 2>/dev/null || prod=main
+	read -r _ _ prod <<< "$(ga_base "${GA_LIVE:-}" local 2>/dev/null)" 2>/dev/null || prod=main
 	[[ -n ${prod:-} ]] || prod=main
 	git rev-parse -q --verify refs/remotes/origin/$prod >/dev/null 2>&1 || return 1
 	mb=$(git merge-base origin/$prod "$branch") || return 1

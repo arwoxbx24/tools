@@ -27,7 +27,7 @@ sync_one(){ # <name> — одно репо под ga_ctx; гейты до спа
 	reason=$(ga_skip_reason "$name")
 	[[ -z $reason ]] || { emit "$name" "skip:$reason"; return $?; }
 	ga_ctx "$name" 2>/dev/null || { emit "$name" err:ctx; return $?; }
-	read -r _ _ prod <<< "$(ga_base "$GA_LIVE" 2>/dev/null)" 2>/dev/null || prod=main
+	read -r _ _ prod <<< "$(ga_base "$GA_LIVE" local 2>/dev/null)" 2>/dev/null || prod=main
 	[[ -n ${prod:-} ]] || prod=main
 	git remote get-url origin >/dev/null 2>&1 || { emit "$name" skip:no-remote; return $?; }
 	timeout 20 git fetch --quiet origin $prod 2>/dev/null \

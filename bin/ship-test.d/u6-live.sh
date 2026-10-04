@@ -36,3 +36,15 @@ new62=$(git -C "$GA_PROJECTS/u62" rev-list --count "$before62"..refs/remotes/ori
 core62=$(grep '^pr create' "$GH_JOURNAL" | tail -n1)
 def62=$(grep -c 'live:deferred dev' "$GA_LOG_DIR/ship.log" || true)
 [[ $rc62 == 0 && $before62 == "$after62" && $core62 == *'--base dev'* && $new62 == 0 && ${def62:-0} -gt 0 ]] && p u6-2 || f u6-2
+
+# u6-3/4: ga_base local — origin на несуществующий путь, решения только по локальным refs.
+. "$bin/git-auto-lib"
+git init -q "$d/live3"; git -C "$d/live3" config user.email t@t; git -C "$d/live3" config user.name t
+( cd "$d/live3" && printf 'x\n' > f.txt && git add . && git commit -q -m base \
+	&& git branch -M main && git update-ref refs/remotes/origin/main HEAD && git update-ref refs/remotes/origin/dev HEAD )
+git -C "$d/live3" remote add origin "$d/no-such-origin.git"
+read -r l3m l3b l3p < <(ga_base "$d/live3" local) || l3m=fail
+[[ $l3m == two && $l3b == dev && $l3p == main ]] && p u6-3 || f u6-3
+git -C "$d/live3" update-ref -d refs/remotes/origin/dev
+read -r l4m l4b l4p < <(ga_base "$d/live3" local) || l4m=fail
+[[ $l4m == one && $l4b == main && $l4p == main ]] && p u6-4 || f u6-4
