@@ -133,6 +133,19 @@ run_form() (
     [[ $rc == 0 ]] || exit 14
     case $pre in 200) ;; 401|403) exit 11;; 429) exit 12;; 402) exit 13;; 5??) exit 14;; 4??) exit 11;; *) exit 14;; esac
     [[ $n != 3 ]] || jq -e '.data.limit_remaining == null or ((.data.limit_remaining | type) == "number" and .data.limit_remaining > 0)' "$tmpjson" >/dev/null 2>&1 || exit 13
+    if [[ $n == 3 ]]; then
+        usage=$(jq -r '.data.usage_daily // empty' "$tmpjson" 2>/dev/null)
+        if [[ -z $usage || ! $usage =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+            printf 'code-channel: нет usage_daily, форма 3 пропущена\n' >&2
+            exit 13
+        fi
+        stop=${OR_DAILY_STOP:-4}
+        [[ $stop =~ ^[0-9]+([.][0-9]+)?$ ]] || { stop=4; printf 'code-channel: OR_DAILY_STOP не число, по умолчанию 4\n' >&2; }
+        if awk "BEGIN{exit !($usage >= $stop)}"; then
+            printf 'code-channel: usage_daily=%s >= stop=%s, форма 3 пропущена\n' "$usage" "$stop" >&2
+            exit 13
+        fi
+    fi
     model=${override:-$model}
     [[ $model == "$provider/"* ]] || exit 15
     mid=${model#*/}

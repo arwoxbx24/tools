@@ -20,7 +20,7 @@ printf 'VIBECODE_API_KEY=x\n' >"$tmp/bitrix-secrets/services/vibecode.env"
 printf '%s\n' '{"provider":{"bitrixgpt":{"models":{"bitrix/bitrixgpt-5.6-agent":{}}},"openrouter":{"whitelist":["other/model"]}}}' >"$tmp/config/opencode/opencode.jsonc"
 printf '%s\n' '{"provider":{"bitrixgpt":{"models":{"bitrix/bitrixgpt-5.6-agent":{}}},"openrouter":{"whitelist":["deepseek/deepseek-v4-flash"]}}}' >"$tmp/config-allow/opencode/opencode.jsonc"
 
-printf '%s\n' '#!/usr/bin/env bash' 'printf "curl %s\\n" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'out=' 'url=${!#}' 'while [[ $# -gt 0 ]]; do' '  [[ $1 == -o ]] && { out=$2; shift 2; continue; }' '  shift' 'done' 'if [[ $url == */key ]]; then' '  printf "%s\n" "{\"data\":{\"limit_remaining\":${CURL_LIMIT_REMAINING:-1}}}" >"$out"' '  printf "%s" "${CURL_KEY_CODE:-${CURL_CODE:-200}}"' 'elif [[ $url == */chat/completions ]]; then' '  printf "%s\n" "insecure api_key=secret token=x authorization=y cookie=z" >"$out"' '  printf "%s" "${CURL_CHAT_CODE:-200}"' 'else' '  printf "%s\n" "{\"data\":[{\"id\":\"bitrix/bitrixgpt-5.6-agent\"},{\"id\":\"deepseek/deepseek-v4-flash\"}]}" >"$out"' '  printf "%s" "${CURL_CODE:-200}"' 'fi' >"$bin/curl"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "curl %s\\n" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'out=' 'url=${!#}' 'while [[ $# -gt 0 ]]; do' '  [[ $1 == -o ]] && { out=$2; shift 2; continue; }' '  shift' 'done' 'if [[ $url == */key ]]; then' '  if [[ ${CURL_USAGE_DAILY:-0.4} == none ]]; then' '    body="{\"data\":{\"limit_remaining\":${CURL_LIMIT_REMAINING:-1}}}"' '  else' '    body="{\"data\":{\"limit_remaining\":${CURL_LIMIT_REMAINING:-1},\"usage_daily\":${CURL_USAGE_DAILY:-0.4}}}"' '  fi' '  printf "%s\n" "$body" >"$out"' '  printf "%s" "${CURL_KEY_CODE:-${CURL_CODE:-200}}"' 'elif [[ $url == */chat/completions ]]; then' '  printf "%s\n" "insecure api_key=secret token=x authorization=y cookie=z" >"$out"' '  printf "%s" "${CURL_CHAT_CODE:-200}"' 'else' '  printf "%s\n" "{\"data\":[{\"id\":\"bitrix/bitrixgpt-5.6-agent\"},{\"id\":\"deepseek/deepseek-v4-flash\"}]}" >"$out"' '  printf "%s" "${CURL_CODE:-200}"' 'fi' >"$bin/curl"
 printf '%s\n' '#!/usr/bin/env bash' 'printf "opencode %s\\n" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "REPORT\\n"' '[[ ${OPENCODE_TOUCH:-} ]] && printf x >"$CODE_CHANNEL_TEST_PROJECT/$OPENCODE_TOUCH"' 'exit "${OPENCODE_RC:-0}"' >"$bin/opencode"
 printf '%s\n' '#!/usr/bin/env bash' 'printf "codex %s\\n" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "REPORT\\n"' '[[ ${CODEX_SWITCH_BRANCH:-} ]] && git -C "$CODE_CHANNEL_TEST_PROJECT" switch -c "codex/x-branch"' '[[ ${CODEX_ERR:-} ]] && printf "%s\n" "$CODEX_ERR" >&2' 'exit "${CODEX_RC:-0}"' >"$bin/codex"
 printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "${SQLITE_RESULT:-bitrixgpt|bitrix/bitrixgpt-5.6-agent}"' >"$bin/sqlite3"
@@ -77,4 +77,14 @@ check 16 '[[ $rc == 0 ]] && grep -Fq -- "-c sandbox_workspace_write.network_acce
 check 17 '[[ $rc == 24 ]] && grep -Fq -- "form=2 среда: read-only" "$tmp/err"' \
   env CODEX_ERR='Read-only file system' CODEX_RC=1 "$root/bin/code-channel" 2 "$project" "$root/AGENTS.md"
 
-[[ $ok == 17 ]] && echo 'PASS 17/17'
+git -C "$project" clean -fdq
+check 18 '[[ $rc == 13 && $err == *4.2* && $err == *4* ]] && ! grep -q "opencode" "$log"' \
+  env CURL_USAGE_DAILY=4.2 "$root/bin/code-channel" 3 "$project" "$root/AGENTS.md"
+check 19 'grep -Fq -- "codex " "$log" && ! grep -q "opencode" "$log" && [[ $err == *"форма 3 пропущена"* ]]' \
+  env CURL_CODE=401 CURL_KEY_CODE=200 CURL_USAGE_DAILY=4.2 "$root/bin/code-channel" auto "$project" "$root/AGENTS.md"
+check 20 '[[ $rc == 0 ]] && grep -Fq -- /key "$log" && grep -Fq -- "opencode" "$log"' \
+  env SQLITE_RESULT='openrouter|deepseek/deepseek-v4-flash' CURL_USAGE_DAILY=0.4 "$root/bin/code-channel" 3 "$project" "$root/AGENTS.md"
+check 21 '[[ $rc == 13 && $err == *"нет usage_daily"* ]]' \
+  env CURL_USAGE_DAILY=none "$root/bin/code-channel" 3 "$project" "$root/AGENTS.md"
+
+[[ $ok == 21 ]] && echo 'PASS 21/21'
