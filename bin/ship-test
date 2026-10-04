@@ -79,7 +79,15 @@ printf '%s\n' "$*" >> "$GH_TEST_DIR/code-archive-calls"
 EOF
 chmod +x "$d/bin/code-archive"
 
-tz="$d/tz.md"; printf 'ship test tz\n' > "$tz"
+# ТЗ-репо с bare-origin; общий ТЗ закоммичен в origin/main, Файлы: покрывает существующие сценарии
+git init -q --bare "$d/origin-tz.git"
+git clone -q "$d/origin-tz.git" "$d/tzrepo"
+git -C "$d/tzrepo" config user.email t@t
+git -C "$d/tzrepo" config user.name t
+( cd "$d/tzrepo" && printf 'Файлы: f.txt, x.txt\nПроверка: true\n' > tz.md \
+	&& git add . && git commit -q -m tz && git branch -M main \
+	&& git push -q -u origin main && git fetch -q origin )
+tz="$d/tzrepo/tz.md"
 atom=dcfg-9jdfv.5
 ship(){ ( cd "$1" && GH_ORIGIN="$(git -C "$1" config remote.origin.url)" "$bin/ship" "$@" --atom "$atom" --tz "$tz#U1" --handover ); }
 p(){ echo "PASS $1"; ok=$((ok+1)); }
@@ -288,4 +296,54 @@ ship "$t1wt" >/dev/null 2>&1; rc=$?
 export GA_WT_ROOT="$d/wts"
 [[ $rc == 0 ]] && p 20 || f 20
 
-[[ $ok == 20 ]] && exit 0 || exit 1
+# 21: дифф трогает файл вне Файлы: -> 80, stderr содержит путь, ветка не запушена
+git -C "$d/tzrepo" checkout -q main
+( cd "$d/tzrepo" && printf 'Файлы: f.txt\nПроверка: true\n' > tz-off.md \
+	&& git add . && git commit -q -m tzoff && git push -q origin main && git fetch -q origin )
+mkrepo r21; w21=$(mkwt r21 claude/c21)
+printf 'oo\n' > "$w21/extra.txt"; git -C "$w21" add -A; git -C "$w21" commit -q -m extra
+( cd "$w21" && GH_ORIGIN="$(git -C "$w21" config remote.origin.url)" "$bin/ship" "$w21" --atom "$atom" --tz "$d/tzrepo/tz-off.md#U1" ) 2>"$d/s21.err" >/dev/null; rc=$?
+err=$(<"$d/s21.err")
+lsr=$(git -C "$GA_PROJECTS/r21" ls-remote origin "refs/heads/claude/c21" 2>/dev/null)
+[[ $rc == 80 && $err == *extra.txt* && -z $lsr ]] && p 21 || f 21
+
+# 22: ТЗ без Файлы: и ТЗ с маской ** -> оба 80 (один вызов p)
+git -C "$d/tzrepo" checkout -q main
+( cd "$d/tzrepo" && printf 'Проверка: true\n' > tz-nofiles.md \
+	&& git add . && git commit -q -m tznf && git push -q origin main && git fetch -q origin )
+mkrepo r22; w22=$(mkwt r22 claude/c22); printf 's22\n' >> "$w22/f.txt"
+( cd "$w22" && GH_ORIGIN="$(git -C "$w22" config remote.origin.url)" "$bin/ship" "$w22" --atom "$atom" --tz "$d/tzrepo/tz-nofiles.md#U1" ) >/dev/null 2>&1; rc1=$?
+git -C "$d/tzrepo" checkout -q main
+( cd "$d/tzrepo" && printf 'Файлы: **\nПроверка: true\n' > tz-star.md \
+	&& git add . && git commit -q -m tzs && git push -q origin main && git fetch -q origin )
+mkrepo r22b; w22b=$(mkwt r22b claude/c22b); printf 's22b\n' >> "$w22b/f.txt"
+( cd "$w22b" && GH_ORIGIN="$(git -C "$w22b" config remote.origin.url)" "$bin/ship" "$w22b" --atom "$atom" --tz "$d/tzrepo/tz-star.md#U1" ) >/dev/null 2>&1; rc2=$?
+[[ $rc1 == 80 && $rc2 == 80 ]] && p 22 || f 22
+
+# 23: ТЗ не в origin/main (только рабочий файл) -> 80 'ТЗ не принято'
+mkrepo r23; w23=$(mkwt r23 claude/c23); printf 's23\n' >> "$w23/f.txt"
+git -C "$d/tzrepo" checkout -q -b claude/tz3
+printf 'Файлы: f.txt\nПроверка: true\n' > "$d/tzrepo/tz3.md"
+git -C "$d/tzrepo" add -A; git -C "$d/tzrepo" commit -q -m tz3
+( cd "$w23" && GH_ORIGIN="$(git -C "$w23" config remote.origin.url)" "$bin/ship" "$w23" --atom "$atom" --tz "$d/tzrepo/tz3.md#U1" ) 2>"$d/s23.err" >/dev/null; rc=$?
+err=$(<"$d/s23.err")
+git -C "$d/tzrepo" checkout -q main
+[[ $rc == 80 && $err == *'ТЗ не принято'* ]] && p 23 || f 23
+
+# 24: переименование a -> b, в Файлы: только b -> 80, stderr содержит a
+git -C "$d/tzrepo" checkout -q main
+( cd "$d/tzrepo" && printf 'Файлы: b\nПроверка: true\n' > tz-ab.md \
+	&& git add . && git commit -q -m tzab && git push -q origin main && git fetch -q origin )
+mkrepo r24
+git -C "$GA_PROJECTS/r24" fetch -q origin
+printf 'a\n' > "$GA_PROJECTS/r24/a.txt"
+git -C "$GA_PROJECTS/r24" add -A; git -C "$GA_PROJECTS/r24" commit -q -m a
+git -C "$GA_PROJECTS/r24" push -q origin main; git -C "$GA_PROJECTS/r24" fetch -q origin
+w24=$(mkwt r24 claude/c24)
+git -C "$w24" mv a.txt b.txt; git -C "$w24" commit -q -m rename
+( cd "$w24" && GH_ORIGIN="$(git -C "$w24" config remote.origin.url)" "$bin/ship" "$w24" --atom "$atom" --tz "$d/tzrepo/tz-ab.md#U1" ) 2>"$d/s24.err" >/dev/null; rc=$?
+err=$(<"$d/s24.err")
+[[ $rc == 80 && $err == *a.txt* ]] && p 24 || f 24
+
+if [[ $ok == 24 ]]; then echo 'PASS 24/24'; exit 0; fi
+exit 1

@@ -15,8 +15,57 @@ leave(){ gg_log "$1" "$2"; exit "$1"; }
 
 usage(){ cat >&2 <<'EOF'
 usage: ship <worktree> --atom <id> --tz <path#U> [--reload <pm2-name>] [--handover]
+exit codes: 0 ok, 10 preflight/usage, 20 gitleaks, 30 commit/push/pr, 40 ci, 50 merge/rebase,
+            60 post, 70 gh/fetch, 75 lock, 80 ТЗ не принято (формат/граница)
 EOF
 leave 10 usage
+}
+
+# Маска путей -> regex: * = любые символы кроме '/', ** = любые символы.
+mask_re(){ # $1 mask
+	local m=$1 out='' c i
+	for ((i=0;i<${#m};i++)); do
+		c=${m:i:1}
+		if [[ $c == '*' ]]; then
+			if [[ ${m:i+1:1} == '*' ]]; then out+='.*'; i=$((i+1)); else out+='[^/]*'; fi
+		else
+			case $c in
+				'.'|'['|']'|'('|')'|'{'|'}'|'+'|'?'|'^'|'$'|'\'|'|') out+="\\$c" ;;
+				*) out+=$c ;;
+			esac
+		fi
+	done
+	printf '%s\n' "$out"
+}
+
+# Разбор ТЗ из origin/main: заполняет tz_regex (regex масок), tz_check, tz_repo, tz_rel.
+tz_regex=(); tz_check=''; tz_repo=''; tz_rel=''
+tz_parse(){ # 0 — ок, 80 — ТЗ не принято
+	local path=${tz%%#*} repo rel o w nf np mline m i
+	tz_regex=()
+	repo=$(git -C "$(dirname "$path")" rev-parse --show-toplevel 2>/dev/null) \
+		|| { echo 'ship: ТЗ не принято — сначала в origin/main' >&2; return 80; }
+	git -C "$repo" fetch -q origin main \
+		|| { echo 'ship: ТЗ не принято — сначала в origin/main' >&2; return 80; }
+	rel=${path#"$repo"/}; [[ -n $rel ]] || { echo 'ship: ТЗ не принято' >&2; return 80; }
+	o=$(git -C "$repo" show "origin/main:$rel" 2>/dev/null) \
+		|| { echo 'ship: ТЗ не принято — сначала в origin/main' >&2; return 80; }
+	w=$(sed -n '1,$p' "$path" 2>/dev/null)
+	[[ "$o" == "$w" ]] || { echo 'ship: ТЗ не принято — сначала в origin/main' >&2; return 80; }
+	nf=$(grep -c '^Файлы: ' "$path"); np=$(grep -c '^Проверка: ' "$path")
+	[[ $nf == 1 ]] || { echo 'ship: ТЗ не принято — добавь строку "Файлы: ..."' >&2; return 80; }
+	[[ $np == 1 ]] || { echo 'ship: ТЗ не принято — добавь строку "Проверка: ..."' >&2; return 80; }
+	tz_check=$(grep '^Проверка: ' "$path")
+	mline=$(grep '^Файлы: ' "$path"); mline=${mline#*Файлы: }
+	IFS=',' read -ra arr <<< "$mline"
+	for m in "${arr[@]}"; do
+		m=${m#"${m%%[![:space:]]*}"}; m=${m%"${m##*[![:space:]]}"}
+		[[ -n $m && $m != '*' && $m != '**' && $m != '**/*' ]] \
+			|| { echo "ship: ТЗ не принято — неверная маска '$m'" >&2; return 80; }
+		tz_regex+=("$(mask_re "$m")")
+	done
+	tz_repo=$repo; tz_rel=$rel
+	return 0
 }
 
 wt=''; atom=''; tz=''; reload=''; handover=0
@@ -48,6 +97,8 @@ name=$(ga_repo_of "$wtr") || leave 10 preflight
 hp=$(git -C "$wtr" config --get-all core.hooksPath)
 [[ $hp == /root/workspaces/tools/git-hooks ]] || { echo 'hooksPath подменён' >&2; leave 10 preflight; }
 
+tz_parse || leave 80 tz
+
 g(){ git -C "$wtr" "$@"; }
 g add -A
 if g diff --cached --quiet; then
@@ -68,6 +119,19 @@ locked_core(){
 	if ! g merge-base --is-ancestor origin/main HEAD 2>/dev/null; then
 		g rebase -q origin/main || { g rebase --abort; return 50; }
 	fi
+	# граница: пути в диффе ветки обязаны лежать внутри Файлы: ТЗ
+	local wtroot changed p re matched found=0
+	wtroot=$(g rev-parse --show-toplevel 2>/dev/null)
+	changed=$(g diff --name-only --no-renames origin/main...HEAD 2>/dev/null)
+	for p in $changed; do
+		[[ $tz_repo == "$wtroot" && $p == "$tz_rel" ]] && { echo 'ship: ТЗ не принято' >&2; return 80; }
+		matched=0
+		for re in "${tz_regex[@]}"; do
+			[[ $p =~ ^$re$ ]] && { matched=1; break; }
+		done
+		[[ $matched == 1 ]] || { echo "ship: $p вне Файлы:" >&2; found=1; }
+	done
+	[[ $found == 0 ]] || return 80
 	( cd "$wtr" && gitleaks git --redact --no-banner --log-opts "origin/main..HEAD" >/dev/null 2>&1 ) || return 20
 	osha=$(g rev-parse --verify -q refs/remotes/origin/"$branch" 2>/dev/null) || osha=''
 	if [[ -n $osha ]]; then
@@ -81,7 +145,7 @@ ga_lock "$name" 60 locked_core
 rc=$?
 if [[ $rc -ne 0 ]]; then
 	case $rc in
-		70) step=fetch;; 50) step=rebase;; 20) step=gitleaks;; 30) step=push;; *) step=lock;;
+		70) step=fetch;; 50) step=rebase;; 20) step=gitleaks;; 30) step=push;; 80) step=tz;; *) step=lock;;
 	esac
 	leave "$rc" "$step"
 fi
