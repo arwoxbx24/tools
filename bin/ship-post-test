@@ -11,7 +11,6 @@ ok=0
 pass() { echo "PASS $1"; ok=$((ok + 1)); }
 fail() { echo "FAIL $1: $2"; }
 
-# Создаём origin и репо
 git init -q --bare "$d/origin.git"
 git -C "$d/origin.git" symbolic-ref HEAD refs/heads/main
 git clone -q "$d/origin.git" "$d/repo"
@@ -21,21 +20,31 @@ printf 'base\n' > "$d/repo/base.txt"
 git -C "$d/repo" add -A && git -C "$d/repo" commit -q -m base
 git -C "$d/repo" push -q origin main && git -C "$d/repo" fetch -q origin
 
-# Worktree A: с трейлерами ТЗ и Atom, вне origin/main
 git -C "$d/repo" worktree add -q -b agent/x "$d/wt-a" origin/main
 printf 'a\n' >> "$d/wt-a/base.txt"
 git -C "$d/wt-a" add -A
 git -C "$d/wt-a" commit -q -m 'task: worktree a' \
 	--trailer 'ТЗ: docs/tz/TZ-TEST.md' --trailer 'Atom: dcfg-test.1' --trailer 'Agent: claude'
 
-# Worktree B: без трейлера ТЗ, вне origin/main
 git -C "$d/repo" worktree add -q -b agent/y "$d/wt-b" origin/main
 printf 'b\n' >> "$d/wt-b/base.txt"
 git -C "$d/wt-b" add -A
 git -C "$d/wt-b" commit -q -m 'task: worktree b' \
 	--trailer 'Atom: dcfg-test.2' --trailer 'Agent: claude'
 
-mkdir -p "$d/bin"
+git -C "$d/repo" worktree add -q -b agent/z "$d/wt-c" origin/main
+printf 'c\n' >> "$d/wt-c/base.txt"
+git -C "$d/wt-c" add -A
+git -C "$d/wt-c" commit -q -m 'task: worktree c' \
+	--trailer 'ТЗ: docs/tz/TZ-TEST.md' --trailer 'Atom: dcfg-test-open' --trailer 'Agent: claude'
+
+git -C "$d/repo" worktree add -q -b agent/w "$d/wt-d" origin/main
+printf 'd\n' >> "$d/wt-d/base.txt"
+git -C "$d/wt-d" add -A
+git -C "$d/wt-d" commit -q -m 'task: worktree d' \
+	--trailer 'ТЗ: docs/tz/TZ-TEST.md' --trailer 'Atom: dcfg-test-merged' --trailer 'Agent: claude'
+
+mkdir -p "$d/bin" "$d/gh_matches/agent"
 
 cat > "$d/bin/ship" <<'EOF'
 #!/usr/bin/env bash
@@ -44,27 +53,51 @@ exit 0
 EOF
 chmod +x "$d/bin/ship"
 
-cat > "$d/bin/bd" <<'EOF'
+cat > "$d/bin/bd" <<'BDEOF'
 #!/usr/bin/env bash
-printf 'bd %s\n' "$*" >> /dev/null
 case $1 in
+	show)
+		case $2 in
+			dcfg-test.1|dcfg-test.2)       echo '[{"status":"closed"}]' ;;
+			dcfg-test-open)                echo '[{"status":"open"}]' ;;
+			dcfg-test-merged)              echo '[{"status":"closed"}]' ;;
+			*)                             echo '[{"status":"closed"}]' ;;
+		esac
+		;;
 	create) echo 'new-issue-999' ;;
 	reopen|add) ;;
 esac
 exit 0
-EOF
+BDEOF
 chmod +x "$d/bin/bd"
 
+cat > "$d/bin/gh" <<'GHEOF'
+#!/usr/bin/env bash
+if [[ $1 == pr && $2 == list && $3 == -H ]]; then
+	branch=$4
+	match_file="${SHIP_POST_TEST_DIR}/gh_matches/${branch}"
+	if [[ -f $match_file ]]; then
+		cat "$match_file"
+	fi
+fi
+exit 0
+GHEOF
+chmod +x "$d/bin/gh"
+
+wt_d_head=$(git -C "$d/wt-d" rev-parse HEAD)
+echo "$wt_d_head" > "$d/gh_matches/agent/w"
+
+export SHIP_POST_TEST_DIR="$d"
 export PATH="$d/bin:$PATH"
 export SHIP_POST_REPOS="$d/repo"
 
-# Тест: dry-run
 out=$("$tool" --dry-run 2>/dev/null); rc=$?
-out_escaped=$(printf '%s' "$out")
 
-if grep -q 'ready' <<<"$out"; then pass 1; else fail 1 "нет ready: $(echo "$out_escaped" | head -1)"; fi
-if grep -q 'skip' <<<"$out"; then pass 2; else fail 2 "нет skip"; fi
-if echo "$out" | tail -1 | grep -q 'ok=0 failed=0 skip=1'; then pass 3; else fail 3 "summary != ok=0 failed=0 skip=1: $(echo "$out" | tail -1)"; fi
-if [[ $rc == 0 ]]; then pass 4; else fail 4 "exit=$rc"; fi
+if grep -q 'ready' <<<"$out"; then pass 1; else fail 1 "нет ready"; fi
+if grep -q 'skip.*нет трейлера ТЗ' <<<"$out"; then pass 2; else fail 2 "нет skip ТЗ"; fi
+if grep -q 'skip.*атом не закрыт' <<<"$out"; then pass 3; else fail 3 "нет skip атом"; fi
+if grep -q 'skip.*PR слит' <<<"$out"; then pass 4; else fail 4 "нет skip PR"; fi
+if echo "$out" | tail -1 | grep -q 'ok=0 failed=0 skip=3'; then pass 5; else fail 5 "summary != ok=0 failed=0 skip=3: $(echo "$out" | tail -1)"; fi
+if [[ $rc == 0 ]]; then pass 6; else fail 6 "exit=$rc"; fi
 
-if [[ $ok == 4 ]]; then echo "PASS $ok/4"; else echo "FAIL $ok/4"; fi
+if [[ $ok == 6 ]]; then echo "PASS $ok/6"; exit 0; else echo "FAIL $ok/6"; exit 1; fi

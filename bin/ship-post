@@ -51,8 +51,30 @@ for repo in "${repos[@]}"; do
 			continue
 		fi
 
+		# ponytail: отсечка 2026-10-05T13:00Z — ветки до почтальона отгружает их владелец; убрать, когда старых worktree не останется
+		if (( $(git -C "$wt" log -1 --format=%ct) < ${SHIP_POST_SINCE:-1791205200} )); then
+			[[ $dry_run == 1 ]] && echo "skip $wt ветка старше почтальона"
+			skip=$((skip + 1))
+			continue
+		fi
+
 		if git -C "$wt" merge-base --is-ancestor HEAD origin/main 2>/dev/null; then
 			[[ $dry_run == 1 ]] && echo "skip $wt HEAD уже в origin/main"
+			skip=$((skip + 1))
+			continue
+		fi
+
+		st=$(bd show "$atom" --json 2>/dev/null | jq -r '.[0].status' 2>/dev/null)
+		if [[ $st != closed ]]; then
+			[[ $dry_run == 1 ]] && echo "skip $wt атом не закрыт ($st)"
+			skip=$((skip + 1))
+			continue
+		fi
+
+		br=$(git -C "$wt" branch --show-current)
+		head=$(git -C "$wt" rev-parse HEAD)
+		if (cd "$wt" && gh pr list -H "$br" -s merged --json headRefOid -q '.[].headRefOid' 2>/dev/null) | grep -qx "$head"; then
+			[[ $dry_run == 1 ]] && echo "skip $wt PR слит"
 			skip=$((skip + 1))
 			continue
 		fi
@@ -75,7 +97,7 @@ for repo in "${repos[@]}"; do
 			failed=$((failed + 1))
 
 			bd reopen "$atom" >/dev/null 2>&1 || true
-			new_id=$(bd create "[ship-post] отказ ship $rc: $atom" -t task -l contour:infra --deps "discovered-from:$atom" --description "$last_line" --acceptance "1) ship-post следующего прогона → ok по атому" 2>/dev/null | tail -1)
+			new_id=$(bd create "[ship-post] отказ ship $rc: $atom" -t task -l contour:infra --deps "discovered-from:$atom" --description "$last_line" --acceptance "1) ship-post следующего прогона → ok по атому" 2>/dev/null --silent)
 			[[ -n $new_id ]] && bd dep add "$atom" "$new_id" >/dev/null 2>&1 || true
 		fi
 	done < <(git -C "$repo" worktree list --porcelain 2>/dev/null) || true
