@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+set -u
+bin=$(cd -- "$(dirname -- "$0")" && pwd)
+dry_run=0
+
+while [[ $# -gt 0 ]]; do
+	case $1 in
+		--dry-run) dry_run=1; shift ;;
+		*) echo "usage: ship-post [--dry-run]" >&2; exit 2 ;;
+	esac
+done
+
+ok=0; failed=0; skip=0
+ship_bin="$bin/ship"
+
+if [[ -n ${SHIP_POST_REPOS:-} ]]; then
+	IFS=':' read -ra repos <<< "$SHIP_POST_REPOS"
+else
+	repos=(/root/workspaces/projects /root/workspaces/tools)
+fi
+
+for repo in "${repos[@]}"; do
+	[[ -d $repo/.git || -f $repo/.git ]] || continue
+	main=$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null) || continue
+
+	while IFS= read -r line; do
+		case $line in
+			worktree*)
+				wt=${line#worktree }
+				[[ $wt == "$main" ]] && continue
+				;;
+			*) continue ;;
+		esac
+
+		read -r head_line || continue
+		read -r branch_line 2>/dev/null || true
+		read -r sep 2>/dev/null || true
+
+		tz=$(git -C "$wt" log -1 --format='%B' 2>/dev/null | sed -n '/^ТЗ: /{s/^ТЗ: *//;s/:$//;p}' | head -1)
+		atom=$(git -C "$wt" log -1 --format='%B' 2>/dev/null | sed -n '/^Atom: /{s/^Atom: *//;s/:$//;p}' | head -1)
+
+		if [[ -z $tz ]]; then
+			[[ $dry_run == 1 ]] && echo "skip $wt нет трейлера ТЗ"
+			skip=$((skip + 1))
+			continue
+		fi
+
+		if [[ -z $atom ]]; then
+			[[ $dry_run == 1 ]] && echo "skip $wt нет трейлера Atom"
+			skip=$((skip + 1))
+			continue
+		fi
+
+		if git -C "$wt" merge-base --is-ancestor HEAD origin/main 2>/dev/null; then
+			[[ $dry_run == 1 ]] && echo "skip $wt HEAD уже в origin/main"
+			skip=$((skip + 1))
+			continue
+		fi
+
+		if [[ $dry_run == 1 ]]; then
+			echo "ready $wt $atom"
+			continue
+		fi
+
+		err_log=$(mktemp)
+		"$ship_bin" "$wt" --atom "$atom" --tz "$tz" >/dev/null 2>"$err_log"; rc=$?
+		last_line=$(tail -1 "$err_log" 2>/dev/null || true)
+		rm -f "$err_log"
+
+		if [[ $rc == 0 ]]; then
+			echo "ok $wt $atom"
+			ok=$((ok + 1))
+		else
+			echo "failed $wt $atom (exit $rc)"
+			failed=$((failed + 1))
+
+			bd reopen "$atom" >/dev/null 2>&1 || true
+			new_id=$(bd create "[ship-post] отказ ship $rc: $atom" -t task -l contour:infra --deps "discovered-from:$atom" --description "$last_line" --acceptance "1) ship-post следующего прогона → ok по атому" 2>/dev/null | tail -1)
+			[[ -n $new_id ]] && bd dep add "$atom" "$new_id" >/dev/null 2>&1 || true
+		fi
+	done < <(git -C "$repo" worktree list --porcelain 2>/dev/null) || true
+done
+
+echo "ok=$ok failed=$failed skip=$skip"
+[[ $failed == 0 ]]
