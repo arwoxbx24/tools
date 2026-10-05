@@ -135,15 +135,7 @@ if [[ -z $base ]]; then
 	leave 10 preflight
 fi
 
-# Политика (FR-002, FR-006): клиентский репо без dev; --reload запрещён в режиме двух веток.
-croot=${GA_CLIENTS_ROOT:-/root/workspaces/projects/clients/}
-croot=${croot%/}
-crootroot=$(git -C "$wtr" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
-crootroot=${crootroot%/}; crootroot=${crootroot%/.git}
-if [[ $mode == one && -n $crootroot && $crootroot == "$croot"/* ]]; then
-	echo 'ship: клиентскому проекту нужна ветка dev' >&2
-	leave 10 policy
-fi
+# Политика (FR-006): --reload запрещён в режиме двух веток.
 if [[ $mode == two && -n $reload ]]; then
 	echo 'ship: --reload в режиме двух веток — только ship-promote' >&2
 	leave 10 policy
