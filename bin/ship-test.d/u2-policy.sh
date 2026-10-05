@@ -1,7 +1,7 @@
-# U2 (FR-002, FR-006, FR-021): политика — клиентский без dev, --reload в two, ci-none в two.
+# U2 (FR-002, FR-006, FR-021): политика — --reload в two, ci-none в two.
 # Подключается через `.` из bin/ship-test: доступны $d, $GH_JOURNAL, mkrepo, mkwt, ship, p, f.
 
-# u2-1 (AE3): клиентский репо под GA_CLIENTS_ROOT без dev -> 10, gh не зван, origin без новых веток.
+# u2-1 (v2 ADR-11): клиентский репо под GA_CLIENTS_ROOT без dev -> не отказ политики.
 mkrepo u2a; w2a=$(mkwt u2a claude/u2a1); printf 's\n' >> "$w2a/f.txt"
 gh_before=$(wc -l < "$GH_JOURNAL")
 br_before=$(git ls-remote --heads "$d/origin-u2a.git" | wc -l)
@@ -10,7 +10,7 @@ out=$(ship "$w2a" 2>&1); rc=$?
 unset GA_CLIENTS_ROOT
 gh_after=$(wc -l < "$GH_JOURNAL")
 br_after=$(git ls-remote --heads "$d/origin-u2a.git" | wc -l)
-[[ $rc == 10 && $out == *'нужна ветка dev'* && $gh_after == $gh_before && $br_after == $br_before ]] && p u2-1 || f u2-1
+[[ $out != *'нужна ветка dev'* && $out != *'policy'* ]] && p u2-1 || f u2-1
 
 # u2-2 (Edge --reload): репо с dev, ship с --reload x -> 10, gh не зван.
 mkrepo u2b
