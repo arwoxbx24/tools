@@ -16,3 +16,4 @@ jobs:
       - run: python3 tests/test_agent_tools.py
       - run: bash bin/ship-test
       - run: bash bin/code-channel-test
+      - run: bash bin/place-files-test

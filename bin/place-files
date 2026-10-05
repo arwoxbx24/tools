@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+set -u
+
+usage() { echo 'usage: place-files <destination-directory> <file>...' >&2; }
+fail() { echo "fail $1: $2" >&2; }
+
+[[ $# -ge 2 ]] || { usage; exit 2; }
+
+root=$(realpath -m "${PLACE_FILES_ROOT:-/root/workspaces/projects}")
+[[ -d $root ]] || { echo "place-files: invalid root: $root" >&2; exit 2; }
+destination=$(realpath -m "$1")
+
+case "$destination/" in
+  "$root"/*) ;;
+  *) echo "place-files: destination outside root: $destination" >&2; exit 2;;
+esac
+case "$destination/" in
+  */.git/*|*/secrets/*) echo "place-files: forbidden destination: $destination" >&2; exit 2;;
+esac
+[[ ! -e $destination || -d $destination ]] || { echo "place-files: destination is not a directory" >&2; exit 2; }
+
+ancestor=$destination
+while [[ ! -e $ancestor ]]; do
+  parent=$(dirname -- "$ancestor")
+  [[ $parent != "$ancestor" ]] || { echo "place-files: no destination ancestor" >&2; exit 2; }
+  ancestor=$parent
+done
+[[ -d $ancestor ]] || { echo "place-files: no destination ancestor" >&2; exit 2; }
+destination_repo=$(git -C "$ancestor" rev-parse --show-toplevel 2>/dev/null) || {
+  echo "place-files: destination is not in a git repository" >&2
+  exit 2
+}
+destination_repo=$(realpath -m "$destination_repo")
+
+sources=()
+targets=()
+for source in "${@:2}"; do
+  source_path=$(realpath -m "$source")
+  if [[ -L $source ]]; then
+    fail "$source" 'symlink'
+  elif [[ ! -f $source ]]; then
+    fail "$source" 'not a regular file'
+  elif [[ $source_path == */.git/* || $source_path == */secrets/* ]]; then
+    fail "$source" 'forbidden path'
+  else
+    source_repo=$(git -C "$(dirname -- "$source_path")" rev-parse --show-toplevel 2>/dev/null || true)
+    [[ -z $source_repo ]] || source_repo=$(realpath -m "$source_repo")
+    if [[ -z $source_repo || $source_repo != "$destination_repo" ]]; then
+      fail "$source" 'not in destination repository'
+    else
+      name=$(basename -- "$source_path")
+      case "$name" in
+        .env*|*.pem|*.key) fail "$source" 'forbidden filename';;
+        *)
+          target="$destination/$name"
+          duplicate=false
+          for accepted_target in "${targets[@]}"; do
+            [[ $accepted_target == "$target" ]] && duplicate=true
+          done
+          if [[ -e $target || -L $target || $duplicate == true ]]; then
+            fail "$source" 'destination exists'
+          else
+            sources+=("$source_path")
+            targets+=("$target")
+          fi
+          ;;
+      esac
+    fi
+  fi
+done
+
+failed=$(( $# - 1 - ${#sources[@]} ))
+ok=0
+if [[ ${#sources[@]} -gt 0 ]]; then
+  mkdir -p -- "$destination" || { echo "place-files: cannot create destination" >&2; exit 2; }
+fi
+for i in "${!sources[@]}"; do
+  if cp -- "${sources[$i]}" "${targets[$i]}"; then
+    echo "ok ${targets[$i]}"
+    ok=$((ok + 1))
+  else
+    fail "${sources[$i]}" 'copy failed'
+    failed=$((failed + 1))
+  fi
+done
+echo "ok=$ok failed=$failed"
+[[ $ok -gt 0 && $failed == 0 ]]
