@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+set -u
+
+bin=$(cd -- "$(dirname -- "$0")" && pwd)
+tmp=$(mktemp -d)
+trap 'rm -rf -- "$tmp"' EXIT
+root="$tmp/root"
+repo="$root/repo"
+other="$root/other"
+tool="$bin/place-files"
+ok=0
+mkdir -p "$repo" "$other"
+git -C "$repo" init -q
+git -C "$other" init -q
+export PLACE_FILES_ROOT="$root"
+
+pass() { echo "PASS $1"; ok=$((ok + 1)); }
+fail() { echo "FAIL $1: $2"; }
+summary() { grep -qx "$1" <<<"$2"; }
+
+src="$repo/client-materials/private/x/otchet.html"
+mkdir -p "$(dirname -- "$src")"
+printf 'meeting\n' > "$src"
+dest="$repo/docs/meetings/d"
+out=$("$tool" "$dest" "$src" 2>"$tmp/err"); rc=$?
+if [[ $rc == 0 ]] && summary 'ok=1 failed=0' "$out" && cmp -s "$src" "$dest/otchet.html"; then pass 1; else fail 1 "rc=$rc"; fi
+
+out=$("$tool" "$dest" "$src" 2>"$tmp/err"); rc=$?
+if [[ $rc == 1 ]] && summary 'ok=0 failed=1' "$out" && cmp -s "$src" "$dest/otchet.html"; then pass 2; else fail 2 "rc=$rc"; fi
+
+foreign="$other/x.html"
+printf 'foreign\n' > "$foreign"
+out=$("$tool" "$repo/docs/meetings/foreign" "$foreign" 2>"$tmp/err"); rc=$?
+if [[ $rc == 1 ]] && [[ ! -e $repo/docs/meetings/foreign/x.html ]]; then pass 3; else fail 3 "rc=$rc"; fi
+
+link="$repo/client-materials/private/x/link.html"
+ln -s "$src" "$link"
+out=$("$tool" "$repo/docs/meetings/link" "$link" 2>"$tmp/err"); rc=$?
+if [[ $rc == 1 ]] && [[ ! -e $repo/docs/meetings/link/link.html ]]; then pass 4; else fail 4 "rc=$rc"; fi
+
+mkdir -p "$repo/secrets"
+printf 'secret\n' > "$repo/secrets/k.txt"
+printf 'env\n' > "$repo/.env"
+out=$("$tool" "$repo/docs/meetings/secret" "$repo/secrets/k.txt" "$repo/.env" 2>"$tmp/err"); rc=$?
+if [[ $rc == 1 ]] && summary 'ok=0 failed=2' "$out"; then pass 5; else fail 5 "rc=$rc"; fi
+
+outside="$tmp/outside/new"
+"$tool" "$outside" "$src" >"$tmp/out" 2>"$tmp/err"; rc=$?
+if [[ $rc == 2 ]] && [[ ! -e $outside ]]; then pass 6; else fail 6 "rc=$rc"; fi
+
+one="$repo/client-materials/private/x/one.html"
+two="$repo/client-materials/private/x/two.html"
+bad="$repo/client-materials/private/x/private.key"
+printf 'one\n' > "$one"; printf 'two\n' > "$two"; printf 'bad\n' > "$bad"
+out=$("$tool" "$repo/docs/meetings/mixed" "$one" "$bad" "$two" 2>"$tmp/err"); rc=$?
+if [[ $rc == 1 ]] && summary 'ok=2 failed=1' "$out" && [[ -f $repo/docs/meetings/mixed/one.html && -f $repo/docs/meetings/mixed/two.html ]]; then pass 7; else fail 7 "rc=$rc"; fi
+
+"$tool" "$repo/.git/x" "$src" >"$tmp/out" 2>"$tmp/err"; rc=$?
+if [[ $rc == 2 ]]; then pass 8; else fail 8 "rc=$rc"; fi
+
+if [[ $ok == 8 ]]; then echo 'PASS 8/8'; else echo "FAIL $ok/8"; fi
