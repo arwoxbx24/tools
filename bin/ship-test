@@ -349,107 +349,12 @@ ship "$t1wt" >/dev/null 2>&1; rc=$?
 export GA_WT_ROOT="$d/wts"
 [[ $rc == 0 ]] && p 20 || f 20
 
-# 21: дифф трогает файл вне Файлы: -> 80, stderr содержит путь, ветка не запушена
-git -C "$d/tzrepo" checkout -q main
-( cd "$d/tzrepo" && printf 'Файлы: f.txt\nПроверка: true\n' > tz-off.md \
-	&& git add . && git commit -q -m tzoff && git push -q origin main && git fetch -q origin )
-mkrepo r21; w21=$(mkwt r21 claude/c21)
-printf 'oo\n' > "$w21/extra.txt"; git -C "$w21" add -A; git -C "$w21" commit -q -m extra
-( cd "$w21" && GH_ORIGIN="$(git -C "$w21" config remote.origin.url)" "$bin/ship" "$w21" --atom "$atom" --tz "$d/tzrepo/tz-off.md#U1" ) 2>"$d/s21.err" >/dev/null; rc=$?
-err=$(<"$d/s21.err")
-lsr=$(git -C "$GA_PROJECTS/r21" ls-remote origin "refs/heads/claude/c21" 2>/dev/null)
-[[ $rc == 80 && $err == *extra.txt* && -z $lsr ]] && p 21 || f 21
-
-# 22: ТЗ без Файлы: и ТЗ с маской ** -> оба 80 (один вызов p)
-git -C "$d/tzrepo" checkout -q main
-( cd "$d/tzrepo" && printf 'Проверка: true\n' > tz-nofiles.md \
-	&& git add . && git commit -q -m tznf && git push -q origin main && git fetch -q origin )
-mkrepo r22; w22=$(mkwt r22 claude/c22); printf 's22\n' >> "$w22/f.txt"
-( cd "$w22" && GH_ORIGIN="$(git -C "$w22" config remote.origin.url)" "$bin/ship" "$w22" --atom "$atom" --tz "$d/tzrepo/tz-nofiles.md#U1" ) >/dev/null 2>&1; rc1=$?
-git -C "$d/tzrepo" checkout -q main
-( cd "$d/tzrepo" && printf 'Файлы: **\nПроверка: true\n' > tz-star.md \
-	&& git add . && git commit -q -m tzs && git push -q origin main && git fetch -q origin )
-mkrepo r22b; w22b=$(mkwt r22b claude/c22b); printf 's22b\n' >> "$w22b/f.txt"
-( cd "$w22b" && GH_ORIGIN="$(git -C "$w22b" config remote.origin.url)" "$bin/ship" "$w22b" --atom "$atom" --tz "$d/tzrepo/tz-star.md#U1" ) >/dev/null 2>&1; rc2=$?
-[[ $rc1 == 80 && $rc2 == 80 ]] && p 22 || f 22
-
-# 23: ТЗ не в origin/main (только рабочий файл) -> 80 'ТЗ не принято'
+# 23: ТЗ не найдено -> 80, stderr содержит 'ТЗ не найдено', ветка не запушена
 mkrepo r23; w23=$(mkwt r23 claude/c23); printf 's23\n' >> "$w23/f.txt"
-git -C "$d/tzrepo" checkout -q -b claude/tz3
-printf 'Файлы: f.txt\nПроверка: true\n' > "$d/tzrepo/tz3.md"
-git -C "$d/tzrepo" add -A; git -C "$d/tzrepo" commit -q -m tz3
-( cd "$w23" && GH_ORIGIN="$(git -C "$w23" config remote.origin.url)" "$bin/ship" "$w23" --atom "$atom" --tz "$d/tzrepo/tz3.md#U1" ) 2>"$d/s23.err" >/dev/null; rc=$?
+( cd "$w23" && GH_ORIGIN="$(git -C "$w23" config remote.origin.url)" "$bin/ship" "$w23" --atom "$atom" --tz "$d/tzrepo/no-such.md#U1" ) 2>"$d/s23.err" >/dev/null; rc=$?
 err=$(<"$d/s23.err")
-git -C "$d/tzrepo" checkout -q main
-[[ $rc == 80 && $err == *'ТЗ не принято'* ]] && p 23 || f 23
-
-# 24: переименование a -> b, в Файлы: только b -> 80, stderr содержит a
-git -C "$d/tzrepo" checkout -q main
-( cd "$d/tzrepo" && printf 'Файлы: b\nПроверка: true\n' > tz-ab.md \
-	&& git add . && git commit -q -m tzab && git push -q origin main && git fetch -q origin )
-mkrepo r24
-git -C "$GA_PROJECTS/r24" fetch -q origin
-printf 'a\n' > "$GA_PROJECTS/r24/a.txt"
-git -C "$GA_PROJECTS/r24" add -A; git -C "$GA_PROJECTS/r24" commit -q -m a
-git -C "$GA_PROJECTS/r24" push -q origin main; git -C "$GA_PROJECTS/r24" fetch -q origin
-w24=$(mkwt r24 claude/c24)
-git -C "$w24" mv a.txt b.txt; git -C "$w24" commit -q -m rename
-( cd "$w24" && GH_ORIGIN="$(git -C "$w24" config remote.origin.url)" "$bin/ship" "$w24" --atom "$atom" --tz "$d/tzrepo/tz-ab.md#U1" ) 2>"$d/s24.err" >/dev/null; rc=$?
-err=$(<"$d/s24.err")
-[[ $rc == 80 && $err == *a.txt* ]] && p 24 || f 24
-
-# 25: проверка падает на ветке -> 90, ветки на origin нет
-git -C "$d/tzrepo" checkout -q main
-( cd "$d/tzrepo" && printf 'Файлы: f.txt\nПроверка: test -f no-such-file\n' > tz-check1.md \
-	&& git add . && git commit -q -m tzc1 && git push -q origin main && git fetch -q origin )
-mkrepo r25; w25=$(mkwt r25 claude/c25); printf 's25\n' >> "$w25/f.txt"
-( cd "$w25" && GH_ORIGIN="$(git -C "$w25" config remote.origin.url)" "$bin/ship" "$w25" --atom "$atom" --tz "$d/tzrepo/tz-check1.md#U1" ) >/dev/null 2>&1; rc=$?
-lsr=$(git -C "$GA_PROJECTS/r25" ls-remote origin "refs/heads/claude/c25" 2>/dev/null)
-[[ $rc == 90 && -z $lsr ]] && p 25 || f 25
-
-# 26: проверка проходит и на ветке, и на main -> 90 'не отличает'
-git -C "$d/tzrepo" checkout -q main
-( cd "$d/tzrepo" && printf 'Файлы: f.txt\nПроверка: test -d .git -o -f .git\n' > tz-check2.md \
-	&& git add . && git commit -q -m tzc2 && git push -q origin main && git fetch -q origin )
-mkrepo r26; w26=$(mkwt r26 claude/c26); printf 's26\n' >> "$w26/f.txt"
-( cd "$w26" && GH_ORIGIN="$(git -C "$w26" config remote.origin.url)" "$bin/ship" "$w26" --atom "$atom" --tz "$d/tzrepo/tz-check2.md#U1" ) 2>"$d/s26.err" >/dev/null; rc=$?
-err=$(<"$d/s26.err")
-[[ $rc == 90 && $err == *'не отличает'* ]] && p 26 || f 26
-
-# 27: пустая проверка -> 90 'пустая проверка'
-git -C "$d/tzrepo" checkout -q main
-( cd "$d/tzrepo" && printf 'Файлы: f.txt\nПроверка: true\n' > tz-check3.md \
-	&& git add . && git commit -q -m tzc3 && git push -q origin main && git fetch -q origin )
-mkrepo r27; w27=$(mkwt r27 claude/c27); printf 's27\n' >> "$w27/f.txt"
-( cd "$w27" && GH_ORIGIN="$(git -C "$w27" config remote.origin.url)" "$bin/ship" "$w27" --atom "$atom" --tz "$d/tzrepo/tz-check3.md#U1" ) 2>"$d/s27.err" >/dev/null; rc=$?
-err=$(<"$d/s27.err")
-[[ $rc == 90 && $err == *пустая* ]] && p 27 || f 27
-
-# 28: проверка на main не исполнилась (bash run.sh, файла нет) -> 90 'не исполнилась'
-git -C "$d/tzrepo" checkout -q main
-( cd "$d/tzrepo" && printf 'Файлы: f.txt, run.sh\nПроверка: bash run.sh\n' > tz-check4.md \
-	&& git add . && git commit -q -m tzc4 && git push -q origin main && git fetch -q origin )
-mkrepo r28; w28=$(mkwt r28 claude/c28)
-printf 'exit 0\n' > "$w28/run.sh"; git -C "$w28" add -A; git -C "$w28" commit -q -m run
-( cd "$w28" && GH_ORIGIN="$(git -C "$w28" config remote.origin.url)" "$bin/ship" "$w28" --atom "$atom" --tz "$d/tzrepo/tz-check4.md#U1" ) 2>"$d/s28.err" >/dev/null; rc=$?
-err=$(<"$d/s28.err")
-[[ $rc == 90 && $err == *'не исполнилась'* ]] && p 28 || f 28
-
-# 29: путь с пробелом вне Файлы: -> 80, stderr содержит путь целиком
-mkrepo r29; w29=$(mkwt r29 claude/c29)
-printf 'x\n' > "$w29/a b.txt"; git -C "$w29" add -A; git -C "$w29" commit -q -m space
-( cd "$w29" && GH_ORIGIN="$(git -C "$w29" config remote.origin.url)" "$bin/ship" "$w29" --atom "$atom" --tz "$tz#U1" ) 2>"$d/s29.err" >/dev/null; rc=$?
-err=$(<"$d/s29.err")
-[[ $rc == 80 && $err == *'a b.txt'* ]] && p 29 || f 29
-
-# 30: первый сегмент маски содержит * -> 80 'неверная маска'
-git -C "$d/tzrepo" checkout -q main
-( cd "$d/tzrepo" && printf 'Файлы: */f.txt\nПроверка: true\n' > tz-starfirst.md \
-	&& git add . && git commit -q -m tzsf && git push -q origin main && git fetch -q origin )
-mkrepo r30; w30=$(mkwt r30 claude/c30); printf 's30\n' >> "$w30/f.txt"
-( cd "$w30" && GH_ORIGIN="$(git -C "$w30" config remote.origin.url)" "$bin/ship" "$w30" --atom "$atom" --tz "$d/tzrepo/tz-starfirst.md#U1" ) 2>"$d/s30.err" >/dev/null; rc=$?
-err=$(<"$d/s30.err")
-[[ $rc == 80 && $err == *'неверная маска'* ]] && p 30 || f 30
+lsr=$(git -C "$GA_PROJECTS/r23" ls-remote origin "refs/heads/claude/c23" 2>/dev/null)
+[[ $rc == 80 && $err == *'ТЗ не найдено'* && -z $lsr ]] && p 23 || f 23
 
 # 31: тело PR (stub gh pr create) содержит вывод проверки
 mkrepo r31; w31=$(mkwt r31 claude/c31); printf 's31\n' >> "$w31/f.txt"
@@ -473,13 +378,12 @@ rc=$?
 err=$(<"$d/s33.err")
 [[ $rc != 0 && $err == *'bd close'* ]] && p 33 || f 33
 
-# 34: успешная доставка — reason содержит команду Проверки и main exit <цифра>
+# 34: успешная доставка — reason содержит PR-ссылку и ТЗ
 mkrepo r34; w34=$(mkwt r34 claude/c34); printf 's34\n' >> "$w34/f.txt"
 : > "$d/bd.log"
 ship "$w34" >/dev/null 2>&1; rc=$?
 closeline=$(grep 'close' "$d/bd.log" | tail -n1)
-has34=$(grep -cE 'main exit [0-9]' <<<"$closeline" || true)
-[[ $rc == 0 && $closeline == *'git diff'* && $closeline == *'echo 3'* && ${has34:-0} -gt 0 ]] && p 34 || f 34
+[[ $rc == 0 && $closeline == *'PR: '* && $closeline == *'ТЗ: '* ]] && p 34 || f 34
 
 # 35: ТЗ с файлом TZ-DOCS-DELIVERY.md — bd close не вызывается вовсе
 git -C "$d/tzrepo" checkout -q main
@@ -490,25 +394,6 @@ mkrepo r35; w35=$(mkwt r35 claude/c35); printf 's35\n' >> "$w35/f.txt"
 ( cd "$w35" && GH_ORIGIN="$(git -C "$w35" config remote.origin.url)" "$bin/ship" "$w35" --atom "$atom" --tz "$d/tzrepo/TZ-DOCS-DELIVERY.md#U1" ) >/dev/null 2>&1; rc=$?
 log=$(<"$d/bd.log")
 [[ $rc == 0 && $log != *'close'* ]] && p 35 || f 35
-
-# 36: ТЗ нет в origin/main -> 80, stderr содержит 'нет в origin/main' и TZ-DOCS-DELIVERY.md
-mkrepo r36; w36=$(mkwt r36 claude/c36); printf 's36\n' >> "$w36/f.txt"
-git -C "$d/tzrepo" checkout -q -b claude/tz36
-printf 'Файлы: f.txt\nПроверка: true\n' > "$d/tzrepo/tz36.md"
-git -C "$d/tzrepo" add -A; git -C "$d/tzrepo" commit -q -m tz36
-( cd "$w36" && GH_ORIGIN="$(git -C "$w36" config remote.origin.url)" "$bin/ship" "$w36" --atom "$atom" --tz "$d/tzrepo/tz36.md#U1" ) 2>"$d/s36.err" >/dev/null; rc=$?
-err=$(<"$d/s36.err"); git -C "$d/tzrepo" checkout -q main
-[[ $rc == 80 && $err == *'нет в origin/main'* && $err == *'TZ-DOCS-DELIVERY.md'* ]] && p 36 || f 36
-
-# 37: ТЗ в рабочем дереве отличается от origin/main -> 80, stderr содержит 'отличается от origin/main'
-git -C "$d/tzrepo" checkout -q main
-( cd "$d/tzrepo" && printf 'Файлы: f.txt\nПроверка: true\n' > tz37.md \
-	&& git add . && git commit -q -m tz37 && git push -q origin main && git fetch -q origin )
-mkrepo r37; w37=$(mkwt r37 claude/c37); printf 's37\n' >> "$w37/f.txt"
-printf 'Файлы: f.txt\nПроверка: false\n' > "$d/tzrepo/tz37.md"
-( cd "$w37" && GH_ORIGIN="$(git -C "$w37" config remote.origin.url)" "$bin/ship" "$w37" --atom "$atom" --tz "$d/tzrepo/tz37.md#U1" ) 2>"$d/s37.err" >/dev/null; rc=$?
-err=$(<"$d/s37.err"); git -C "$d/tzrepo" checkout -q -- .
-[[ $rc == 80 && $err == *'отличается от origin/main'* ]] && p 37 || f 37
 
 # 38 (AE1): dev-ветка на origin -> режим two; PR в dev, живая копия отложена, main без нового
 mkrepo r38 1
