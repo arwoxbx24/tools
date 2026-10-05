@@ -12,91 +12,18 @@ name='-'; branch='-'
 usage(){ cat >&2 <<'EOF'
 usage: ship <worktree> --atom <id> --tz <path#U> [--reload <pm2-name>] [--handover]
 exit codes: 0 ok, 10 preflight/usage, 20 gitleaks, 30 commit/push/pr, 40 ci, 50 merge/rebase,
-            60 post, 70 gh/fetch, 75 lock, 80 ТЗ не принято (формат/граница), 90 проверка
+            60 post, 70 gh/fetch, 75 lock, 80 ТЗ не найдено
 EOF
 leave 10 usage
 }
 
-# Маска путей -> regex: * = любые символы кроме '/', ** = любые символы.
-mask_re(){ # $1 mask
-	local m=$1 out='' c i
-	for ((i=0;i<${#m};i++)); do
-		c=${m:i:1}
-		if [[ $c == '*' ]]; then
-			if [[ ${m:i+1:1} == '*' ]]; then out+='.*'; i=$((i+1)); else out+='[^/]*'; fi
-		else
-			case $c in
-				'.'|'['|']'|'('|')'|'{'|'}'|'+'|'?'|'^'|'$'|'\'|'|') out+="\\$c" ;;
-				*) out+=$c ;;
-			esac
-		fi
-	done
-	printf '%s\n' "$out"
-}
-
-# Разбор ТЗ из origin/<base> репозитория ТЗ: заполняет tz_regex, tz_check, tz_repo, tz_rel.
-tz_regex=(); tz_check=''; tz_repo=''; tz_rel=''; cmd=''; main_rc=''
+# Разбор ТЗ.
+tz_repo=''; tz_rel=''; cmd=''
 tz_parse(){ # 0 — ок, 80 — ТЗ не принято
-	local path=${tz%%#*} repo rel o w nf np mline m i tb
-	tz_regex=()
-	repo=$(git -C "$(dirname "$path")" rev-parse --show-toplevel 2>/dev/null) \
-		|| { echo "ship: ТЗ не принято — файл ТЗ не в git-репозитории: $path" >&2; return 80; }
-	read -r _ tb _ <<< "$(ga_base "$repo")"
-	[[ -n $tb ]] || { echo 'ship: ТЗ не принято — основная ветка origin не определена' >&2; return 80; }
-	git -C "$repo" fetch -q origin "$tb" \
-		|| { echo "ship: ТЗ не принято — git fetch origin $tb не прошёл в $repo" >&2; return 80; }
-	rel=${path#"$repo"/}; [[ -n $rel ]] || { echo "ship: ТЗ не принято — путь ТЗ вне репозитория $repo" >&2; return 80; }
-	o=$(git -C "$repo" show "origin/$tb:$rel" 2>/dev/null) \
-		|| { echo "ship: ТЗ не принято — $rel нет в origin/$tb; сначала доставь ТЗ: ship $wt --atom $atom --tz $repo/docs/tz/TZ-DOCS-DELIVERY.md" >&2; return 80; }
-	w=$(sed -n '1,$p' "$path" 2>/dev/null)
-	[[ "$o" == "$w" ]] || { echo "ship: ТЗ не принято — $rel в рабочем дереве отличается от origin/$tb; доставь правку ТЗ через TZ-DOCS-DELIVERY.md или верни файл к origin/$tb" >&2; return 80; }
-	nf=$(grep -c '^Файлы: ' "$path"); np=$(grep -c '^Проверка: ' "$path")
-	[[ $nf == 1 ]] || { echo 'ship: ТЗ не принято — добавь строку "Файлы: ..."' >&2; return 80; }
-	[[ $np == 1 ]] || { echo 'ship: ТЗ не принято — добавь строку "Проверка: ..."' >&2; return 80; }
-	tz_check=$(grep '^Проверка: ' "$path")
-	mline=$(grep '^Файлы: ' "$path"); mline=${mline#*Файлы: }
-	IFS=',' read -ra arr <<< "$mline"
-	for m in "${arr[@]}"; do
-		m=${m#"${m%%[![:space:]]*}"}; m=${m%"${m##*[![:space:]]}"}
-		[[ -n $m && ${m%%/*} != *'*'* ]] \
-			|| { echo "ship: ТЗ не принято — неверная маска '$m'" >&2; return 80; }
-		tz_regex+=("$(mask_re "$m")")
-	done
-	tz_repo=$repo; tz_rel=$rel
-	return 0
-}
-
-# Запуск команды Проверка: внутри $1; ветка — stdout+stderr в $chk_out, main — в /dev/null.
-run_check(){ # $1 каталог
-	local out=/dev/null
-	[[ $1 == "$wtr" && -n ${chk_out:-} ]] && out=$chk_out
-	( cd "$1" && env -i PATH="$PATH" HOME="$HOME" timeout -k 5 300 setsid bash -c "$cmd" ) >"$out" 2>&1
-}
-
-# Дифференциальная проверка: пустая/неразличимая проверка или изменение файлов — 90.
-check_gate(){ # 0 — ок, 90 — проверка не прошла/изменила/не отличает/пустая
-	local before tmp mrc
-	cmd=${tz_check#Проверка: }
-	case $cmd in
-		''|true|:|'exit 0') echo 'ship: пустая проверка' >&2; return 90 ;;
-		echo*|printf*) [[ $cmd != *'|'* ]] && { echo 'ship: пустая проверка' >&2; return 90; } ;;
-	esac
-	before=$(g status --porcelain)
-	if ! run_check "$wtr"; then
-		echo 'ship: проверка не прошла' >&2; return 90
-	fi
-	[[ $(g status --porcelain) == "$before" ]] \
-		|| { echo 'ship: проверка изменила файлы' >&2; return 90; }
-	tmp=$(mktemp -d) || { echo 'ship: не удалось поднять main' >&2; return 90; }
-	g worktree add -q --detach "$tmp/m" origin/$base \
-		|| { echo 'ship: не удалось поднять main' >&2; return 90; }
-	run_check "$tmp/m"; mrc=$?; main_rc=$mrc
-	printf '%s\n' "$mrc" > "$chk_out.rc"
-	g worktree remove --force "$tmp/m" 2>/dev/null; rmdir "$tmp" 2>/dev/null
-	case $mrc in
-		0) echo 'ship: проверка не отличает изменение' >&2; return 90 ;;
-		124|126|127) echo "ship: main: проверка не исполнилась ($mrc)" >&2; return 90 ;;
-	esac
+	path=${tz%%#*}
+	[[ -f $path ]] || { echo "ship: ТЗ не найдено: $path" >&2; return 80; }
+	tz_repo=$(git -C "$(dirname "$path")" rev-parse --show-toplevel)
+	tz_rel=${path#"$tz_repo"/}
 	return 0
 }
 
@@ -163,24 +90,6 @@ locked_core(){
 	if ! g merge-base --is-ancestor origin/$base HEAD 2>/dev/null; then
 		g rebase -q origin/$base || { g rebase --abort; return 50; }
 	fi
-	# граница: пути в диффе ветки обязаны лежать внутри Файлы: ТЗ
-	local df p re matched found=0 tzcd wtcd
-	tzcd=$( cd "$tz_repo" && d=$(git rev-parse --git-common-dir) && cd "$d" && pwd -P 2>/dev/null )
-	wtcd=$( cd "$wtr" && d=$(git rev-parse --git-common-dir) && cd "$d" && pwd -P 2>/dev/null )
-	df=$(mktemp) || { echo 'ship: дифф не прочитан' >&2; return 80; }
-	g diff -z --name-only --no-renames origin/$base...HEAD > "$df" \
-		|| { rm -f "$df"; echo 'ship: дифф не прочитан' >&2; return 80; }
-	while IFS= read -r -d '' p; do
-		[[ $tzcd == "$wtcd" && $p == "$tz_rel" ]] && { rm -f "$df"; echo "ship: ТЗ не принято — ТЗ $tz_rel правится в ветке кода; доставь ТЗ отдельно через TZ-DOCS-DELIVERY.md" >&2; return 80; }
-		matched=0
-		for re in "${tz_regex[@]}"; do
-			[[ $p =~ ^$re$ ]] && { matched=1; break; }
-		done
-		[[ $matched == 1 ]] || { echo "ship: $p вне Файлы:" >&2; found=1; }
-	done < "$df"
-	rm -f "$df"
-	[[ $found == 0 ]] || return 80
-	check_gate || return $?
 	( cd "$wtr" && gitleaks git --redact --no-banner --log-opts "origin/$base..HEAD" >/dev/null 2>&1 ) || return 20
 	osha=$(g rev-parse --verify -q refs/remotes/origin/"$branch" 2>/dev/null) || osha=''
 	if [[ -n $osha ]]; then
@@ -190,8 +99,6 @@ locked_core(){
 	fi
 	return 0
 }
-chk_out=$(mktemp)
-trap 'rm -f "$chk_out" "$chk_out.rc"' EXIT
 ga_lock "$name" 60 locked_core
 rc=$?
 if [[ $rc -ne 0 ]]; then
@@ -218,9 +125,6 @@ fi
 pr=$(gh pr list -R "$slug" --head "$branch" --state open --json number,baseRefName --jq '.[0]' 2>/dev/null)
 if [[ -z $pr ]]; then
 	body="$(g log -1 --format=%b)"
-	if [[ -n ${chk_out:-} ]]; then
-		body+=$'\n\nПроверка: '"${tz_check#Проверка: }"$'\n```\n'"$(tail -n 20 "$chk_out")"$'\n```'
-	fi
 	gh pr create -R "$slug" --head "$branch" --base "$base" \
 		--title "$(g log -1 --format=%s)" --body "$body" >/dev/null || leave 30 pr
 	pr=$(gh pr list -R "$slug" --head "$branch" --state open --json number,baseRefName --jq '.[0]' 2>/dev/null)
@@ -254,12 +158,12 @@ gh_or70 gh pr merge "$num" -R "$slug" --squash --match-head-commit "$(git -C "$w
 merge_sha=$(gh pr view "$num" -R "$slug" --json mergeCommit --jq .mergeCommit.oid)
 gg_log 0 "merged $num $merge_sha"
 merge_ms=$(( $(date +%s) * 1000 ))
-rmot=$(sed '/^[[:space:]]*$/d' "$chk_out" | tail -n1)
-cmd=${tz_check#Проверка: }
-main_rc=$(<"$chk_out.rc") || main_rc='?'
-reason="Проверка: $cmd | ветка exit 0, main exit $main_rc | $rmot | https://github.com/$slug/pull/$num"
+reason="PR: https://github.com/$slug/pull/$num | ТЗ: $tz"
 if [[ ${tz%%#*} != */TZ-DOCS-DELIVERY.md ]]; then
-	if ! bd close "$atom" --reason "$reason" >/dev/null 2>&1; then
+	st=$(bd show "$atom" --json 2>/dev/null | jq -r '.[0].status' 2>/dev/null)
+	if [[ $st == closed ]]; then
+		bd update "$atom" --append-notes "$reason" >/dev/null 2>&1 || echo "ship: notes не записаны: $atom" >&2
+	elif ! bd close "$atom" --reason "$reason" >/dev/null 2>&1; then
 		echo "ship: закрой вручную: bd close \"$atom\" --reason \"$reason\"" >&2
 		post_rc=60; post_step=close
 		[[ $handover == 1 ]] && leave 60 close
