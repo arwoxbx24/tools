@@ -317,7 +317,7 @@ deliver_one(){
 }
 
 scan_repo(){
- local repo=$1 lk fd line wt head branch msg atom tz st owner agent actor dirty base rf code rc remote_proof='' remote_open=''
+ local repo=$1 lk fd line wt head branch msg atom tz st status owner agent actor dirty base rf code rc remote_proof='' remote_open=''
  local ok=0 failed=0 skip=0
  [[ -d $repo ]] || return 1
  repo=$(realpath "$repo") || return 1
@@ -337,10 +337,11 @@ scan_repo(){
   head=$(git -C "$wt" rev-parse HEAD) || continue
   branch=$(git -C "$wt" symbolic-ref --short -q HEAD) || { skip=$((skip+1)); continue; }
   st=$(bd_cmd show "$atom" --json) || { failed=$((failed+1)); continue; }
-  owner=$(jq -r '.[0].assignee // empty' <<<"$st"); actor=$(actor_name "$owner") || { skip=$((skip+1)); continue; }
+  status=$(jq -r '.[0].status' <<<"$st")
+  owner=$(jq -r '.[0].assignee // empty' <<<"$st"); actor=$(actor_name "$owner") || { [[ -n $owner || $status != closed ]] || echo "skip $atom no assignee"; skip=$((skip+1)); continue; }
   owner=codex; [[ $actor == 'Claude Code' ]] && owner=claude
-  [[ $branch == "$owner/$atom" || $branch == "$owner/$atom"-* ]] || { skip=$((skip+1)); continue; }
-  [[ -z $agent || $(actor_name "$agent") == "$actor" ]] || { skip=$((skip+1)); continue; }
+  [[ $branch == "$owner/$atom" || $branch == "$owner/$atom"-* ]] || { [[ $status != closed ]] || echo "skip $atom branch $branch != $owner/$atom"; skip=$((skip+1)); continue; }
+  [[ -z $agent || $(actor_name "$agent") == "$actor" ]] || { [[ $status != closed ]] || echo "skip $atom agent mismatch"; skip=$((skip+1)); continue; }
   rf=$(receipt_file "$repo" "$atom" "$head")
   if [[ $dry_run == 1 && ( -f $rf || -f $rf.failed || -f $(inflight_file "$repo" "$atom") ) ]]; then
    echo "reconcile $wt $atom"; continue
@@ -363,13 +364,13 @@ scan_repo(){
     *) (BEADS_ACTOR=$actor; record_failure "$repo" "$atom" "$head" "$code") || failed=$((failed+1)); continue ;;
    esac
   fi
-  [[ $(jq -r '.[0].status' <<<"$st") == closed ]] || { skip=$((skip+1)); continue; }
+  [[ $status == closed ]] || { skip=$((skip+1)); continue; }
   dirty=$(git -C "$wt" status --porcelain=v1 --untracked-files=all) || { failed=$((failed+1)); continue; }
   [[ -z $dirty ]] || { echo "skip $atom dirty worktree"; skip=$((skip+1)); continue; }
   # Normalize legacy absolute and current worktree-relative TZ without escaping the worktree.
   [[ $tz == /* ]] || tz="$wt/$tz"
   tz="$(realpath -m "${tz%%#*}")#${tz#*#}"
-  [[ ${tz%%#*} == "$wt/"* && -f ${tz%%#*} ]] || { skip=$((skip+1)); continue; }
+  [[ ${tz%%#*} == "$wt/"* && -f ${tz%%#*} ]] || { [[ $status != closed ]] || echo "skip $atom tz not a file in worktree"; skip=$((skip+1)); continue; }
   if [[ $dry_run == 1 ]]; then echo "ready $wt $atom"; continue; fi
   (BEADS_ACTOR=$actor; deliver_one "$wt" "$atom" "$tz" "$head" "$repo" "$branch") && ok=$((ok+1)) || failed=$((failed+1))
  done < <(git -C "$repo" worktree list --porcelain)
@@ -447,6 +448,7 @@ do_watch() (
    break
   fi
   ev="$partial$ev"; partial=''
+  [[ $ev == \{* ]] || { echo "ship-post: bd: $ev" >&2; continue; }
   if [[ $(jq -r '.code // empty' <<<"$ev" 2>/dev/null) == events_journal_truncated ]]; then
    next=$(jq -er '.floor | select(type=="number" and .>0 and floor==.)' <<<"$ev") || die 'invalid retention boundary'
    queue_all || return 1
