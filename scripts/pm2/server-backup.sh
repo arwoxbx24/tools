@@ -47,7 +47,7 @@ send_telegram() { # text
 run_step() { # name command...
   local name="$1" rc
   shift
-  timeout 3600 "$@" >>"$LOG" 2>&1
+  timeout -k 30s 3600 "$@" >>"$LOG" 2>&1
   rc=$?
   log "$name rc=$rc"
   return "$rc"
@@ -145,11 +145,16 @@ set +a
 
 [ "${1:-}" = --drill ] && { drill; exit 0; }
 
+exec 9>"$STAGE/.server-backup.lock" || fail lock 1
+if ! flock -n 9; then
+  log "backup already running; duplicate invocation skipped"
+  exit 0
+fi
+
 # Снимок cron и свежий docker-бэкап.
 crontab -l >"$STAGE/crontab-root.txt" 2>>"$LOG" || :
 stage_manifests
 stage_host_dumps
-LATEST_SNAP=$(ls -1 /root/backups/docker 2>/dev/null | sort | tail -1)
 
 curl -s --max-time 10 -o /dev/null https://storage.yandexcloud.net
 preflight_rc=$?
@@ -171,6 +176,12 @@ else
   config_rc=0
 fi
 
+# One scheduler: produce Docker dumps before the same server snapshot.
+run_step docker-stage bash /root/workspaces/tools/scripts/pm2/docker-backup.sh
+docker_rc=$?
+# Preserve the ordinary server backup even if fresh Docker staging fails.
+[ "$docker_rc" -eq 0 ] || log "Docker staging failed; uploading prior published archives"
+
 paths=(
   /root/workspaces /root/.claude /root/.config
   /root/.pm2 /root/.codex
@@ -185,7 +196,19 @@ paths=(
   /root/actions-runner-2/.runner /home/claude /home/gitmirror/repos /home/gitmirror/archived-repos
 )
 paths+=(/root/.tmux*)
-[ -n "$LATEST_SNAP" ] && paths+=("/root/backups/docker/$LATEST_SNAP")
+# Migrate historical archives once; normal runs include only the latest dump.
+# Hidden incomplete dumps are excluded; local retention requires restore proof.
+docker_snapshots=()
+for docker_snapshot in /root/backups/docker/20*; do
+  [ -d "$docker_snapshot" ] && [ ! -L "$docker_snapshot" ] && docker_snapshots+=("$docker_snapshot")
+done
+if [ "${#docker_snapshots[@]}" -gt 0 ]; then
+  if [ "${BK_DOCKER_MIGRATE:-0}" = 1 ]; then
+    paths+=("${docker_snapshots[@]}")
+  else
+    paths+=("$(printf '%s\n' "${docker_snapshots[@]}" | LC_ALL=C sort | tail -1)")
+  fi
+fi
 
 backup_paths=()
 for path in "${paths[@]}"; do
@@ -211,8 +234,7 @@ run_step backup "${NICE_PREFIX[@]}" "$RESTIC" backup --tag server --group-by hos
   --read-concurrency 1 --limit-upload "${BK_LIMIT_UPLOAD:-5120}" --retry-lock 30m \
   "${backup_paths[@]}"
 backup_rc=$?
-case "$backup_rc" in 0|3) ;; *) fail backup "$backup_rc" ;; esac
-date +%s >"$LAST_OK"
+case "$backup_rc" in 0) ;; *) fail backup "$backup_rc" ;; esac
 
 # Сверка числа bare-репозиториев зеркала в S3 с локальным каталогом.
 mirror_local=$(ls -d "$BK_MIRROR_DIR"/*.git 2>/dev/null | wc -l)
@@ -260,7 +282,9 @@ printf '%s\n' "$stats_output" >>"$LOG"
 log "stats rc=$stats_rc"
 stats_size=$(printf '%s\n' "$stats_output" | awk -F': ' '/Total Size:/ {print $2; exit}')
 case "$stats_rc" in 0|3) ;; *) fail stats "$stats_rc" ;; esac
-log "SUMMARY backup_rc=$backup_rc forget_rc=$forget_rc check_rc=$check_rc stats=${stats_size:-unknown}"
+log "SUMMARY docker_rc=$docker_rc backup_rc=$backup_rc forget_rc=$forget_rc check_rc=$check_rc stats=${stats_size:-unknown}"
+[ "$docker_rc" -eq 0 ] || fail docker-stage "$docker_rc"
+date +%s >"$LAST_OK"
 if [ "$(date +%u)" = 7 ]; then
   send_telegram "✅ server-backup: неделя ок, snapshot latest, size ${stats_size:-unknown}, drill ok"
 fi

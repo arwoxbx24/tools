@@ -1,6 +1,22 @@
 # ТЗ: existing disk cleanup, owner scope correction
 
-## U2 — authoritative current scope
+## U3 — owner correction and two-cycle independent review
+
+The owner's current request supersedes U2: modify the existing S3 script to include compressed Docker backups, then disable the independent Docker backup job. No duplicate scripts or paid external executors. The owner now requires explicit confirmation before production changes, uploads, or deletions; all edits below are worktree preparation only.
+
+Decision: one existing `server-backup` scheduler invokes the existing `docker-backup.sh` producer, then uploads its compressed archives with the ordinary server snapshot. Named volumes are not direct inputs of the primary backup, so removing the producer would remove their coverage. The standalone `docker-backup` ecosystem entry is removed from the draft configuration; live PM2 remains unchanged.
+
+Normal capture includes the latest published Docker directory. One-time `BK_DOCKER_MIGRATE=1` includes all inventoried published directories. Hidden incomplete output is not a published snapshot. Local historical retention remains a separate, unimplemented cleanup gate; do not claim that this draft frees space or bounds retention. The existing S3 policy retains 14 daily server snapshots, not indefinite historical archive retention.
+
+Three independent native reviewers covered six requested roles in two cycles. Findings addressed: producer failure no longer prevents ordinary S3 upload; degraded completion returns failure without advancing LAST_OK; pipeline failures propagate; fatal tar failures and failed volume enumeration are rejected; gzip integrity is checked before no-clobber publication; concurrent invocations use locks; subprocess timeouts have a 30-second kill-after bound. This does not prove container-side command termination or database recovery. Pre-upload local archive deletion is removed.
+
+Actual duplicate coverage: `/data/minio` is included directly by server-backup; the existing restore drill on 2026-10-06 succeeded, rc0, 550M. Its redundant bindmount archive call is removed. The assumed nginx path `/root/nginx-proxy-manager` failed restore because that path was missing. Docker metadata instead locates Nginx Proxy Manager's bind mounts at `/root/workspaces/system/services/proxy-manager/data` and `letsencrypt`, within the main `/root/workspaces` input. Their restore is not yet proved; the old fallback call remains. No client or credential contents were inspected.
+
+Acceptance after owner confirmation: deploy the exact reviewed scripts; disable the single old PM2 registration and verify one scheduler; run the migration once and record snapshot ID and archive inventory; restore archived objects and compare sizes/SHA-256 with originals (zero missing/mismatched files); validate relevant logical dumps independently before claiming database recovery. Only then apply an explicitly approved local retention/deletion list, retaining one complete local snapshot. Measure actual `df -B1 /` delta; do not substitute a promised 15 GiB for evidence. Existing service/container inventory must remain unchanged.
+
+Rollback: restore only this atom's script/configuration changes; retain existing S3 snapshots and local archives. Do not reactivate legacy pre-upload deletion. Upload, live PM2 transition, whole Docker restore, and local cleanup have not been executed by this draft.
+
+## U2 — previous bounded scope
 
 The owner narrowed execution to improving the existing cleanup script, with no duplicate scripts, renaming, new tests, paid runs or new executors. This section supersedes the earlier implementation steps below. The unshipped changes to `ecosystem.config.js` and `scripts/pm2/docker-backup.sh` have been reverted in this task's worktree; production was not changed.
 

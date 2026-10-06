@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set +e
+set -o pipefail
 
 # Docker Backup Script
 # Backs up all PostgreSQL, MySQL databases and Docker volumes/bind mounts
 # FMEA-driven design with comprehensive error handling
 
 BACKUP_ROOT="/root/backups/docker"
-KEEP_SNAPSHOTS=4
 LOG_FILE="/root/workspaces/system/tools/scripts/logs/docker-backup.log"
 ALERT_FILE="/root/workspaces/system/tools/scripts/data/backup-alert.txt"
 MIN_FREE_SPACE_GB=1
@@ -45,16 +45,16 @@ if [ "$EUID" -ne 0 ]; then
     exit 2
 fi
 
-# FMEA Mitigation: Rotate old backups BEFORE creating new ones (RPN 18)
-log "Rotating old backups (keeping newest $KEEP_SNAPSHOTS)"
-ls -1d "$BACKUP_ROOT"/20* 2>/dev/null | sort | head -n -"$KEEP_SNAPSHOTS" | while IFS= read -r old_backup; do
-    rm -rf "$old_backup"
-    log "Removed: $(basename "$old_backup")"
-done
-
-# Create timestamped backup directory
-BACKUP_DIR="$BACKUP_ROOT/$(date '+%Y-%m-%d_%H')"
-mkdir -p "$BACKUP_DIR"
+# Never rotate local archives before their offsite copy and restore are proved.
+exec 8>"$BACKUP_ROOT/.docker-backup.lock" || exit 2
+flock -n 8 || { log "ERROR: Docker staging already running"; exit 1; }
+# Publish a complete directory only; interrupted dumps stay hidden.
+FINAL_BACKUP_DIR="$BACKUP_ROOT/$(date '+%Y-%m-%d_%H%M%S')"
+if [ -e "$FINAL_BACKUP_DIR" ] || [ -L "$FINAL_BACKUP_DIR" ]; then
+    log "ERROR: Snapshot destination already exists"
+    exit 2
+fi
+BACKUP_DIR=$(mktemp -d "$BACKUP_ROOT/.incomplete-XXXXXX") || exit 2
 log "Backup directory: $BACKUP_DIR"
 
 # Function: Check if container is running
@@ -89,7 +89,7 @@ backup_postgres() {
     fi
 
     # FMEA Mitigation: Timeout to prevent hangs (RPN 98)
-    timeout 300s docker exec "$container" sh -c "PGPASSWORD='$db_password' pg_dump -U $db_user $db_name" 2>>"$LOG_FILE" | gzip > "$output_file"
+    timeout -k 30s 300s docker exec "$container" sh -c "PGPASSWORD='$db_password' pg_dump -U $db_user $db_name" 2>>"$LOG_FILE" | gzip > "$output_file"
 
     local result=$?
     if [ $result -eq 0 ] && [ -f "$output_file" ]; then
@@ -131,7 +131,7 @@ backup_mysql() {
     fi
 
     # FMEA Mitigation: Timeout to prevent hangs (RPN 98)
-    timeout 300s docker exec "$container" sh -c "command -v mariadb-dump >/dev/null && exec mariadb-dump -u $db_user -p'$db_password' $db_name || exec mysqldump -u $db_user -p'$db_password' $db_name" 2>>"$LOG_FILE" | gzip > "$output_file"
+    timeout -k 30s 300s docker exec "$container" sh -c "command -v mariadb-dump >/dev/null && exec mariadb-dump -u $db_user -p'$db_password' $db_name || exec mysqldump -u $db_user -p'$db_password' $db_name" 2>>"$LOG_FILE" | gzip > "$output_file"
 
     local result=$?
     if [ $result -eq 0 ] && [ -f "$output_file" ]; then
@@ -173,9 +173,9 @@ backup_mongo() {
 
     # FMEA Mitigation: Timeout to prevent hangs (RPN 98)
     if [ -n "$db_user" ] && [ -n "$db_password" ]; then
-        timeout 300s docker exec "$container" mongodump --archive --gzip -u "$db_user" -p "$db_password" --authenticationDatabase admin > "$output_file" 2>>"$LOG_FILE"
+        timeout -k 30s 300s docker exec "$container" mongodump --archive --gzip -u "$db_user" -p "$db_password" --authenticationDatabase admin > "$output_file" 2>>"$LOG_FILE"
     else
-        timeout 300s docker exec "$container" mongodump --archive --gzip > "$output_file" 2>>"$LOG_FILE"
+        timeout -k 30s 300s docker exec "$container" mongodump --archive --gzip > "$output_file" 2>>"$LOG_FILE"
     fi
 
     local result=$?
@@ -210,18 +210,18 @@ backup_volume() {
     log "Backing up volume: $volume_name"
 
     if [ ! -d "$volume_path" ]; then
-        log "WARNING: Volume path does not exist: $volume_path, skipping"
-        ((WARNINGS++))
+        log "ERROR: Volume path does not exist: $volume_path"
+        ((ERRORS++))
         return 1
     fi
 
     # FMEA Mitigation: Timeout to prevent hangs (RPN 98)
-    timeout 300s tar -czf "$output_file" -C "$volume_path" . 2>>"$LOG_FILE"
+    timeout -k 30s 300s tar -czf "$output_file" -C "$volume_path" . 2>>"$LOG_FILE"
 
     local result=$?
     # tar exit code 1 = some files differ (changed during read, common for active services)
-    # tar exit code 2 = fatal error (but archive may still be usable)
-    if [ $result -eq 0 ] || [ $result -eq 1 ] || [ $result -eq 2 ]; then
+    # tar exit code 2 is fatal: never publish it as a successful archive.
+    if [ $result -eq 0 ] || [ $result -eq 1 ]; then
         if [ -f "$output_file" ]; then
             local size=$(stat -f%z "$output_file" 2>/dev/null || stat -c%s "$output_file" 2>/dev/null)
             # FMEA Mitigation: Verify backup not empty (RPN 80)
@@ -265,12 +265,12 @@ backup_bindmount() {
     fi
 
     # FMEA Mitigation: Timeout to prevent hangs (RPN 98)
-    timeout 300s tar -czf "$output_file" -C "$(dirname "$mount_path")" "$(basename "$mount_path")" 2>>"$LOG_FILE"
+    timeout -k 30s 300s tar -czf "$output_file" -C "$(dirname "$mount_path")" "$(basename "$mount_path")" 2>>"$LOG_FILE"
 
     local result=$?
     # tar exit code 1 = some files differ (changed during read, common for active services)
-    # tar exit code 2 = fatal error (but archive may still be usable)
-    if [ $result -eq 0 ] || [ $result -eq 1 ] || [ $result -eq 2 ]; then
+    # tar exit code 2 is fatal: never publish it as a successful archive.
+    if [ $result -eq 0 ] || [ $result -eq 1 ]; then
         if [ -f "$output_file" ]; then
             local size=$(stat -f%z "$output_file" 2>/dev/null || stat -c%s "$output_file" 2>/dev/null)
             # FMEA Mitigation: Verify backup not empty (RPN 80)
@@ -358,7 +358,12 @@ fi
 
 # Docker Volumes
 log "--- Starting Docker volume backups ---"
-for v in $(docker volume ls -q); do
+VOLUMES=$(docker volume ls -q)
+if [ "$?" -ne 0 ]; then
+    log "ERROR: Cannot enumerate Docker volumes"
+    ((ERRORS++))
+fi
+for v in $VOLUMES; do
     if [[ "$v" == *_cache ]]; then
         log "Skipping cache volume: $v"
     else
@@ -368,7 +373,8 @@ done
 
 # Bind Mounts
 log "--- Starting bind mount backups ---"
-backup_bindmount "/data/minio"
+# /data/minio is directly backed up by server-backup; its S3 restore is proved.
+# Keep the nginx fallback until its actual direct-path recovery is proved.
 backup_bindmount "/root/nginx-proxy-manager"
 
 # ========== FINAL SUMMARY ==========
@@ -396,6 +402,18 @@ if [ $ERRORS -gt 0 ]; then
         exit 1
     fi
 else
+    for archive in "$BACKUP_DIR"/*.gz; do
+        if [ ! -f "$archive" ] || ! gzip -t -- "$archive" 2>>"$LOG_FILE"; then
+            log "ERROR: Archive integrity check failed; incomplete directory retained"
+            exit 2
+        fi
+    done
+    if ! mv -T -n -- "$BACKUP_DIR" "$FINAL_BACKUP_DIR" || [ -d "$BACKUP_DIR" ]; then
+        log "ERROR: Snapshot publication failed; incomplete directory retained"
+        exit 2
+    fi
+    BACKUP_DIR="$FINAL_BACKUP_DIR"
+    log "Published snapshot: $BACKUP_DIR"
     log "SUCCESS: All backups completed successfully"
     exit 0
 fi
