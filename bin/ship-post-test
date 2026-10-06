@@ -56,7 +56,8 @@ case ${1:-} in
 show) [[ ! -f $SHIP_POST_TEST_DIR/bd-down ]] || exit 1
  jq -n --arg status "$(cat "$SHIP_POST_TEST_DIR/status" 2>/dev/null || echo "${BD_STATUS:-in_progress}")" --arg assignee "${BD_ASSIGNEE-Codex}" --arg notes "$(cat "$SHIP_POST_TEST_DIR/bd.notes" 2>/dev/null || true)" '[{status:$status,assignee:$assignee,notes:$notes}]' ;;
 info) printf '{"database_path":"%s"}\n' "$SHIP_POST_TEST_DIR/repo/.git" ;;
-events) cat "$SHIP_POST_TEST_DIR/events"; [[ ${EVENT_STREAM_FAIL:-0} == 1 ]] && exit 7
+events) [[ -z ${EVENT_STDERR:-} ]] || printf '%s\n' "$EVENT_STDERR" >&2
+ cat "$SHIP_POST_TEST_DIR/events"; [[ ${EVENT_STREAM_FAIL:-0} == 1 ]] && exit 7
  if [[ ${PARTIAL_EVENT:-0} == 1 ]]; then
   printf '{"seq":'; /bin/sleep 2; printf '%s\n' '1,"op":"update","issue":{"status":"in_progress"}}'
  fi
@@ -225,9 +226,13 @@ test_recovery(){
 test_stream_errors(){
  local out rc
  setup_submit malformed codex/dcfg-malformed.1
- printf 'broken-json\n' > "$d/events"
+ printf '%s\n' '{"broken":true}' > "$d/events"
  out=$(export BEADS_ACTOR=Codex TEST_TIMEOUT=3; run_tool "$d" --watch 2>&1); rc=$?
  [[ $rc == 1 && $out == *'malformed journal record'* && ! -f $d/state/cursor.json ]] && pass malformed_no_ack || fail malformed_no_ack "$out rc=$rc"
+ setup_submit bd_stderr codex/dcfg-bd-stderr.1
+ printf '%s\n' '{"seq":1,"op":"update","issue":{"status":"in_progress"}}' > "$d/events"
+ out=$(export BEADS_ACTOR=Codex EVENT_STDERR='beads: auto-export warning' TEST_TIMEOUT=3; run_tool "$d" --watch 2>&1); rc=$?
+ [[ $out == *'ship-post: bd: beads: auto-export warning'* && $out != *'malformed journal record'* && $(jq -r .seq "$d/state/cursor.json") == 1 ]] && pass bd_stderr_skipped || fail bd_stderr_skipped "$out rc=$rc"
  setup_submit truncated codex/dcfg-truncated.1
  printf '%s\n' '{"code":"events_journal_truncated","floor":9,"head":10}' > "$d/events"
  out=$(export BEADS_ACTOR=Codex TEST_TIMEOUT=3; run_tool "$d" --watch 2>&1); rc=$?
@@ -238,6 +243,14 @@ test_stream_errors(){
  jq '.identity="different-ledger"' "$d/state/cursor.json" > "$d/state/x"; mv "$d/state/x" "$d/state/cursor.json"
  out=$(export BEADS_ACTOR=Codex TEST_TIMEOUT=3; run_tool "$d" --watch 2>&1); rc=$?
  [[ $rc == 1 && $out == *'ledger identity changed'* ]] && pass identity_refused || fail identity_refused "$out rc=$rc"
+}
+
+test_closed_skip_reason(){
+ local out rc
+ setup_submit closed_branch codex/not-the-atom
+ commit_candidate dcfg-closed-branch.1
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex; run_tool "$d" 2>&1); rc=$?
+ [[ $rc == 0 && $out == *'skip dcfg-closed-branch.1 branch codex/not-the-atom != codex/dcfg-closed-branch.1'* ]] && pass closed_branch_skip_reason || fail closed_branch_skip_reason "$out rc=$rc"
 }
 
 test_concurrent_repositories(){
@@ -326,10 +339,10 @@ MOCKGH
  h=$(git -C "$wt" rev-parse HEAD)
  git -C "$wt" config core.hooksPath /root/workspaces/tools/git-hooks
  printf foreign > "$wt/foreign"
- out=$(env HOME="$d/home" PATH="$d/bin:/usr/bin:/bin" SHIP_POST_TEST_DIR="$d" BEADS_ACTOR=Codex GA_LOG_DIR="$d/logs" "$d/bin/ship-real" "$wt" --atom dcfg-pin.1 --tz "$wt/$tz#U2" --handover --expected-head "$h" 2>&1); rc=$?
+ out=$(env HOME="$d/home" PATH="$d/bin:/usr/bin:/bin" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null SHIP_POST_TEST_DIR="$d" BEADS_ACTOR=Codex GA_LOG_DIR="$d/logs" GA_WT_ROOT="$d/.worktrees" "$d/bin/ship-real" "$wt" --atom dcfg-pin.1 --tz "$wt/$tz#U2" --handover --expected-head "$h" 2>&1); rc=$?
  [[ $rc == 10 && $out == *'accepted HEAD or worktree changed'* && $(git -C "$wt" rev-parse HEAD) == "$h" && -f $wt/foreign ]] && pass accepted_dirty_rejected || fail accepted_dirty_rejected "$out rc=$rc"
  rm "$wt/foreign"
- out=$(env HOME="$d/home" PATH="$d/bin:/usr/bin:/bin" SHIP_POST_TEST_DIR="$d" BEADS_ACTOR=Codex BD_STATUS=closed GA_LOG_DIR="$d/logs" "$d/bin/ship-real" "$wt" --atom dcfg-pin.1 --tz "$wt/$tz#U2" --handover --expected-head "$h" 2>&1); rc=$?
+ out=$(env HOME="$d/home" PATH="$d/bin:/usr/bin:/bin" GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null SHIP_POST_TEST_DIR="$d" BEADS_ACTOR=Codex BD_STATUS=closed GA_LOG_DIR="$d/logs" GA_WT_ROOT="$d/.worktrees" "$d/bin/ship-real" "$wt" --atom dcfg-pin.1 --tz "$wt/$tz#U2" --handover --expected-head "$h" 2>&1); rc=$?
  after=$(git --git-dir="$d/origin.git" rev-parse refs/heads/codex/dcfg-pin.1 2>/dev/null)
  [[ $rc == 0 && $after == "$h" ]] && grep -q -- "--match-head-commit $h" "$d/gh.calls" && pass accepted_exact_head_delivery || fail accepted_exact_head_delivery "$out rc=$rc remote=$after"
 }
@@ -367,7 +380,7 @@ if [[ ${SHIP_POST_TEST_GROUP:-all} == review ]]; then
 elif [[ ${SHIP_POST_TEST_GROUP:-all} == recovery ]]; then
  test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery
 else
- test_dryrun_mocks; test_valid_actors; test_rejections; test_hook_and_retry; test_closed_retry; test_delivery; test_watch; test_recovery; test_stream_errors; test_concurrent_repositories; test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery
+ test_dryrun_mocks; test_valid_actors; test_rejections; test_hook_and_retry; test_closed_retry; test_delivery; test_watch; test_recovery; test_stream_errors; test_closed_skip_reason; test_concurrent_repositories; test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery
 fi
 echo "checks=$checks failures=$failures"
 [[ $failures == 0 ]]

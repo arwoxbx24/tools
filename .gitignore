@@ -4,6 +4,8 @@ __pycache__/
 vendor/
 # bin/ — инструменты агентов (конституция 10.09: плоско tools/bin/), под git; игнорируются только бинарники
 bin/restic
+# временные каталоги bin/ship-post-test (mktemp в bin/), остаются при прерванном прогоне
+bin/.ship-post-test.*/
 *.log
 logs/
 data/
