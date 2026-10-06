@@ -2,7 +2,7 @@
 
 **Feature Branch**: task-owned linked worktree, dcfg-qjj5x
 **Created**: 2026-10-06
-**Status**: Execution requested; runtime acceptance pending
+**Status**: Safe execution authorized without repeated permission questions; runtime acceptance pending
 **Input**: Owner: «Найди скрипт, который отвечает за копирование в S3-хранилище. Добавь в него бэкапы Docker и все, а потом бэкапы Docker отключи»; «да делай строго через ТЗ спек + задачи жестко».
 **Existing TZ**: ../../docs/tz/2026-10-06-dcfg-qjj5x-backup-retention.md#U3
 **Beads parent**: dcfg-qjj5x
@@ -22,7 +22,7 @@ The owner receives the server backup and compressed Docker data through the exis
 
 ### User Story 2 - Recover existing local archives (Priority: P1)
 
-The owner can recover accumulated archives from S3 before approving removal of local copies.
+The owner can recover accumulated archives from S3 before automatic removal of authorized local copies.
 
 **Why this priority**: Path inclusion alone does not prove that an archive exists offsite or is recoverable.
 **Independent Test**: The inventoried compressed files are restored and compared with originals: N/N matching, zero missing or mismatched files.
@@ -33,7 +33,7 @@ The owner can recover accumulated archives from S3 before approving removal of l
 
 ### User Story 3 - Release space without backup loss (Priority: P2)
 
-The owner retains one complete local snapshot after offsite recovery is proved and a precise deletion list is approved.
+The owner retains one complete local snapshot after offsite recovery is proved and exact host authorization is present.
 
 **Why this priority**: Repeated staging must not silently refill the disk.
 **Independent Test**: Approved duplicate paths are absent, one complete snapshot remains, allocated-byte and filesystem measurements are recorded.
@@ -56,7 +56,7 @@ The owner retains one complete local snapshot after offsite recovery is proved a
 - **FR-001**: Reuse the existing S3 uploader, repository, credentials mechanism and backup schedule. Create no new executable or independent scheduler.
 - **FR-002**: Preserve logical database dumps and named-volume archive coverage when disabling the independent Docker schedule.
 - **FR-003**: Publish only output whose production and compressed-stream checks succeeded; exclude hidden incomplete output.
-- **FR-004**: Upload all inventoried published archives once; ordinary runs include the latest complete Docker snapshot.
+- **FR-004**: Upload all retained published archives in the same snapshot before proof-gated cleanup; after successful retention ordinary runs contain the previous and newly produced complete snapshots only.
 - **FR-005**: Preserve ordinary server uploads when fresh Docker staging fails; report degradation without advancing full-success evidence.
 - **FR-006**: Record snapshot identity and demonstrate exact restored compressed-file equality before local deletion.
 - **FR-007**: Remove only precisely approved local copies, retain one complete local snapshot, and establish bounded future local retention after recovery proof.

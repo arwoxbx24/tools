@@ -4,7 +4,7 @@
 
 ## Summary
 
-Keep server-backup.sh as the only scheduled S3 orchestration. It invokes the existing docker-backup.sh producer before capturing archives. Remove only the separate Docker ecosystem entry. Preserve current S3 source paths, credential loading, repository and retention. One-time historical migration differs from steady-state capture.
+Keep server-backup.sh as the only scheduled S3 orchestration. It invokes the existing docker-backup.sh producer before capturing archives. Remove only the separate Docker ecosystem entry. Preserve current S3 source paths, credential loading, repository and retention. Capture retained directories before cleanup: initial history migration, then the prior plus new snapshot after successful retention. Pin the full offsite snapshot ID and restore/compare all compressed files before any deletion; reserve target capacity and preserve the exact host authorization gate.
 
 ## Technical Context
 
@@ -46,4 +46,4 @@ Rollback restores only the owned source/configuration changes through normal del
 
 ## Current Evidence and Gaps
 
-Local implementation baseline: 8b99dfe; syntax checks passed; three real independent reviewers covered six roles in two cycles. MinIO restore rc0, 550M. Actual proxy-manager bind mounts are under /root/workspaces/system/services/proxy-manager, within the primary workspace input. Whole Docker archive recovery, live schedule transition and local retention are not proved. Local retention has not yet been implemented; it is a required task, not an accepted omission.
+Local implementation baseline: 8b99dfe; syntax checks passed; three real independent reviewers covered six roles in two cycles. MinIO restore rc0, 550M. Actual proxy-manager bind mounts are under /root/workspaces/system/services/proxy-manager, within the primary workspace input. Proof-gated local retention is implemented in the existing uploader; actual archive recovery, live schedule transition and space release still need runtime evidence. No deletion is attempted without the unchanged host gate.

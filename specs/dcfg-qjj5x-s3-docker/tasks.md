@@ -27,7 +27,7 @@
 
 ## Phase 5: US3 — Bounded local retention
 
-- [ ] T010 [US3] Implement proof-gated bounded local retention in the existing scripts/pm2/server-backup.sh only; no second cleanup script. Preserve originals on missing receipt, recovery failure, expiry or absent exact host authorization.
+- [x] T010 [US3] Implement proof-gated bounded local retention in the existing scripts/pm2/server-backup.sh only; no second cleanup script. Preserve originals on missing receipt, recovery failure, missing snapshot or absent exact host authorization. Evidence: actual-function guard probes 8/8 and targeted review corrections; runtime deletion remains T011.
 - [ ] T011 [US3] Apply only the approved exact deletion list under /root/backups/docker using the existing authorized cleanup route; record one retained complete snapshot, allocated bytes removed, df delta and unchanged active services in the existing TZ.
 
 ## Phase 6: Completion

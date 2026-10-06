@@ -663,23 +663,10 @@ clean_dir() { # base mtime class
 }
 
 cleanup_cache() { # только доказанные заменимые кэши при soft и выше
-  local p hash busy busy_rc
   clean_dir /root/.cache/pip     1 cache
   clean_dir /root/.npm/_cacache  1 cache
   clean_dir /root/.nvm/.cache    1 cache
   clean_dir /var/lib/snapd/cache 1 cache
-
-  # ponytail: only the owner-approved library hash; validate provenance before adding a new build.
-  if command -v lsof >/dev/null 2>&1; then
-    while IFS= read -r -d '' p; do
-      hash=$(sha256sum -- "$p" 2>/dev/null) || continue
-      [ "${hash%% *}" = 977a96fc9911edd8cabacb098e90229c6a2dde7384f3291e5beccaf1ee93fef5 ] || continue
-      busy_rc=0
-      busy=$(lsof -t -- "$p" 2>&1) || busy_rc=$?
-      [ "$busy_rc" -eq 1 ] && [ -z "$busy" ] || continue
-      handle cache < <(printf '%s\0' "$p")
-    done < <(find -P /tmp -maxdepth 1 -type f -user root -name '.bcdb*.so' -mtime +1 -print0 2>/dev/null)
-  fi
 
   # _npx содержит установленный код; browser/session/project data не кандидаты.
   # systemd-tmpfiles-clean.timer владеет возрастом /tmp и исключениями tmux.

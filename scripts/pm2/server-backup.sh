@@ -128,6 +128,105 @@ drill() { # проба: каталог ~100 МБ из снимка server в mkt
   [ "$rc" -eq 0 ] || fail drill "$rc"
 }
 
+# Capture only flat, regular compressed archives. Recheck before any deletion.
+docker_manifest() {
+  local dir="$1" file size hash count=0
+  [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
+  for file in "$dir"/* "$dir"/.[!.]* "$dir"/..?*; do
+    [ -e "$file" ] || [ -L "$file" ] || continue
+    [ -f "$file" ] && [ ! -L "$file" ] || return 1
+    [[ ${file##*/} =~ ^[A-Za-z0-9_.-]+\.gz$ ]] || return 1
+    size=$(stat -c%s -- "$file") || return 1
+    hash=$(sha256sum -- "$file") || return 1
+    printf '%s\t%s\t%s\n' "${file##*/}" "$size" "${hash%% *}"
+    count=$((count + 1))
+  done
+  [ "$count" -gt 0 ]
+}
+
+docker_recovery_and_retention() {
+  local snapshot="$1" proof="$2" dir name target before after restored count=0 verified=0 kept
+  local gate=/root/.codex/DELETE-APPROVED.json cleanup_rc=0 approved=0 required available mode entry
+  kept=${docker_snapshots[${#docker_snapshots[@]}-1]}
+  mkdir -p "$STAGE/docker-receipts" || return 1
+  # Verify all directories before deleting any: a partial drill grants no cleanup.
+  for dir in "${docker_snapshots[@]}"; do
+    name=${dir##*/}
+    before="$proof/$name.before"
+    after="$proof/$name.after"
+    restored="$proof/$name.restored"
+    required=$(awk -F '\t' '{sum += $2} END {printf "%.0f", sum + 268435456}' "$before") || return 1
+    available=$(df -B1 --output=avail /tmp | tail -1 | tr -d '[:space:]') || return 1
+    [[ $available =~ ^[0-9]+$ && $required =~ ^[0-9]+$ ]] || return 1
+    if [ "$available" -lt "$required" ]; then
+      log "docker-recovery insufficient space: required=$required available=$available; originals retained"
+      return 1
+    fi
+    target=$(mktemp -d /tmp/restic-docker-drill.XXXXXX) || return 1
+    if ! run_step docker-restore "${NICE_PREFIX[@]}" "$RESTIC" restore "$snapshot" \
+      --target "$target" --include "$dir" --verify --retry-lock 30m; then
+      rm -rf -- "$target"
+      return 1
+    fi
+    if ! docker_manifest "$target$dir" >"$restored" || ! docker_manifest "$dir" >"$after" \
+      || ! cmp -s "$before" "$after" || ! cmp -s "$before" "$restored"; then
+      log "docker-recovery mismatch: $name; originals retained"
+      rm -rf -- "$target"
+      return 1
+    fi
+    count=$(wc -l <"$before")
+    verified=$((verified + count))
+    rm -rf -- "$target"
+    log "docker-recovery snapshot=$snapshot directory=$name matching=$count missing=0 mismatch=0"
+    cp -- "$before" "$STAGE/docker-receipts/$name.sha256.tsv" || return 1
+    printf '%s\n' "$snapshot" >"$STAGE/docker-receipts/$name.snapshot" || return 1
+  done
+  log "docker-recovery TOTAL snapshot=$snapshot matching=$verified missing=0 mismatch=0"
+  [ "${#docker_snapshots[@]}" -gt 1 ] || return 0
+  # The owner-controlled host gate is never created or changed by this script.
+  # Accepted gate contract: paths is an array of exact canonical directory paths.
+  if [ -f "$gate" ] && [ ! -L "$gate" ] && [ "$(stat -c%u "$gate")" = 0 ]; then
+    approved=1
+    # Reject extended ACLs as well as group/world-write access; fail closed.
+    for entry in /root /root/.codex "$gate"; do
+      [ ! -L "$entry" ] && [ "$(stat -c%u "$entry")" = 0 ] || approved=0
+      mode=$(stat -c%a -- "$entry") || return 1
+      [ "$((8#$mode & 0022))" -eq 0 ] || approved=0
+      python3 - "$entry" <<'PY' || approved=0
+import os, sys
+try:
+    attrs = os.listxattr(sys.argv[1], follow_symlinks=False)
+    sys.exit(any(a in attrs for a in ("system.posix_acl_access", "system.posix_acl_default")))
+except OSError:
+    sys.exit(1)
+PY
+    done
+    for dir in "${docker_snapshots[@]}"; do
+      [ "$dir" = "$kept" ] && continue
+      jq -e --arg path "$dir" '.paths | type == "array" and index($path) != null' "$gate" >/dev/null 2>&1 \
+        || approved=0
+    done
+  fi
+  if [ "$approved" -ne 1 ]; then
+    log "docker-retention refused: exact owner-controlled DELETE-APPROVED.json paths absent; originals retained"
+    return 4
+  fi
+  for dir in "${docker_snapshots[@]}"; do
+    [ "$dir" = "$kept" ] && continue
+    [ "$(realpath -e -- "$dir")" = "$dir" ] && [ ! -L "$dir" ] || return 1
+    [[ $dir =~ ^/root/backups/docker/20[0-9]{2}-[0-9]{2}-[0-9]{2}_[0-9]{2,6}$ ]] || return 1
+    docker_manifest "$dir" >"$proof/delete-current" || return 1
+    cmp -s "$proof/${dir##*/}.before" "$proof/delete-current" || return 1
+    if ! rm -r --one-file-system -- "$dir"; then
+      cleanup_rc=1
+      log "docker-retention delete failed: ${dir##*/}"
+    else
+      log "docker-retention deleted=${dir##*/} snapshot=$snapshot kept=${kept##*/}"
+    fi
+  done
+  return "$cleanup_rc"
+}
+
 set -a
 # shellcheck disable=SC1090
 source "$S3_ENV"
@@ -182,6 +281,12 @@ docker_rc=$?
 # Preserve the ordinary server backup even if fresh Docker staging fails.
 [ "$docker_rc" -eq 0 ] || log "Docker staging failed; uploading prior published archives"
 
+# Hold the producer's existing lock through inventory, upload, recovery and cleanup.
+exec 8>/root/backups/docker/.docker-backup.lock || fail docker-lock 1
+flock -w 360 8 || fail docker-lock 1
+docker_proof=$(mktemp -d /tmp/restic-docker-proof.XXXXXX) || fail docker-inventory 1
+trap 'rm -rf -- "$docker_proof"' EXIT
+
 paths=(
   /root/workspaces /root/.claude /root/.config
   /root/.pm2 /root/.codex
@@ -196,18 +301,21 @@ paths=(
   /root/actions-runner-2/.runner /home/claude /home/gitmirror/repos /home/gitmirror/archived-repos
 )
 paths+=(/root/.tmux*)
-# Migrate historical archives once; normal runs include only the latest dump.
-# Hidden incomplete dumps are excluded; local retention requires restore proof.
+# Capture every retained published directory in the same snapshot before cleanup.
+# After successful retention only the prior and fresh local snapshots remain as inputs.
 docker_snapshots=()
 for docker_snapshot in /root/backups/docker/20*; do
   [ -d "$docker_snapshot" ] && [ ! -L "$docker_snapshot" ] && docker_snapshots+=("$docker_snapshot")
 done
 if [ "${#docker_snapshots[@]}" -gt 0 ]; then
-  if [ "${BK_DOCKER_MIGRATE:-0}" = 1 ]; then
-    paths+=("${docker_snapshots[@]}")
-  else
-    paths+=("$(printf '%s\n' "${docker_snapshots[@]}" | LC_ALL=C sort | tail -1)")
-  fi
+  paths+=("${docker_snapshots[@]}")
+  for docker_snapshot in "${docker_snapshots[@]}"; do
+    docker_manifest "$docker_snapshot" >"$docker_proof/${docker_snapshot##*/}.before" \
+      || fail docker-inventory 1
+  done
+else
+  docker_rc=1
+  log "Docker published archive inventory empty"
 fi
 
 backup_paths=()
@@ -217,7 +325,8 @@ done
 
 run_step unlock "${NICE_PREFIX[@]}" "$RESTIC" unlock --retry-lock 30m
 
-run_step backup "${NICE_PREFIX[@]}" "$RESTIC" backup --tag server --group-by host,tags --one-file-system \
+backup_json="$docker_proof/backup.jsonl"
+timeout -k 30s 3600 "${NICE_PREFIX[@]}" "$RESTIC" backup --json --tag server --group-by host,tags --one-file-system \
   --exclude-caches --exclude node_modules --exclude .venv --exclude venv \
   --exclude __pycache__ --exclude .cache --exclude .repowise \
   --exclude '*.pyc' --exclude /root/workspaces/system/archives --exclude /root/.pm2/logs \
@@ -232,9 +341,17 @@ run_step backup "${NICE_PREFIX[@]}" "$RESTIC" backup --tag server --group-by hos
   --exclude /root/.gemini/tmp --exclude /root/.kimi-code/bin --exclude /root/.kimi-code/cache \
   --exclude /root/.kimi-code/logs --exclude /root/.kimi-code/sessions --exclude /root/.kimi-code/search-index \
   --read-concurrency 1 --limit-upload "${BK_LIMIT_UPLOAD:-5120}" --retry-lock 30m \
-  "${backup_paths[@]}"
+  "${backup_paths[@]}" >"$backup_json" 2>>"$LOG"
 backup_rc=$?
+log "backup rc=$backup_rc"
 case "$backup_rc" in 0) ;; *) fail backup "$backup_rc" ;; esac
+snapshot_id=$(jq -er 'select(.message_type == "summary") | .snapshot_id | select(test("^[0-9a-f]{8,64}$"))' "$backup_json") \
+  || fail snapshot-receipt 1
+timeout -k 30s 3600 "${NICE_PREFIX[@]}" "$RESTIC" snapshots "$snapshot_id" --json --retry-lock 30m \
+  >"$docker_proof/snapshot.json" 2>>"$LOG" || fail snapshot-receipt 1
+snapshot_id=$(jq -er 'select(length == 1) | .[0].id | select(test("^[0-9a-f]{64}$"))' "$docker_proof/snapshot.json") \
+  || fail snapshot-receipt 1
+log "backup snapshot=$snapshot_id"
 
 # Сверка числа bare-репозиториев зеркала в S3 с локальным каталогом.
 mirror_local=$(ls -d "$BK_MIRROR_DIR"/*.git 2>/dev/null | wc -l)
@@ -284,6 +401,10 @@ stats_size=$(printf '%s\n' "$stats_output" | awk -F': ' '/Total Size:/ {print $2
 case "$stats_rc" in 0|3) ;; *) fail stats "$stats_rc" ;; esac
 log "SUMMARY docker_rc=$docker_rc backup_rc=$backup_rc forget_rc=$forget_rc check_rc=$check_rc stats=${stats_size:-unknown}"
 [ "$docker_rc" -eq 0 ] || fail docker-stage "$docker_rc"
+docker_recovery_and_retention "$snapshot_id" "$docker_proof"
+docker_retention_rc=$?
+log "docker-retention rc=$docker_retention_rc"
+[ "$docker_retention_rc" -eq 0 ] || fail docker-retention "$docker_retention_rc"
 date +%s >"$LAST_OK"
 if [ "$(date +%u)" = 7 ]; then
   send_telegram "✅ server-backup: неделя ок, snapshot latest, size ${stats_size:-unknown}, drill ok"
