@@ -1,103 +1,238 @@
 #!/usr/bin/env bash
-set -u
+set -uo pipefail
 
 bin=$(cd -- "$(dirname -- "$0")" && pwd)
-d=$(mktemp -d)
-trap 'rm -rf -- "$d"' EXIT
+root=$(mktemp -d "$bin/.ship-post-test.XXXXXX")
+trap 'rm -rf -- "$root"' EXIT
+checks=0 failures=0
+pass(){ checks=$((checks + 1)); echo "PASS $1"; }
+fail(){ checks=$((checks + 1)); failures=$((failures + 1)); echo "FAIL $1: $2"; }
+assert_rc(){ [[ $3 == "$2" ]] && pass "$1" || fail "$1" "rc=$3 want=$2: $4"; }
+assert_nonzero(){
+ local expected
+ case $1 in
+ 13) expected='worktree must be linked' ;; 14|15) expected='assignee must be' ;;
+ 16) expected='must match codex/' ;; 17) expected='invalid ТЗ path' ;;
+ 18) expected='ТЗ must be an existing file' ;; 19|20) expected='dirty or staged files outside' ;;
+ 21) expected='unknown BEADS_ACTOR' ;; 22) expected='invalid file path' ;;
+ 23) expected='commit failed' ;; 25) expected='bd close failed' ;; *) expected='ship-post:' ;;
+ esac
+ [[ $2 != 0 && $3 == *"$expected"* ]] && pass "$1" || fail "$1" "wrong rejection rc=$2 expected=$expected: $3"
+}
 
-tool="$bin/ship-post"
-ok=0
-
-pass() { echo "PASS $1"; ok=$((ok + 1)); }
-fail() { echo "FAIL $1: $2"; }
-
-git init -q --bare "$d/origin.git"
-git -C "$d/origin.git" symbolic-ref HEAD refs/heads/main
-git clone -q "$d/origin.git" "$d/repo"
-git -C "$d/repo" config user.email t@t
-git -C "$d/repo" config user.name t
-printf 'base\n' > "$d/repo/base.txt"
-git -C "$d/repo" add -A && git -C "$d/repo" commit -q -m base
-git -C "$d/repo" push -q origin main && git -C "$d/repo" fetch -q origin
-
-git -C "$d/repo" worktree add -q -b agent/x "$d/wt-a" origin/main
-printf 'a\n' >> "$d/wt-a/base.txt"
-git -C "$d/wt-a" add -A
-git -C "$d/wt-a" commit -q -m 'task: worktree a' \
-	--trailer 'ТЗ: docs/tz/TZ-TEST.md' --trailer 'Atom: dcfg-test.1' --trailer 'Agent: claude'
-
-git -C "$d/repo" worktree add -q -b agent/y "$d/wt-b" origin/main
-printf 'b\n' >> "$d/wt-b/base.txt"
-git -C "$d/wt-b" add -A
-git -C "$d/wt-b" commit -q -m 'task: worktree b' \
-	--trailer 'Atom: dcfg-test.2' --trailer 'Agent: claude'
-
-git -C "$d/repo" worktree add -q -b agent/z "$d/wt-c" origin/main
-printf 'c\n' >> "$d/wt-c/base.txt"
-git -C "$d/wt-c" add -A
-git -C "$d/wt-c" commit -q -m 'task: worktree c' \
-	--trailer 'ТЗ: docs/tz/TZ-TEST.md' --trailer 'Atom: dcfg-test-open' --trailer 'Agent: claude'
-
-git -C "$d/repo" worktree add -q -b agent/w "$d/wt-d" origin/main
-printf 'd\n' >> "$d/wt-d/base.txt"
-git -C "$d/wt-d" add -A
-git -C "$d/wt-d" commit -q -m 'task: worktree d' \
-	--trailer 'ТЗ: docs/tz/TZ-TEST.md' --trailer 'Atom: dcfg-test-merged' --trailer 'Agent: claude'
-
-mkdir -p "$d/bin" "$d/gh_matches/agent"
-
-cat > "$d/bin/ship" <<'EOF'
+make_repo(){
+	local d=$1
+	git init -q --bare "$d/origin.git"; git -C "$d/origin.git" symbolic-ref HEAD refs/heads/main
+	git clone -q "$d/origin.git" "$d/repo"; git -C "$d/repo" config user.email t@t; git -C "$d/repo" config user.name t
+	printf 'base\n' > "$d/repo/base.txt"; git -C "$d/repo" add -- base.txt; git -C "$d/repo" commit -q -m base
+	git -C "$d/repo" push -q origin main; git -C "$d/repo" fetch -q origin
+}
+make_worktree(){ git -C "$1/repo" worktree add -q -b "$3" "$1/$2" origin/main; }
+make_mocks(){
+	local d=$1; mkdir -p "$d/bin" "$d/home"; cp -f -- "$bin/ship-post" "$d/bin/ship-post"
+	cat > "$d/bin/ship" <<'MOCKSHIP'
 #!/usr/bin/env bash
-printf 'mock ship: %s\n' "$*"
-exit 0
-EOF
-chmod +x "$d/bin/ship"
-
-cat > "$d/bin/bd" <<'BDEOF'
+printf '%s|%s|%s\n' "${BEADS_ACTOR:-}" "$*" "$(git -C "$1" rev-parse HEAD)" >> "$SHIP_POST_TEST_DIR/ship.calls"
+[[ ${MOCK_SHIP_DELAY:-0} == 0 ]] || sleep "$MOCK_SHIP_DELAY"
+[[ ${MOCK_SHIP_RC:-0} == 0 ]] || exit "$MOCK_SHIP_RC"
+printf '%s\n' "$(git -C "$1" rev-parse HEAD)" >> "$SHIP_POST_TEST_DIR/merged"
+MOCKSHIP
+	cat > "$d/bin/gh" <<'MOCKGH'
 #!/usr/bin/env bash
-case $1 in
-	show)
-		case $2 in
-			dcfg-test.1|dcfg-test.2)       echo '[{"status":"closed"}]' ;;
-			dcfg-test-open)                echo '[{"status":"open"}]' ;;
-			dcfg-test-merged)              echo '[{"status":"closed"}]' ;;
-			*)                             echo '[{"status":"closed"}]' ;;
-		esac
-		;;
-	create) echo 'new-issue-999' ;;
-	reopen|add) ;;
+[[ ${MOCK_GH_FAIL:-0} == 0 ]] || exit 1
+if [[ $1 == repo ]]; then echo '{"isPrivate":true}'; exit; fi
+if [[ -s $SHIP_POST_TEST_DIR/merged ]]; then
+ jq -Rs '[split("\n")[] | select(length>0) | {headRefOid:.,state:"MERGED",url:"https://github.com/test/private/pull/1",mergeCommit:{oid:"merged-test"},statusCheckRollup:[]}]' "$SHIP_POST_TEST_DIR/merged"
+else echo '[]'; fi
+MOCKGH
+	printf '#!/usr/bin/env bash\nexit "${GITLEAKS_RC:-0}"\n' > "$d/bin/gitleaks"
+	cat > "$d/bin/bd" <<'EOF'
+#!/usr/bin/env bash
+printf '%s|%s|%s\n' "$PWD" "${BEADS_ACTOR:-}" "$*" >> "${SHIP_POST_TEST_DIR}/bd.calls"
+case ${1:-} in
+show) printf '[{"status":"%s","assignee":"%s"}]\n' "${BD_STATUS:-in_progress}" "${BD_ASSIGNEE-Codex}" ;;
+info) printf '{"database_path":"%s"}\n' "$SHIP_POST_TEST_DIR/repo/.git" ;;
+events) cat "$SHIP_POST_TEST_DIR/events"; [[ ${EVENT_STREAM_FAIL:-0} == 1 ]] && exit 7; while :; do sleep 1; done ;;
+create) echo test-infra ;;
+close) printf '%s\n' "${2:-}" >> "${SHIP_POST_TEST_DIR}/bd.closes"; exit "${BD_CLOSE_RC:-0}" ;;
 esac
-exit 0
-BDEOF
-chmod +x "$d/bin/bd"
+EOF
+	chmod +x "$d/bin/ship-post" "$d/bin/ship" "$d/bin/gitleaks" "$d/bin/bd" "$d/bin/gh"; : > "$d/ship.calls"; : > "$d/bd.calls"; : > "$d/bd.closes"
+}
+run_tool(){
+	local d=$1; shift
+	bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp --unshare-net --bind "$d" "$d" \
+		--setenv HOME "$d/home" --setenv PATH "$d/bin:/usr/bin:/bin" --setenv SHIP_POST_TEST_DIR "$d" \
+		--setenv SHIP_POST_REPOS "${TEST_REPOS:-$d/repo}" --setenv SHIP_POST_STATE_DIR "$d/state" --setenv SHIP_POST_BEADS_ROOT "$d" \
+		timeout --kill-after=2 "${TEST_TIMEOUT:-15}" "$d/bin/ship-post" "$@"
+}
+setup_submit(){
+	local name=$1 branch=$2
+	d="$root/$name"; make_repo "$d" || exit 1; mkdir -p "$d/repo/docs/tz"; printf '# TZ\n' > "$d/repo/docs/tz/TZ-TEST.md"
+	git -C "$d/repo" add -- docs/tz/TZ-TEST.md; git -C "$d/repo" commit -q -m tz; git -C "$d/repo" push -q origin main
+	make_worktree "$d" wt "$branch" || exit 1; wt="$d/wt"; tz='docs/tz/TZ-TEST.md'; make_mocks "$d"
+}
+submit(){ run_tool "$d" --submit "$wt" --atom "$1" --tz "$2#U2" --evidence evidence --files "$tz" "${@:3}"; }
 
-cat > "$d/bin/gh" <<'GHEOF'
-#!/usr/bin/env bash
-if [[ $1 == pr && $2 == list && $3 == -H ]]; then
-	branch=$4
-	match_file="${SHIP_POST_TEST_DIR}/gh_matches/${branch}"
-	if [[ -f $match_file ]]; then
-		cat "$match_file"
-	fi
-fi
-exit 0
-GHEOF
-chmod +x "$d/bin/gh"
+test_dryrun_mocks(){
+	local n=1 out rc
+	setup_submit dry codex/dcfg-dry.1
+	git -C "$wt" commit -q --allow-empty -m dry -m "$(printf 'ТЗ: %s#U2\nAtom: dcfg-dry.1' "$wt/$tz")"
+	out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex; run_tool "$d" --dry-run 2>&1); rc=$?
+	assert_rc "$n" 0 "$rc" "$out"; n=$((n + 1))
+	grep -Fqx "$d|Codex|show dcfg-dry.1 --json" "$d/bd.calls" && pass "$n" || fail "$n" "mock cwd/argv"; n=$((n + 1))
+	[[ ! -s $d/ship.calls ]] && pass "$n" || fail "$n" "ship called"; n=$((n + 1))
+	grep -q 'ok=0 failed=0 skip=0' <<<"$out" && pass "$n" || fail "$n" "summary: $out"; n=$((n + 1))
+	[[ -x $d/bin/ship-post && -x $d/bin/ship ]] && pass "$n" || fail "$n" "local candidate/mock missing"; n=$((n + 1))
+	[[ $out != *'PASS '* ]] && pass "$n" || fail "$n" "misleading PASS count"
+}
+test_valid_actors(){
+	local n=7 out rc msg
+	setup_submit codex codex/dcfg-valid.1; printf x > "$wt/file.txt"
+	out=$(export BEADS_ACTOR=Codex BD_ASSIGNEE=Codex; submit dcfg-valid.1 "$tz" file.txt 2>&1); rc=$?
+	assert_rc "$n" 0 "$rc" "$out"; n=$((n + 1)); msg=$(git -C "$wt" log -1 --format=%B)
+	grep -Fxq 'Agent: codex' <<<"$msg" && pass "$n" || fail "$n" "canonical Codex trailer"; n=$((n + 1))
+	grep -Fqx "$d|Codex|close dcfg-valid.1 --reason submitted $(git -C "$wt" rev-parse HEAD): evidence" "$d/bd.calls" && pass "$n" || fail "$n" "close cwd/argv"; n=$((n + 1))
+	setup_submit claude claude/dcfg-valid.2; printf x > "$wt/file.txt"
+	out=$(export BEADS_ACTOR='Claude Code' BD_ASSIGNEE='Claude Code'; submit dcfg-valid.2 "$tz" file.txt 2>&1); rc=$?
+	assert_rc "$n" 0 "$rc" "$out"; n=$((n + 1)); msg=$(git -C "$wt" log -1 --format=%B)
+	grep -Fxq 'Agent: claude' <<<"$msg" && pass "$n" || fail "$n" "canonical Claude trailer"; n=$((n + 1))
+	compgen -G "$d/state/submissions/*/*/dcfg-valid.2/*" >/dev/null && pass "$n" || fail "$n" "local submission receipt"
+}
+test_rejections(){
+	local n=13 out rc
+	setup_submit live codex/dcfg-live.1; printf x > "$d/repo/file.txt"
+	out=$(export BEADS_ACTOR=Codex BD_ASSIGNEE=Codex; run_tool "$d" --submit "$d/repo" --atom dcfg-live.1 --tz "$tz#U2" --evidence e --files "$tz" file.txt 2>&1); rc=$?; assert_nonzero "$n" "$rc" "$out"; n=$((n + 1))
+	setup_submit unclaimed codex/dcfg-unclaimed.1; printf x > "$wt/file.txt"
+	out=$(export BEADS_ACTOR=Codex BD_ASSIGNEE=''; submit dcfg-unclaimed.1 "$tz" file.txt 2>&1); rc=$?; assert_nonzero "$n" "$rc" "$out"; n=$((n + 1))
+	setup_submit wrongactor codex/dcfg-wrongactor.1; printf x > "$wt/file.txt"
+	out=$(export BEADS_ACTOR=Codex BD_ASSIGNEE='Claude Code'; submit dcfg-wrongactor.1 "$tz" file.txt 2>&1); rc=$?; assert_nonzero "$n" "$rc" "$out"; n=$((n + 1))
+	setup_submit prefix codex/dcfg-prefix.10; printf x > "$wt/file.txt"
+	out=$(export BEADS_ACTOR=Codex BD_ASSIGNEE=Codex; submit dcfg-prefix.1 "$tz" file.txt 2>&1); rc=$?; assert_nonzero "$n" "$rc" "$out"; n=$((n + 1))
+	setup_submit outside codex/dcfg-outside.1; printf x > "$wt/file.txt"
+	out=$(export BEADS_ACTOR=Codex BD_ASSIGNEE=Codex; submit dcfg-outside.1 /etc/hosts file.txt 2>&1); rc=$?; assert_nonzero "$n" "$rc" "$out"; n=$((n + 1))
+	setup_submit dangling codex/dcfg-dangling.1; printf x > "$wt/file.txt"; ln -s nowhere "$wt/docs/tz/bad.md"
+	out=$(export BEADS_ACTOR=Codex BD_ASSIGNEE=Codex; submit dcfg-dangling.1 docs/tz/bad.md file.txt 2>&1); rc=$?; assert_nonzero "$n" "$rc" "$out"; n=$((n + 1))
+	setup_submit foreigndelete codex/dcfg-delete.1; printf foreign > "$wt/foreign.txt"; git -C "$wt" add -- foreign.txt; git -C "$wt" commit -q -m foreign; rm -f -- "$wt/foreign.txt"; printf target > "$wt/target.txt"
+	out=$(export BEADS_ACTOR=Codex BD_ASSIGNEE=Codex; submit dcfg-delete.1 "$tz" target.txt 2>&1); rc=$?; assert_nonzero "$n" "$rc" "$out"; n=$((n + 1))
+	setup_submit staged codex/dcfg-staged.1; printf foreign > "$wt/foreign.txt"; git -C "$wt" add -- foreign.txt; printf target > "$wt/target.txt"
+	out=$(export BEADS_ACTOR=Codex BD_ASSIGNEE=Codex; submit dcfg-staged.1 "$tz" target.txt 2>&1); rc=$?; assert_nonzero "$n" "$rc" "$out"; n=$((n + 1))
+	setup_submit invalid codex/dcfg-invalid.1; printf x > "$wt/file.txt"
+	out=$(export BEADS_ACTOR=agent BD_ASSIGNEE=agent; submit dcfg-invalid.1 "$tz" file.txt 2>&1); rc=$?; assert_nonzero "$n" "$rc" "$out"; n=$((n + 1))
+	setup_submit badfile codex/dcfg-badfile.1; printf x > "$wt/file.txt"
+	out=$(export BEADS_ACTOR=Codex BD_ASSIGNEE=Codex; run_tool "$d" --submit "$wt" --atom dcfg-badfile.1 --tz "$tz#U2" --evidence e --files -- --bad 2>&1); rc=$?; assert_nonzero "$n" "$rc" "$out"
+}
+test_hook_and_retry(){
+	local n=23 out rc first second
+	setup_submit hook codex/dcfg-hook.1; printf x > "$wt/file.txt"; git -C "$wt" add -- file.txt; mkdir -p "$d/hooks"; printf '#!/usr/bin/env bash\nexit 1\n' > "$d/hooks/pre-commit"; chmod +x "$d/hooks/pre-commit"; git -C "$wt" config core.hooksPath "$d/hooks"
+	out=$(export BEADS_ACTOR=Codex BD_ASSIGNEE=Codex; submit dcfg-hook.1 "$tz" file.txt 2>&1); rc=$?; assert_nonzero "$n" "$rc" "$out"; n=$((n + 1))
+	git -C "$wt" diff --cached --quiet -- file.txt && fail "$n" "hook failure changed index" || pass "$n"; n=$((n + 1))
+	setup_submit retry codex/dcfg-retry.1; printf x > "$wt/file.txt"
+	out=$(export BEADS_ACTOR=Codex BD_ASSIGNEE=Codex BD_CLOSE_RC=1; submit dcfg-retry.1 "$tz" file.txt 2>&1); rc=$?; assert_nonzero "$n" "$rc" "$out"; n=$((n + 1)); first=$(git -C "$wt" rev-list --count HEAD)
+	[[ ! -e $d/state/receipts ]] && pass "$n" || fail "$n" "delivery receipt on close failure"; n=$((n + 1))
+	out=$(export BEADS_ACTOR=Codex BD_ASSIGNEE=Codex BD_CLOSE_RC=0; submit dcfg-retry.1 "$tz" file.txt 2>&1); rc=$?; assert_rc "$n" 0 "$rc" "$out"; n=$((n + 1)); second=$(git -C "$wt" rev-list --count HEAD)
+	[[ $first == "$second" ]] && pass "$n" || fail "$n" "retry made another commit"; n=$((n + 1))
+	compgen -G "$d/state/submissions/*/*/dcfg-retry.1/*" >/dev/null && pass "$n" || fail "$n" "retry receipt"
+}
+test_closed_retry(){
+	local n=30 out rc first second
+	setup_submit closed codex/dcfg-closed.1; printf x > "$wt/file.txt"
+	out=$(export BEADS_ACTOR=Codex BD_ASSIGNEE=Codex BD_STATUS=in_progress; submit dcfg-closed.1 "$tz" file.txt 2>&1); rc=$?; assert_rc "$n" 0 "$rc" "$out"; n=$((n + 1)); first=$(git -C "$wt" rev-list --count HEAD)
+	out=$(export BEADS_ACTOR=Codex BD_ASSIGNEE=Codex BD_STATUS=closed; submit dcfg-closed.1 "$tz" file.txt 2>&1); rc=$?; assert_rc "$n" 0 "$rc" "$out"; n=$((n + 1)); second=$(git -C "$wt" rev-list --count HEAD)
+	[[ $first == "$second" ]] && pass "$n" || fail "$n" "closed retry made another commit"; n=$((n + 1))
+	grep -q 'already closed' <<<"$out" && pass "$n" || fail "$n" "idempotent receipt message"
+}
 
-wt_d_head=$(git -C "$d/wt-d" rev-parse HEAD)
-echo "$wt_d_head" > "$d/gh_matches/agent/w"
+test_delivery(){
+ local out rc h before
+ setup_submit delivery codex/dcfg-delivery.1
+ git -C "$wt" commit -q --allow-empty -m delivery -m "$(printf 'ТЗ: %s#U2\nAtom: dcfg-delivery.1\nAgent: codex' "$wt/$tz")"
+ h=$(git -C "$wt" rev-parse HEAD)
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex; run_tool "$d" 2>&1); rc=$?
+ assert_rc delivery 0 "$rc" "$out"
+ [[ $(wc -l <"$d/ship.calls") == 1 ]] && pass one_ship || fail one_ship "$out"
+ grep -q -- '--handover' "$d/ship.calls" && pass preserve_live || fail preserve_live missing
+ grep -Fq "$h" "$d/ship.calls" && pass exact_sha || fail exact_sha missing
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex; run_tool "$d" 2>&1); rc=$?
+ [[ $rc == 0 && $(wc -l <"$d/ship.calls") == 1 ]] && pass duplicate || fail duplicate "$out"
+ setup_submit open codex/dcfg-open.1
+ git -C "$wt" commit -q --allow-empty -m open -m "$(printf 'ТЗ: %s#U2\nAtom: dcfg-open.1' "$wt/$tz")"
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=in_progress BD_ASSIGNEE=Codex; run_tool "$d" 2>&1)
+ [[ ! -s $d/ship.calls ]] && pass open_ignored || fail open_ignored "$out"
+ setup_submit uncertain codex/dcfg-uncertain.1
+ git -C "$wt" commit -q --allow-empty -m uncertain -m "$(printf 'ТЗ: %s#U2\nAtom: dcfg-uncertain.1' "$wt/$tz")"
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_GH_FAIL=1; run_tool "$d" 2>&1); rc=$?
+ [[ $rc != 0 && ! -s $d/ship.calls ]] && pass unknown_remote || fail unknown_remote "$out"
+ grep -q 'reopen dcfg-uncertain.1' "$d/bd.calls" && pass failure_recorded || fail failure_recorded missing
+}
 
-export SHIP_POST_TEST_DIR="$d"
-export PATH="$d/bin:$PATH"
-export SHIP_POST_REPOS="$d/repo"
+test_watch(){
+ local out rc h
+ setup_submit watch codex/dcfg-watch.1
+ git -C "$wt" commit -q --allow-empty -m watch -m "$(printf 'ТЗ: %s#U2\nAtom: dcfg-watch.1' "$wt/$tz")"
+ printf '%s\n' '{"seq":1,"op":"update","issue":{"status":"in_progress"}}' '{"seq":2,"op":"close","issue":{"status":"closed"}}' > "$d/events"
+ # Bound the whole sandbox; mock stream lives until the tested watcher exits.
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex TEST_TIMEOUT=3; run_tool "$d" --watch --atom dcfg-watch.1 >"$d/watch.log" 2>&1); rc=$?
+ [[ $(wc -l <"$d/ship.calls") == 1 ]] && pass watch_delivers || fail watch_delivers "rc=$rc $(cat "$d/watch.log")"
+ [[ $(jq -r .seq "$d/state/cursor.json") == 2 ]] && pass cursor_ack || fail cursor_ack missing
+ [[ -n $(jq -r .identity "$d/state/cursor.json") ]] && pass cursor_identity || fail cursor_identity missing
+}
 
-out=$("$tool" --dry-run 2>/dev/null); rc=$?
+commit_candidate(){
+ git -C "$wt" commit -q --allow-empty -m candidate -m "$(printf 'ТЗ: %s#U2\nAtom: %s\nAgent: %s' "$wt/$tz" "$1" "${2:-codex}")"
+}
+test_recovery(){
+ local out rc h key saved
+ setup_submit crash codex/dcfg-crash.1; commit_candidate dcfg-crash.1
+ h=$(git -C "$wt" rev-parse HEAD); key=$(printf %s "$d/repo" | sha256sum | cut -d ' ' -f1)
+ mkdir -p "$d/state/inflight/$key"; printf '%s\n' "$h" > "$d/state/inflight/$key/dcfg-crash.1"; printf '%s' "$h" > "$d/merged"
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex; run_tool "$d" 2>&1); rc=$?
+ [[ $rc == 0 && ! -s $d/ship.calls && -f $d/state/receipts/$key/dcfg-crash.1/$h ]] && pass crash_reconciled || fail crash_reconciled "$out"
+ setup_submit dirty codex/dcfg-dirty.1; commit_candidate dcfg-dirty.1; printf foreign > "$wt/untracked"
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex; run_tool "$d" 2>&1)
+ [[ ! -s $d/ship.calls && -f $wt/untracked ]] && pass dirty_preserved || fail dirty_preserved "$out"
+ setup_submit claude_delivery claude/dcfg-claude.1; commit_candidate dcfg-claude.1 claude
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE='Claude Code'; run_tool "$d" 2>&1); rc=$?
+ [[ $rc == 0 ]] && grep -q '^Claude Code|' "$d/ship.calls" && pass claude_delivery || fail claude_delivery "$out"
+ setup_submit failure codex/dcfg-failure.1; commit_candidate dcfg-failure.1
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_RC=40; run_tool "$d" 2>&1); rc=$?
+ [[ $rc != 0 ]] && grep -q 'reopen dcfg-failure.1' "$d/bd.calls" && pass ci_failure || fail ci_failure "$out"
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_RC=40; run_tool "$d" 2>&1)
+ [[ $(wc -l < "$d/ship.calls") == 1 && $(grep -c 'create ' "$d/bd.calls") == 1 ]] && pass failure_dedup || fail failure_dedup "$out"
+ setup_submit excluded codex/dcfg-excluded.1; commit_candidate dcfg-excluded.1
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex TEST_REPOS="$d/not-allowlisted"; run_tool "$d" 2>&1)
+ [[ ! -s $d/ship.calls ]] && pass allowlist || fail allowlist "$out"
+}
+test_stream_errors(){
+ local out rc
+ setup_submit malformed codex/dcfg-malformed.1
+ printf 'broken-json\n' > "$d/events"
+ out=$(export BEADS_ACTOR=Codex TEST_TIMEOUT=3; run_tool "$d" --watch 2>&1); rc=$?
+ [[ $rc == 1 && $out == *'malformed journal record'* && ! -f $d/state/cursor.json ]] && pass malformed_no_ack || fail malformed_no_ack "$out rc=$rc"
+ setup_submit truncated codex/dcfg-truncated.1
+ printf '%s\n' '{"code":"events_journal_truncated","floor":9,"head":10}' > "$d/events"
+ out=$(export BEADS_ACTOR=Codex TEST_TIMEOUT=3; run_tool "$d" --watch 2>&1); rc=$?
+ [[ $rc == 1 && $(jq -r .seq "$d/state/cursor.json") == 8 ]] && pass truncation_rebaseline || fail truncation_rebaseline "$out rc=$rc"
+ printf '%s\n' '{"seq":9,"op":"update","issue":{"status":"in_progress"}}' > "$d/events"
+ out=$(export BEADS_ACTOR=Codex EVENT_STREAM_FAIL=1 TEST_TIMEOUT=3; run_tool "$d" --watch 2>&1); rc=$?
+ [[ $rc == 1 && $out == *'journal stream ended (exit 7)'* ]] && pass stream_exit_observed || fail stream_exit_observed "$out rc=$rc"
+ jq '.identity="different-ledger"' "$d/state/cursor.json" > "$d/state/x"; mv "$d/state/x" "$d/state/cursor.json"
+ out=$(export BEADS_ACTOR=Codex TEST_TIMEOUT=3; run_tool "$d" --watch 2>&1); rc=$?
+ [[ $rc == 1 && $out == *'ledger identity changed'* ]] && pass identity_refused || fail identity_refused "$out rc=$rc"
+}
 
-if grep -q 'ready' <<<"$out"; then pass 1; else fail 1 "нет ready"; fi
-if grep -q 'skip.*нет трейлера ТЗ' <<<"$out"; then pass 2; else fail 2 "нет skip ТЗ"; fi
-if grep -q 'skip.*атом не закрыт' <<<"$out"; then pass 3; else fail 3 "нет skip атом"; fi
-if grep -q 'skip.*PR слит' <<<"$out"; then pass 4; else fail 4 "нет skip PR"; fi
-if echo "$out" | tail -1 | grep -q 'ok=0 failed=0 skip=3'; then pass 5; else fail 5 "summary != ok=0 failed=0 skip=3: $(echo "$out" | tail -1)"; fi
-if [[ $rc == 0 ]]; then pass 6; else fail 6 "exit=$rc"; fi
+test_concurrent_repositories(){
+ local first second out rc
+ setup_submit first_repo codex/dcfg-first.1; commit_candidate dcfg-first.1; first="$d/repo"
+ setup_submit second_repo codex/dcfg-second.1; commit_candidate dcfg-second.1; second="$d/repo"
+ : > "$d/events"
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_DELAY=2 TEST_REPOS="$first:$second" TEST_TIMEOUT=3; run_tool "$d" --watch 2>&1); rc=$?
+ [[ $(wc -l < "$d/ship.calls") == 2 ]] && pass independent_repo_workers || fail independent_repo_workers "$out rc=$rc"
+ [[ $(cat "$d/merged" | wc -l) == 2 ]] && pass workers_drained || fail workers_drained "$out rc=$rc"
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex TEST_REPOS="$first:$second" TEST_TIMEOUT=2; run_tool "$d" --watch 2>&1)
+ [[ $(wc -l < "$d/ship.calls") == 2 ]] && pass restart_no_duplicate || fail restart_no_duplicate "$out"
+}
 
-if [[ $ok == 6 ]]; then echo "PASS $ok/6"; exit 0; else echo "FAIL $ok/6"; exit 1; fi
+test_dryrun_mocks; test_valid_actors; test_rejections; test_hook_and_retry; test_closed_retry; test_delivery; test_watch; test_recovery; test_stream_errors; test_concurrent_repositories
+echo "checks=$checks failures=$failures"
+[[ $failures == 0 ]]
