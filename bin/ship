@@ -10,7 +10,7 @@ ship_log="$logdir/ship.log"
 name='-'; branch='-'
 
 usage(){ cat >&2 <<'EOF'
-usage: ship <worktree> --atom <id> --tz <path#U> [--reload <pm2-name>] [--handover]
+usage: ship <worktree> --atom <id> --tz <path#U> [--reload <pm2-name>] [--handover] [--expected-head <sha>]
 exit codes: 0 ok, 10 preflight/usage, 20 gitleaks, 30 commit/push/pr, 40 ci, 50 merge/rebase,
             60 post, 70 gh/fetch, 75 lock, 80 ТЗ не найдено
 EOF
@@ -27,13 +27,14 @@ tz_parse(){ # 0 — ок, 80 — ТЗ не принято
 	return 0
 }
 
-wt=''; atom=''; tz=''; reload=''; handover=0
+wt=''; atom=''; tz=''; reload=''; handover=0; expected_head=''
 while [[ $# -gt 0 ]]; do
 	case $1 in
 		--atom) atom=${2:-}; shift 2 ;;
 		--tz) tz=${2:-}; shift 2 ;;
 		--reload) reload=${2:-}; shift 2 ;;
 		--handover) handover=1; shift ;;
+		--expected-head) [[ $# -ge 2 && $2 =~ ^[0-9a-f]{40,64}$ ]] || usage; expected_head=$2; shift 2 ;;
 		-*) usage ;;
 		*) wt=$1; shift ;;
 	esac
@@ -71,6 +72,12 @@ fi
 tz_parse || leave 80 tz
 
 g(){ git -C "$wtr" "$@"; }
+accepted_clean(){
+	[[ $(g rev-parse HEAD) == "$expected_head" && -z $(g status --porcelain=v1 --untracked-files=all) ]]
+}
+if [[ -n $expected_head ]]; then
+	accepted_clean || { echo 'ship: accepted HEAD or worktree changed' >&2; leave 10 accepted-head; }
+else
 g add -A
 if g diff --cached --quiet; then
 	[[ $(g rev-list --count origin/$base..HEAD 2>/dev/null) == 0 ]] && { echo 'ship: nothing'; leave 0 nothing; }
@@ -83,19 +90,22 @@ else
 		--trailer "Atom: $atom" --trailer "ТЗ: $tz" --trailer "Agent: $agent" \
 		|| leave 30 commit
 fi
+fi
 
 locked_core(){
 	local osha=''
 	g fetch -q origin "$base" || return 70
-	if ! g merge-base --is-ancestor origin/$base HEAD 2>/dev/null; then
+	if [[ -n $expected_head ]]; then
+		accepted_clean || return 10
+	elif ! g merge-base --is-ancestor origin/$base HEAD 2>/dev/null; then
 		g rebase -q origin/$base || { g rebase --abort; return 50; }
 	fi
-	( cd "$wtr" && gitleaks git --redact --no-banner --log-opts "origin/$base..HEAD" >/dev/null 2>&1 ) || return 20
+	( cd "$wtr" && gitleaks git --redact --no-banner --log-opts "origin/$base..${expected_head:-HEAD}" >/dev/null 2>&1 ) || return 20
 	osha=$(g rev-parse --verify -q refs/remotes/origin/"$branch" 2>/dev/null) || osha=''
 	if [[ -n $osha ]]; then
-		g push -q --force-with-lease="$branch:$osha" origin HEAD:refs/heads/"$branch" || return 30
+		g push -q --force-with-lease="$branch:$osha" origin "${expected_head:-HEAD}":refs/heads/"$branch" || return 30
 	else
-		g push -q -u origin HEAD:refs/heads/"$branch" || return 30
+		g push -q -u origin "${expected_head:-HEAD}":refs/heads/"$branch" || return 30
 	fi
 	return 0
 }
@@ -122,12 +132,12 @@ if [[ $ci == none && $mode == two ]]; then
 	leave 30 ci-none
 fi
 # D3: сверить базу открытого PR — чужой (не в $base) не должен влиться в prod мимо dev.
-pr=$(gh pr list -R "$slug" --head "$branch" --state open --json number,baseRefName --jq '.[0]' 2>/dev/null)
+pr=$(gh pr list -R "$slug" --head "$branch" --state open --json number,baseRefName --jq '.[0]' 2>/dev/null) || leave 70 pr-read
 if [[ -z $pr ]]; then
 	body="$(g log -1 --format=%b)"
 	gh pr create -R "$slug" --head "$branch" --base "$base" \
 		--title "$(g log -1 --format=%s)" --body "$body" >/dev/null || leave 30 pr
-	pr=$(gh pr list -R "$slug" --head "$branch" --state open --json number,baseRefName --jq '.[0]' 2>/dev/null)
+	pr=$(gh pr list -R "$slug" --head "$branch" --state open --json number,baseRefName --jq '.[0]' 2>/dev/null) || leave 70 pr-read
 fi
 num=$(printf '%s' "$pr" | sed -n 's/.*"number": *\([0-9][0-9]*\).*/\1/p')
 [[ -n $num ]] || num=$pr
@@ -141,7 +151,7 @@ printf 'pr:%s\n' "$num"
 if [[ $ci == none ]]; then
 	echo ci:none
 else
-	ga_ci_wait pr "$slug" "$num" "$(git -C "$wtr" rev-parse HEAD)"
+	ga_ci_wait pr "$slug" "$num" "${expected_head:-$(git -C "$wtr" rev-parse HEAD)}"
 	ci_rc=$?
 	if [[ $ci_rc == 30 ]]; then
 		echo 'ship: CI не появился' >&2
@@ -154,7 +164,7 @@ fi
 gh_or70(){ local e; e=$("$@" 2>&1 >/dev/null) && return 0; grep -qiE 'HTTP 40[13]|authentication|could not connect|timeout' <<<"$e" && leave 70 gh; return 1; }
 
 ga_lock "$name" 60
-gh_or70 gh pr merge "$num" -R "$slug" --squash --match-head-commit "$(git -C "$wtr" rev-parse HEAD)" || leave 50 merge
+gh_or70 gh pr merge "$num" -R "$slug" --squash --match-head-commit "${expected_head:-$(git -C "$wtr" rev-parse HEAD)}" || leave 50 merge
 merge_sha=$(gh pr view "$num" -R "$slug" --json mergeCommit --jq .mergeCommit.oid)
 gg_log 0 "merged $num $merge_sha"
 merge_ms=$(( $(date +%s) * 1000 ))
@@ -169,7 +179,7 @@ if [[ ${tz%%#*} != */TZ-DOCS-DELIVERY.md ]]; then
 		[[ $handover == 1 ]] && leave 60 close
 	fi
 fi
-[[ $handover == 1 ]] && { echo 'live:deferred handover'; g update-ref "refs/delivered/$branch" HEAD; leave 0 handover; }
+[[ $handover == 1 ]] && { echo 'live:deferred handover'; g update-ref "refs/delivered/$branch" "${expected_head:-HEAD}"; leave 0 handover; }
 
 saved_close=''; [[ ${post_step:-} == close ]] && saved_close=close
 if [[ $mode == two ]]; then
