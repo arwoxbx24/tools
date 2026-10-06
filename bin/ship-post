@@ -235,7 +235,7 @@ record_failure(){
  printf '%s\n' "$rc" > "$marker" || return 1
  bd_cmd reopen "$atom" >/dev/null || return 1
  bd_cmd update "$atom" --append-notes "ship-post delivery failed: exit $rc; local commit $head retained; inspect courier receipt before retry." >/dev/null || return 1
- issue=$(bd_cmd create "[ship-post] delivery failure $atom" -t task -l contour:infra --deps "discovered-from:$atom" --description "Courier exit $rc. Local commit $head retained. Reconcile remote state before retry." --acceptance '1) Verified remote receipt for the exact submitted commit.' --silent) || return 1
+ issue=$(bd_cmd create "[ship-post] delivery failure $atom" -t task -l contour:infra --deps "discovered-from:$atom" --description "Courier exit $rc. Local commit $head retained. Reconcile remote state before retry." --acceptance '1) Recorded delivery failure cause repaired and verified. 2) Remote state reconciled before retry. 3) Parent can close locally and resume courier delivery; remote receipt remains a parent requirement.' --silent) || return 1
  [[ -n $issue ]] && bd_cmd dep add "$atom" "$issue" >/dev/null
 }
 
