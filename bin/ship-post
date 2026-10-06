@@ -1,107 +1,410 @@
 #!/usr/bin/env bash
 set -u
+umask 077
 bin=$(cd -- "$(dirname -- "$0")" && pwd)
-dry_run=0
+
+ship_bin="$bin/ship"
+SHIP_POST_STATE_DIR=${SHIP_POST_STATE_DIR:-/root/workspaces/tools/state/ship-post}
+SHIP_POST_BEADS_ROOT=${SHIP_POST_BEADS_ROOT:-/root/workspaces/projects}
+SHIP_POST_SINCE=${SHIP_POST_SINCE:-1791205200}
+BEADS_ACTOR=${BEADS_ACTOR:-}
+
+dry_run=0; watch=0; submit=0; submit_wt=''; submit_atom=''; submit_tz=''
+submit_evidence=''; submit_files=(); filter_atom=''
+
+usage(){ cat >&2 <<'USAGE'
+usage: ship-post [--dry-run]
+       ship-post --watch [--atom <id>]
+       ship-post --submit <worktree> --atom <id> --tz <path#U2> --evidence <text> --files <file>...
+USAGE
+exit 2
+}
 
 while [[ $# -gt 0 ]]; do
+	case $1 in --atom|--submit|--tz|--evidence) [[ $# -ge 2 && -n $2 && $2 != --* ]] || usage ;; esac
 	case $1 in
 		--dry-run) dry_run=1; shift ;;
-		*) echo "usage: ship-post [--dry-run]" >&2; exit 2 ;;
+		--watch) watch=1; shift ;;
+		--atom) filter_atom=${2:-}; submit_atom=${2:-}; shift 2 ;;
+		--submit) submit=1; submit_wt=${2:-}; shift 2 ;;
+		--tz) submit_tz=${2:-}; shift 2 ;;
+		--evidence) submit_evidence=${2:-}; shift 2 ;;
+		--files) shift; while [[ $# -gt 0 && $1 != -* ]]; do submit_files+=("$1"); shift; done ;;
+		--) shift; submit_files+=("$@"); break ;;
+		*) usage ;;
 	esac
 done
 
-ok=0; failed=0; skip=0
-ship_bin="$bin/ship"
+usage_err(){ local msg=$1; echo "ship-post: $msg" >&2; exit 2; }
+die(){ echo "ship-post: $*" >&2; exit 1; }
 
-if [[ -n ${SHIP_POST_REPOS:-} ]]; then
-	IFS=':' read -ra repos <<< "$SHIP_POST_REPOS"
-else
-	repos=(/root/workspaces/projects /root/workspaces/tools)
-fi
+# ── repo / worktree helpers ──────────────────────────────────────────
 
-for repo in "${repos[@]}"; do
-	[[ -d $repo/.git || -f $repo/.git ]] || continue
-	main=$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null) || continue
+resolve_repos(){
+	local list=${SHIP_POST_REPOS:-/root/workspaces/projects:/root/workspaces/tools}
+	IFS=':' read -ra _repos <<< "$list"
+}
 
-	while IFS= read -r line; do
-		case $line in
-			worktree*)
-				wt=${line#worktree }
-				[[ $wt == "$main" ]] && continue
-				;;
-			*) continue ;;
-		esac
+slugify(){ printf '%s' "$1" | sha256sum | cut -d ' ' -f1; }
 
-		read -r head_line || continue
-		read -r branch_line 2>/dev/null || true
-		read -r sep 2>/dev/null || true
+receipt_file(){
+	local repo=$1 atom=$2 sha=$3
+	echo "$SHIP_POST_STATE_DIR/receipts/$(slugify "$repo")/$atom/$sha"
+}
 
-		tz=$(git -C "$wt" log -1 --format='%B' 2>/dev/null | sed -n '/^ТЗ: /{s/^ТЗ: *//;s/:$//;p}' | head -1)
-		atom=$(git -C "$wt" log -1 --format='%B' 2>/dev/null | sed -n '/^Atom: /{s/^Atom: *//;s/:$//;p}' | head -1)
+inflight_file(){
+	local repo=$1 atom=$2
+	echo "$SHIP_POST_STATE_DIR/inflight/$(slugify "$repo")/$atom"
+}
 
-		if [[ -z $tz ]]; then
-			[[ $dry_run == 1 ]] && echo "skip $wt нет трейлера ТЗ"
-			skip=$((skip + 1))
-			continue
-		fi
+lock_file(){
+	local repo=$1
+	echo "$SHIP_POST_STATE_DIR/locks/$(slugify "$repo").lock"
+}
 
-		if [[ -z $atom ]]; then
-			[[ $dry_run == 1 ]] && echo "skip $wt нет трейлера Atom"
-			skip=$((skip + 1))
-			continue
-		fi
+bd_cmd(){ (cd "$SHIP_POST_BEADS_ROOT" && env BEADS_ACTOR="$BEADS_ACTOR" bd "$@"); }
 
-		# ponytail: отсечка 2026-10-05T13:00Z — ветки до почтальона отгружает их владелец; убрать, когда старых worktree не останется
-		if (( $(git -C "$wt" log -1 --format=%ct) < ${SHIP_POST_SINCE:-1791205200} )); then
-			[[ $dry_run == 1 ]] && echo "skip $wt ветка старше почтальона"
-			skip=$((skip + 1))
-			continue
-		fi
+submit_receipt_file(){
+	local repo=$1 wt=$2 atom=$3 sha=$4
+	echo "$SHIP_POST_STATE_DIR/submissions/$(slugify "$repo")/$(slugify "$wt")/$atom/$sha"
+}
 
-		if git -C "$wt" merge-base --is-ancestor HEAD origin/main 2>/dev/null; then
-			[[ $dry_run == 1 ]] && echo "skip $wt HEAD уже в origin/main"
-			skip=$((skip + 1))
-			continue
-		fi
+write_submit_receipt(){
+	local repo=$1 wt=$2 atom=$3 sha=$4 evidence=$5 file
+	file=$(submit_receipt_file "$repo" "$wt" "$atom" "$sha")
+	mkdir -p "$(dirname "$file")" || return 1
+	printf 'repo=%s\nworktree=%s\natom=%s\nsha=%s\nevidence=%s\n' "$repo" "$wt" "$atom" "$sha" "$evidence" > "$file.tmp" && mv "$file.tmp" "$file"
+}
 
-		st=$(bd show "$atom" --json 2>/dev/null | jq -r '.[0].status' 2>/dev/null)
-		if [[ $st != closed ]]; then
-			[[ $dry_run == 1 ]] && echo "skip $wt атом не закрыт ($st)"
-			skip=$((skip + 1))
-			continue
-		fi
+# ── submit mode ──────────────────────────────────────────────────────
 
-		br=$(git -C "$wt" branch --show-current)
-		head=$(git -C "$wt" rev-parse HEAD)
-		if (cd "$wt" && gh pr list -H "$br" -s merged --json headRefOid -q '.[].headRefOid' 2>/dev/null) | grep -qx "$head"; then
-			[[ $dry_run == 1 ]] && echo "skip $wt PR слит"
-			skip=$((skip + 1))
-			continue
-		fi
+do_submit(){
+	local wt=$1 atom=$2 tz=$3 evidence=$4; shift 4
+	local files=("$@")
 
-		if [[ $dry_run == 1 ]]; then
-			echo "ready $wt $atom"
-			continue
-		fi
+	[[ $watch == 0 && $dry_run == 0 ]] || usage_err "--submit cannot be combined with --watch or --dry-run"
+	[[ -n $evidence ]] || usage_err "--evidence required"
+	[[ $atom =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || usage_err "invalid atom: $atom"
+	[[ -n $tz ]] || usage_err "--tz required"
+	[[ $wt == /* && -d $wt ]] || usage_err "worktree must be an absolute directory: $wt"
+	[[ ${#files[@]} -gt 0 ]] || usage_err "--files list empty"
 
-		err_log=$(mktemp)
-		"$ship_bin" "$wt" --atom "$atom" --tz "$tz" >/dev/null 2>"$err_log"; rc=$?
-		last_line=$(tail -1 "$err_log" 2>/dev/null || true)
-		rm -f "$err_log"
+	local wt_real
+	wt_real=$(realpath "$wt" 2>/dev/null) || usage_err "cannot resolve worktree: $wt"
+	[[ $wt_real == "$wt" ]] || usage_err "worktree must be absolute: $wt"
+	[[ -f $wt_real/.git && ! -d $wt_real/.git ]] || usage_err "worktree must be linked: $wt_real"
+	local wt_top
+	wt_top=$(git -C "$wt_real" rev-parse --show-toplevel 2>/dev/null) || usage_err "not a git repository: $wt_real"
+	[[ $wt_top == "$wt_real" ]] || usage_err "worktree subdirectory not allowed: $wt"
+	local registered=0 line
+	while IFS= read -r line; do [[ $line == "worktree $wt_real" ]] && registered=1; done < <(git -C "$wt_real" worktree list --porcelain)
+	[[ $registered == 1 ]] || usage_err "not a registered linked worktree: $wt_real"
 
-		if [[ $rc == 0 ]]; then
-			echo "ok $wt $atom"
-			ok=$((ok + 1))
+	local repo common
+	common=$(git -C "$wt_real" rev-parse --path-format=absolute --git-common-dir) || die "cannot locate repository"
+	repo=$(dirname "$common")
+	local branch caller
+	branch=$(git -C "$wt_real" symbolic-ref --short -q HEAD 2>/dev/null) || usage_err "cannot get branch"
+	case $BEADS_ACTOR in Codex) caller=codex ;; Claude|'Claude Code') caller=claude ;; *) usage_err "unknown BEADS_ACTOR: ${BEADS_ACTOR:-empty}" ;; esac
+	[[ $branch == "$caller/$atom" || $branch == "$caller/$atom"-* ]] || usage_err "branch $branch must match $caller/$atom or $caller/$atom-<topic>"
+
+	local atom_json
+	atom_json=$(bd_cmd show "$atom" --json 2>/dev/null) || usage_err "bd show $atom failed"
+	local status assignee
+	status=$(jq -r '.[0].status // empty' <<< "$atom_json" 2>/dev/null)
+	assignee=$(jq -r '.[0].assignee // empty' <<< "$atom_json" 2>/dev/null)
+	case $assignee in Codex|codex) assignee=codex ;; Claude|'Claude Code'|claude) assignee=claude ;; esac
+	[[ -n $assignee && $assignee == "$caller" ]] || usage_err "atom $atom assignee must be $caller"
+	[[ $status == in_progress || $status == closed ]] || usage_err "atom $atom status=$status"
+
+	local tz_path=${tz%%#*} tz_suffix="#${tz#*#}" tz_abs
+	[[ $tz_suffix =~ ^#U[0-9]+$ ]] || usage_err "--tz must end with #U<number>"
+	[[ $tz_path != /* && $tz_path != . && $tz_path != .. && $tz_path != ./* && $tz_path != */./* && $tz_path != *'/../'* && $tz_path != ../* && $tz_path != *'//' && $tz_path != *['*?['']'* ]] || usage_err "invalid ТЗ path: $tz_path"
+	tz_abs=$(realpath "$wt_real/$tz_path" 2>/dev/null) || usage_err "cannot resolve ТЗ: $tz_path"
+	[[ -f $tz_abs && $tz_abs == "$wt_real"/* ]] || usage_err "ТЗ must be an existing file inside worktree: $tz_path"
+	local tz_stored="$tz_abs$tz_suffix"
+
+	local seen_outside=0 f abs_f resolved parent literal
+	local -A file_set
+	for f in "${files[@]}"; do
+		[[ -n $f && $f != /* && $f != . && $f != .. && $f != ./* && $f != ../* && $f != */./* && $f != */../* && $f != *'//' && $f != -* && $f != *['*?['']'*] && $f != *:* ]] || { echo "ship-post: invalid file path: $f" >&2; seen_outside=1; continue; }
+		[[ -z ${file_set[$f]:-} ]] || { echo "ship-post: duplicate file: $f" >&2; seen_outside=1; continue; }
+		file_set[$f]=1
+		abs_f="$wt_real/$f"
+		if [[ -e $abs_f || -L $abs_f ]]; then
+			resolved=$(realpath "$abs_f" 2>/dev/null) || { echo "ship-post: cannot resolve file: $f" >&2; seen_outside=1; continue; }
+			[[ -f $resolved && $resolved == "$wt_real"/* ]] || { echo "ship-post: file outside worktree: $f" >&2; seen_outside=1; }
 		else
-			echo "failed $wt $atom (exit $rc)"
-			failed=$((failed + 1))
-
-			bd reopen "$atom" >/dev/null 2>&1 || true
-			new_id=$(bd create "[ship-post] отказ ship $rc: $atom" -t task -l contour:infra --deps "discovered-from:$atom" --description "$last_line" --acceptance "1) ship-post следующего прогона → ok по атому" 2>/dev/null --silent)
-			[[ -n $new_id ]] && bd dep add "$atom" "$new_id" >/dev/null 2>&1 || true
+			git -C "$wt_real" cat-file -e "HEAD:$f" 2>/dev/null || { echo "ship-post: file missing or untracked: $f" >&2; seen_outside=1; continue; }
+			parent=$(realpath "$(dirname "$abs_f")" 2>/dev/null) || { echo "ship-post: cannot resolve deleted file parent: $f" >&2; seen_outside=1; continue; }
+			[[ $parent == "$wt_real" || $parent == "$wt_real"/* ]] || { echo "ship-post: deleted file outside worktree: $f" >&2; seen_outside=1; }
 		fi
-	done < <(git -C "$repo" worktree list --porcelain 2>/dev/null) || true
-done
+	done
+	[[ $seen_outside == 0 ]] || die "file validation failed"
+	[[ -n ${file_set[$tz_path]:-} ]] || usage_err "ТЗ must be listed in --files: $tz_path"
 
-echo "ok=$ok failed=$failed skip=$skip"
-[[ $failed == 0 ]]
+	local lock_path submit_lock_fd
+	lock_path=$(git -C "$wt_real" rev-parse --git-path ship-post-submit.lock) || die "cannot find worktree lock path"
+	exec {submit_lock_fd}>"$lock_path"; flock -x "$submit_lock_fd"
+
+	local dirty=0 status_entry status_xy status_path status_source seen_dirty=0
+	while IFS= read -r -d '' status_entry; do
+		status_xy=${status_entry:0:2}; status_path=${status_entry:3}
+		[[ $status_xy == '!!' ]] && continue
+		dirty=1
+		[[ -n ${file_set[$status_path]:-} ]] || { echo "ship-post: dirty file not in --files: $status_path" >&2; seen_dirty=1; }
+		if [[ $status_xy == *R* || $status_xy == *C* ]]; then
+			IFS= read -r -d '' status_source || { echo "ship-post: malformed rename status" >&2; seen_dirty=1; break; }
+			[[ -n ${file_set[$status_source]:-} ]] || { echo "ship-post: rename source not in --files: $status_source" >&2; seen_dirty=1; }
+		fi
+	done < <(git -C "$wt_real" status --porcelain=v1 -z --untracked-files=all)
+	[[ $seen_dirty == 0 ]] || die "dirty or staged files outside --files list"
+
+	local head_msg head_matches=0 head_sha
+	head_msg=$(git -C "$wt_real" log -1 --format=%B) || die "cannot read HEAD"
+	grep -Fxq "ТЗ: $tz_stored" <<< "$head_msg" && grep -Fxq "Atom: $atom" <<< "$head_msg" && grep -Fxq "Agent: $caller" <<< "$head_msg" && head_matches=1
+	if [[ $dirty == 0 ]]; then
+		[[ $head_matches == 1 ]] || die "nothing to commit and HEAD trailers do not match"
+		head_sha=$(git -C "$wt_real" rev-parse HEAD) || die "cannot read HEAD"
+		if [[ $status == closed ]]; then
+			write_submit_receipt "$repo" "$wt_real" "$atom" "$head_sha" "$evidence" || die "cannot write submission receipt"
+			echo "ship-post: already closed $atom"
+			return 0
+		fi
+	else
+		[[ $status == in_progress ]] || usage_err "atom $atom already closed with dirty worktree"
+		local index_path index_backup
+		index_path=$(git -C "$wt_real" rev-parse --git-path index) || die "cannot locate index"
+		index_backup="$index_path.ship-post-submit.$$"
+		cp -f -- "$index_path" "$index_backup" || die "cannot back up index"
+		local literal_paths=()
+		for f in "${files[@]}"; do literal_paths+=(":(literal)$f"); done
+		git -C "$wt_real" add -- "${literal_paths[@]}" || { cp -f -- "$index_backup" "$index_path"; rm -f -- "$index_backup"; die "git add failed"; }
+		( cd "$wt_real" && gitleaks git --pre-commit --staged --redact --no-banner ) || { cp -f -- "$index_backup" "$index_path"; rm -f -- "$index_backup"; die "gitleaks failed"; }
+		local first_line
+		first_line=$(sed -n '1p' "$tz_abs" 2>/dev/null || echo "$atom")
+		git -C "$wt_real" commit -q -m "$atom: ${first_line:-$atom}" \
+			-m "$(printf 'ТЗ: %s\nAtom: %s\nAgent: %s' "$tz_stored" "$atom" "$caller")" || {
+			local rc=$?
+			cp -f -- "$index_backup" "$index_path"; rm -f -- "$index_backup"
+			die "commit failed (exit $rc)"
+		}
+		rm -f -- "$index_backup"
+		echo "ship-post: committed $atom"
+	fi
+
+	head_sha=$(git -C "$wt_real" rev-parse HEAD)
+	[[ -z $(git -C "$wt_real" status --porcelain=v1 --untracked-files=all) ]] || die "worktree not clean after commit"
+
+	local close_out
+	close_out=$(bd_cmd close "$atom" --reason "submitted $head_sha: $evidence" 2>&1) || {
+		local rc=$?
+		echo "ship-post: commit ok but bd close failed (exit $rc): $close_out" >&2
+		return "$rc"
+	}
+
+	write_submit_receipt "$repo" "$wt_real" "$atom" "$head_sha" "$evidence" || die "cannot write submission receipt"
+	echo "ship-post: closed $atom"
+	return 0
+}
+
+# One eligibility/delivery path for startup, events and manual scans.
+actor_name(){
+ case $1 in Codex|codex) echo Codex ;; Claude|'Claude Code'|claude) echo 'Claude Code' ;; *) return 1 ;; esac
+}
+
+remote_result(){
+ local wt=$1 head=$2 branch=$3 origin result
+ origin=$(git -C "$wt" remote get-url origin) || return 23
+ result=$(gh repo view "$origin" --json isPrivate 2>/dev/null) || return 23
+ [[ $(jq -r '.isPrivate' <<<"$result") == true ]] || return 23
+ result=$(gh pr list -R "$origin" --head "$branch" --state all --json headRefOid,state,url,mergeCommit,statusCheckRollup 2>/dev/null) || return 23
+ jq -e 'type == "array"' <<<"$result" >/dev/null || return 23
+ remote_proof=$(jq -c --arg h "$head" '[.[] | select(.headRefOid==$h and .state=="MERGED" and (.mergeCommit.oid|type)=="string")][0] // empty' <<<"$result")
+ [[ -n $remote_proof ]] && return 0
+ [[ $(jq 'length' <<<"$result") == 0 ]] && return 21
+ return 22
+}
+
+record_failure(){
+ local repo=$1 atom=$2 head=$3 rc=$4 key marker issue
+ key=$(receipt_file "$repo" "$atom" "$head"); marker="$key.failed"
+ [[ -f $marker ]] && return 0
+ mkdir -p "$(dirname "$marker")" || return 1
+ # Retain one durable failure before tracker mutations; never retry an uncertain ship blindly.
+ printf '%s\n' "$rc" > "$marker" || return 1
+ bd_cmd reopen "$atom" >/dev/null || return 1
+ bd_cmd update "$atom" --append-notes "ship-post delivery failed: exit $rc; local commit $head retained; inspect courier receipt before retry." >/dev/null || return 1
+ issue=$(bd_cmd create "[ship-post] delivery failure $atom" -t task -l contour:infra --deps "discovered-from:$atom" --description "Courier exit $rc. Local commit $head retained. Reconcile remote state before retry." --acceptance '1) Verified remote receipt for the exact submitted commit.' --silent) || return 1
+ [[ -n $issue ]] && bd_cmd dep add "$atom" "$issue" >/dev/null
+}
+
+write_delivery_receipt(){
+ local repo=$1 atom=$2 submitted=$3 remote_head=$4 rf
+ rf=$(receipt_file "$repo" "$atom" "$submitted")
+ jq -n --arg repo "$repo" --arg atom "$atom" --arg sha "$submitted" --arg head "$remote_head" --argjson proof "$remote_proof" \
+  '{repo:$repo,atom:$atom,local_sha:$sha,remote_head:$head,remote:$proof}' > "$rf.tmp" && mv "$rf.tmp" "$rf" || return 1
+ bd_cmd update "$atom" --append-notes "ship-post delivered: local $submitted; remote $remote_head; $(jq -r .url <<<"$remote_proof")" >/dev/null || return 1
+ echo "delivered $atom $remote_head"
+}
+
+deliver_one(){
+ local wt=$1 atom=$2 tz=$3 head=$4 repo=$5 branch=$6 rf inflight rc final_head remote_proof=''
+ rf=$(receipt_file "$repo" "$atom" "$head"); inflight=$(inflight_file "$repo" "$atom")
+ [[ -f $rf ]] && return 0
+ [[ -f $rf.failed ]] && return 1
+ mkdir -p "$(dirname "$rf")" "$(dirname "$inflight")" || return 1
+ remote_result "$wt" "$head" "$branch"; rc=$?
+ if [[ $rc == 0 ]]; then
+  write_delivery_receipt "$repo" "$atom" "$head" "$head" || return 1
+  return 0
+ fi
+ if [[ $rc == 23 || ( -f $inflight && $rc != 21 ) ]]; then
+  echo "ship-post: remote outcome unresolved for $atom" >&2
+  record_failure "$repo" "$atom" "$head" "$rc"; return 1
+ fi
+ if [[ -f $inflight && $(cat "$inflight") != "$head" ]]; then
+  echo "ship-post: prior in-flight SHA differs for $atom" >&2
+  record_failure "$repo" "$atom" "$head" 24; return 1
+ fi
+ printf '%s\n' "$head" > "$inflight.tmp" && mv "$inflight.tmp" "$inflight" || return 1
+ # Existing ship owns private origin, secret scan, CI and exact-head merge gates.
+ (cd "$SHIP_POST_BEADS_ROOT" && env BEADS_ACTOR="$BEADS_ACTOR" "$ship_bin" "$wt" --atom "$atom" --tz "$tz" --handover) > "$rf.log" 2>&1
+ rc=$?
+ [[ $rc == 0 ]] || { record_failure "$repo" "$atom" "$head" "$rc"; return 1; }
+ final_head=$(git -C "$wt" rev-parse HEAD) || return 1
+ remote_result "$wt" "$final_head" "$branch" || { record_failure "$repo" "$atom" "$head" 23; return 1; }
+ write_delivery_receipt "$repo" "$atom" "$head" "$final_head" || return 1
+ # ship may rebase before pushing. Record both keys, retaining the original submission SHA.
+ if [[ $head != "$final_head" ]]; then
+  mkdir -p "$(dirname "$(receipt_file "$repo" "$atom" "$final_head")")"
+  cp "$rf" "$(receipt_file "$repo" "$atom" "$final_head")" || return 1
+ fi
+ rm -f -- "$inflight"
+}
+
+scan_repo(){
+ local repo=$1 lk fd line wt head branch msg atom tz st owner agent actor dirty base
+ local ok=0 failed=0 skip=0
+ [[ -d $repo ]] || return 1
+ repo=$(realpath "$repo") || return 1
+ [[ $(git -C "$repo" rev-parse --show-toplevel 2>/dev/null) == "$repo" ]] || return 1
+ lk=$(lock_file "$repo"); mkdir -p "$(dirname "$lk")" || return 1
+ exec {fd}>"$lk"; flock -x "$fd" || return 1
+ while IFS= read -r line; do
+  [[ $line == 'worktree '* ]] || continue
+  wt=${line#worktree }; [[ $wt != "$repo" && -f $wt/.git ]] || continue
+  msg=$(git -C "$wt" log -1 --format=%B) || { failed=$((failed+1)); continue; }
+  atom=$(sed -n 's/^Atom: *//p' <<<"$msg" | head -1)
+  tz=$(sed -n 's/^ТЗ: *//p' <<<"$msg" | head -1)
+  agent=$(sed -n 's/^Agent: *//p' <<<"$msg" | head -1)
+  [[ $atom =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && -n $tz ]] || { skip=$((skip+1)); continue; }
+  [[ -z $filter_atom || $atom == "$filter_atom" ]] || continue
+  (( $(git -C "$wt" log -1 --format=%ct) >= SHIP_POST_SINCE )) || { skip=$((skip+1)); continue; }
+  head=$(git -C "$wt" rev-parse HEAD) || continue
+  [[ -f $(receipt_file "$repo" "$atom" "$head") ]] && continue
+  branch=$(git -C "$wt" symbolic-ref --short -q HEAD) || { skip=$((skip+1)); continue; }
+  st=$(bd_cmd show "$atom" --json) || { failed=$((failed+1)); continue; }
+  [[ $(jq -r '.[0].status' <<<"$st") == closed ]] || { skip=$((skip+1)); continue; }
+  owner=$(jq -r '.[0].assignee // empty' <<<"$st"); actor=$(actor_name "$owner") || { skip=$((skip+1)); continue; }
+  owner=codex; [[ $actor == 'Claude Code' ]] && owner=claude
+  [[ $branch == "$owner/$atom" || $branch == "$owner/$atom"-* ]] || { skip=$((skip+1)); continue; }
+  [[ -z $agent || $(actor_name "$agent") == "$actor" ]] || { skip=$((skip+1)); continue; }
+  dirty=$(git -C "$wt" status --porcelain=v1 --untracked-files=all) || { failed=$((failed+1)); continue; }
+  [[ -z $dirty ]] || { echo "skip $atom dirty worktree"; skip=$((skip+1)); continue; }
+  # Normalize legacy absolute and current worktree-relative TZ without escaping the worktree.
+  [[ $tz == /* ]] || tz="$wt/$tz"
+  tz="$(realpath -m "${tz%%#*}")#${tz#*#}"
+  [[ ${tz%%#*} == "$wt/"* && -f ${tz%%#*} ]] || { skip=$((skip+1)); continue; }
+  if [[ $dry_run == 1 ]]; then echo "ready $wt $atom"; continue; fi
+  (BEADS_ACTOR=$actor; deliver_one "$wt" "$atom" "$tz" "$head" "$repo" "$branch") && ok=$((ok+1)) || failed=$((failed+1))
+ done < <(git -C "$repo" worktree list --porcelain)
+ exec {fd}>&-
+ echo "ok=$ok failed=$failed skip=$skip"
+ [[ $failed == 0 ]]
+}
+
+ledger_identity(){
+ local info db
+ info=$(bd_cmd info --json) || return 1
+ db=$(jq -er '.database_path' <<<"$info") || return 1
+ [[ -d $db ]] || return 1
+ printf '%s|%s|%s|%s\n' "$(realpath "$SHIP_POST_BEADS_ROOT")" "$(realpath "$db")" "$(stat -Lc '%d:%i' "$db")" "$(git -C "$SHIP_POST_BEADS_ROOT" branch --show-current 2>/dev/null)"
+}
+
+write_cursor(){
+ jq -n --arg identity "$identity" --argjson seq "$seq" '{identity:$identity,seq:$seq}' > "$SHIP_POST_STATE_DIR/cursor.json.tmp" && mv "$SHIP_POST_STATE_DIR/cursor.json.tmp" "$SHIP_POST_STATE_DIR/cursor.json"
+}
+
+queue_all(){
+ local repo
+ for repo in "${_repos[@]}"; do
+  touch "$SHIP_POST_STATE_DIR/pending/$(slugify "$repo")" || return 1
+ done
+}
+
+do_watch() (
+ resolve_repos
+ local identity seq=0 ev next pid reader_fd journal_pid watcher_lock tmp repo stored
+ local workers=()
+ identity=$(ledger_identity) || die 'cannot establish ledger identity'
+ mkdir -p "$SHIP_POST_STATE_DIR/pending" || return 1
+ exec {watcher_lock}>"$SHIP_POST_STATE_DIR/watch.lock"
+ flock -n "$watcher_lock" || die 'watcher already active'
+ if [[ -f $SHIP_POST_STATE_DIR/cursor.json ]]; then
+  stored=$(jq -er .identity "$SHIP_POST_STATE_DIR/cursor.json") || die 'invalid cursor identity'
+  [[ $stored == "$identity" ]] || die 'ledger identity changed'
+  seq=$(jq -er '.seq | select(type=="number" and .>=0 and floor==.)' "$SHIP_POST_STATE_DIR/cursor.json") || die 'invalid cursor sequence'
+ fi
+ queue_all || return 1
+ tmp=$(mktemp -d "$SHIP_POST_STATE_DIR/watch.XXXXXX") || return 1
+ cleanup_watch(){
+  touch "$tmp/stop"
+  [[ -z ${journal_pid:-} ]] || kill "$journal_pid" 2>/dev/null || true
+  [[ -z ${journal_pid:-} ]] || wait "$journal_pid" 2>/dev/null || true
+  for pid in "${workers[@]}"; do wait "$pid" || true; done
+  rm -rf -- "$tmp"
+ }
+ trap cleanup_watch EXIT
+ trap 'exit 143' TERM INT
+ for repo in "${_repos[@]}"; do
+  (
+   pending="$SHIP_POST_STATE_DIR/pending/$(slugify "$repo")"
+   while [[ ! -f $tmp/stop ]]; do
+    if [[ -f $pending ]]; then rm -f -- "$pending"; scan_repo "$repo" || true; fi
+    sleep 1
+   done
+  ) & workers+=("$!")
+ done
+ # Native --follow owns the journal polling. The coordinator never starts a model.
+ coproc JOURNAL { cd "$SHIP_POST_BEADS_ROOT" && exec env BEADS_ACTOR="${BEADS_ACTOR:-Codex}" bd events tail --since "$seq" --follow --json 2>&1; }
+ journal_pid=$JOURNAL_PID; exec {reader_fd}<&"${JOURNAL[0]}"
+ while IFS= read -r ev <&"$reader_fd"; do
+  if [[ $(jq -r '.code // empty' <<<"$ev" 2>/dev/null) == events_journal_truncated ]]; then
+   next=$(jq -er '.floor | select(type=="number" and .>0 and floor==.)' <<<"$ev") || die 'invalid retention boundary'
+   queue_all || return 1
+   seq=$((next-1)); write_cursor || return 1
+   die 'journal truncated; recovery scheduled, restart from retained floor'
+  fi
+  next=$(jq -er '.seq | select(type=="number" and .>=0 and floor==.)' <<<"$ev") || die 'malformed journal record'
+  (( next > seq )) || continue
+  if jq -e '(.op=="close" or .op=="update") and .issue.status=="closed"' <<<"$ev" >/dev/null; then
+   queue_all || return 1
+  fi
+  seq=$next; write_cursor || return 1
+ done
+ wait "$journal_pid"; next=$?; journal_pid=''
+ echo "ship-post: journal stream ended (exit $next)" >&2
+ return 1
+)
+
+if [[ $submit == 1 ]]; then
+ do_submit "$submit_wt" "$submit_atom" "$submit_tz" "$submit_evidence" "${submit_files[@]}"
+elif [[ $watch == 1 ]]; then
+ do_watch
+else
+ resolve_repos
+ result=0
+ for repo in "${_repos[@]}"; do scan_repo "$repo" || result=1; done
+ exit "$result"
+fi
