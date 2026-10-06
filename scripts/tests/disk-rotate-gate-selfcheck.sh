@@ -286,6 +286,76 @@ scenario_12() { # state в несуществующем подкаталоге: 
   fi
 }
 
+scenario_13() { # GATE_RC unbound regression: --dry-run без gate_process
+  fixture scen13
+  local out rc
+  out=$(run_rotate -- --dry-run 2>&1)
+  rc=$?
+  if [ "$rc" -eq 0 ]; then
+    report 13 "GATE_RC unset (--dry-run + test-only)" PASS
+  else
+    report 13 "GATE_RC unset (--dry-run + test-only, rc=$rc, out=$(printf '%s' "$out" | tail -1))" FAIL
+  fi
+}
+
+scenario_14() { # handle() label=$cls unbound regression: заменимый файл в dry-run
+  fixture scen14
+  printf 'replaceable junk\n' >"$F"
+  local out rc
+  out=$(run_rotate DR_USAGE_PCT=5 -- --dry-run 2>&1)
+  rc=$?
+  # Dry-run must complete, not mask a shell error as a gate status.
+  if [ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -qF "$F"; then
+    report 14 "handle label=\$cls (dry-run + low-usage)" PASS
+  else
+    local last
+    last=$(printf '%s' "$out" | tail -3)
+    report 14 "handle label=\$cls (dry-run + low-usage, rc=$rc, last=$last)" FAIL
+  fi
+}
+
+scenario_15() { # dry/live protected-path alignment: оба режима через handle
+  fixture scen15
+  printf 'protected content\n' >"$A"
+  printf 'replaceable junk\n' >"$F"
+  local dry_out live_out bad_dry bad_live rc_dry rc_live
+  # dry-run
+  dry_out=$(run_rotate -- --dry-run 2>&1)
+  rc_dry=$?
+  # live (usage 85 → cache, trashes F и удаляет заменимые)
+  live_out=$(run_rotate GATE_MODE=shadow DR_USAGE_PCT=85 -- 2>&1)
+  rc_live=$?
+  # ни в одном из режимов не должно быть путей из DENY_LIST
+  bad_dry=$(printf '%s' "$dry_out" | grep -E '^/' | grep -vE "^($I|$R)(/|$)" | head -1)
+  bad_live=$(printf '%s' "$live_out" | grep -E '(backups|secrets|hh-scoring|\.codex)' | head -1)
+  if [ "$rc_dry" -eq 0 ] && [ "$rc_live" -eq 0 ] && [ -z "$bad_dry" ] && [ -z "$bad_live" ]; then
+    report 15 "dry/live protected-path alignment" PASS
+  else
+    report 15 "dry/live protected-path alignment (dry=$bad_dry live=$bad_live)" FAIL
+  fi
+}
+
+scenario_16() { # forecast counts regular disposable files once
+  fixture scen16
+  dd if=/dev/zero of="$F" bs=4096 count=1 status=none
+  dd if=/dev/zero of="$R/second.data" bs=4096 count=2 status=none
+  local out rc expected total count
+  expected=$(du -sk "$F" "$R/second.data" | awk '{n+=$1} END{print n}')
+  out=$(run_rotate -- --dry-run 2>&1); rc=$?
+  total=$(printf '%s\n' "$out" | sed -n 's/^total candidates: \([0-9]*\)K$/\1/p')
+  count=$(printf '%s\n' "$out" | grep -c "^$R/")
+  if [ "$rc" -eq 0 ] && [ "$total" = "$expected" ] && [ "$count" -eq 2 ]; then
+    report 16 "disposable forecast equals unique-file sum" PASS
+  else
+    report 16 "disposable forecast (rc=$rc, total=$total expected=$expected count=$count)" FAIL
+  fi
+}
+
+if [ "${1:-}" = accounting ]; then
+  scenario_16
+  exit "$FAILS"
+fi
+
 scenario_1
 scenario_2
 scenario_3
@@ -298,8 +368,12 @@ scenario_9
 scenario_10
 scenario_11
 scenario_12
+scenario_13
+scenario_14
+scenario_15
+scenario_16
 
-echo "PASS $((12 - FAILS))/12"
+echo "PASS $((16 - FAILS))/16"
 [ "$FAILS" -eq 0 ] && exit 0
-echo "$FAILS/12 FAILED"
+echo "$FAILS/16 FAILED"
 exit 1
