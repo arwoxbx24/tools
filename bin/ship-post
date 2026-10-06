@@ -8,6 +8,8 @@ SHIP_POST_STATE_DIR=${SHIP_POST_STATE_DIR:-/root/workspaces/tools/state/ship-pos
 SHIP_POST_BEADS_ROOT=${SHIP_POST_BEADS_ROOT:-/root/workspaces/projects}
 SHIP_POST_SINCE=${SHIP_POST_SINCE:-1791205200}
 BEADS_ACTOR=${BEADS_ACTOR:-}
+SHIP_POST_RETRY_SECONDS=${SHIP_POST_RETRY_SECONDS:-30}
+[[ $SHIP_POST_RETRY_SECONDS =~ ^[1-9][0-9]*$ ]] || { echo 'ship-post: invalid retry interval' >&2; exit 2; }
 
 dry_run=0; watch=0; submit=0; submit_wt=''; submit_atom=''; submit_tz=''
 submit_evidence=''; submit_files=(); filter_atom=''
@@ -103,10 +105,15 @@ do_submit(){
 	local repo common
 	common=$(git -C "$wt_real" rev-parse --path-format=absolute --git-common-dir) || die "cannot locate repository"
 	repo=$(dirname "$common")
+	resolve_repos
+	local allowed=0 candidate
+	for candidate in "${_repos[@]}"; do [[ $(realpath "$candidate" 2>/dev/null) == "$repo" ]] && allowed=1; done
+	[[ $allowed == 1 ]] || usage_err "repository is not served by courier: $repo"
 	local branch caller
 	branch=$(git -C "$wt_real" symbolic-ref --short -q HEAD 2>/dev/null) || usage_err "cannot get branch"
 	case $BEADS_ACTOR in Codex) caller=codex ;; Claude|'Claude Code') caller=claude ;; *) usage_err "unknown BEADS_ACTOR: ${BEADS_ACTOR:-empty}" ;; esac
 	[[ $branch == "$caller/$atom" || $branch == "$caller/$atom"-* ]] || usage_err "branch $branch must match $caller/$atom or $caller/$atom-<topic>"
+	[[ $wt_real == */.worktrees/"$caller"/* ]] || usage_err "worktree must use .worktrees/<agent>/<task>"
 
 	local atom_json
 	atom_json=$(bd_cmd show "$atom" --json 2>/dev/null) || usage_err "bd show $atom failed"
@@ -223,43 +230,62 @@ remote_result(){
  remote_proof=$(jq -c --arg h "$head" '[.[] | select(.headRefOid==$h and .state=="MERGED" and (.mergeCommit.oid|type)=="string")][0] // empty' <<<"$result")
  [[ -n $remote_proof ]] && return 0
  [[ $(jq 'length' <<<"$result") == 0 ]] && return 21
- return 22
+ remote_open=$(jq -c --arg h "$head" '[.[] | select(.headRefOid==$h and .state=="OPEN")][0] // empty' <<<"$result")
+ [[ -n $remote_open ]] && return 22
+ return 24
 }
 
 record_failure(){
  local repo=$1 atom=$2 head=$3 rc=$4 key marker issue
  key=$(receipt_file "$repo" "$atom" "$head"); marker="$key.failed"
- [[ -f $marker ]] && return 0
  mkdir -p "$(dirname "$marker")" || return 1
- # Retain one durable failure before tracker mutations; never retry an uncertain ship blindly.
- printf '%s\n' "$rc" > "$marker" || return 1
+ # A marker records an observation, not completion of the tracker transaction.
+ printf '%s\n' "$rc" > "$marker.tmp" && mv "$marker.tmp" "$marker" || return 1
+ printf '%s actor=%s atom=%s sha=%s stage=failed code=%s\n' "$(date -Iseconds)" "$BEADS_ACTOR" "$atom" "$head" "$rc" >&2
+ case $rc in 23|70|75) return 0 ;; esac
  bd_cmd reopen "$atom" >/dev/null || return 1
  bd_cmd update "$atom" --append-notes "ship-post delivery failed: exit $rc; local commit $head retained; inspect courier receipt before retry." >/dev/null || return 1
- issue=$(bd_cmd create "[ship-post] delivery failure $atom" -t task -l contour:infra --deps "discovered-from:$atom" --description "Courier exit $rc. Local commit $head retained. Reconcile remote state before retry." --acceptance '1) Recorded delivery failure cause repaired and verified. 2) Remote state reconciled before retry. 3) Parent can close locally and resume courier delivery; remote receipt remains a parent requirement.' --silent) || return 1
- [[ -n $issue ]] && bd_cmd dep add "$atom" "$issue" >/dev/null
+ issue=$(bd_cmd search "[ship-post] delivery failure $atom" --json) || return 1
+ issue=$(jq -r --arg t "[ship-post] delivery failure $atom" '[.[] | select(.title==$t and .status!="closed")][0].id // empty' <<<"$issue") || return 1
+ if [[ -z $issue ]]; then
+  issue=$(bd_cmd create "[ship-post] delivery failure $atom" -t task -l contour:infra --deps "discovered-from:$atom" --description "Courier exit $rc. Local commit $head retained. Reconcile remote state before retry." --acceptance '1) Recorded delivery failure cause repaired and verified. 2) Remote state reconciled before retry. 3) Parent can close locally and resume courier delivery; remote receipt remains a parent requirement.' --silent) || return 1
+ fi
+ [[ -n $issue ]] && bd_cmd dep add "$atom" "$issue" >/dev/null || return 1
+ touch "$marker.reported"
+}
+
+ack_delivery(){
+ local rf=$1 atom=$2 marker st
+ [[ -f $rf.ack ]] && return 0
+ marker="ship-post receipt:$(jq -r .local_sha "$rf"):$atom"
+ st=$(bd_cmd show "$atom" --json) || return 1
+ if ! jq -e --arg marker "$marker" '.[0].notes // "" | contains($marker)' <<<"$st" >/dev/null; then
+  bd_cmd update "$atom" --append-notes "$marker; ship-post delivered: actor $BEADS_ACTOR; local $(jq -r .local_sha "$rf"); remote $(jq -r .remote_head "$rf"); $(jq -r .remote.url "$rf")" >/dev/null || return 1
+ fi
+ touch "$rf.ack"
 }
 
 write_delivery_receipt(){
  local repo=$1 atom=$2 submitted=$3 remote_head=$4 rf
  rf=$(receipt_file "$repo" "$atom" "$submitted")
- jq -n --arg repo "$repo" --arg atom "$atom" --arg sha "$submitted" --arg head "$remote_head" --argjson proof "$remote_proof" \
-  '{repo:$repo,atom:$atom,local_sha:$sha,remote_head:$head,remote:$proof}' > "$rf.tmp" && mv "$rf.tmp" "$rf" || return 1
- bd_cmd update "$atom" --append-notes "ship-post delivered: local $submitted; remote $remote_head; $(jq -r .url <<<"$remote_proof")" >/dev/null || return 1
+ mkdir -p "$(dirname "$rf")" || return 1
+ jq -n --arg actor "$BEADS_ACTOR" --arg timestamp "$(date -Iseconds)" --arg repo "$repo" --arg atom "$atom" --arg sha "$submitted" --arg head "$remote_head" --argjson proof "$remote_proof" \
+  '{actor:$actor,timestamp:$timestamp,stage:"delivered",repo:$repo,atom:$atom,local_sha:$sha,remote_head:$head,remote:$proof}' > "$rf.tmp" && mv "$rf.tmp" "$rf" || return 1
+ ack_delivery "$rf" "$atom" || return 1
  echo "delivered $atom $remote_head"
 }
 
 deliver_one(){
- local wt=$1 atom=$2 tz=$3 head=$4 repo=$5 branch=$6 rf inflight rc final_head remote_proof=''
+ local wt=$1 atom=$2 tz=$3 head=$4 repo=$5 branch=$6 rf inflight rc final_head ship_rc remote_proof='' remote_open=''
  rf=$(receipt_file "$repo" "$atom" "$head"); inflight=$(inflight_file "$repo" "$atom")
- [[ -f $rf ]] && return 0
- [[ -f $rf.failed ]] && return 1
+ [[ -f $rf ]] && { ack_delivery "$rf" "$atom"; return $?; }
  mkdir -p "$(dirname "$rf")" "$(dirname "$inflight")" || return 1
  remote_result "$wt" "$head" "$branch"; rc=$?
  if [[ $rc == 0 ]]; then
   write_delivery_receipt "$repo" "$atom" "$head" "$head" || return 1
   return 0
  fi
- if [[ $rc == 23 || ( -f $inflight && $rc != 21 ) ]]; then
+ if [[ $rc != 21 && $rc != 22 ]]; then
   echo "ship-post: remote outcome unresolved for $atom" >&2
   record_failure "$repo" "$atom" "$head" "$rc"; return 1
  fi
@@ -269,22 +295,29 @@ deliver_one(){
  fi
  printf '%s\n' "$head" > "$inflight.tmp" && mv "$inflight.tmp" "$inflight" || return 1
  # Existing ship owns private origin, secret scan, CI and exact-head merge gates.
- (cd "$SHIP_POST_BEADS_ROOT" && env BEADS_ACTOR="$BEADS_ACTOR" "$ship_bin" "$wt" --atom "$atom" --tz "$tz" --handover) > "$rf.log" 2>&1
+ printf '%s actor=%s atom=%s sha=%s stage=ship\n' "$(date -Iseconds)" "$BEADS_ACTOR" "$atom" "$head" >> "$rf.log"
+ (cd "$SHIP_POST_BEADS_ROOT" && env BEADS_ACTOR="$BEADS_ACTOR" "$ship_bin" "$wt" --atom "$atom" --tz "$tz" --handover --expected-head "$head") >> "$rf.log" 2>&1
  rc=$?
- [[ $rc == 0 ]] || { record_failure "$repo" "$atom" "$head" "$rc"; return 1; }
- final_head=$(git -C "$wt" rev-parse HEAD) || return 1
+ if [[ $rc != 0 ]]; then
+  ship_rc=$rc
+  remote_result "$wt" "$head" "$branch"; rc=$?
+  if [[ $rc == 0 ]]; then write_delivery_receipt "$repo" "$atom" "$head" "$head"; return $?; fi
+  if [[ $rc == 23 ]]; then ship_rc=23
+  elif [[ $ship_rc == 30 ]] && { [[ $rc == 22 ]] || grep -qiE 'could not resolve|could not connect|connection (reset|refused|timed out)|network is unreachable|HTTP 50[234]|TLS connection' "$rf.log"; }; then ship_rc=70
+  elif [[ $rc == 22 && $ship_rc == 40 ]]; then
+   # A pending check or unavailable CI API is not a confirmed product failure.
+   jq -e 'any(.statusCheckRollup[]?; (.conclusion=="FAILURE" or .conclusion=="CANCELLED" or .conclusion=="TIMED_OUT" or .state=="FAILURE" or .state=="ERROR"))' <<<"$remote_open" >/dev/null || ship_rc=70
+  fi
+  record_failure "$repo" "$atom" "$head" "$ship_rc"; return 1
+ fi
+ final_head=$head # Accepted delivery never rebases or commits another SHA.
  remote_result "$wt" "$final_head" "$branch" || { record_failure "$repo" "$atom" "$head" 23; return 1; }
  write_delivery_receipt "$repo" "$atom" "$head" "$final_head" || return 1
- # ship may rebase before pushing. Record both keys, retaining the original submission SHA.
- if [[ $head != "$final_head" ]]; then
-  mkdir -p "$(dirname "$(receipt_file "$repo" "$atom" "$final_head")")"
-  cp "$rf" "$(receipt_file "$repo" "$atom" "$final_head")" || return 1
- fi
  rm -f -- "$inflight"
 }
 
 scan_repo(){
- local repo=$1 lk fd line wt head branch msg atom tz st owner agent actor dirty base
+ local repo=$1 lk fd line wt head branch msg atom tz st owner agent actor dirty base rf code rc remote_proof='' remote_open=''
  local ok=0 failed=0 skip=0
  [[ -d $repo ]] || return 1
  repo=$(realpath "$repo") || return 1
@@ -302,14 +335,35 @@ scan_repo(){
   [[ -z $filter_atom || $atom == "$filter_atom" ]] || continue
   (( $(git -C "$wt" log -1 --format=%ct) >= SHIP_POST_SINCE )) || { skip=$((skip+1)); continue; }
   head=$(git -C "$wt" rev-parse HEAD) || continue
-  [[ -f $(receipt_file "$repo" "$atom" "$head") ]] && continue
   branch=$(git -C "$wt" symbolic-ref --short -q HEAD) || { skip=$((skip+1)); continue; }
   st=$(bd_cmd show "$atom" --json) || { failed=$((failed+1)); continue; }
-  [[ $(jq -r '.[0].status' <<<"$st") == closed ]] || { skip=$((skip+1)); continue; }
   owner=$(jq -r '.[0].assignee // empty' <<<"$st"); actor=$(actor_name "$owner") || { skip=$((skip+1)); continue; }
   owner=codex; [[ $actor == 'Claude Code' ]] && owner=claude
   [[ $branch == "$owner/$atom" || $branch == "$owner/$atom"-* ]] || { skip=$((skip+1)); continue; }
   [[ -z $agent || $(actor_name "$agent") == "$actor" ]] || { skip=$((skip+1)); continue; }
+  rf=$(receipt_file "$repo" "$atom" "$head")
+  if [[ $dry_run == 1 && ( -f $rf || -f $rf.failed || -f $(inflight_file "$repo" "$atom") ) ]]; then
+   echo "reconcile $wt $atom"; continue
+  fi
+  if [[ -f $rf ]]; then
+   (BEADS_ACTOR=$actor; ack_delivery "$rf" "$atom") || failed=$((failed+1))
+   continue
+  fi
+  if [[ -f $rf.failed || -f $(inflight_file "$repo" "$atom") ]]; then
+   remote_result "$wt" "$head" "$branch"; rc=$?
+   if [[ $rc == 0 ]]; then
+    (BEADS_ACTOR=$actor; write_delivery_receipt "$repo" "$atom" "$head" "$head") || failed=$((failed+1))
+    continue
+   fi
+   [[ $rc != 23 ]] || { failed=$((failed+1)); continue; }
+  fi
+  if [[ -f $rf.failed && ! -f $rf.failed.reported ]]; then
+   code=$(cat "$rf.failed")
+   case $code in 23|70|75) ;;
+    *) (BEADS_ACTOR=$actor; record_failure "$repo" "$atom" "$head" "$code") || failed=$((failed+1)); continue ;;
+   esac
+  fi
+  [[ $(jq -r '.[0].status' <<<"$st") == closed ]] || { skip=$((skip+1)); continue; }
   dirty=$(git -C "$wt" status --porcelain=v1 --untracked-files=all) || { failed=$((failed+1)); continue; }
   [[ -z $dirty ]] || { echo "skip $atom dirty worktree"; skip=$((skip+1)); continue; }
   # Normalize legacy absolute and current worktree-relative TZ without escaping the worktree.
@@ -345,7 +399,7 @@ queue_all(){
 
 do_watch() (
  resolve_repos
- local identity seq=0 ev next pid reader_fd journal_pid watcher_lock tmp repo stored
+ local identity seq=0 ev next pid reader_fd journal_pid watcher_lock tmp repo stored partial=''
  local workers=()
  identity=$(ledger_identity) || die 'cannot establish ledger identity'
  mkdir -p "$SHIP_POST_STATE_DIR/pending" || return 1
@@ -371,7 +425,13 @@ do_watch() (
   (
    pending="$SHIP_POST_STATE_DIR/pending/$(slugify "$repo")"
    while [[ ! -f $tmp/stop ]]; do
-    if [[ -f $pending ]]; then rm -f -- "$pending"; scan_repo "$repo" || true; fi
+    if [[ -f $pending ]]; then
+     rm -f -- "$pending"
+     if ! scan_repo "$repo"; then
+      touch "$pending" || exit 1
+      sleep "$SHIP_POST_RETRY_SECONDS"
+     fi
+    fi
     sleep 1
    done
   ) & workers+=("$!")
@@ -379,7 +439,14 @@ do_watch() (
  # Native --follow owns the journal polling. The coordinator never starts a model.
  coproc JOURNAL { cd "$SHIP_POST_BEADS_ROOT" && exec env BEADS_ACTOR="${BEADS_ACTOR:-Codex}" bd events tail --since "$seq" --follow --json 2>&1; }
  journal_pid=$JOURNAL_PID; exec {reader_fd}<&"${JOURNAL[0]}"
- while IFS= read -r ev <&"$reader_fd"; do
+ while :; do
+  for pid in "${workers[@]}"; do kill -0 "$pid" 2>/dev/null || die 'repository worker exited; restart required'; done
+  IFS= read -r -t 1 ev <&"$reader_fd"; next=$?
+  if [[ $next != 0 ]]; then
+   if (( next > 128 )); then partial+=$ev; continue; fi
+   break
+  fi
+  ev="$partial$ev"; partial=''
   if [[ $(jq -r '.code // empty' <<<"$ev" 2>/dev/null) == events_journal_truncated ]]; then
    next=$(jq -er '.floor | select(type=="number" and .>0 and floor==.)' <<<"$ev") || die 'invalid retention boundary'
    queue_all || return 1

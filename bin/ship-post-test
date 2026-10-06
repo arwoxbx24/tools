@@ -27,7 +27,7 @@ make_repo(){
 	printf 'base\n' > "$d/repo/base.txt"; git -C "$d/repo" add -- base.txt; git -C "$d/repo" commit -q -m base
 	git -C "$d/repo" push -q origin main; git -C "$d/repo" fetch -q origin
 }
-make_worktree(){ git -C "$1/repo" worktree add -q -b "$3" "$1/$2" origin/main; }
+make_worktree(){ git -C "$1/repo" worktree add -q -b "$3" "$1/.worktrees/${3%%/*}/$2" origin/main; }
 make_mocks(){
 	local d=$1; mkdir -p "$d/bin" "$d/home"; cp -f -- "$bin/ship-post" "$d/bin/ship-post"
 	cat > "$d/bin/ship" <<'MOCKSHIP'
@@ -41,6 +41,9 @@ MOCKSHIP
 #!/usr/bin/env bash
 [[ ${MOCK_GH_FAIL:-0} == 0 ]] || exit 1
 if [[ $1 == repo ]]; then echo '{"isPrivate":true}'; exit; fi
+if [[ -n ${MOCK_PR_HEAD:-} && ! -s $SHIP_POST_TEST_DIR/merged ]]; then
+ jq -n --arg h "$MOCK_PR_HEAD" --arg c "${MOCK_CHECK_CONCLUSION:-}" '[{headRefOid:$h,state:"OPEN",statusCheckRollup:[{conclusion:$c}]}]'; exit
+fi
 if [[ -s $SHIP_POST_TEST_DIR/merged ]]; then
  jq -Rs '[split("\n")[] | select(length>0) | {headRefOid:.,state:"MERGED",url:"https://github.com/test/private/pull/1",mergeCommit:{oid:"merged-test"},statusCheckRollup:[]}]' "$SHIP_POST_TEST_DIR/merged"
 else echo '[]'; fi
@@ -50,10 +53,26 @@ MOCKGH
 #!/usr/bin/env bash
 printf '%s|%s|%s\n' "$PWD" "${BEADS_ACTOR:-}" "$*" >> "${SHIP_POST_TEST_DIR}/bd.calls"
 case ${1:-} in
-show) printf '[{"status":"%s","assignee":"%s"}]\n' "${BD_STATUS:-in_progress}" "${BD_ASSIGNEE-Codex}" ;;
+show) [[ ! -f $SHIP_POST_TEST_DIR/bd-down ]] || exit 1
+ jq -n --arg status "$(cat "$SHIP_POST_TEST_DIR/status" 2>/dev/null || echo "${BD_STATUS:-in_progress}")" --arg assignee "${BD_ASSIGNEE-Codex}" --arg notes "$(cat "$SHIP_POST_TEST_DIR/bd.notes" 2>/dev/null || true)" '[{status:$status,assignee:$assignee,notes:$notes}]' ;;
 info) printf '{"database_path":"%s"}\n' "$SHIP_POST_TEST_DIR/repo/.git" ;;
-events) cat "$SHIP_POST_TEST_DIR/events"; [[ ${EVENT_STREAM_FAIL:-0} == 1 ]] && exit 7; while :; do sleep 1; done ;;
-create) echo test-infra ;;
+events) cat "$SHIP_POST_TEST_DIR/events"; [[ ${EVENT_STREAM_FAIL:-0} == 1 ]] && exit 7
+ if [[ ${PARTIAL_EVENT:-0} == 1 ]]; then
+  printf '{"seq":'; /bin/sleep 2; printf '%s\n' '1,"op":"update","issue":{"status":"in_progress"}}'
+ fi
+ if [[ ${DELAYED_CLOSE:-0} == 1 ]]; then
+  /bin/sleep 1; echo in_progress > "$SHIP_POST_TEST_DIR/status"
+  printf '%s\n' '{"seq":1,"op":"update","issue":{"status":"in_progress"}}'
+  /bin/sleep 1; [[ ! -s $SHIP_POST_TEST_DIR/ship.calls ]] && touch "$SHIP_POST_TEST_DIR/no-early-ship"
+  echo closed > "$SHIP_POST_TEST_DIR/status"
+  printf '%s\n' '{"seq":2,"op":"close","issue":{"status":"closed"}}'
+ fi
+ while :; do /bin/sleep 1; done ;;
+create) echo "$2" > "$SHIP_POST_TEST_DIR/issue-title"; echo test-infra ;;
+search) if [[ -f $SHIP_POST_TEST_DIR/issue-title ]]; then jq -n --arg title "$(cat "$SHIP_POST_TEST_DIR/issue-title")" '[{id:"test-infra",title:$title,status:"open"}]'; else echo '[]'; fi ;;
+update) [[ ! -f $SHIP_POST_TEST_DIR/notes-down ]] || exit 1; printf '%s\n' "${4:-}" >> "$SHIP_POST_TEST_DIR/bd.notes" ;;
+dep) [[ ! -f $SHIP_POST_TEST_DIR/dep-down ]] || exit 1 ;;
+reopen) echo open > "$SHIP_POST_TEST_DIR/status" ;;
 close) printf '%s\n' "${2:-}" >> "${SHIP_POST_TEST_DIR}/bd.closes"; exit "${BD_CLOSE_RC:-0}" ;;
 esac
 EOF
@@ -61,16 +80,15 @@ EOF
 }
 run_tool(){
 	local d=$1; shift
-	bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp --unshare-net --bind "$d" "$d" \
-		--setenv HOME "$d/home" --setenv PATH "$d/bin:/usr/bin:/bin" --setenv SHIP_POST_TEST_DIR "$d" \
-		--setenv SHIP_POST_REPOS "${TEST_REPOS:-$d/repo}" --setenv SHIP_POST_STATE_DIR "$d/state" --setenv SHIP_POST_BEADS_ROOT "$d" \
+	env HOME="$d/home" PATH="$d/bin:/usr/bin:/bin" SHIP_POST_TEST_DIR="$d" \
+		SHIP_POST_REPOS="${TEST_REPOS:-$d/repo}" SHIP_POST_STATE_DIR="$d/state" SHIP_POST_BEADS_ROOT="$d" SHIP_POST_RETRY_SECONDS=1 \
 		timeout --kill-after=2 "${TEST_TIMEOUT:-15}" "$d/bin/ship-post" "$@"
 }
 setup_submit(){
 	local name=$1 branch=$2
 	d="$root/$name"; make_repo "$d" || exit 1; mkdir -p "$d/repo/docs/tz"; printf '# TZ\n' > "$d/repo/docs/tz/TZ-TEST.md"
 	git -C "$d/repo" add -- docs/tz/TZ-TEST.md; git -C "$d/repo" commit -q -m tz; git -C "$d/repo" push -q origin main
-	make_worktree "$d" wt "$branch" || exit 1; wt="$d/wt"; tz='docs/tz/TZ-TEST.md'; make_mocks "$d"
+	make_worktree "$d" wt "$branch" || exit 1; wt="$d/.worktrees/${branch%%/*}/wt"; tz='docs/tz/TZ-TEST.md'; make_mocks "$d"
 }
 submit(){ run_tool "$d" --submit "$wt" --atom "$1" --tz "$2#U2" --evidence evidence --files "$tz" "${@:3}"; }
 
@@ -163,19 +181,20 @@ test_delivery(){
  git -C "$wt" commit -q --allow-empty -m uncertain -m "$(printf 'ТЗ: %s#U2\nAtom: dcfg-uncertain.1' "$wt/$tz")"
  out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_GH_FAIL=1; run_tool "$d" 2>&1); rc=$?
  [[ $rc != 0 && ! -s $d/ship.calls ]] && pass unknown_remote || fail unknown_remote "$out"
- grep -q 'reopen dcfg-uncertain.1' "$d/bd.calls" && pass failure_recorded || fail failure_recorded missing
+ compgen -G "$d/state/receipts/*/dcfg-uncertain.1/*.failed" >/dev/null && ! grep -q 'reopen dcfg-uncertain.1' "$d/bd.calls" && pass transient_retains_readiness || fail transient_retains_readiness missing
 }
 
 test_watch(){
  local out rc h
  setup_submit watch codex/dcfg-watch.1
  git -C "$wt" commit -q --allow-empty -m watch -m "$(printf 'ТЗ: %s#U2\nAtom: dcfg-watch.1' "$wt/$tz")"
- printf '%s\n' '{"seq":1,"op":"update","issue":{"status":"in_progress"}}' '{"seq":2,"op":"close","issue":{"status":"closed"}}' > "$d/events"
- # Bound the whole sandbox; mock stream lives until the tested watcher exits.
- out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex TEST_TIMEOUT=3; run_tool "$d" --watch --atom dcfg-watch.1 >"$d/watch.log" 2>&1); rc=$?
+ : > "$d/events"
+ # Open throughout startup; only the later native-shaped close event makes it ready.
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=in_progress BD_ASSIGNEE=Codex DELAYED_CLOSE=1 TEST_TIMEOUT=5; run_tool "$d" --watch --atom dcfg-watch.1 >"$d/watch.log" 2>&1); rc=$?
  [[ $(wc -l <"$d/ship.calls") == 1 ]] && pass watch_delivers || fail watch_delivers "rc=$rc $(cat "$d/watch.log")"
  [[ $(jq -r .seq "$d/state/cursor.json") == 2 ]] && pass cursor_ack || fail cursor_ack missing
  [[ -n $(jq -r .identity "$d/state/cursor.json") ]] && pass cursor_identity || fail cursor_identity missing
+ [[ -f $d/no-early-ship ]] && pass no_startup_or_open_update_delivery || fail no_startup_or_open_update_delivery missing
 }
 
 commit_candidate(){
@@ -233,6 +252,122 @@ test_concurrent_repositories(){
  [[ $(wc -l < "$d/ship.calls") == 2 ]] && pass restart_no_duplicate || fail restart_no_duplicate "$out"
 }
 
-test_dryrun_mocks; test_valid_actors; test_rejections; test_hook_and_retry; test_closed_retry; test_delivery; test_watch; test_recovery; test_stream_errors; test_concurrent_repositories
+test_service_recovery(){
+ local out rc key h receipt
+ setup_submit api_recover codex/dcfg-api.1; commit_candidate dcfg-api.1
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed MOCK_GH_FAIL=1; run_tool "$d" 2>&1)
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed; run_tool "$d" 2>&1); rc=$?
+ [[ $rc == 0 && $(wc -l < "$d/ship.calls") == 1 ]] && pass api_recovers || fail api_recovers "$out"
+ setup_submit note_recover claude/dcfg-note.1; commit_candidate dcfg-note.1 claude
+ touch "$d/notes-down"
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE='Claude Code'; run_tool "$d" 2>&1)
+ rm "$d/notes-down"; : > "$d/bd.calls"
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE='Claude Code'; run_tool "$d" 2>&1); rc=$?
+ [[ $rc == 0 && $(wc -l < "$d/ship.calls") == 1 ]] && grep -q 'update dcfg-note.1.*delivered' "$d/bd.calls" && pass note_repaired_without_ship || fail note_repaired_without_ship "$out"
+ key=$(printf %s "$d/repo" | sha256sum | cut -d ' ' -f1); h=$(git -C "$wt" rev-parse HEAD); receipt="$d/state/receipts/$key/dcfg-note.1/$h"
+ jq -e '.actor=="Claude Code" and .stage=="delivered" and (.timestamp|type)=="string"' "$receipt" >/dev/null && pass receipt_actor || fail receipt_actor missing
+ setup_submit pending_recover codex/dcfg-pending.1; commit_candidate dcfg-pending.1
+ : > "$d/events"; touch "$d/bd-down"
+ (sleep 2; rm "$d/bd-down") & local repair=$!
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed TEST_TIMEOUT=5; run_tool "$d" --watch 2>&1); wait "$repair"
+ [[ $(wc -l < "$d/ship.calls") == 1 ]] && pass pending_recovers || fail pending_recovers "$out"
+}
+
+test_recovery_boundaries(){
+ local out rc key h rf count
+ setup_submit registration codex/dcfg-reg.1; commit_candidate dcfg-reg.1
+ touch "$d/dep-down"
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed MOCK_SHIP_RC=40; run_tool "$d" 2>&1)
+ rm "$d/dep-down"
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=open; run_tool "$d" 2>&1)
+ key=$(printf %s "$d/repo" | sha256sum | cut -d ' ' -f1); h=$(git -C "$wt" rev-parse HEAD); rf="$d/state/receipts/$key/dcfg-reg.1/$h"
+ [[ -f $rf.failed.reported && $(grep -c '^.*|create ' "$d/bd.calls") == 1 && $(wc -l < "$d/ship.calls") == 1 ]] && pass failure_registration_resumes || fail failure_registration_resumes "$out"
+ setup_submit ack_crash codex/dcfg-ack.1; commit_candidate dcfg-ack.1
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed; run_tool "$d" 2>&1)
+ key=$(printf %s "$d/repo" | sha256sum | cut -d ' ' -f1); h=$(git -C "$wt" rev-parse HEAD); rf="$d/state/receipts/$key/dcfg-ack.1/$h"
+ rm "$rf.ack"; count=$(grep -c 'update.*receipt:' "$d/bd.calls")
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed; run_tool "$d" 2>&1)
+ [[ -f $rf.ack && $(grep -c 'update.*receipt:' "$d/bd.calls") == "$count" ]] && pass ack_crash_no_duplicate_note || fail ack_crash_no_duplicate_note "$out"
+ setup_submit scope codex/dcfg-scope.1; printf x > "$wt/x"
+ out=$(export BEADS_ACTOR=Codex TEST_REPOS="$d/elsewhere"; submit dcfg-scope.1 "$tz" x 2>&1); rc=$?
+ [[ $rc != 0 && $out == *'repository is not served'* && ! -s $d/bd.closes ]] && pass submit_scope_matches_courier || fail submit_scope_matches_courier "$out"
+ setup_submit worker_death codex/dcfg-worker.1; : > "$d/events"
+ cat > "$d/bin/sleep" <<'MOCKSLEEP'
+#!/usr/bin/env bash
+# Only the fixture's worker calls sleep through this PATH; journal uses /bin/sleep.
+kill -KILL "$PPID"
+MOCKSLEEP
+ chmod +x "$d/bin/sleep"
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=in_progress TEST_TIMEOUT=4; run_tool "$d" --watch 2>&1); rc=$?
+ [[ $rc == 1 && $out == *'repository worker exited'* ]] && pass worker_death_observed || fail worker_death_observed "$out rc=$rc"
+}
+
+test_accepted_ship(){
+ local out rc h after
+ setup_submit accepted codex/dcfg-pin.1; commit_candidate dcfg-pin.1
+ cp "$bin/ship" "$d/bin/ship-real"
+ cat > "$d/bin/git-auto-lib" <<'MOCKLIB'
+ga_repo_of(){ echo test; }
+ga_skip_reason(){ :; }
+ga_base(){ echo 'single main main'; }
+ga_lock(){ shift 2; if (( $# )); then "$@"; fi; }
+ga_ctx(){ GA_SLUG=test/private; }
+gg_log(){ :; }
+leave(){ exit "$1"; }
+MOCKLIB
+ cat > "$d/bin/gh" <<'MOCKGH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$SHIP_POST_TEST_DIR/gh.calls"
+case "$1 $2" in
+ 'pr list') echo '{"number":1,"baseRefName":"main"}' ;;
+ 'pr view') echo merged-test ;;
+esac
+MOCKGH
+ h=$(git -C "$wt" rev-parse HEAD)
+ git -C "$wt" config core.hooksPath /root/workspaces/tools/git-hooks
+ printf foreign > "$wt/foreign"
+ out=$(env HOME="$d/home" PATH="$d/bin:/usr/bin:/bin" SHIP_POST_TEST_DIR="$d" BEADS_ACTOR=Codex GA_LOG_DIR="$d/logs" "$d/bin/ship-real" "$wt" --atom dcfg-pin.1 --tz "$wt/$tz#U2" --handover --expected-head "$h" 2>&1); rc=$?
+ [[ $rc == 10 && $out == *'accepted HEAD or worktree changed'* && $(git -C "$wt" rev-parse HEAD) == "$h" && -f $wt/foreign ]] && pass accepted_dirty_rejected || fail accepted_dirty_rejected "$out rc=$rc"
+ rm "$wt/foreign"
+ out=$(env HOME="$d/home" PATH="$d/bin:/usr/bin:/bin" SHIP_POST_TEST_DIR="$d" BEADS_ACTOR=Codex BD_STATUS=closed GA_LOG_DIR="$d/logs" "$d/bin/ship-real" "$wt" --atom dcfg-pin.1 --tz "$wt/$tz#U2" --handover --expected-head "$h" 2>&1); rc=$?
+ after=$(git --git-dir="$d/origin.git" rev-parse refs/heads/codex/dcfg-pin.1 2>/dev/null)
+ [[ $rc == 0 && $after == "$h" ]] && grep -q -- "--match-head-commit $h" "$d/gh.calls" && pass accepted_exact_head_delivery || fail accepted_exact_head_delivery "$out rc=$rc remote=$after"
+}
+
+test_review_recovery(){
+ local out rc key h rf before
+ setup_submit dry_ack codex/dcfg-dryack.1; commit_candidate dcfg-dryack.1
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed; run_tool "$d" 2>&1)
+ key=$(printf %s "$d/repo" | sha256sum | cut -d ' ' -f1); h=$(git -C "$wt" rev-parse HEAD); rf="$d/state/receipts/$key/dcfg-dryack.1/$h"
+ rm "$rf.ack"; : > "$d/bd.calls"
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed; run_tool "$d" --dry-run 2>&1)
+ [[ ! -f $rf.ack ]] && ! grep -Eq '\|(update|reopen|create|dep) ' "$d/bd.calls" && pass dry_receipt_no_mutation || fail dry_receipt_no_mutation "$out"
+ rm "$rf"; echo 40 > "$rf.failed"
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed; run_tool "$d" --dry-run 2>&1)
+ ! grep -Eq '\|(update|reopen|create|dep) ' "$d/bd.calls" && pass dry_failure_no_mutation || fail dry_failure_no_mutation "$out"
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=open; run_tool "$d" 2>&1)
+ [[ -f $rf && $(wc -l < "$d/ship.calls") == 1 ]] && pass legacy_failure_merged_reconciled || fail legacy_failure_merged_reconciled "$out"
+ setup_submit repeat_red codex/dcfg-red.1; commit_candidate dcfg-red.1
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed MOCK_SHIP_RC=40; run_tool "$d" 2>&1)
+ echo closed > "$d/status"
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed MOCK_SHIP_RC=40; run_tool "$d" 2>&1)
+ [[ $(cat "$d/status") == open && $(grep -c '|reopen ' "$d/bd.calls") == 2 ]] && pass repeated_failure_reopens || fail repeated_failure_reopens "$out"
+ setup_submit ci_transport codex/dcfg-ci.1; commit_candidate dcfg-ci.1; h=$(git -C "$wt" rev-parse HEAD)
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed MOCK_SHIP_RC=40 MOCK_PR_HEAD="$h"; run_tool "$d" 2>&1)
+ ! grep -q '|reopen ' "$d/bd.calls" && pass pending_ci_retains_readiness || fail pending_ci_retains_readiness "$out"
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed MOCK_PR_HEAD="$h"; run_tool "$d" 2>&1); rc=$?
+ [[ $rc == 0 && $(wc -l < "$d/merged") == 1 ]] && pass ci_transport_recovers || fail ci_transport_recovers "$out"
+ setup_submit partial_event codex/dcfg-partial.1; : > "$d/events"
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=in_progress PARTIAL_EVENT=1 TEST_TIMEOUT=4; run_tool "$d" --watch 2>&1)
+ [[ $(jq -r .seq "$d/state/cursor.json") == 1 && $out != *'malformed journal'* ]] && pass partial_event_retained || fail partial_event_retained "$out"
+}
+
+if [[ ${SHIP_POST_TEST_GROUP:-all} == review ]]; then
+ test_review_recovery
+elif [[ ${SHIP_POST_TEST_GROUP:-all} == recovery ]]; then
+ test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery
+else
+ test_dryrun_mocks; test_valid_actors; test_rejections; test_hook_and_retry; test_closed_retry; test_delivery; test_watch; test_recovery; test_stream_errors; test_concurrent_repositories; test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery
+fi
 echo "checks=$checks failures=$failures"
 [[ $failures == 0 ]]
