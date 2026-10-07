@@ -807,7 +807,7 @@ if [ "$MODE" = run ] && [ "$pct_after" -gt "$EXHAUSTED_PCT" ]; then
     fi
   done
   echo "EXHAUSTED-LIST$owner_list" >>"$DR_LOG"
-  maybe_alert exhausted "Диск занят на ${pct_after}% даже после уборки — скоро может не хватить места. Нужно ваше решение, что удалить; список — в журнале уборки."
+  maybe_alert exhausted "Диск занят на ${pct_after}% даже после уборки — скоро может не хватить места. Безопасные кандидаты уборки исчерпаны. Нужен атом для освобождения места; список — в журнале уборки."
 elif [ "$MODE" = run ]; then
   clear_alert exhausted
 fi
