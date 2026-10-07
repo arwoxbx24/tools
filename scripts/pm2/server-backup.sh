@@ -232,6 +232,78 @@ set -a
 source "$S3_ENV"
 set +a
 
+backup_docker_images() {
+  local image_list id size avail need reserve rc short_snapshot snapshot candidate receipt result
+  local ok=0 failed=0 count=0
+  local -a image_ids=()
+  receipt="$STAGE/docker-images.receipt"
+  result="$STAGE/docker-images-result.jsonl"
+  reserve=${BK_IMAGE_RESERVE_BYTES:-3221225472}
+  [[ $reserve =~ ^[0-9]+$ ]] || { log "docker-images invalid reserve=$reserve"; return 1; }
+  image_list=$(docker image ls --no-trunc --quiet) || { log "docker-images inventory failed"; return 1; }
+  [ -n "$image_list" ] || { log "docker-images inventory empty"; return 1; }
+  mapfile -t image_ids < <(printf '%s\n' "$image_list" | LC_ALL=C sort -u)
+  count=${#image_ids[@]}
+  for id in "${image_ids[@]}"; do
+    [[ $id =~ ^sha256:[0-9a-f]{64}$ ]] || { log "docker-images invalid id=$id"; return 1; }
+  done
+
+  for id in "${image_ids[@]}"; do
+    snapshot=''
+    if [ -f "$receipt" ]; then
+      while read -r receipt_id candidate; do
+        if [ "$receipt_id" = "$id" ] && [[ $candidate =~ ^[0-9a-f]{64}$ ]] \
+          && "$RESTIC" cat snapshot "$candidate" >/dev/null 2>>"$LOG"; then
+          snapshot=$candidate
+          break
+        fi
+      done <"$receipt"
+    fi
+    if [ -n "$snapshot" ]; then
+      ok=$((ok + 1))
+      continue
+    fi
+    size=$(docker image inspect -f '{{.Size}}' "$id") || { log "docker-images inspect failed id=$id"; failed=$((failed + 1)); continue; }
+    avail=$(df -B1 --output=avail /var/lib/docker | tail -1 | tr -d '[:space:]') || { log "docker-images df failed id=$id"; failed=$((failed + 1)); continue; }
+    if ! [[ $size =~ ^[0-9]+$ && $avail =~ ^[0-9]+$ ]]; then
+      log "docker-images invalid size/avail id=$id size=$size avail=$avail"
+      failed=$((failed + 1))
+      continue
+    fi
+    need=$((size + reserve))
+    if [ "$avail" -lt "$need" ]; then
+      log "docker-images skip $id low-space need=$need avail=$avail"
+      failed=$((failed + 1))
+      continue
+    fi
+    timeout -k 30s 3600 "${NICE_PREFIX[@]}" "$RESTIC" backup --json --tag docker-images \
+      --stdin-from-command --stdin-filename "docker-image-${id#sha256:}.tar.gz" \
+      --limit-upload "${BK_LIMIT_UPLOAD:-5120}" --retry-lock 30m -- \
+      env -u AWS_SECRET_ACCESS_KEY -u AWS_ACCESS_KEY_ID -u RESTIC_PASSWORD \
+      bash -o pipefail -c 'docker image save "$1" | gzip -1' _ "$id" >"$result" 2>>"$LOG"
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+      log "docker-images backup failed id=$id rc=$rc"
+      failed=$((failed + 1))
+      continue
+    fi
+    short_snapshot=$(jq -er 'select(.message_type == "summary") | .snapshot_id | select(test("^[0-9a-f]{8,64}$"))' "$result") || {
+      log "docker-images snapshot receipt failed id=$id"; failed=$((failed + 1)); continue;
+    }
+    timeout -k 30s 120 "${NICE_PREFIX[@]}" "$RESTIC" snapshots --tag docker-images --json \
+      >"$result" 2>>"$LOG" || { log "docker-images snapshots failed id=$id"; failed=$((failed + 1)); continue; }
+    snapshot=$(jq -er --arg prefix "$short_snapshot" '[.[] | .id | select(startswith($prefix))] | if length == 1 then .[0] else empty end | select(test("^[0-9a-f]{64}$"))' "$result") || {
+      log "docker-images snapshot resolve failed id=$id"; failed=$((failed + 1)); continue;
+    }
+    printf '%s %s\n' "$id" "$snapshot" >>"$receipt" || { log "docker-images receipt write failed id=$id"; failed=$((failed + 1)); continue; }
+    ok=$((ok + 1))
+  done
+  run_step docker-images-retention "${NICE_PREFIX[@]}" "$RESTIC" forget --tag docker-images \
+    --group-by host,paths --keep-last 1 --retry-lock 30m || failed=$((failed + 1))
+  log "docker-images ok=$ok failed=$failed count=$count"
+  [ "$failed" -eq 0 ]
+}
+
 if [ ! -f "$PW_ENV" ]; then
   (umask 077; printf 'RESTIC_PASSWORD=%s\n' "$(openssl rand -hex 32)" >"$PW_ENV")
   chmod 600 "$PW_ENV"
@@ -243,6 +315,10 @@ source "$PW_ENV"
 set +a
 
 [ "${1:-}" = --drill ] && { drill; exit 0; }
+if [ "${1:-}" = --images-only ]; then
+  backup_docker_images || fail docker-images "$?"
+  exit 0
+fi
 
 exec 9>"$STAGE/.server-backup.lock" || fail lock 1
 if ! flock -n 9; then
@@ -276,10 +352,13 @@ else
 fi
 
 # One scheduler: produce Docker dumps before the same server snapshot.
-run_step docker-stage bash /root/workspaces/tools/scripts/pm2/docker-backup.sh
+run_step docker-stage bash "${BK_DOCKER_SCRIPT:-/root/workspaces/tools/scripts/pm2/docker-backup.sh}"
 docker_rc=$?
 # Preserve the ordinary server backup even if fresh Docker staging fails.
 [ "$docker_rc" -eq 0 ] || log "Docker staging failed; uploading prior published archives"
+backup_docker_images
+images_rc=$?
+[ "$images_rc" -eq 0 ] || log "Docker images failed; ordinary server upload continues"
 
 # Hold the producer's existing lock through inventory, upload, recovery and cleanup.
 exec 8>/root/backups/docker/.docker-backup.lock || fail docker-lock 1
@@ -399,12 +478,13 @@ printf '%s\n' "$stats_output" >>"$LOG"
 log "stats rc=$stats_rc"
 stats_size=$(printf '%s\n' "$stats_output" | awk -F': ' '/Total Size:/ {print $2; exit}')
 case "$stats_rc" in 0|3) ;; *) fail stats "$stats_rc" ;; esac
-log "SUMMARY docker_rc=$docker_rc backup_rc=$backup_rc forget_rc=$forget_rc check_rc=$check_rc stats=${stats_size:-unknown}"
+log "SUMMARY docker_rc=$docker_rc images_rc=$images_rc backup_rc=$backup_rc forget_rc=$forget_rc check_rc=$check_rc stats=${stats_size:-unknown}"
 [ "$docker_rc" -eq 0 ] || fail docker-stage "$docker_rc"
 docker_recovery_and_retention "$snapshot_id" "$docker_proof"
 docker_retention_rc=$?
 log "docker-retention rc=$docker_retention_rc"
 [ "$docker_retention_rc" -eq 0 ] || fail docker-retention "$docker_retention_rc"
+[ "$images_rc" -eq 0 ] || fail docker-images "$images_rc"
 date +%s >"$LAST_OK"
 if [ "$(date +%u)" = 7 ]; then
   send_telegram "✅ server-backup: неделя ок, snapshot latest, size ${stats_size:-unknown}, drill ok"
