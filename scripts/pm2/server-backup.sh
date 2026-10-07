@@ -355,7 +355,7 @@ fi
 run_step docker-stage bash "${BK_DOCKER_SCRIPT:-/root/workspaces/tools/scripts/pm2/docker-backup.sh}"
 docker_rc=$?
 # Preserve the ordinary server backup even if fresh Docker staging fails.
-[ "$docker_rc" -eq 0 ] || log "Docker staging failed; uploading prior published archives"
+[ "$docker_rc" -eq 0 ] || log "Docker staging failed; uploading prior DB dumps"
 backup_docker_images
 images_rc=$?
 [ "$images_rc" -eq 0 ] || log "Docker images failed; ordinary server upload continues"
@@ -373,19 +373,32 @@ paths=(
   /root/.northflank /root/.copilot /root/.azure-devops /root/.git-templates /root/.holmes /root/.semgrep /root/.vim
   /root/.dbclient /root/bin /root/netplan-backup
   /root/CLAUDE.md /root/AGENTS.md /root/GEMINI.md /etc /data/minio
-  /root/nginx-proxy-manager "$STAGE"
+  /root/nginx-proxy-manager /var/lib/docker/volumes "$STAGE"
   /root/.claude.json /root/.bashrc /root/.profile /root/.gitconfig /root/.gitignore_global
   /root/.mc /root/.docker /root/.gnupg /root/.beads /root/.dolt /root/.opencode
   /root/.agents /root/ecosystem.config.js /var/www /opt/actions-runner/.runner
   /root/actions-runner-2/.runner /home/claude /home/gitmirror/repos /home/gitmirror/archived-repos
 )
 paths+=(/root/.tmux*)
-# Capture every retained published directory in the same snapshot before cleanup.
-# After successful retention only the prior and fresh local snapshots remain as inputs.
-docker_snapshots=()
-for docker_snapshot in /root/backups/docker/20*; do
-  [ -d "$docker_snapshot" ] && [ ! -L "$docker_snapshot" ] && docker_snapshots+=("$docker_snapshot")
+[ -d /var/lib/docker/volumes ] && [ ! -L /var/lib/docker/volumes ] || fail docker-inventory 1
+# Selected writable container layers are not included by the Docker volume path.
+docker_upper_dirs=()
+for container in hiddify-manager-hiddify-1 proxy-manager-app-1 3x-ui; do
+  upper_dir=$(docker inspect -f '{{index .GraphDriver.Data "UpperDir"}}' "$container" 2>>"$LOG") \
+    || fail docker-inventory 1
+  [[ $upper_dir == /var/lib/docker/overlay2/*/diff ]] && [ -d "$upper_dir" ] && [ ! -L "$upper_dir" ] \
+    || fail docker-inventory 1
+  paths+=("$upper_dir")
+  docker_upper_dirs+=("$upper_dir")
+  log "docker-layer container=$container path=$upper_dir"
 done
+# The stable DB stage replaces growing dated tar archives; old archives stay untouched.
+docker_snapshots=()
+docker_snapshot=/root/backups/docker/current
+if [ -d "$docker_snapshot" ] && [ ! -L "$docker_snapshot" ] \
+  && compgen -G "$docker_snapshot/*.gz" >/dev/null; then
+  docker_snapshots+=("$docker_snapshot")
+fi
 if [ "${#docker_snapshots[@]}" -gt 0 ]; then
   paths+=("${docker_snapshots[@]}")
   for docker_snapshot in "${docker_snapshots[@]}"; do
@@ -393,8 +406,7 @@ if [ "${#docker_snapshots[@]}" -gt 0 ]; then
       || fail docker-inventory 1
   done
 else
-  docker_rc=1
-  log "Docker published archive inventory empty"
+  log "Docker DB dump inventory empty; direct Docker paths still included"
 fi
 
 backup_paths=()
@@ -430,6 +442,11 @@ timeout -k 30s 3600 "${NICE_PREFIX[@]}" "$RESTIC" snapshots "$snapshot_id" --jso
   >"$docker_proof/snapshot.json" 2>>"$LOG" || fail snapshot-receipt 1
 snapshot_id=$(jq -er 'select(length == 1) | .[0].id | select(test("^[0-9a-f]{64}$"))' "$docker_proof/snapshot.json") \
   || fail snapshot-receipt 1
+for path in /var/lib/docker/volumes "${docker_upper_dirs[@]}"; do
+  jq -e --arg path "$path" '.[0].paths | index($path) != null' "$docker_proof/snapshot.json" >/dev/null \
+    || fail snapshot-receipt 1
+  log "snapshot-path verified snapshot=$snapshot_id path=$path"
+done
 log "backup snapshot=$snapshot_id"
 
 # Сверка числа bare-репозиториев зеркала в S3 с локальным каталогом.
@@ -480,8 +497,11 @@ stats_size=$(printf '%s\n' "$stats_output" | awk -F': ' '/Total Size:/ {print $2
 case "$stats_rc" in 0|3) ;; *) fail stats "$stats_rc" ;; esac
 log "SUMMARY docker_rc=$docker_rc images_rc=$images_rc backup_rc=$backup_rc forget_rc=$forget_rc check_rc=$check_rc stats=${stats_size:-unknown}"
 [ "$docker_rc" -eq 0 ] || fail docker-stage "$docker_rc"
-docker_recovery_and_retention "$snapshot_id" "$docker_proof"
-docker_retention_rc=$?
+docker_retention_rc=0
+if [ "${#docker_snapshots[@]}" -gt 0 ]; then
+  docker_recovery_and_retention "$snapshot_id" "$docker_proof"
+  docker_retention_rc=$?
+fi
 log "docker-retention rc=$docker_retention_rc"
 [ "$docker_retention_rc" -eq 0 ] || fail docker-retention "$docker_retention_rc"
 [ "$images_rc" -eq 0 ] || fail docker-images "$images_rc"
