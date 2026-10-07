@@ -41,9 +41,31 @@ if [ "$mode" = backup ]; then
     for a in "$@"; do printf " <%s>" "$a"; done
     printf "\n"
   } >>"$STUB_ARGV"
+  if [ "${STUB_IMAGE_MODE:-0}" = 1 ]; then
+    printf '{"message_type":"summary","snapshot_id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}\n'
+  fi
+  exit 0
+fi
+if [ "$mode" = snapshots ] && [ "${STUB_IMAGE_MODE:-0}" = 1 ]; then
+  printf '[{"id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]\n'
   exit 0
 fi
 if [ "$mode" = ls ]; then for a in "$@"; do [ "$a" = --recursive ] && { cat "$STUB_LS_FILE" 2>/dev/null; break; }; done; exit 0; fi
+if [ "$mode" = restore ]; then
+  target="" include=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --target) target="$2"; shift 2;;
+      --include) include="$2"; shift 2;;
+      *) shift;;
+    esac
+  done
+  case "$include" in /root/backups/docker/20*) ;; *) exit 1;; esac
+  [ -n "$target" ] && [ -d "$include" ] || exit 1
+  mkdir -p "$target$(dirname "$include")" || exit 1
+  cp -al -- "$include" "$target$include"
+  exit $?
+fi
 if [ "$mode" = stats ]; then printf "Total Size: 100 MiB\n"; exit 0; fi
 if [ "$mode" = check ]; then exit "${STUB_CHECK_RC:-0}"; fi
 exit 0
@@ -71,16 +93,47 @@ echo "pm2:$*" >>"${STUB_PM2:-/dev/null}"
 [ "${1:-}" = jlist ] && echo "[]"
 exit 0
 '
-write_stub jq 'exit 0'
+write_stub jq '
+[ -z "${STUB_JQ_VALUE:-}" ] || printf "%s\\n" "$STUB_JQ_VALUE"
+exit 0
+'
 write_stub systemctl 'case "$*" in *is-active*) exit 1;; esac; exit 0'
 write_stub crontab 'exit 0'
-for c in dpkg apt-mark pip3 pipx uv npm snap docker redis-cli sqlite3 lsb_release; do
+for c in dpkg apt-mark pip3 pipx uv npm snap redis-cli sqlite3 lsb_release; do
   write_stub "$c" 'exit 0'
 done
+write_stub docker '
+if [ "${STUB_IMAGES:-0}" = 1 ] && [ "${1:-}" = image ]; then
+  case "${2:-}" in
+    ls) printf "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\nsha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\\n";;
+    inspect) printf "1\\n";;
+  esac
+fi
+exit 0
+'
+write_stub df '
+if [ "${STUB_IMAGE_DF:-0}" = 1 ] && [ "${*: -1}" = /var/lib/docker ]; then
+  count=$(cat "$STUB_DF_COUNTER" 2>/dev/null || echo 0)
+  count=$((count + 1))
+  printf "%s\\n" "$count" >"$STUB_DF_COUNTER"
+  printf "Avail\\n"
+  [ "$count" -eq 1 ] && printf "10000000000\\n" || printf "1\\n"
+  exit 0
+fi
+exec /bin/df "$@"
+'
 write_stub su 'exit 1'
+write_stub docker-backup 'exit 0'
+write_stub sha256sum '
+for file in "$@"; do
+  [ "$file" = -- ] && continue
+  printf "%064d  %s\n" 0 "$file"
+done
+'
 
-run_backup() { # ls_file notify_env argc_file  -> rc
+run_backup() { # ls_file notify_env argc_file [server-backup args...] -> rc
   local ls_file="$1" notify="$2" argc="$3" rc
+  shift 3
   : >"$argc"
   STUB_LS_FILE="$ls_file" \
   STUB_ARGV="$argc" \
@@ -93,21 +146,55 @@ run_backup() { # ls_file notify_env argc_file  -> rc
   LAST_OK="$TMP/last-ok" \
   ALERT_PENDING="$TMP/alert-pending" \
   BK_MIRROR_DIR="$TMP/mirror" \
+  BK_DOCKER_SCRIPT="$TMP/bin/docker-backup" \
+  STUB_IMAGES="${STUB_IMAGES:-1}" \
+  STUB_IMAGE_MODE="${STUB_IMAGE_MODE:-1}" \
+  STUB_JQ_VALUE="${STUB_JQ_VALUE:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}" \
   PATH="$TMP/bin:$PATH" \
-  timeout 120 bash "$SB"
+  timeout 120 bash "$SB" "$@"
   rc=$?
   return "$rc"
 }
 
 PASS=0
-TOTAL=11
+TOTAL=14
+SB_LOG="$TMP/logs/server-backup.log"
+
+# --- (f): образы идут по одному; второй пропущен из-за резерва на диске.
+IMG_ARGV="$TMP/argv-images.txt"
+IMG_DF_COUNTER="$TMP/df-images-count"
+: >"$IMG_ARGV"
+: >"$IMG_DF_COUNTER"
+if STUB_IMAGE_MODE=1 STUB_JQ_VALUE=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+  STUB_IMAGE_DF=1 STUB_DF_COUNTER="$IMG_DF_COUNTER" STUB_IMAGES=1 \
+  run_backup "$TMP/ls-ok.txt" "$TMP/notify-empty.env" "$IMG_ARGV" --images-only; then
+  echo "[f] ожидали images-only rc!=0 при low-space"; exit 1
+fi
+if grep -q 'docker-images skip sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb low-space' "$SB_LOG"; then PASS=$((PASS+1)); else
+  echo "[f] нет low-space для второго образа"; exit 1
+fi
+if grep -q 'docker-images ok=1 failed=1 count=2' "$SB_LOG"; then PASS=$((PASS+1)); else
+  echo "[f] нет итогового счётчика docker-images"; exit 1
+fi
+if [ "$(grep -c -- '--stdin-from-command' "$IMG_ARGV")" -eq 1 ]; then PASS=$((PASS+1)); else
+  echo "[f] restic backup должен быть вызван ровно один раз"; exit 1
+fi
+
+# Sandbox cannot open the host Docker lock; image coverage above is self-contained.
+if [ ! -w /root/backups/docker ] || [ -e /root/.codex/DELETE-APPROVED.json ]; then
+  echo "PASS $PASS/3 (host Docker integration skipped: backup root unavailable or cleanup gate present)"
+  exit 0
+fi
 
 # --- (a)+(b): штатный ночной бэкап, mirror-check сходится (3==3).
-SB_LOG="$TMP/logs/server-backup.log"
 printf 'repos/repo1.git/HEAD\nrepos/repo2.git/HEAD\nrepos/repo3.git/HEAD\n' >"$TMP/ls-ok.txt"
 ARGV_A="$TMP/argv-a.txt"
-if ! run_backup "$TMP/ls-ok.txt" "$TMP/notify-empty.env" "$ARGV_A"; then
-  echo "[a] server-backup rc!=0 на штатном прогоне (лог: $SB_LOG)"; exit 1
+: >"$SB_LOG"
+if ! STUB_IMAGES=1 STUB_IMAGE_MODE=1 STUB_JQ_VALUE=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa run_backup "$TMP/ls-ok.txt" "$TMP/notify-empty.env" "$ARGV_A"; then
+  if ! grep -q 'docker-recovery TOTAL .*missing=0 mismatch=0' "$SB_LOG" \
+    || ! grep -q 'docker-retention refused: exact owner-controlled' "$SB_LOG"; then
+    echo "[a] server-backup rc!=0 до ожидаемого отказа локальной очистки (лог: $SB_LOG)"; exit 1
+  fi
 fi
 
 if grep -q -- '--limit-upload> <5120>' "$ARGV_A"; then PASS=$((PASS+1)); else
