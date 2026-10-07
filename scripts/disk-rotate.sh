@@ -231,7 +231,7 @@ ledger_top5() { # имя=вес:дельта; разделитель ';'; дел
   echo "${out%;}"
 }
 
-# --- алерт (не больше одного на состояние в сутки) ---
+# --- алерт (один на состояние до восстановления) ---
 send_alert() { # text -> 0/1
   local code
   if [ -n "$DR_NOTIFY_CMD" ]; then
@@ -254,19 +254,24 @@ send_alert() { # text -> 0/1
   [ "$code" = "200" ]
 }
 
-alert_sent_today() { # состояние
-  grep -qF "$1=$(date '+%F')" "$DR_ALERT_STATE_FILE" 2>/dev/null
+alert_active() { # состояние
+  awk -F= -v st="$1" '$1==st{found=1} END{exit !found}' "$DR_ALERT_STATE_FILE" 2>/dev/null
 }
 
 mark_alert() { # состояние
   sed -i "/^$1=/d" "$DR_ALERT_STATE_FILE" 2>/dev/null || true
-  echo "$1=$(date '+%F')" >>"$DR_ALERT_STATE_FILE"
+  echo "$1=active" >>"$DR_ALERT_STATE_FILE"
+}
+
+clear_alert() { # состояние
+  [ -f "$DR_ALERT_STATE_FILE" ] || return 0
+  sed -i "/^$1=/d" "$DR_ALERT_STATE_FILE"
 }
 
 maybe_alert() { # состояние текст
   local st=$1 txt=$2
-  if alert_sent_today "$st"; then
-    echo "ALERT-SKIP $st уже сегодня" >>"$DR_LOG"
+  if alert_active "$st"; then
+    echo "ALERT-SKIP $st уже активен" >>"$DR_LOG"
     return 0
   fi
   if send_alert "$txt"; then
@@ -281,7 +286,9 @@ maybe_alert() { # состояние текст
 if [ "$MODE" = check ]; then
   check_declared
   if [ "$DECLARED_MISSING" -gt 0 ]; then
-    maybe_alert declared "Уборка диска: не найдено $DECLARED_MISSING запланированных скриптов — часть автозадач не работает. Чинит агент."
+    maybe_alert declared "Уборка диска: не найдено $DECLARED_MISSING запланированных скриптов — часть автозадач не работает. Нужен атом."
+  else
+    clear_alert declared
   fi
   print_mechanisms
   echo "=== $(date '+%F %T') END ===" >>"$DR_LOG"
@@ -354,7 +361,9 @@ if [ "$MODE" = run ] && [ "$DR_TEST_ONLY" != 1 ]; then
   check_declared
   if [ "$DECLARED_MISSING" -gt 0 ]; then
     echo "DECLARED-MISSING $DECLARED_MISSING" >>"$DR_LOG"
-    maybe_alert declared "Уборка диска: не найдено $DECLARED_MISSING запланированных скриптов — часть автозадач не работает. Чинит агент."
+    maybe_alert declared "Уборка диска: не найдено $DECLARED_MISSING запланированных скриптов — часть автозадач не работает. Нужен атом."
+  else
+    clear_alert declared
   fi
 fi
 
@@ -774,6 +783,8 @@ zones_check() { # end of run/dry-run; журналирует зону claude и 
       [ "$MODE" = dry-run ] && echo "zone-silent $zone"
       echo "zone-silent $zone" >>"$DR_LOG"
       maybe_alert "zone-silent:$zone" "Зона $zone молчит >${silent_h}ч — нужен агент зоны $zone"
+    else
+      clear_alert "zone-silent:$zone"
     fi
   done
 }
@@ -797,6 +808,8 @@ if [ "$MODE" = run ] && [ "$pct_after" -gt "$EXHAUSTED_PCT" ]; then
   done
   echo "EXHAUSTED-LIST$owner_list" >>"$DR_LOG"
   maybe_alert exhausted "Диск занят на ${pct_after}% даже после уборки — скоро может не хватить места. Нужно ваше решение, что удалить; список — в журнале уборки."
+elif [ "$MODE" = run ]; then
+  clear_alert exhausted
 fi
 
 # Алерты о заполнении диска — только обычный прогон.
@@ -807,7 +820,9 @@ if [ "$MODE" = run ]; then
   [ -f "$F" ] && last_ok=$(cat "$F")
   if [ ! -f "$F" ] || [ $((now - last_ok)) -gt 129600 ]; then
     echo "server-backup dead-man: последний успешный прогон старше 36 ч (или не было)" >>"$DR_LOG"
-    maybe_alert backup "Резервная копия сервера не делалась больше 36 часов — данные не защищены. Чинит агент."
+    maybe_alert backup "Резервная копия сервера не делалась больше 36 часов — данные не защищены. Нужен атом."
+  else
+    clear_alert backup
   fi
 fi
 
@@ -847,10 +862,13 @@ cp -f "$DR_JOURNAL" "$DR_JOURNAL_COPY" 2>/dev/null || true
 if [ "$MODE" = run ]; then
   _summary="Уборка диска: занято ${pct_after}% (было ${pct_before}%), освобождено ${freed_mb} МБ."
   if [ "$GATE_STATUS" != open ]; then
-    _summary+=" Уборка приостановлена — нет свежей копии. Чинит агент."
+    _summary+=" Уборка приостановлена — нет свежей копии. Нужен атом."
   fi
   _tech="disk-rotate: ${pct_before}% → ${pct_after}%, освобождено ${freed_mb} МБ, зафиксировано ${FIXED_COUNT} (${FIXED_MB} МБ), отложено ${DEFERRED_COUNT}, гейт ${GATE_STATUS}, режим ${GATE_MODE}"
   echo "SUMMARY-LOG-ONLY $_tech" >>"$DR_LOG"
+  if [ "$GATE_STATUS" = open ] && [ "${pct_after%%.*}" -lt "$HARD_PCT" ]; then
+    clear_alert summary
+  fi
   if [ "$ALERT_SENT" -eq 0 ] && { [ "$GATE_STATUS" != open ] || [ "${pct_after%%.*}" -ge "$HARD_PCT" ] 2>/dev/null; }; then
     maybe_alert summary "$_summary"
   fi

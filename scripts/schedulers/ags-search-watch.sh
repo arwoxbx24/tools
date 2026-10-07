@@ -97,7 +97,7 @@ if search_ok; then
   log "search ok streak=$ok_streak"
   state_set ok_streak "$ok_streak"
   if [ "$ok_streak" -ge 2 ]; then
-    if notify "✅ Поиск навыков agentskill.sh заработал (проверено дважды подряд). /learn снова можно использовать. Чинит агент: вернуть поиск в маршрут навыков."; then
+    if notify "✅ Поиск навыков agentskill.sh заработал (проверено дважды подряд). /learn снова можно использовать. Нужен атом: вернуть поиск в маршрут навыков."; then
       state_set done 1
     fi
   fi
@@ -106,7 +106,7 @@ else
   state_set ok_streak 0
   if issue_closed; then
     if [ "$closed_notified" != "1" ]; then
-      if notify "⚠️ Автор agentskill.sh закрыл задачу о сломанном поиске, но поиск всё ещё не работает. /learn пока не использовать. Чинит агент: следим дальше."; then
+      if notify "⚠️ Автор agentskill.sh закрыл задачу о сломанном поиске, но поиск всё ещё не работает. /learn пока не использовать. Нужен атом: следим дальше."; then
         state_set closed_notified 1
       fi
     else
