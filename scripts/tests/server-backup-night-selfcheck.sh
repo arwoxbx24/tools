@@ -157,7 +157,7 @@ run_backup() { # ls_file notify_env argc_file [server-backup args...] -> rc
 }
 
 PASS=0
-TOTAL=14
+TOTAL=17
 SB_LOG="$TMP/logs/server-backup.log"
 
 # --- (f): образы идут по одному; второй пропущен из-за резерва на диске.
@@ -179,10 +179,19 @@ fi
 if [ "$(grep -c -- '--stdin-from-command' "$IMG_ARGV")" -eq 1 ]; then PASS=$((PASS+1)); else
   echo "[f] restic backup должен быть вызван ровно один раз"; exit 1
 fi
+if grep -q '<--compression> <auto>' "$IMG_ARGV"; then PASS=$((PASS+1)); else
+  echo "[f] restic должен сжимать поток сам"; exit 1
+fi
+if grep -Eq '<--stdin-filename> <docker-image-[0-9a-f]{64}\.tar>' "$IMG_ARGV"; then PASS=$((PASS+1)); else
+  echo "[f] ожидается имя .tar без gzip"; exit 1
+fi
+if grep -q '<docker> <image> <save> <sha256:aaaaaaaa' "$IMG_ARGV" && ! grep -q 'gzip' "$IMG_ARGV"; then PASS=$((PASS+1)); else
+  echo "[f] docker image save должен идти напрямую"; exit 1
+fi
 
-# Sandbox cannot open the host Docker lock; image coverage above is self-contained.
-if [ ! -w /root/backups/docker ] || [ -e /root/.codex/DELETE-APPROVED.json ]; then
-  echo "PASS $PASS/3 (host Docker integration skipped: backup root unavailable or cleanup gate present)"
+# Host integration uses published backup archives and requires an explicit opt-in.
+if [ "${STUB_HOST_INTEGRATION:-0}" != 1 ] || [ ! -w /root/backups/docker ] || [ -e /root/.codex/DELETE-APPROVED.json ]; then
+  echo "PASS $PASS/6 (stub-only; host Docker integration skipped)"
   exit 0
 fi
 

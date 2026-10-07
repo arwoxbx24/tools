@@ -277,10 +277,10 @@ backup_docker_images() {
       continue
     fi
     timeout -k 30s 3600 "${NICE_PREFIX[@]}" "$RESTIC" backup --json --tag docker-images \
-      --stdin-from-command --stdin-filename "docker-image-${id#sha256:}.tar.gz" \
-      --limit-upload "${BK_LIMIT_UPLOAD:-5120}" --retry-lock 30m -- \
+      --stdin-from-command --stdin-filename "docker-image-${id#sha256:}.tar" \
+      --compression auto --limit-upload "${BK_LIMIT_UPLOAD:-5120}" --retry-lock 30m -- \
       env -u AWS_SECRET_ACCESS_KEY -u AWS_ACCESS_KEY_ID -u RESTIC_PASSWORD \
-      bash -o pipefail -c 'docker image save "$1" | gzip -1' _ "$id" >"$result" 2>>"$LOG"
+      docker image save "$id" >"$result" 2>>"$LOG"
     rc=$?
     if [ "$rc" -ne 0 ]; then
       log "docker-images backup failed id=$id rc=$rc"
