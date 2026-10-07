@@ -12,14 +12,12 @@ CURL_BIN="${CURL_BIN:-curl}"
 INTERVAL="${GUARD_INTERVAL:-60}"
 RESTART_RATE_LIMIT="${GUARD_RATE_LIMIT:-20}"
 MIN_STORM_RESTARTS="${GUARD_MIN_STORM:-5}"
-COOLDOWN="${GUARD_COOLDOWN:-3600}"
 INCIDENT_ROOT="${GUARD_INCIDENT_ROOT:-$STATE_DIR/incidents}"
 NOTIFY_ENV="${GUARD_NOTIFY_ENV:-/root/workspaces/secrets/services/pm2-notify.env}"
 DEAD_HOURS="${GUARD_DEAD_HOURS:-6}"
 DUMP_MAX_AGE_H="${GUARD_DUMP_MAX_AGE_H:-24}"
 BOOT_STATE="${GUARD_BOOT_STATE:-$PM2_HOME/boot-preflight.json}"
 ECOSYSTEM="${GUARD_ECOSYSTEM:-/root/workspaces/tools/ecosystem.config.js}"
-REMIND_DAYS="${GUARD_REMIND_DAYS:-7}"
 SELF_NAME="pm2-loop-guard"
 
 mkdir -p "$STATE_DIR"
@@ -50,10 +48,16 @@ for p in procs:
 PYEOF
 }
 
-in_cooldown() {
-  local name="$1" now="$2" ts
-  ts=$(awk -F'\t' -v n="$name" '$1==n{t=$2} END{print t+0}' "$STATE_DIR/alerted.tsv" 2>/dev/null)
-  [ -n "$ts" ] && [ "$ts" != 0 ] && [ $((now - ts)) -lt "$COOLDOWN" ]
+already_alerted() {
+  local name="$1"
+  awk -F'\t' -v n="$name" '$1==n{found=1} END{exit !found}' "$STATE_DIR/alerted.tsv" 2>/dev/null
+}
+
+clear_alert() {
+  local name="$1" file="$STATE_DIR/alerted.tsv" tmp
+  [ -f "$file" ] || return 0
+  tmp="$file.new"
+  awk -F'\t' -v n="$name" '$1!=n' "$file" > "$tmp" && mv "$tmp" "$file"
 }
 
 send_telegram() {
@@ -105,7 +109,7 @@ PYEOF
 
 handle_trigger() { # name reason out_log err_log now jlist_file
   local name="$1" reason="$2" out_log="$3" err_log="$4" now="$5" jlist="${6:-}" ts dir
-  if in_cooldown "$name" "$now"; then log "cooldown: skip alert for $name ($reason)"; return 0; fi
+  if already_alerted "$name"; then log "active incident: skip alert for $name ($reason)"; return 0; fi
   ts=$(date -u -d "@$now" '+%Y%m%dT%H%M%SZ' 2>/dev/null || date -u '+%Y%m%dT%H%M%SZ')
   dir="$INCIDENT_ROOT/${name}-${ts}"; mkdir -p "$dir"
   "$PM2_BIN" stop "$name" >>"$LOG_FILE" 2>&1
@@ -115,11 +119,12 @@ handle_trigger() { # name reason out_log err_log now jlist_file
   printf '%s\n' "$reason" > "$dir/reason.txt"
   printf '%s\t%s\n' "$name" "$now" >> "$STATE_DIR/alerted.tsv"
   log "TRIGGER $name: $reason -> stopped, archive $dir"
-  send_or_queue "$now" "🚨 $name остановлен из-за цикла перезапусков. Чинит агент."
+  send_or_queue "$now" "🚨 $name остановлен из-за цикла перезапусков. Нужен атом."
 }
 
 declare -A DIGEST_TEXT=()
 DIGEST_KEYS=()
+declare -A ONLINE_NAMES=()
 
 digest_collect() { # key text
   local key="$1" text="$2"
@@ -135,7 +140,7 @@ digest_resolved_text() { # key
     boot:*) name="${key#boot:}"; name="${name%%:*}" ;;
     *) name="проблема" ;;
   esac
-  printf '✅ PM2: исправлено — %s снова в норме. Чинит агент.' "$name"
+  printf '✅ PM2: исправлено — %s снова в норме.' "$name"
 }
 
 reconcile_digest() { # now
@@ -150,7 +155,7 @@ reconcile_digest() { # now
   for key in "${DIGEST_KEYS[@]}"; do
     current["$key"]=1
     first="${old_first[$key]:-$now}"; last="${old_last[$key]:-0}"
-    if [ "$last" = 0 ] || [ $((now - last)) -ge $((REMIND_DAYS * 86400)) ]; then
+    if [ "$last" = 0 ]; then
       due+=("${DIGEST_TEXT[$key]}"); last="$now"
     fi
     printf '%s\t%s\t%s\n' "$key" "$first" "$last" >> "$tmp"
@@ -160,7 +165,12 @@ reconcile_digest() { # now
     [ "$key" = dump-cache ] && continue
     name=""
     [[ "$key" == dead:* ]] && name="${key#dead:}"
+    [[ "$key" == boot:* ]] && { name="${key#boot:}"; name="${name%%:*}"; }
     if [ -n "$name" ] && awk -F'\t' -v n="$name" '$1==n{f=1} END{exit !f}' "$STATE_DIR/dead-since.tsv" 2>/dev/null; then
+      printf '%s\t%s\t%s\n' "$key" "${old_first[$key]}" "${old_last[$key]}" >> "$tmp"
+      continue
+    fi
+    if [ -z "$name" ] || [ -z "${ONLINE_NAMES[$name]+x}" ]; then
       printf '%s\t%s\t%s\n' "$key" "${old_first[$key]}" "${old_last[$key]}" >> "$tmp"
       continue
     fi
@@ -182,7 +192,7 @@ prepare_generation() { # returns 0 when deltas may be used
 guard_tick() { # jlist_file now_ts
   local jlist="$1" now="$2" restarts="$STATE_DIR/restarts.tsv" dead="$STATE_DIR/dead-since.tsv" allow=1
   local name status rt sp out_log err_log autorestart cron prev_rt prev_ts delta_r delta_t rate reason death
-  DIGEST_TEXT=(); DIGEST_KEYS=()
+  DIGEST_TEXT=(); DIGEST_KEYS=(); ONLINE_NAMES=()
   send_pending "$now"; touch "$restarts" "$dead"
   : > "$dead.new"
   prepare_generation || allow=0
@@ -199,11 +209,16 @@ guard_tick() { # jlist_file now_ts
     if [ -n "$sp" ] && [ ! -f "$sp" ] && [ "$delta_r" -gt 0 ]; then reason="script missing on disk: $sp (+${delta_r} restarts in ${delta_t}s)"; elif [ -n "$sp" ] && [ ! -f "$sp" ] && [ "$delta_r" -eq 0 ]; then log "WARN $name: script missing ($sp) but no restarts - left running"; fi
     if [ -z "$reason" ] && [ "$status" = online ] && [ "$delta_r" -ge "$MIN_STORM_RESTARTS" ] && [ "$delta_t" -gt 0 ]; then rate=$((delta_r*3600/delta_t)); [ "$rate" -gt "$RESTART_RATE_LIMIT" ] && reason="restart rate ${rate}/h (limit ${RESTART_RATE_LIMIT}/h; +${delta_r} in ${delta_t}s)"; fi
     if [ -z "$reason" ] && [ "$status" != online ] && [ -z "$cron" ] && [ "$delta_r" -ge "$MIN_STORM_RESTARTS" ] && [ "$delta_t" -gt 0 ]; then rate=$((delta_r*3600/delta_t)); [ "$rate" -gt "$RESTART_RATE_LIMIT" ] && reason="phantom loop: restart rate ${rate}/h (limit ${RESTART_RATE_LIMIT}/h; +${delta_r} in ${delta_t}s)"; fi
-    [ -n "$reason" ] && handle_trigger "$name" "$reason" "$out_log" "$err_log" "$now" "$jlist"
+    if [ -n "$reason" ]; then
+      handle_trigger "$name" "$reason" "$out_log" "$err_log" "$now" "$jlist"
+    elif [ "$status" = online ]; then
+      ONLINE_NAMES["$name"]=1
+      clear_alert "$name"
+    fi
     if { [ "$status" = errored ] || [ "$status" = stopped ]; } && [ "$autorestart" = true ] && [ -z "$cron" ]; then
       death=$(awk -F'\t' -v n="$name" '$1==n{t=$2} END{print t}' "$dead")
       [ -n "$death" ] || death="$now"; printf '%s\t%s\n' "$name" "$death" >> "$dead.new"
-      if [ $((now-death)) -ge $((DEAD_HOURS*3600)) ]; then digest_collect "dead:$name" "Не запускается $name уже $(((now-death)/3600)) ч. Чинит агент."; fi
+      if [ $((now-death)) -ge $((DEAD_HOURS*3600)) ]; then digest_collect "dead:$name" "Не запускается $name уже $(((now-death)/3600)) ч. Нужен атом."; fi
     fi
   done < <(dump_processes "$jlist")
   [ -f "$restarts.new" ] && mv "$restarts.new" "$restarts"; mv "$dead.new" "$dead"
@@ -213,7 +228,7 @@ guard_tick() { # jlist_file now_ts
     while IFS=$'\t' read -r n c s; do
       [ -n "$n" ] || continue
       [ "$filter_boot" = 0 ] || grep -Fxq "$n" <<<"$ecosystem_names" || continue
-      digest_collect "boot:$n:$c:$s" "Не запускается $n — сбой проверки запуска. Чинит агент."
+      digest_collect "boot:$n:$c:$s" "Не запускается $n — сбой проверки запуска. Нужен атом."
     done < <(python3 - "$BOOT_STATE" <<'PYEOF'
 import json,sys
 try:
