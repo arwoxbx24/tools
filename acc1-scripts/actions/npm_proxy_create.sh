@@ -8,7 +8,8 @@ FWD_HOST=$(echo "$PARAMS" | jq -r '.forward_host // "172.17.0.1"')
 FWD_PORT=$(echo "$PARAMS" | jq -r '.forward_port')
 
 # Load NPM credentials
-source "/root/workspaces/secrets/services/npm.env" 2>/dev/null || { echo "ERROR: npm.env not found"; exit 1; }
+source "${NPM_ENV_FILE:-/root/workspaces/secrets/system/services/npm.env}" 2>/dev/null || { echo "ERROR: npm.env not found"; exit 1; }
+NPM_PASSWORD=${NPM_PASSWORD:-${NPM_PASS:-}}
 
 # Get auth token
 TOKEN=$(curl -s -X POST "http://localhost:81/api/tokens" \

@@ -6,7 +6,8 @@ PARAMS="${1:?}"
 HOST_ID=$(echo "$PARAMS" | jq -r '.proxy_host_id')
 [[ -z "$HOST_ID" || "$HOST_ID" == "null" ]] && { echo "ERROR: proxy_host_id required"; exit 1; }
 
-source "/root/workspaces/secrets/services/npm.env" 2>/dev/null || exit 1
+source "${NPM_ENV_FILE:-/root/workspaces/secrets/system/services/npm.env}" 2>/dev/null || exit 1
+NPM_PASSWORD=${NPM_PASSWORD:-${NPM_PASS:-}}
 TOKEN=$(curl -s -X POST "http://localhost:81/api/tokens" \
   -H "Content-Type: application/json" \
   -d "{\"identity\":\"$NPM_EMAIL\",\"secret\":\"$NPM_PASSWORD\"}" | jq -r '.token')
