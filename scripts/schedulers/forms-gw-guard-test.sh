@@ -7,6 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GUARD="$SCRIPT_DIR/forms-gw-guard.sh"
 REAL_DATE="$(command -v date)"
 SWITCH="$SCRIPT_DIR/forms-fallback-switch.sh"
+DNS_SWITCH="$SCRIPT_DIR/forms-dns-switch.sh"
 
 tmp=$(mktemp -d /tmp/forms-gw-guard-test.XXXXXX)
 trap 'rm -rf "$tmp"' EXIT
@@ -29,6 +30,8 @@ out_file=""
 use_k=""
 text=""
 header=""
+input=""
+use_resolve=""
 prev=""
 method=GET
 body=""
@@ -36,11 +39,12 @@ for arg in "$@"; do
   if [ "$prev" = "-X" ]; then method="$arg"; prev=""; continue; fi
   if [ "$prev" = "--data-binary" ]; then body="${arg#@}"; prev=""; continue; fi
   if [ "$prev" = "-o" ]; then out_file="$arg"; prev=""; continue; fi
+  if [ "$prev" = "--resolve" ]; then use_resolve=1; prev=""; continue; fi
   if [ "$prev" = "-w" ] || [ "$prev" = "--max-time" ] || [ "$prev" = "-H" ]; then prev=""; continue; fi
   if [ "$prev" = "-K" ]; then [ "$arg" = "-" ] && use_k=1; prev=""; continue; fi
   case "$arg" in
-    -s|-sS|-k) ;;
-    -o|-w|--max-time|-H|-K|-X|--data-binary) prev="$arg" ;;
+    -s|-sS|-sI|-k|-I) ;;
+    -o|-w|--max-time|-H|-K|-X|--data-binary|--resolve) prev="$arg" ;;
     *) [ -z "$url" ] && url="$arg" ;;
   esac
 done
@@ -52,12 +56,28 @@ if [ -n "$use_k" ]; then
         [ -n "$url" ] || { url="${line#url = }"; url="${url#\"}"; url="${url%\"}"; };;
       header\ =\ *)
         header="${line#header = }"; header="${header#\"}"; header="${header%\"}";;
+      data-urlencode\ =\ \"input_data=*)
+        input="${line#data-urlencode = \"input_data=}"; input="${input%\"}"; input="${input//\\\"/\"}";;
       data-urlencode\ =\ *)
         text="${line#data-urlencode = \"text=}"; text="${text%\"}";;
     esac
   done
 fi
 case "$url" in
+  "$BEGET_API"/dns/getData)
+    if [ -f "$GUARD_TEST_TMP/dns.auth" ]; then
+      printf '%s\n' '{"status":"error","error_text":"auth","error_code":"AUTH_ERROR"}'
+    else
+      printf '%s' '{"status":"success","answer":{"status":"success","result":'
+      cat "$GUARD_TEST_TMP/dns.records"
+      printf '%s\n' '}}'
+    fi
+    ;;
+  "$BEGET_API"/dns/changeRecords)
+    printf '%s\n' "$input" >> "$GUARD_TEST_TMP/changeRecords.log"
+    jq -c '{fqdn:.fqdn,records:.records}' <<< "$input" > "$GUARD_TEST_TMP/dns.records"
+    printf '%s\n' '{"status":"success","answer":{"status":"success","result":true}}'
+    ;;
   https://vibe.test/v1/*)
     printf '%s %s\n' "$method" "$url" >> "$GUARD_TEST_TMP/api.log"
     printf '%s\n' "$header" >> "$GUARD_TEST_TMP/api.header.log"
@@ -92,6 +112,14 @@ case "$url" in
     ;;
   *billingAccounts*)
     printf '{"billingAccounts":[{"active":true,"balance":"%s"}]}\n' "$(cat "$GUARD_TEST_TMP/balance")"
+    ;;
+  https://*/)
+    if [ -n "$use_resolve" ]; then
+      cat "$GUARD_TEST_TMP/precheck.hdr"
+    else
+      [ -n "$out_file" ] && cat "$GUARD_TEST_TMP/forms.body" > "$out_file"
+      printf '%s 0\n' "$(cat "$GUARD_TEST_TMP/forms.code")"
+    fi
     ;;
   *)
     [ -n "$out_file" ] && cat "$GUARD_TEST_TMP/forms.body" > "$out_file"
@@ -351,13 +379,82 @@ case16() { # default snapshot comes from the script's repository directory
   grep -q '^repository snapshot' "$tmp/default/state/fallback-normal.html"
 }
 
-for i in {1..16}; do
+dns_setup() {
+  local name=$1
+  local dns_tmp="$tmp/$name"
+  rm -rf "$dns_tmp"
+  mkdir -p "$dns_tmp/state"
+  export GUARD_TEST_TMP="$dns_tmp"
+  export GUARD_STATE_DIR="$dns_tmp/state"
+  export BEGET_API=http://beget.test/api
+  export BEGET_IP=203.0.113.10
+  export BEGET_ENV_FILE="$dns_tmp/beget.env"
+  export TG_BOT_TOKEN=x TG_CHAT_ID=1
+  printf '100000\n' > "$dns_tmp/clock"
+  printf 'BEGET_LOGIN=test\nBEGET_API_PASSWORD=test\n' > "$BEGET_ENV_FILE"
+  printf '{"fqdn":"forms.arwox.ru","records":{"CNAME":[{"priority":10,"value":"d5dn462s09a9dpofvl2d.6brbn2wz.apigw.yandexcloud.net"}]}}\n' > "$dns_tmp/dns.records"
+}
+
+dns_run() { bash "$DNS_SWITCH" "$@"; }
+
+case17() { # status classifies normal, outage and foreign without writes
+  dns_setup case17
+  out=$(dns_run status); rc=$?
+  [ "$out" = normal ] && [ "$rc" = 0 ] || return 1
+  printf '{"fqdn":"forms.arwox.ru","records":{"A":[{"priority":10,"value":"203.0.113.10"}]}}\n' > "$GUARD_TEST_TMP/dns.records"
+  out=$(dns_run status); rc=$?
+  [ "$out" = outage ] && [ "$rc" = 0 ] || return 1
+  printf '{"fqdn":"forms.arwox.ru","records":{"A":[{"priority":10,"value":"198.51.100.7"}]}}\n' > "$GUARD_TEST_TMP/dns.records"
+  out=$(dns_run status); rc=$?
+  [ "$out" = foreign ] && [ "$rc" = 4 ] || return 1
+  dns_run apply outage >/dev/null; rc=$?
+  [ "$rc" = 4 ] && [ ! -e "$GUARD_TEST_TMP/changeRecords.log" ] || return 1
+  dns_run status --fqdn forms-test.arwox.ru >/dev/null
+  [ -f "$GUARD_STATE_DIR/forms-dns.forms-test.arwox.ru.json" ]
+}
+
+case18() { # refusal keeps DNS intact; switch and restore use one snapshot
+  dns_setup case18
+  cp -f "$GUARD_TEST_TMP/dns.records" "$GUARD_TEST_TMP/original.records"
+  printf 'HTTP/2 200\n' > "$GUARD_TEST_TMP/precheck.hdr"
+  out=$(dns_run apply outage); rc=$?
+  printf '%s' "$out" | grep -q '^refused precheck' && [ "$rc" = 3 ] && \
+    [ ! -e "$GUARD_TEST_TMP/changeRecords.log" ] && [ "$(wc -l < "$GUARD_TEST_TMP/sent.log")" = 1 ] || return 1
+  cmp "$GUARD_TEST_TMP/original.records" "$GUARD_STATE_DIR/forms-dns.snapshot.forms.arwox.ru.json" || return 1
+  printf 'HTTP/2 302\nlocation: https://arwox.ru/#contact\n' > "$GUARD_TEST_TMP/precheck.hdr"
+  out=$(dns_run apply outage); rc=$?
+  [ "$out" = 'switched normal→outage' ] && [ "$rc" = 0 ] && \
+    [ "$(wc -l < "$GUARD_TEST_TMP/changeRecords.log")" = 1 ] && grep -q '"A".*203.0.113.10' "$GUARD_TEST_TMP/changeRecords.log" || return 1
+  out=$(dns_run apply outage); [ "$out" = 'noop outage' ] || return 1
+  [ "$(wc -l < "$GUARD_TEST_TMP/changeRecords.log")" = 1 ] || return 1
+  out=$(dns_run apply normal); rc=$?
+  [ "$out" = 'switched outage→normal' ] && [ "$rc" = 0 ] && \
+    [ "$(wc -l < "$GUARD_TEST_TMP/changeRecords.log")" = 2 ] && grep -q '"CNAME"' "$GUARD_TEST_TMP/changeRecords.log" || return 1
+  cmp "$GUARD_TEST_TMP/original.records" "$GUARD_STATE_DIR/forms-dns.snapshot.forms.arwox.ru.json"
+}
+
+case19() { # third consecutive API failure sends exactly one alert and success resets it
+  dns_setup case19
+  touch "$GUARD_TEST_TMP/dns.auth"
+  for i in {1..3}; do
+    out=$(dns_run status); rc=$?
+    [ "$out" = 'api_error AUTH_ERROR' ] && [ "$rc" = 2 ] || return 1
+  done
+  [ "$(wc -l < "$GUARD_TEST_TMP/sent.log")" = 1 ] && \
+    jq -e '.api_fail == 3' "$GUARD_STATE_DIR/forms-dns.forms.arwox.ru.json" >/dev/null && \
+    [ ! -e "$GUARD_TEST_TMP/changeRecords.log" ] || return 1
+  rm -f "$GUARD_TEST_TMP/dns.auth"
+  out=$(dns_run status); rc=$?
+  [ "$out" = normal ] && [ "$rc" = 0 ] && jq -e '.api_fail == 0' "$GUARD_STATE_DIR/forms-dns.forms.arwox.ru.json" >/dev/null
+}
+
+for i in {1..19}; do
   if "case$i"; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); printf 'FAIL case %s\n' "$i"; fi
 done
 if [ "$FAIL" = 0 ]; then
-  printf 'PASS %d/16\n' "$PASS"
+  printf 'PASS %d/19\n' "$PASS"
   exit 0
 else
-  printf 'FAIL %d/16 (PASS %d/16)\n' "$FAIL" "$PASS"
+  printf 'FAIL %d/19 (PASS %d/19)\n' "$FAIL" "$PASS"
   exit 1
 fi
