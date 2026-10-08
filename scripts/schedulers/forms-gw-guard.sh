@@ -60,15 +60,21 @@ notify() { # type text
 }
 
 check_form() { # sets code, ssl, stopped
-  local out extra rc
-  out=$(curl -s --max-time 30 -o "$BODY_FILE" -w '%{http_code} %{ssl_verify_result}' "$GUARD_FORMS_URL" 2>/dev/null); rc=$?
-  case "$out" in [0-9][0-9][0-9]\ *) read -r code ssl <<<"$out" ;; *) code=000; ssl=0 ;; esac
+  local out extra rc total
+  out=$(curl -s --max-time 30 -o "$BODY_FILE" -w '%{http_code} %{ssl_verify_result} %{time_total}' "$GUARD_FORMS_URL" 2>/dev/null); rc=$?
+  case "$out" in [0-9][0-9][0-9]\ *) read -r code ssl total <<<"$out" ;; *) code=000; ssl=0; total=0 ;; esac
   [ "$rc" -ne 0 ] && [ "$code" = "000" ] && ssl=0
   stopped=0
   if grep -q "is stopped and cannot be used" "$BODY_FILE" 2>/dev/null; then stopped=1; fi
   if [ "$code" = "000" ]; then
     extra=$(curl -sk --max-time 10 "$GUARD_FORMS_URL" 2>&1) || extra=""
     if printf '%s' "$extra" | grep -q "is stopped and cannot be used"; then stopped=1; fi
+  fi
+  case "$code" in 2??|3??) ;; *)
+    log evidence "code=$code time_total=${total:-0} body=$(LC_ALL=C head -c 200 "$BODY_FILE" 2>/dev/null | tr '\r\n\t' '   ')" ;; esac
+  if awk -v t="${total:-0}" 'BEGIN{exit !(t>10)}'; then
+    log "медленно" "code=$code time_total=$total"
+    notify form_slow "forms.arwox.ru: медленно (${total} с), HTTP $code"
   fi
   log "check code=$code ssl=$ssl stopped=$stopped"
 }
