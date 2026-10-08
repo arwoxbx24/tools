@@ -71,9 +71,20 @@ DENY_LIST=(
   '/root/.local/share/uv/**'
   '/home/gitmirror/**'
 )
+PROJECTS_ALLOW=(
+  '/root/workspaces/projects/.agent-work/*'
+  '/root/workspaces/projects/.worktrees/codex/*'
+  '/root/workspaces/projects/.worktrees/claude/*'
+)
+NEVER_LIST=(
+  '*hh-scoring*' '*/secrets/*' '*/.claude/*' '*/system/archives/*'
+  '*/client-materials/*' '*.db' '*-wal'
+)
 
 denied() { # path -> 0 если путь в запретном списке
   local p=$1 pat
+  for pat in "${NEVER_LIST[@]}"; do [[ "$p" == $pat ]] && return 0; done
+  for pat in "${PROJECTS_ALLOW[@]}"; do [[ "$p" == $pat ]] && return 1; done
   for pat in "${DENY_LIST[@]}"; do
     [[ "$p" == $pat ]] && return 0
   done
@@ -136,6 +147,8 @@ ALERT_RESULT=none
 FIXED_COUNT=0
 FIXED_MB=0
 DEFERRED_COUNT=0
+WT_CANDIDATES=()
+PROJECTS_NOTICES=()
 
 # Общий список незаменимых файлов прогона (копится во время классов, фиксируется
 # через гейт после них). Создаётся в начале каждого прогона.
@@ -711,6 +724,61 @@ cleanup_always() { # только существующая vendor log rotation, 
   fi
 }
 
+projects_candidates() { # -> безопасные files; WT_CANDIDATES для remove только после gate
+  local agent=/root/workspaces/projects/.agent-work p rel top wt tmp ts zone path cls size after freed rc state line self_dir
+  WT_CANDIDATES=(); PROJECTS_NOTICES=()
+  if [ -d "$agent" ]; then while IFS= read -r p; do
+    case "$p" in *.log|*.txt|*.out|*.jsonl|*.json|*.md|*.csv|*.tsv|*.html) ;; *) continue;; esac
+    case "/$p/" in */node_modules/*|*/.git/*|*/.venv/*|*/__pycache__/*|*/dist/*|*/.worktrees/*) continue;; esac
+    rel=${p#"$agent/"}; top=${rel%%/*}; [ -e "$agent/$top/.git" ] && continue
+    denied "$p" || { [ -f "$p" ] && [ ! -L "$p" ] && [ "$(realpath -e -- "$p" 2>/dev/null)" = "$p" ] && printf '%s\n' "$p"; }
+  done < <(find -P "$agent" -type f -mtime +"${DZ_AGE_DAYS:-14}" 2>/dev/null); fi
+  self_dir=$(cd "${0%/*}" && pwd -P)
+  for wt in /root/workspaces/projects/.worktrees/codex /root/workspaces/projects/.worktrees/claude; do
+    [ -d "$wt" ] || continue; tmp=$(mktemp) || continue
+    if ! (cd /root/workspaces/projects && ZONE_MODE=dry-run DZ_CODEX_WT="$wt" DZ_ZONES_TSV="$tmp" bash "$self_dir/disk-zones/codex-worktrees.sh") >>"$DR_LOG" 2>&1; then
+      echo "projects classifier failed: $wt" >>"$DR_LOG"; rm -f -- "$tmp"; continue
+    fi
+    while IFS=$'\t' read -r ts zone path cls size after freed rc state; do
+      case "$state" in
+        candidate) WT_CANDIDATES+=("$path")
+          while IFS= read -r p; do p="$path/$p"
+            denied "$p" || { [ -f "$p" ] && [ ! -L "$p" ] && [ "$(realpath -e -- "$p" 2>/dev/null)" = "$p" ] && printf '%s\n' "$p"; }
+          done < <(git -C "$path" ls-files --others);;
+        run-done) ;;
+        *) line="kept-${state#kept-}"$'\t'"$path"
+          echo "$line" >>"$DR_LOG"
+          [ "$MODE" = dry-run ] && PROJECTS_NOTICES+=("$line");;
+      esac
+    done <"$tmp"; rm -f -- "$tmp"
+  done
+  size=$(du -sm /root/workspaces/projects/hh-scoring-dev 2>/dev/null | awk '{print $1}')
+  line="hh-scoring-dev size: ${size:-0}M (closed zone)"
+  echo "$line" >>"$DR_LOG"; [ "$MODE" = dry-run ] && PROJECTS_NOTICES+=("$line")
+}
+
+projects_gate() {
+  local list p wt others status root
+  list=$(mktemp) || return; projects_candidates >"$list"
+  if [ "$MODE" = dry-run ]; then [ "${#PROJECTS_NOTICES[@]}" -eq 0 ] || printf '%s\n' "${PROJECTS_NOTICES[@]}"; while IFS= read -r p; do handle projects < <(printf '%s\0' "$p"); done <"$list"
+  else
+    REFIX_PATHS=(); gate_process projects "$list" || true
+    if [ "$GATE_MODE" = enforce ]; then for wt in "${WT_CANDIDATES[@]}"; do
+      if others=$(git -C "$wt" ls-files --others) && status=$(git -C "$wt" status --porcelain) && [ -z "$others" ] && [ -z "$status" ] && root=$(git -C "$wt" rev-parse --path-format=absolute --git-common-dir 2>/dev/null); then
+        root=${root%/.git}; if git -C "$root" worktree remove -- "$wt"; then journal_row projects worktree-removed "$wt" - - - -; else journal_row projects worktree-kept "$wt" - - - remove-refused; fi
+      else journal_row projects worktree-kept "$wt" - - - pending-gate; fi
+    done; fi
+  fi
+  rm -f -- "$list"
+}
+
+s3_line() {
+  local stats used max pct line
+  if stats=$("${DR_YC:-yc}" storage bucket stats --name arwox-server-backup --format json 2>/dev/null) && used=$(jq -r '.used_size' <<<"$stats" 2>/dev/null) && max=$(jq -r '.max_size' <<<"$stats" 2>/dev/null) && [[ "$used" =~ ^[0-9]+$ && "$max" =~ ^[0-9]+$ ]] && [ "$max" -gt 0 ]; then pct=$((used * 100 / max)); line="s3: $used/$max ${pct}%"; else line='s3: unavailable'; fi
+  echo "$line" >>"$DR_LOG"; [ "$MODE" = dry-run ] && echo "$line"
+  if [ "$MODE" = run ]; then if [ "${pct:-0}" -ge "${S3_ALERT_PCT:-80}" ]; then maybe_alert s3 "Резервное хранилище заполнено на ${pct}% — нужен атом."; else clear_alert s3; fi; fi
+}
+
 # Тестовый режим (DR_TEST_ONLY=1): только тестовые классы, реальная уборка не выполняется.
 if [ "$DR_TEST_ONLY" = 1 ]; then
   REFIX_PATHS=()
@@ -746,8 +814,11 @@ elif [ "$MODE" != report ]; then
     if [ "$state" = soft ] || [ "$state" = hard ]; then
       cleanup_cache
     fi
+    projects_gate
   fi
 fi
+
+if { [ "$MODE" = run ] || [ "$MODE" = dry-run ]; } && { [ "$DR_TEST_ONLY" != 1 ] || [ -n "${DR_YC:-}" ]; }; then s3_line; fi
 
 pct_after=$(use_pct)
 used_after=$(used_kb)

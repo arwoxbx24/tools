@@ -48,7 +48,7 @@ fixture() { # имя -> новая фикстура в $TMP/$имя (свой re
   NOTIFY_STUB="$d/notify-stub.sh"
   cat >"$NOTIFY_STUB" <<NOTIFYEOF
 #!/bin/bash
-echo "notify \$(date +%s)" >>"$NOTIFY"
+echo "\$1" >>"$NOTIFY"
 NOTIFYEOF
   chmod +x "$NOTIFY_STUB"
 
@@ -60,6 +60,7 @@ NOTIFYEOF
     DR_ALERT_STATE_FILE="$ALERTS"
     DR_LOCK_FILE="$LOCK"
     DR_LEDGER="$LEDGER"
+    DR_ZONES_TSV="$S/zones.tsv"
     DR_LOG="$TLOG"
     DR_NOTIFY_CMD="$NOTIFY_STUB"
     DR_RESTIC_REPO="$REPO"
@@ -351,6 +352,14 @@ scenario_16() { # forecast counts regular disposable files once
   fi
 }
 
+scenario_17() {
+  fixture scen17
+  local yc="$S/yc"
+  printf '#!/bin/bash\necho '\''{"used_size":"90","max_size":"100"}'\''\n' >"$yc"; chmod +x "$yc"
+  run_rotate GATE_MODE=shadow DR_USAGE_PCT=85 DR_YC="$yc" -- >/dev/null 2>&1
+  grep -q '90%' "$NOTIFY" && report 17 "S3 alert" PASS || report 17 "S3 alert" FAIL
+}
+
 if [ "${1:-}" = accounting ]; then
   scenario_16
   exit "$FAILS"
@@ -372,8 +381,9 @@ scenario_13
 scenario_14
 scenario_15
 scenario_16
+scenario_17
 
-echo "PASS $((16 - FAILS))/16"
+echo "PASS $((17 - FAILS))/17"
 [ "$FAILS" -eq 0 ] && exit 0
-echo "$FAILS/16 FAILED"
+echo "$FAILS/17 FAILED"
 exit 1
