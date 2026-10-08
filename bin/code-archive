@@ -26,7 +26,7 @@ if [[ ${CA_ASKPASS:-} == 1 && $# -eq 1 ]]; then
   if [[ "$1" == *Username* ]]; then echo oauth2; else echo "$GITLAB_MIRROR_TOKEN"; fi
   exit 0
 fi
-export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS="$0" CA_ASKPASS=1
+export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS="/root/workspaces/tools/bin/code-archive" CA_ASKPASS=1
 CA_GITHUB_BASE="${CA_GITHUB_BASE:-git@github.com:arwoxbx24}"
 CA_GITLAB_BASE="${CA_GITLAB_BASE:-https://gitlab.com/arwox24-group}"
 CA_REPOS_DIR="${CA_REPOS_DIR:-/home/gitmirror/repos}"

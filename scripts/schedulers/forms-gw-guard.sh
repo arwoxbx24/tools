@@ -61,7 +61,7 @@ notify() { # type text
 
 check_form() { # sets code, ssl, stopped
   local out extra rc
-  out=$(curl -s --max-time 10 -o "$BODY_FILE" -w '%{http_code} %{ssl_verify_result}' "$GUARD_FORMS_URL" 2>/dev/null); rc=$?
+  out=$(curl -s --max-time 30 -o "$BODY_FILE" -w '%{http_code} %{ssl_verify_result}' "$GUARD_FORMS_URL" 2>/dev/null); rc=$?
   case "$out" in [0-9][0-9][0-9]\ *) read -r code ssl <<<"$out" ;; *) code=000; ssl=0 ;; esac
   [ "$rc" -ne 0 ] && [ "$code" = "000" ] && ssl=0
   stopped=0
