@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set +x
+set -euo pipefail
+[[ $# == 2 ]] || { echo 'usage: vercel-free MODEL REQUEST.json' >&2; exit 64; }
+case "$1" in
+  inclusionai/ling-3.1-flash-free) until=20261014; endpoint=chat/completions ;;
+  convaiinnovations/laya-free) until=20261101; endpoint=evaluate ;;
+  *) echo 'denied: model is not on the free allowlist' >&2; exit 64 ;;
+esac
+(( $(date -u +%Y%m%d) < until )) || { echo 'denied: free promotion expired' >&2; exit 78; }
+# Rebuild the request so caller-supplied routing/fallback options cannot reach Gateway.
+request=$(jq -ce --arg model "$1" '
+  select(.model == $model) |
+  if $model == "inclusionai/ling-3.1-flash-free" then
+    select((.messages|type)=="array" and (.messages|length)>0) |
+    {model:$model, messages, max_tokens:512, stream:false}
+  else
+    select((.state|type)=="string" and (.questions|type)=="object") |
+    {model:$model, state, questions}
+  end' "$2") || exit 64
+[[ ${#request} -le 65536 ]] || exit 64
+. /root/workspaces/secrets/services/vercel-ai-gateway.env
+[[ -n ${AI_GATEWAY_API_KEY:-} ]] || exit 77
+response=$(printf '%s' "$request" | curl --silent --show-error --fail-with-body --max-time 90 \
+  --config /dev/fd/3 --header 'Content-Type: application/json' --data-binary @- \
+  "https://ai-gateway.vercel.sh/v1/$endpoint" \
+  3< <(printf 'header = "Authorization: Bearer %s"\n' "$AI_GATEWAY_API_KEY")) || exit 69
+printf '%s' "$response" | jq -ce '
+  {id,model,result:.choices[0].message.content,answers,
+   cost:(.usage.cost // .providerMetadata.gateway.cost),usage} |
+  select(.cost != null and (.cost|tonumber)==0 and
+         (.result != null or .answers != null))' || { echo 'denied: cost/result unverified' >&2; exit 65; }
