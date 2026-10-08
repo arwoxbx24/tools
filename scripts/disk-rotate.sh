@@ -533,14 +533,24 @@ fix_candidates() { # class listfile -> 0/1; фиксирует незамени�
 verify_and_delete() { # class -> удаление по гейту: проверка копии в restic; заполняет REFIX_PATHS
   local class=$1
   [ -f "$DR_STATE_FILE" ] || return 0
-  local tmp now_s path size mtime sha256 snapshot_id fixed_ts sid_path
+  local tmp now_s path size mtime sha256 snapshot_id fixed_ts sid_path line own
   local -a rec
   local -A snap_path=() snap_done=()
   local p s m ms meta snap_size snap_mtime
   tmp=$(mktemp)
   now_s=$(date +%s)
-  while IFS=$'\t' read -ra rec; do
-    [ "${#rec[@]}" -eq 6 ] || continue   # мусор (напр. строки тревог) пропускаем
+  while IFS= read -r line || [ -n "$line" ]; do
+    IFS=$'\t' read -ra rec <<<"$line"
+    path="${rec[0]:-}"; own=0
+    # ponytail: six-column state uses path ownership; add class metadata if classes share paths.
+    case "$class" in
+      projects) for p in "${PROJECTS_ALLOW[@]}"; do [[ "$path" == $p ]] && { own=1; break; }; done ;;
+      test-irreplaceable) [ -n "${DR_TEST_IRREPLACEABLE_DIR:-}" ] && [[ "$path" == "$DR_TEST_IRREPLACEABLE_DIR/"* ]] && own=1 ;;
+    esac
+    if [ "$own" -eq 0 ] || [ "${#rec[@]}" -ne 6 ]; then
+      printf '%s\n' "$line" >>"$tmp"
+      continue
+    fi
     path="${rec[0]}"; size="${rec[1]}"; mtime="${rec[2]}"
     sha256="${rec[3]}"; snapshot_id="${rec[4]}"; fixed_ts="${rec[5]}"
     [ -n "$path" ] || continue
@@ -622,11 +632,13 @@ gate_process() { # class listfile -> 0, либо RC_GATE_CLOSED при закр�
   fi
   while IFS= read -r p; do
     [ -n "$p" ] || continue
+    [ -e "$p" ] || continue
     [ -n "${known[$p]:-}" ] && continue
     printf '%s\n' "$p"
   done <"$listfile" >"$tmp"
   for p in "${REFIX_PATHS[@]:-}"; do
     [ -n "$p" ] || continue
+    [ -e "$p" ] || continue
     printf '%s\n' "$p"
   done >>"$tmp"
   if [ -s "$tmp" ]; then
@@ -758,15 +770,23 @@ projects_candidates() { # -> безопасные files; WT_CANDIDATES для re
 }
 
 projects_gate() {
-  local list p wt others status root
+  local list p wt others status root reason
   list=$(mktemp) || return; projects_candidates >"$list"
   if [ "$MODE" = dry-run ]; then [ "${#PROJECTS_NOTICES[@]}" -eq 0 ] || printf '%s\n' "${PROJECTS_NOTICES[@]}"; while IFS= read -r p; do handle projects < <(printf '%s\0' "$p"); done <"$list"
   else
     REFIX_PATHS=(); gate_process projects "$list" || true
     if [ "$GATE_MODE" = enforce ]; then for wt in "${WT_CANDIDATES[@]}"; do
-      if others=$(git -C "$wt" ls-files --others) && status=$(git -C "$wt" status --porcelain) && [ -z "$others" ] && [ -z "$status" ] && root=$(git -C "$wt" rev-parse --path-format=absolute --git-common-dir 2>/dev/null); then
+      status=
+      if others=$(git -C "$wt" ls-files --others) && status=$(git -C "$wt" status --porcelain --ignored) && [ -z "$others" ] && [ -z "$status" ] && root=$(git -C "$wt" rev-parse --path-format=absolute --git-common-dir 2>/dev/null); then
         root=${root%/.git}; if git -C "$root" worktree remove -- "$wt"; then journal_row projects worktree-removed "$wt" - - - -; else journal_row projects worktree-kept "$wt" - - - remove-refused; fi
-      else journal_row projects worktree-kept "$wt" - - - pending-gate; fi
+      else
+        reason=pending-gate
+        if printf '%s\n' "$status" | grep -q '^!! '; then
+          reason=kept-ignored
+          printf 'kept-ignored\t%s\n' "$wt" >>"$DR_LOG"
+        fi
+        journal_row projects worktree-kept "$wt" - - - "$reason"
+      fi
     done; fi
   fi
   rm -f -- "$list"

@@ -21,13 +21,21 @@ mkdir -p "$(dirname "$DZ_ZONES_TSV")"
 ts=$(date +%Y-%m-%dT%H:%M:%S)
 
 classify() { # wt -> задаёт глобальные STATE, CLASS
-  local wt=$1 name id status lout procbusy lrc
+  local wt=$1 name id status ltmp procbusy lrc
   STATE=kept-not-merged
   CLASS=И
   # 1. HEAD — предок origin/main (локальный ref, без fetch)
   git -C "$wt" merge-base --is-ancestor HEAD origin/main 2>/dev/null || return
-  # 2. чисто, кроме путей с разрешённым сегментом (срезаем префикс статуса "XY ")
-  if [ -n "$(git -C "$wt" status --porcelain --ignored 2>/dev/null | sed 's/^...//' | awk -F/ '
+  # 2. ignored содержимое не удаляем; ошибки status тоже оставляют worktree.
+  if ! status=$(git -C "$wt" status --porcelain --ignored 2>/dev/null); then
+    STATE=kept-dirty
+    return
+  fi
+  if printf '%s\n' "$status" | grep -q '^!! '; then
+    STATE=kept-ignored
+    return
+  fi
+  if [ -n "$(printf '%s\n' "$status" | sed 's/^...//' | awk -F/ '
       { ok=0
         for (i=1;i<=NF;i++) if ($i=="node_modules"||$i==".venv"||$i=="__pycache__"||$i=="dist") ok=1
         if (!ok) print }')" ]; then
@@ -41,25 +49,29 @@ classify() { # wt -> задаёт глобальные STATE, CLASS
     STATE=kept-no-atom
     return
   fi
-  status=$("$DZ_BD" show "$id" --json 2>/dev/null)
-  if [ -z "$status" ] || ! printf '%s' "$status" | grep -q '"closed"'; then
+  if ! status=$("$DZ_BD" show "$id" --json 2>/dev/null) \
+     || ! jq -e --arg id "$id" 'any(.[]; .id == $id and .status == "closed")' <<<"$status" >/dev/null 2>&1; then
     STATE=kept-atom-open
     return
   fi
-  # 4. lsof +D: rc=1 + пустой = свободен; rc=0 + непустой = занят; иначе ошибка
-  lout=$(lsof +D "$wt" 2>/dev/null)
+  # 4. Свободен только при rc=1 и нулевой длине обоих потоков.
+  ltmp=$(mktemp -d /tmp/codex-wt-lsof.XXXXXX) || { STATE=kept-lsof-error; return; }
+  lsof +D "$wt" >"$ltmp/out" 2>"$ltmp/err"
   lrc=$?
+  cat "$ltmp/err" >&2
   procbusy=$(readlink /proc/*/cwd 2>/dev/null | grep -F "${wt%/}" || true)
   if [ -n "$procbusy" ]; then
     STATE=kept-busy
-  elif [ "$lrc" -eq 1 ] && [ -z "$lout" ]; then
+  elif [ "$lrc" -eq 1 ] && [ ! -s "$ltmp/out" ] && [ ! -s "$ltmp/err" ]; then
     STATE=candidate
     CLASS=У
-  elif [ "$lrc" -eq 0 ] && [ -n "$lout" ]; then
+  elif [ "$lrc" -eq 0 ] && [ -s "$ltmp/out" ]; then
     STATE=kept-busy
   else
     STATE=kept-lsof-error
   fi
+  rm -f -- "$ltmp/out" "$ltmp/err"
+  rmdir -- "$ltmp"
 }
 
 for wt in "$DZ_CODEX_WT"/*/; do

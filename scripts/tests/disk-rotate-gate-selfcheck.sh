@@ -9,10 +9,22 @@
 set -u
 
 SCRIPT="$(cd "$(dirname "$0")/.." && pwd -P)/disk-rotate.sh"
-RESTIC=/root/workspaces/tools/bin/restic
+RESTIC=
 
 TMP="$(mktemp -d)"
 trap 'rm -rf -- "$TMP"' EXIT
+
+# Host-wide ledger sizes are irrelevant to fixture behavior; never scan host data.
+mkdir -p "$TMP/bin"
+cat >"$TMP/bin/du" <<'DUEOF'
+#!/bin/bash
+case "$*" in
+  '-sm /root/workspaces'|'-sm /var/lib/docker'|'-sm /root/backups'|'-sm /root/.local'|'-sm /tmp') printf '0\tfixture\n' ;;
+  *) exec /usr/bin/du "$@" ;;
+esac
+DUEOF
+chmod +x "$TMP/bin/du"
+export PATH="$TMP/bin:$PATH"
 
 # --- текущая фикстура (глобальные пути, пересобираются fixture <<имя>>) ---
 I= R= STATE= JOURNAL= LASTOK= LOCK= LEDGER= TLOG= ALERTS= NOTIFY= S=
@@ -20,6 +32,113 @@ NOTIFY_STUB= REPO= PASSFILE=
 RUN_ENV=()
 A= B= C= D= E= F= SP=
 O_A= O_B= O_C= O_D= O_E= O_F=
+
+mock_restic() { # fixture-local stub: only the operations exercised by this selfcheck
+  RESTIC="$S/restic"
+  cat >"$RESTIC" <<'PY'
+#!/usr/bin/env python3
+import datetime
+import json
+import os
+import pathlib
+import shutil
+import sys
+
+raw_args = sys.argv[1:]
+args = list(raw_args)
+
+def option(name):
+    try:
+        return raw_args[raw_args.index(name) + 1]
+    except (ValueError, IndexError):
+        return None
+
+repo = option("--repo") or option("-r") or os.environ.get("RESTIC_REPOSITORY")
+if not repo:
+    print("mock-restic: repository missing", file=sys.stderr)
+    sys.exit(2)
+root = pathlib.Path(repo)
+index = root / "index.json"
+
+while args and args[0] in ("-r", "--repo", "--password-file"):
+    del args[:2]
+cmd = args[0] if args else ""
+
+def load_index():
+    return json.loads(index.read_text()) if index.exists() else []
+
+def save_index(items):
+    index.write_text(json.dumps(items))
+
+if cmd == "init":
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "config").write_text("mock\n")
+    save_index([])
+elif cmd == "cat" and len(args) > 1 and args[1] == "config":
+    if not (root / "config").is_file():
+        sys.exit(1)
+elif cmd == "backup":
+    listfile = option("--files-from-verbatim")
+    if not listfile:
+        sys.exit(2)
+    paths = [line for line in pathlib.Path(listfile).read_text().splitlines() if line]
+    if not paths or any(not pathlib.Path(path).is_file() for path in paths):
+        print("mock-restic: source missing", file=sys.stderr)
+        sys.exit(1)
+    items = load_index()
+    snapshot_id = f"mock{len(items) + 1:08d}"
+    saved = root / "snapshots" / snapshot_id
+    saved.mkdir(parents=True)
+    files = []
+    for n, path in enumerate(paths):
+        source = pathlib.Path(path)
+        target = saved / str(n)
+        shutil.copy2(source, target)
+        stat = source.stat()
+        files.append({"path": path, "size": stat.st_size,
+                      "mtime": datetime.datetime.fromtimestamp(stat.st_mtime, datetime.timezone.utc).isoformat(),
+                      "saved": str(n)})
+    items.append({"id": snapshot_id, "short_id": snapshot_id, "tags": [option("--tag") or ""], "files": files})
+    save_index(items)
+    print(json.dumps({"message_type": "summary", "snapshot_id": snapshot_id}))
+elif cmd == "snapshots":
+    items = load_index()
+    tag = option("--tag")
+    if tag:
+        items = [item for item in items if tag in item["tags"]]
+    if option("--latest") and items:
+        items = [items[-1]]
+    if "--json" in args:
+        print(json.dumps([{key: item[key] for key in ("id", "short_id", "tags")} for item in items]))
+    else:
+        for item in items:
+            print(f"{item['short_id']} {' '.join(item['tags'])}")
+elif cmd == "ls":
+    ids = [arg for arg in args[1:] if not arg.startswith("-")]
+    item = next((item for item in load_index() if item["id"] == ids[-1]), None) if ids else None
+    if not item:
+        sys.exit(1)
+    for file in item["files"]:
+        print(json.dumps({"struct_type": "node", "type": "file", "path": file["path"],
+                          "size": file["size"], "mtime": file["mtime"]}))
+elif cmd == "restore":
+    ids = [arg for arg in args[1:] if not arg.startswith("-")]
+    target = option("--target")
+    item = next((item for item in load_index() if item["id"] == ids[0]), None) if ids else None
+    if not item or not target:
+        sys.exit(1)
+    for file in item["files"]:
+        destination = pathlib.Path(target) / file["path"].lstrip("/")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(root / "snapshots" / item["id"] / file["saved"], destination)
+elif cmd == "forget":
+    pass
+else:
+    print(f"mock-restic: unsupported {' '.join(args)}", file=sys.stderr)
+    sys.exit(2)
+PY
+  chmod +x "$RESTIC"
+}
 
 fixture() { # имя -> новая фикстура в $TMP/$имя (свой restic, state, journal, lastok)
   local name=$1
@@ -40,6 +159,7 @@ fixture() { # имя -> новая фикстура в $TMP/$имя (свой re
   REPO="$d/repo"
   PASSFILE="$d/pw"
   printf 'fixture-pass-%s-%s\n' "$RANDOM" "$RANDOM" >"$PASSFILE"
+  mock_restic
   if ! "$RESTIC" init --repo "$REPO" --password-file "$PASSFILE" >/dev/null 2>&1; then
     echo "FIXTURE-ERROR: restic init failed ($RESTIC)" >&2
     exit 2
@@ -62,9 +182,13 @@ NOTIFYEOF
     DR_LEDGER="$LEDGER"
     DR_ZONES_TSV="$S/zones.tsv"
     DR_LOG="$TLOG"
+    DR_LOGROTATE_STATE="$d/logrotate.state"
     DR_NOTIFY_CMD="$NOTIFY_STUB"
+    NOTIFY_ENV="$d/empty-notify.env"
     DR_RESTIC_REPO="$REPO"
     DR_RESTIC_PASSWORD_FILE="$PASSFILE"
+    DR_JOURNAL_COPY="$d/journal-copy.tsv"
+    RESTIC="$RESTIC"
     DR_TEST_IRREPLACEABLE_DIR="$I"
     DR_TEST_REPLACEABLE_DIR="$R")
 
@@ -360,6 +484,153 @@ scenario_17() {
   grep -q '90%' "$NOTIFY" && report 17 "S3 alert" PASS || report 17 "S3 alert" FAIL
 }
 
+source_gate_functions() { # extracts the actual production gate functions without its live entry point
+  local assignment
+  for assignment in "${RUN_ENV[@]}"; do export "$assignment"; done
+  RC_GATE_CLOSED=5
+  sed -n '/^journal_row() {/,/^handle() {/p' "$SCRIPT" | sed '$d' >"$S/gate-functions.sh"
+  # shellcheck disable=SC1090
+  source "$S/gate-functions.sh"
+  use_pct() { printf '85\n'; }
+}
+
+fake_tools() { # synthetic git/bd/lsof only for the classifier and projects gate
+  BIN="$S/bin"
+  mkdir -p "$BIN"
+  cat >"$BIN/git" <<'GITEOF'
+#!/bin/bash
+case " $* " in
+  *" merge-base "*) exit 0 ;;
+  *" status --porcelain --ignored "*)
+    if [[ "$*" == *dcfg-ignored* ]]; then printf '!! node_modules/cache\n';
+    elif [[ "$*" == *dcfg-race* ]]; then
+      n=0; [ -f "$GIT_STATUS_CALLS" ] && n=$(cat "$GIT_STATUS_CALLS")
+      n=$((n + 1)); printf '%s\n' "$n" >"$GIT_STATUS_CALLS"
+      [ "$n" -gt 1 ] && printf '!! node_modules/cache\n'
+    else printf '%s' "${FAKE_GIT_IGNORED:-}"; fi
+    ;;
+  *" status --porcelain "*) printf '%s' "${FAKE_GIT_PORCELAIN:-}" ;;
+  *" ls-files --others "*) printf '%s' "${FAKE_GIT_OTHERS:-}" ;;
+  *" rev-parse --path-format=absolute --git-common-dir "*) printf '%s\n' "${FAKE_GIT_ROOT:-/tmp/mock-root/.git}" ;;
+  *" worktree remove "*) printf 'remove\n' >>"$GIT_CALL_LOG" ;;
+esac
+exit 0
+GITEOF
+  cat >"$BIN/bd" <<'BDEOF'
+#!/bin/bash
+if [ -n "${BD_JSON:-}" ]; then printf '%s\n' "$BD_JSON"; else printf '[{"id":"%s","status":"closed"}]\n' "$2"; fi
+BDEOF
+  cat >"$BIN/lsof" <<'LSOFEOF'
+#!/bin/bash
+printf '%s' "${LSOF_OUT:-}"
+printf '%s' "${LSOF_ERR:-}" >&2
+exit "${LSOF_RC:-1}"
+LSOFEOF
+  chmod +x "$BIN/git" "$BIN/bd" "$BIN/lsof"
+}
+
+run_classifier() { # root -> emits zones TSV, with fake tools configured by caller
+  local root=$1
+  PATH="$BIN:$PATH" ZONE_MODE=dry-run DZ_CODEX_WT="$root" DZ_ZONES_TSV="$S/zones.tsv" \
+    DZ_BD="$BIN/bd" GIT_CALL_LOG="$S/git-calls" GIT_STATUS_CALLS="$S/status-calls" \
+    bash "$(dirname "$SCRIPT")/disk-zones/codex-worktrees.sh" >"$S/classifier.out" 2>"$S/classifier.err"
+}
+
+scenario_18() { # projects call preserves a legacy/test state row verbatim
+  fixture scen18
+  printf 'legacy payload\n' >"$A"
+  run_rotate GATE_MODE=shadow DR_USAGE_PCT=85 -- >/dev/null 2>&1
+  local project="$S/projects/current.data" other_line
+  other_line=$(cat "$STATE")
+  mkdir -p "${project%/*}"; printf 'current payload\n' >"$project"
+  MODE=run GATE_MODE=enforce JOURNAL_MODE=enforce RUN_ID=scen18 REFIX_PATHS=()
+  FIXED_COUNT=0 FIXED_MB=0 DEFERRED_COUNT=0 PROJECTS_ALLOW=("$S/projects/*")
+  source_gate_functions
+  restic_env
+  printf '%s\n' "$project" >"$S/list"
+  fix_candidates projects "$S/list"
+  : >"$JOURNAL"
+  verify_and_delete projects
+  if [ ! -e "$project" ] && [ -f "$A" ] && grep -qxF "$other_line" "$STATE" \
+     && ! grep -qF "$A" "$JOURNAL" 2>/dev/null; then
+    report 18 "mixed state keeps other class byte-for-byte" PASS
+  else
+    report 18 "mixed state keeps other class byte-for-byte" FAIL
+  fi
+}
+
+scenario_19() { # closed text in another item/notes is not the requested atom status
+  fixture scen19
+  local root="$S/worktrees" wt="$S/worktrees/dcfg-notes"
+  mkdir -p "$wt"; touch "$wt/.git"; fake_tools
+  BD_JSON='[{"id":"dcfg-notes","status":"open","notes":"linked atom closed"},{"id":"dcfg-linked","status":"closed"}]'
+  export BD_JSON LSOF_RC=1 LSOF_OUT= LSOF_ERR=
+  run_classifier "$root"
+  if grep -q $'\tkept-atom-open$' "$S/zones.tsv" && ! grep -q $'\tcandidate$' "$S/zones.tsv"; then
+    report 19 "bd JSON exact id and status" PASS
+  else
+    report 19 "bd JSON exact id and status" FAIL
+  fi
+}
+
+scenario_20() { # lsof rc=1 with stderr is an error, not a free worktree
+  fixture scen20
+  local root="$S/worktrees" wt="$S/worktrees/dcfg-lsof"
+  mkdir -p "$wt"; touch "$wt/.git"; fake_tools
+  unset BD_JSON; export LSOF_RC=1 LSOF_OUT= LSOF_ERR='lsof: permission denied'
+  run_classifier "$root"
+  if grep -q $'\tkept-lsof-error$' "$S/zones.tsv" \
+     && grep -q 'lsof: permission denied' "$S/classifier.err"; then
+    report 20 "lsof stderr fails closed" PASS
+  else
+    report 20 "lsof stderr fails closed" FAIL
+  fi
+}
+
+scenario_21() { # ignored content at classification or final check prevents removal
+  fixture scen21
+  local root="$S/worktrees" wt="$S/worktrees/dcfg-ignored"
+  mkdir -p "$wt" "$root/dcfg-race"; touch "$wt/.git" "$root/dcfg-race/.git"
+  fake_tools
+  unset BD_JSON; export LSOF_RC=1 LSOF_OUT= LSOF_ERR=
+  run_classifier "$root"
+  export PATH="$BIN:$PATH" GIT_CALL_LOG="$S/git-calls" GIT_STATUS_CALLS="$S/status-calls"
+  MODE=run GATE_MODE=enforce JOURNAL_MODE=enforce RUN_ID=scen21 REFIX_PATHS=()
+  FIXED_COUNT=0 FIXED_MB=0 DEFERRED_COUNT=0 PROJECTS_ALLOW=("$root/*")
+  source_gate_functions
+  sed -n '/^projects_gate() {/,/^s3_line() {/p' "$SCRIPT" | sed '$d' >"$S/projects-functions.sh"
+  # shellcheck disable=SC1090
+  source "$S/projects-functions.sh"
+  projects_candidates() { WT_CANDIDATES=("$S/worktrees/dcfg-race"); PROJECTS_NOTICES=(); }
+  projects_gate
+  if grep -q $'\tkept-ignored$' "$S/zones.tsv" \
+     && grep -q 'kept-ignored' "$JOURNAL" \
+     && ! grep -q 'remove' "$S/git-calls" 2>/dev/null; then
+    report 21 "ignored worktree kept without remove" PASS
+  else
+    report 21 "ignored worktree kept without remove" FAIL
+  fi
+}
+
+scenario_22() { # paths deleted by verify are not re-backed up in this same gate pass
+  fixture scen22
+  printf 'same pass payload\n' >"$A"
+  run_rotate GATE_MODE=shadow DR_USAGE_PCT=85 -- >/dev/null 2>&1
+  local list="$S/list"
+  printf '%s\n' "$A" >"$list"
+  MODE=run GATE_MODE=enforce JOURNAL_MODE=enforce RUN_ID=scen22 REFIX_PATHS=()
+  FIXED_COUNT=0 FIXED_MB=0 DEFERRED_COUNT=0 PROJECTS_ALLOW=()
+  source_gate_functions
+  gate_process test-irreplaceable "$list" >/dev/null 2>&1 || true
+  if [ ! -e "$A" ] \
+     && grep -q $'\tdeleted\t' "$JOURNAL" \
+     && ! grep -q 'restic-backup-failed' "$JOURNAL"; then
+    report 22 "same-pass deleted paths are not refixed" PASS
+  else
+    report 22 "same-pass deleted paths are not refixed" FAIL
+  fi
+}
+
 if [ "${1:-}" = accounting ]; then
   scenario_16
   exit "$FAILS"
@@ -382,8 +653,13 @@ scenario_14
 scenario_15
 scenario_16
 scenario_17
+scenario_18
+scenario_19
+scenario_20
+scenario_21
+scenario_22
 
-echo "PASS $((17 - FAILS))/17"
+echo "PASS $((22 - FAILS))/22"
 [ "$FAILS" -eq 0 ] && exit 0
-echo "$FAILS/17 FAILED"
+echo "$FAILS/22 FAILED"
 exit 1
