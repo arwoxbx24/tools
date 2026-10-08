@@ -12,6 +12,7 @@ GUARD_BALANCE_MIN="${GUARD_BALANCE_MIN:-10}"
 GUARD_STATE_DIR="${GUARD_STATE_DIR:-/root/workspaces/tools/scripts/schedulers/state}"
 GUARD_DEBOUNCE_SEC="${GUARD_DEBOUNCE_SEC:-21600}"
 GUARD_REMINDER_SEC="${GUARD_REMINDER_SEC:-3600}"
+FALLBACK_SWITCH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/forms-fallback-switch.sh"
 
 STATE_FILE="$GUARD_STATE_DIR/state.json"
 BODY_FILE="$GUARD_STATE_DIR/forms-gw-guard.body"
@@ -73,6 +74,8 @@ notify() { # type text
       elapsed=$((now - started))
       msg="✅ forms.arwox.ru: восстановлено. Сбой длился $(outage_duration "$elapsed")."
       ;;
+    fallback_outage|fallback_normal|fallback_*)
+      ;;
     *)
       ts=$(echo "$state" | jq -r --arg t "$type" '.[$t] // 0' 2>/dev/null || echo 0)
       ts=${ts:-0}
@@ -128,6 +131,44 @@ form_err_code() { # notify form_error when code is 5xx or 000
   if [ "$code" = "000" ] || { [ -n "$code" ] && [ "$code" -ge 500 ] 2>/dev/null; }; then
     notify form_error "$code"
     form_error=1
+  fi
+}
+
+fallback_track() { # failed|success; switch only after two consecutive outcomes
+  local outcome="$1" state failures successes mode target result rc
+  [ -n "${FALLBACK_PAGE_ID:-}" ] && [ -n "${FALLBACK_BLOCK_ID:-}" ] || return 0
+  state="{}"
+  if [ -f "$STATE_FILE" ] && state=$(cat "$STATE_FILE" 2>/dev/null) && echo "$state" | jq -e . >/dev/null 2>&1; then :; else state="{}"; fi
+  failures=$(echo "$state" | jq -r '.fallback_failures // 0')
+  successes=$(echo "$state" | jq -r '.fallback_successes // 0')
+  mode=$(echo "$state" | jq -r '.fallback_mode // "normal"')
+  case "$outcome" in
+    failed)
+      failures=$((failures + 1)); successes=0; target=outage
+      state=$(echo "$state" | jq --argjson f "$failures" --argjson s "$successes" '.fallback_failures=$f | .fallback_successes=$s')
+      [ "$failures" -ge 2 ] && [ "$mode" != outage ] || { printf '%s\n' "$state" > "$STATE_FILE"; return 0; }
+      ;;
+    success)
+      successes=$((successes + 1)); failures=0; target=normal
+      state=$(echo "$state" | jq --argjson f "$failures" --argjson s "$successes" '.fallback_failures=$f | .fallback_successes=$s')
+      [ "$mode" = outage ] && [ "$successes" -ge 2 ] || { printf '%s\n' "$state" > "$STATE_FILE"; return 0; }
+      ;;
+    *) return 0 ;;
+  esac
+  printf '%s\n' "$state" > "$STATE_FILE"
+  result=$(bash "$FALLBACK_SWITCH" apply "$target" 2>&1); rc=$?
+  result=${result%%$'\n'*}
+  if [ "$rc" = 0 ]; then
+    jq --arg mode "$target" '.fallback_mode=$mode' "$STATE_FILE" > "$STATE_FILE.tmp" && mv -f "$STATE_FILE.tmp" "$STATE_FILE"
+    case "$target" in
+      outage) notify fallback_outage "forms.arwox.ru: включён резервный канал формы." ;;
+      normal) notify fallback_normal "forms.arwox.ru: восстановлен стандартный блок формы." ;;
+    esac
+  else
+    case "$result" in
+      fallback_*) notify "$result" "$result" ;;
+      *) notify fallback_switch "$result" ;;
+    esac
   fi
 }
 
@@ -199,6 +240,12 @@ case "$code" in
     fi
     ;;
 esac
+
+if [ "$failed" = 1 ] || [ "$form_error" = 1 ]; then
+  fallback_track failed
+elif [ "$code" != "000" ] && [ "$stopped" = 0 ] && [ "$ssl" = 0 ]; then
+  fallback_track success
+fi
 
 IAM=$(yc iam create-token 2>/dev/null)
 if [ -z "$IAM" ]; then
