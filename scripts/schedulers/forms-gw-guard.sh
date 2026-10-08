@@ -11,6 +11,7 @@ GUARD_FORMS_URL="${GUARD_FORMS_URL:-https://forms.arwox.ru/}"
 GUARD_BALANCE_MIN="${GUARD_BALANCE_MIN:-10}"
 GUARD_STATE_DIR="${GUARD_STATE_DIR:-/root/workspaces/tools/scripts/schedulers/state}"
 GUARD_DEBOUNCE_SEC="${GUARD_DEBOUNCE_SEC:-21600}"
+GUARD_REMINDER_SEC="${GUARD_REMINDER_SEC:-3600}"
 
 STATE_FILE="$GUARD_STATE_DIR/state.json"
 BODY_FILE="$GUARD_STATE_DIR/forms-gw-guard.body"
@@ -19,14 +20,19 @@ form_error=0
 
 log() { printf '%s %s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%S')" "$1" "${2:-}" ; }
 
+outage_duration() { # seconds
+  local seconds="$1" hours minutes
+  hours=$((seconds / 3600))
+  minutes=$(((seconds % 3600) / 60))
+  if [ "$hours" -gt 0 ]; then printf '%sч %sм' "$hours" "$minutes"; else printf '%sм' "$minutes"; fi
+}
+
 notify() { # type text
-  local type="$1" text="$2" now ts state json out msg
+  local type="$1" text="$2" now ts state json out msg started last elapsed
   text=$(printf '%s' "$text" | tr -d '"\r\n' | head -c 400)
   now=$(date +%s)
   case "$type" in
     gw_resumed) msg="✅ forms.arwox.ru: шлюз форм был остановлен (реапер YC) — поднят сторожем, форма отвечает <$2>." ;;
-    gw_failed) msg="🚨 forms.arwox.ru: шлюз форм STOPPED, resume не удался: $2. Проверить биллинг YC." ;;
-    form_error) msg="⚠️ forms.arwox.ru отвечает <$2> (шлюз не остановлен). Проверить функцию arwox-lead-form." ;;
     low_balance) msg="💸 Баланс Yandex Cloud $2 ₽ (< $GUARD_BALANCE_MIN). Пополнить, иначе реапер остановит шлюз форм." ;;
     *) msg="${2:-}" ;;
   esac
@@ -39,12 +45,43 @@ notify() { # type text
       state="{}"
     fi
   fi
-  ts=$(echo "$state" | jq -r --arg t "$type" '.[$t] // 0' 2>/dev/null || echo 0)
-  ts=${ts:-0}
-  if [ "$ts" != 0 ] && [ $((now - ts)) -lt "$GUARD_DEBOUNCE_SEC" ]; then
-    log "debounced $type"
-    return 0
-  fi
+  case "$type" in
+    form_error|gw_failed)
+      started=$(echo "$state" | jq -r '.form_outage_started_at // 0' 2>/dev/null || echo 0)
+      case "$started" in ''|*[!0-9]*) started=0 ;; esac
+      if [ "$started" = 0 ]; then
+        started="$now"
+        state=$(echo "$state" | jq --argjson n "$now" '.form_outage_started_at = $n')
+        printf '%s\n' "$state" > "$STATE_FILE"
+      fi
+      elapsed=$((now - started))
+      case "$type" in
+        gw_failed) msg="🚨 forms.arwox.ru: шлюз форм STOPPED, resume не удался: $text. Сбой длится $(outage_duration "$elapsed"). Проверить биллинг YC." ;;
+        form_error) msg="⚠️ forms.arwox.ru отвечает <$text> (шлюз не остановлен). Сбой длится $(outage_duration "$elapsed"). Проверить функцию arwox-lead-form." ;;
+      esac
+      last=$(echo "$state" | jq -r '.form_outage_notified_at // 0' 2>/dev/null || echo 0)
+      case "$last" in ''|*[!0-9]*) last=0 ;; esac
+      if [ "$last" != 0 ] && awk -v now="$now" -v last="$last" -v interval="$GUARD_REMINDER_SEC" 'BEGIN{exit !(now-last<interval)}'; then
+        log "debounced outage"
+        return 0
+      fi
+      ;;
+    form_recovered)
+      started=$(echo "$state" | jq -r '.form_outage_started_at // 0' 2>/dev/null || echo 0)
+      case "$started" in ''|*[!0-9]*) started=0 ;; esac
+      [ "$started" = 0 ] && return 0
+      elapsed=$((now - started))
+      msg="✅ forms.arwox.ru: восстановлено. Сбой длился $(outage_duration "$elapsed")."
+      ;;
+    *)
+      ts=$(echo "$state" | jq -r --arg t "$type" '.[$t] // 0' 2>/dev/null || echo 0)
+      ts=${ts:-0}
+      if [ "$ts" != 0 ] && [ $((now - ts)) -lt "$GUARD_DEBOUNCE_SEC" ]; then
+        log "debounced $type"
+        return 0
+      fi
+      ;;
+  esac
   if [ -z "${TG_BOT_TOKEN:-}" ] || [ -z "${TG_CHAT_ID:-}" ]; then
     log "telegram skipped $type"
     return 0
@@ -52,7 +89,15 @@ notify() { # type text
   if out=$(printf 'url = "https://api.telegram.org/bot%s/sendMessage"\ndata = "chat_id=%s"\ndata-urlencode = "text=%s"\n' \
       "$TG_BOT_TOKEN" "$TG_CHAT_ID" "$msg" | curl -s --max-time 10 -K - 2>&1) && \
      printf '%s' "$out" | jq -e '.ok == true' >/dev/null 2>&1; then
-    echo "$state" | jq --arg t "$type" --argjson n "$now" '.[$t] = $n' > "$STATE_FILE"
+    case "$type" in
+      form_error|gw_failed)
+        echo "$state" | jq --arg t "$type" --argjson n "$now" '.form_outage_notified_at = $n | .[$t] = $n' > "$STATE_FILE"
+        ;;
+      form_recovered)
+        echo "$state" | jq 'del(.form_outage_started_at, .form_outage_notified_at)' > "$STATE_FILE"
+        ;;
+      *) echo "$state" | jq --arg t "$type" --argjson n "$now" '.[$t] = $n' > "$STATE_FILE" ;;
+    esac
     log "sent $type"
   else
     log "send failed $type"
@@ -95,6 +140,12 @@ for tool in yc jq curl flock awk; do
     exit 2
   fi
 done
+
+if ! [[ "$GUARD_REMINDER_SEC" =~ ^([0-9]+(\.[0-9]+)?|\.[0-9]+)$ ]] || \
+   ! awk -v value="$GUARD_REMINDER_SEC" 'BEGIN{exit !(value>0)}'; then
+  log "invalid GUARD_REMINDER_SEC=$GUARD_REMINDER_SEC"
+  exit 2
+fi
 
 exec 9>"$GUARD_STATE_DIR/forms-gw-guard.lock"
 if ! flock -n 9; then
@@ -140,6 +191,14 @@ elif [ "$ssl" != 0 ]; then
 else
   form_err_code
 fi
+
+case "$code" in
+  2??|3??)
+    if [ "$stopped" = 0 ] && [ "$ssl" = 0 ] && [ "$failed" = 0 ] && [ "$form_error" = 0 ]; then
+      notify form_recovered ""
+    fi
+    ;;
+esac
 
 IAM=$(yc iam create-token 2>/dev/null)
 if [ -z "$IAM" ]; then
