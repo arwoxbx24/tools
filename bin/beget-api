@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BEGET_API=${BEGET_API:-https://api.beget.com/api}
+BEGET_ENV_FILE=${BEGET_ENV_FILE:-/root/workspaces/secrets/projects/beget.env}
+method=${1:-}
+input=${2:-\{\}}
+
+if [[ ! $method =~ ^[a-z]+/[A-Za-z]+$ ]]; then
+  printf 'usage: %s <section/method> [input_data-json]\n' "$0" >&2
+  exit 64
+fi
+if { [ -z "${BEGET_LOGIN:-}" ] || [ -z "${BEGET_API_PASSWORD:-}" ]; } && [ -f "$BEGET_ENV_FILE" ]; then . "$BEGET_ENV_FILE"; fi
+BEGET_LOGIN=${BEGET_LOGIN:-${login:-}}
+BEGET_API_PASSWORD=${BEGET_API_PASSWORD:-${password:-}}
+if [ -z "${BEGET_LOGIN:-}" ] || [ -z "${BEGET_API_PASSWORD:-}" ]; then
+  missing='BEGET_LOGIN|BEGET_API_PASSWORD'
+  keys=$(sed -nE 's/^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)=.*/\2/p' "$BEGET_ENV_FILE" 2>/dev/null | paste -sd ' ' - || :)
+  printf 'missing %s in %s; keys: %s\n' "$missing" "$BEGET_ENV_FILE" "$keys" >&2
+  exit 3
+fi
+
+input=${input//\"/\\\"}
+if ! reply=$(printf 'url = "%s/%s"\ndata-urlencode = "login=%s"\ndata-urlencode = "passwd=%s"\ndata-urlencode = "input_format=json"\ndata-urlencode = "output_format=json"\ndata-urlencode = "input_data=%s"\n' "$BEGET_API" "$method" "${BEGET_LOGIN:-}" "${BEGET_API_PASSWORD:-}" "$input" | curl -s --max-time 15 -K - -w '\n%{http_code}'); then
+  printf 'network error\n' >&2
+  exit 2
+fi
+
+http=${reply: -3}
+body=${reply%$'\n'$http}
+if ! jq -e . >/dev/null 2>&1 <<<"$body"; then
+  printf 'non-json response, http=%s, bytes=%s\n' "$http" "$(printf %s "$body" | wc -c)" >&2
+  exit 2
+fi
+jq . <<<"$body"
+jq -e '(.status == "success") and ((.answer.status? // "success") == "success")' >/dev/null <<<"$body" && exit 0
+exit 1
