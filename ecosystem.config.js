@@ -20,6 +20,7 @@ function loadEnvFile(filePath) {
 const pm2ApiEnv = loadEnvFile('/root/workspaces/secrets/services/pm2-api.env');
 const formsGwGuardEnv = loadEnvFile('/root/workspaces/secrets/services/pm2-notify.env');
 const hhBotEnv = loadEnvFile('/root/workspaces/secrets/projects/arwox-biz/hr/bot/.env');
+const formsBackupEnv = loadEnvFile('/root/workspaces/secrets/system/infra/yc-serverless/functions/arwox-lead-form/.env');
 
 module.exports = {
   apps: [
@@ -198,6 +199,23 @@ module.exports = {
       cron_restart: '3,18,33,48 * * * *',
       error_file: '/root/.pm2/logs/context-heartbeat-error.log',
       out_file: '/root/.pm2/logs/context-heartbeat-out.log'
+    },
+    {
+      name: 'forms-backup',
+      time: true,
+      merge_logs: true,
+      script: '/root/workspaces/projects/arwox-v3-src/forms-failover/server.py',
+      cwd: '/root/workspaces/projects/arwox-v3-src/forms-failover',
+      interpreter: 'python3',
+      exec_mode: 'fork_mode',
+      instances: 1,
+      autorestart: true,
+      min_uptime: 10000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
+      env: { ...formsBackupEnv, FORMS_BACKUP_BIND: '172.20.0.1', FORMS_BACKUP_PORT: '20140' },
+      error_file: '/root/.pm2/logs/forms-backup-error.log',
+      out_file: '/root/.pm2/logs/forms-backup-out.log'
     },
     {
       name: 'forms-gw-guard',
