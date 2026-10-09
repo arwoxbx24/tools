@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+case ${1:-} in -h|--help) echo "usage: gitmirror-passwd  (создаёт пароль GitMirror)"; exit 0;; esac
 umask 077
 GMP_DIR=${GMP_DIR:-/root/workspaces/secrets}
 if [ -e "$GMP_DIR/gitmirror.htpasswd" ] || [ -e "$GMP_DIR/gitmirror.curlrc" ]; then
