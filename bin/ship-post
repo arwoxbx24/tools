@@ -239,7 +239,7 @@ remote_result(){
 }
 
 record_failure(){
- local repo=$1 atom=$2 head=$3 rc=$4 key marker issue
+ local repo=$1 atom=$2 head=$3 rc=$4 key marker t issue
  key=$(receipt_file "$repo" "$atom" "$head"); marker="$key.failed"
  mkdir -p "$(dirname "$marker")" || return 1
  # A marker records an observation, not completion of the tracker transaction.
@@ -248,11 +248,13 @@ record_failure(){
  case $rc in 23|70|75) return 0 ;; esac
  bd_cmd reopen "$atom" >/dev/null || return 1
  bd_cmd update "$atom" --append-notes "ship-post delivery failed: exit $rc; local commit $head retained; inspect courier receipt before retry." >/dev/null || return 1
- issue=$(bd_cmd search "[ship-post] delivery failure $atom" --json) || return 1
- issue=$(jq -r --arg t "[ship-post] delivery failure $atom" '[.[] | select(.title==$t and .status!="closed")][0].id // empty' <<<"$issue") || return 1
+ t="[ship-post] delivery failure $(basename "$repo") exit $rc"
+ issue=$(bd_cmd search "$t" --status open,in_progress,blocked --json) || return 1
+ issue=$(jq -r --arg t "$t" '[.[] | select(.title==$t and .status!="closed")][0].id // empty' <<<"$issue") || return 1
  if [[ -z $issue ]]; then
-  issue=$(bd_cmd create "[ship-post] delivery failure $atom" -t task -l contour:infra --deps "discovered-from:$atom" --description "Courier exit $rc. Local commit $head retained. Reconcile remote state before retry." --acceptance '1) Recorded delivery failure cause repaired and verified. 2) Remote state reconciled before retry. 3) Parent can close locally and resume courier delivery; remote receipt remains a parent requirement.' --silent) || return 1
+  issue=$(bd_cmd create "$t" -t task -l contour:infra --deps "discovered-from:$atom" --description "Courier exit $rc. Local commit $head retained. Reconcile remote state before retry." --acceptance '1) Recorded delivery failure cause repaired and verified. 2) Remote state reconciled before retry. 3) Parent can close locally and resume courier delivery; remote receipt remains a parent requirement.' --silent) || return 1
  fi
+ bd_cmd update "$issue" --append-notes "atom $atom sha $head exit $rc" >/dev/null || return 1
  [[ -n $issue ]] && bd_cmd dep add "$atom" "$issue" >/dev/null || return 1
  touch "$marker.reported"
 }
