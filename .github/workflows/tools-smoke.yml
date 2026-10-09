@@ -10,10 +10,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - run: python3 tests/test_agent_tools.py
+      - run: npx --yes jscpd@5.4.1 --baseline-from-ref origin/main --fail-on-new-clones=0 bin scripts
       - run: bash bin/ship-test
       - run: bash bin/code-channel-test
       - run: bash bin/place-files-test
