@@ -2,7 +2,7 @@
 set -euo pipefail
 # U1 (ADR-1): validate before reading secrets; askpass (git single-prompt) skips.
 if ! [[ ${CA_ASKPASS:-} == 1 && $# -eq 1 ]]; then
-  usage(){ printf '%s\n' 'code-archive <repo>...' 'code-archive --changed' 'code-archive --protect-all' 'code-archive --help'; }
+  usage(){ printf '%s\n' 'usage: code-archive <repo>...' 'code-archive --changed' 'code-archive --protect-all' 'code-archive --help'; }
   [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]] && { usage; exit 0; }
   [[ $# -eq 0 ]] && { usage >&2; exit 64; }
   if [[ "${1:-}" != "--changed" && "${1:-}" != "--protect-all" ]]; then

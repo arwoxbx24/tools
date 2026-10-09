@@ -2,6 +2,7 @@
 # code-archive-drill: test restoration, verify refs count, check project presence
 
 set -o pipefail
+case ${1:-} in -h|--help) echo "usage: code-archive-drill  (checks archive refs and restores one mirror)"; exit 0;; esac
 # Default environment
 CA_ENV_FILE="${CA_ENV_FILE:-/root/workspaces/secrets/gitmirror.env}"
 CA_GITHUB_BASE="${CA_GITHUB_BASE:-git@github.com:arwoxbx24}"

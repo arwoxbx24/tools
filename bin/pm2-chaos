@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Isolated contract harness for pm2-boot and pm2-loop-guard.  Never targets production.
 set -uo pipefail
+case ${1:-} in -h|--help) echo "usage: pm2-chaos [--keep] [--verbose] [S1 ... S13]  (runs isolated PM2 boot and watchdog scenarios)"; exit 0;; esac
 
 ROOT=/root/workspaces/tools
 PM2_BIN=/root/bin/pm2
