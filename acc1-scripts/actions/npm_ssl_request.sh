@@ -22,7 +22,7 @@ CERT_RESULT=$(curl -s -X POST "http://localhost:81/api/nginx/certificates" \
   -H "Content-Type: application/json" \
   -d "{
     \"domain_names\": [\"$DOMAIN\"],
-    \"meta\": {'"dns_challenge": false'},
+    \"meta\": {\"dns_challenge\": false},
     \"provider\": \"letsencrypt\"
   }")
 
