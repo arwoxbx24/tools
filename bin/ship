@@ -135,6 +135,16 @@ for f in $(git -C "$wtr" ls-tree --name-only origin/$base:.github/workflows 2>/d
 		git -C "$wtr" show "origin/$base:.github/workflows/$f" 2>/dev/null | grep -q pull_request && { ci=ci; break; } ;;
 	esac
 done
+docs_only=0
+if [[ $ci == none ]]; then
+	changed_paths=$(git -C "$wtr" diff --name-only "origin/$base...HEAD") || leave 10 diff
+	if [[ -n $changed_paths ]]; then
+		docs_only=1
+		while IFS= read -r path; do
+			[[ $path == *.md ]] || { docs_only=0; break; }
+		done <<< "$changed_paths"
+	fi
+fi
 if [[ $ci == none && $mode == two ]]; then
 	echo 'ship: в dev нет CI pull_request' >&2
 	leave 30 ci-none
@@ -156,25 +166,31 @@ if [[ -n $num && -n $pbase && $pbase != "$base" ]]; then
 fi
 [[ -n $num ]] || { echo 'ship: номер PR не получен' >&2; leave 30 pr; }
 printf 'pr:%s\n' "$num"
-if [[ $ci == none ]]; then
+if [[ $ci == none && $docs_only == 0 ]]; then
 	echo ci:none
 	echo 'prod:wait-owner no-ci'
 	g update-ref "refs/dev-ready/$branch" "${expected_head:-HEAD}"
 	bd update "$atom" --append-notes "wait-owner no-ci: PR https://github.com/$slug/pull/$num — без автопроверок, на прод только ship-promote по слову владельца" >/dev/null 2>&1 || true
 	leave 0 wait-owner
 fi
+if [[ $docs_only == 1 ]]; then
+	echo ci:none
+	echo 'gate:auto docs-only'
+fi
 mg=$(gh pr view "$num" -R "$slug" --json mergeable -q .mergeable 2>/dev/null)
 if [[ $mg == CONFLICTING ]]; then
 	echo "ship: PR #$num конфликтует с $base — rebase ветки агента" >&2
 	leave 50 conflict
 fi
-ga_ci_wait pr "$slug" "$num" "${expected_head:-$(git -C "$wtr" rev-parse HEAD)}"
-ci_rc=$?
-if [[ $ci_rc == 30 ]]; then
-	echo 'ship: CI не появился' >&2
-	leave 30 ci-absent
-elif [[ $ci_rc != 0 ]]; then
-	leave 40 ci
+if [[ $docs_only == 0 ]]; then
+	ga_ci_wait pr "$slug" "$num" "${expected_head:-$(git -C "$wtr" rev-parse HEAD)}"
+	ci_rc=$?
+	if [[ $ci_rc == 30 ]]; then
+		echo 'ship: CI не появился' >&2
+		leave 30 ci-absent
+	elif [[ $ci_rc != 0 ]]; then
+		leave 40 ci
+	fi
 fi
 
 gh_or70(){ local e; e=$("$@" 2>&1 >/dev/null) && return 0; echo "ship: gh: $e" >&2; grep -qiE 'HTTP 40[13]|HTTP 5[0-9][0-9]|authentication|could not connect|timeout|Something went wrong' <<<"$e" && leave 70 gh; return 1; }

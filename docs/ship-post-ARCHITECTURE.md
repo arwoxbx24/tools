@@ -32,7 +32,7 @@ Claude/Codex agent
 2. Watcher queues a repository after a closed Beads event; `bin/ship-post:do_watch` persists the cursor only after queueing.
 3. A worker finds a clean closed worktree; `bin/ship-post:scan_repo` verifies trailers, owner, branch and receipt state.
 4. `bin/ship-post:deliver_one` reconciles an existing GitHub result or calls `bin/ship:locked_core` through `ship --handover`. `bin/git-auto-lib:ga_class` marks the repository `plain`, `staged`, or `guarded`: mode `two` is staged; a skip reason in mode `one` is guarded.
-5. A guarded delivery commits locally, writes `refs/dev-ready/<branch>`, prints `prod:hold guarded <reason>` and stops before fetch, push or GitHub. A plain delivery reaches `bin/ship:locked_core`, which pushes the fixed head; the remaining `ship` flow creates/uses a PR. Without pull-request CI, it writes `refs/dev-ready/<branch>`, records `wait-owner no-ci`, prints `prod:wait-owner no-ci` and stops without merge, close, live sync or worktree cleanup. Only CI-backed plain delivery waits for CI and merges the exact head.
+5. A guarded delivery commits locally, writes `refs/dev-ready/<branch>`, prints `prod:hold guarded <reason>` and stops before fetch, push or GitHub. A plain delivery reaches `bin/ship:locked_core`, which pushes the fixed head; the remaining `ship` flow creates/uses a PR. A nonempty all-`.md` diff without pull-request CI prints `gate:auto docs-only`, checks mergeability, and merges the exact head without a CI wait. Other no-CI changes write `refs/dev-ready/<branch>`, record `wait-owner no-ci`, print `prod:wait-owner no-ci` and stop without merge, close, live sync or worktree cleanup. CI-backed plain delivery waits for CI and merges the exact head.
 6. `bin/ship-post:write_delivery_receipt` stores remote proof, appends the Beads delivery note and runs `bin/git-sync:sync_one`.
 7. `bin/git-sync:sync_one` fast-forwards the live checkout or preserves local work under rescue refs; `bin/git-state:emit` exposes delivery/sync alarms.
 
@@ -72,7 +72,7 @@ Default state root is `/root/workspaces/tools/state/ship-post` (`SHIP_POST_STATE
 
 - Conflict (50): `ship` reports a conflicting PR or failed rebase/merge. Rebase or otherwise reconcile the agent branch, then submit/deliver the corrected head.
 - SHA change: an `inflight` record with another SHA becomes code 24 in `bin/ship-post:deliver_one`; inspect remote state before any retry.
-- No CI: a repository without a pull-request workflow returns `prod:wait-owner no-ci` after branch push and PR creation; production requires the owner’s word through `ship-promote`.
+- No CI: a nonempty all-`.md` diff prints `gate:auto docs-only` and merges after the mergeability check; other changes return `prod:wait-owner no-ci` after branch push and PR creation, and production requires the owner’s word through `ship-promote`.
 - Guarded repository: `bin/git-auto-lib:ga_skip_reason` returns `allowlist` or `hh-scoring`; `ship` returns `prod:hold guarded <reason>` after local commit and dev-ready ref, before any remote action. `ship-post` excludes these roots and `git-sync` emits `skip:<reason>`.
 
 ## 7. Наблюдаемость
