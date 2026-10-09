@@ -152,6 +152,11 @@ printf 'pr:%s\n' "$num"
 if [[ $ci == none ]]; then
 	echo ci:none
 else
+	mg=$(gh pr view "$num" -R "$slug" --json mergeable -q .mergeable 2>/dev/null)
+	if [[ $mg == CONFLICTING ]]; then
+		echo "ship: PR #$num конфликтует с $base — rebase ветки агента" >&2
+		leave 50 conflict
+	fi
 	ga_ci_wait pr "$slug" "$num" "${expected_head:-$(git -C "$wtr" rev-parse HEAD)}"
 	ci_rc=$?
 	if [[ $ci_rc == 30 ]]; then
