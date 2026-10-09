@@ -15,7 +15,6 @@ TOKEN=$(curl -s -X POST "http://localhost:81/api/tokens" \
 # Get current host to check domain
 HOST_DATA=$(curl -s "http://localhost:81/api/nginx/proxy-hosts/$HOST_ID" -H "Authorization: Bearer $TOKEN")
 DOMAIN=$(echo "$HOST_DATA" | jq -r '.domain_names[0]')
-NPM_EMAIL_LE="${NPM_EMAIL}"
 
 # Request Let's Encrypt cert
 CERT_RESULT=$(curl -s -X POST "http://localhost:81/api/nginx/certificates" \
@@ -23,7 +22,7 @@ CERT_RESULT=$(curl -s -X POST "http://localhost:81/api/nginx/certificates" \
   -H "Content-Type: application/json" \
   -d "{
     \"domain_names\": [\"$DOMAIN\"],
-    \"meta\": {\"letsencrypt_email\": \"$NPM_EMAIL_LE\", \"letsencrypt_agree\": true, \"dns_challenge\": false},
+    \"meta\": {'"dns_challenge": false'},
     \"provider\": \"letsencrypt\"
   }")
 
