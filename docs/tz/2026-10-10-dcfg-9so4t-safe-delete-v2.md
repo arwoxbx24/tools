@@ -1,6 +1,6 @@
 # ТЗ dcfg-9so4t — safe-delete v2 (спека projects/specs/007-fix-delete-gate/spec.md §v2)
 
-СЕЙЧАС ВЫПОЛНЯТЬ ТОЛЬКО РАЗДЕЛ: U1. Остальные разделы — не трогать.
+СЕЙЧАС ВЫПОЛНЯТЬ ТОЛЬКО РАЗДЕЛ: U2 (U1 уже сделан и закоммичен). Остальные разделы — не трогать.
 ВНИМАНИЕ ИСПОЛНИТЕЛЮ: ты уже запущен внутри `code-channel`. Правь файлы сам. `code-channel`, `opencode run`, `codex exec` НЕ вызывать. git commit не делать — коммитит оркестратор.
 Разведка — repowise; индекс: repowise/CBM проверен, нет — `tools/bin/code-memory-enable`.
 Файлы (только эти): `bin/safe-delete`, `bin/safe-delete-test`. Стиль файла сохранить (bash, `refuse`, `log` 8 колонок). Принципы: SOLID, DRY, KISS, YAGNI, fail fast; без чистки соседнего кода; ≤100 новых строк на раздел.

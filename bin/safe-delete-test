@@ -4,7 +4,8 @@ export SAFE_DELETE_GH=false
 bin=$(cd -- "$(dirname -- "$0")" && pwd)
 d=/tmp/safe-delete-test-$$
 export SAFE_DELETE_ROOTS="$d"
-trap 'rm -rf "$d"' EXIT
+outside=/tmp/safe-delete-outside-$$
+trap 'rm -rf "$d" "$outside"' EXIT
 mkdir -p "$d"
 git init -q --bare "$d/origin.git"
 git clone -q "$d/origin.git" "$d/w"
@@ -198,4 +199,31 @@ if [[ $r27 == 0 && $ltype == file ]]; then echo 'PASS T27'; ok=$((ok+1)); else e
 
 if [[ $out == *'восстановить: safe-delete restore '* ]]; then echo 'PASS T28'; ok=$((ok+1)); else echo 'FAIL T28: stdout'; fi
 
-[[ $ok == 28 ]]
+# T29-T33: forbidden paths, clients exception, and expired copies
+printf 'env\n' > "$d/.env"
+"$bin/safe-delete" --bk "$bk" file "$d/.env" >/dev/null 2>&1; r29=$?
+if [[ $r29 == 2 && -f $d/.env ]]; then echo 'PASS T29'; ok=$((ok+1)); else echo "FAIL T29: rc=$r29"; fi
+
+printf 'outside\n' > "$outside"
+ln -s "$outside" "$d/escape"
+"$bin/safe-delete" --bk "$bk" file "$d/escape" >/dev/null 2>&1; r30=$?
+if [[ $r30 == 2 && -L $d/escape && -f $outside ]]; then echo 'PASS T30'; ok=$((ok+1)); else echo "FAIL T30: rc=$r30"; fi
+
+mkdir -p "$d/clients/x/.agent-work"; printf 'work\n' > "$d/clients/x/.agent-work/f"
+"$bin/safe-delete" --bk "$bk" file "$d/clients/x/.agent-work/f" >/dev/null; r31=$?
+t31=$(awk -F '\t' -v p="$d/clients/x/.agent-work/f" '$3 == p { t=$2 } END { print t }' "$bk/ledger.tsv")
+if [[ $r31 == 0 && ! -e $d/clients/x/.agent-work/f && $t31 == file ]]; then echo 'PASS T31'; ok=$((ok+1)); else echo "FAIL T31: rc=$r31 type=$t31"; fi
+
+printf 'client\n' > "$d/clients/x/f"
+"$bin/safe-delete" --bk "$bk" file "$d/clients/x/f" >/dev/null 2>&1; r32=$?
+if [[ $r32 == 2 && -f $d/clients/x/f ]]; then echo 'PASS T32'; ok=$((ok+1)); else echo "FAIL T32: rc=$r32"; fi
+
+printf 'expired\n' > "$d/expired.txt"
+"$bin/safe-delete" --bk "$bk" file "$d/expired.txt" >/dev/null
+eline=$(awk -F '\t' -v p="$d/expired.txt" '$2 == "file" && $3 == p && $8 == "deleted" { n=NR } END { print n }' "$bk/ledger.tsv")
+ecopy=$(sed -n "${eline}p" "$bk/ledger.tsv" | cut -f6)
+rm -f "$ecopy"
+err=$("$bin/safe-delete" --bk "$bk" restore "$eline" 2>&1); r33=$?
+if [[ $r33 == 2 && $err == *'копия истекла'* ]]; then echo 'PASS T33'; ok=$((ok+1)); else echo "FAIL T33: rc=$r33 err=$err"; fi
+
+[[ $ok == 33 ]]

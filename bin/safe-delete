@@ -5,6 +5,7 @@ BK=${SAFE_DELETE_BK:-/root/workspaces/projects/.agent-work/backup}
 GH=${SAFE_DELETE_GH:-true}
 mkdir -p "$BK"
 led=$BK/ledger.tsv
+self=$(realpath -e "$(command -v -- "$0")") || exit 1
 log_n=
 log(){ { flock -x 9 || return 1; printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date +%Y-%m-%dT%H:%M:%S)" "$@" >>"$led" || return 1; log_n=$(wc -l <"$led"); log_n=${log_n//[[:space:]]/}; } 9>>"$led.lock"; }
 fail(){ echo "safe-delete: $*" >&2; exit 1; }
@@ -43,6 +44,7 @@ case "$cmd" in
   file)
     [[ $# -ge 1 ]] || refuse 'usage'
     p=$(realpath -e "$1") || refuse "нет файла: $1"; [[ -f $p ]] || refuse "не обычный файл: $p"
+    [[ $p == /etc/claude-code/* || $p == "$HOME"/.ssh/* || $p == "$HOME"/.claude/settings*.json ]] && refuse "запрещённый путь: $p"
     roots=${SAFE_DELETE_ROOTS:-/root/workspaces/projects:/root/workspaces/tools:/root/workspaces/sandbox:/home/gitmirror/state:/root/.claude/projects/-root-workspaces-projects/memory}
     if [[ -n ${SAFE_DELETE_ROOTS:-} ]]; then
       IFS=: read -ra rts <<< "$roots"
@@ -51,10 +53,12 @@ case "$cmd" in
     okr=; IFS=: read -ra rts <<< "$roots"
     for r in "${rts[@]}"; do [[ $p == "$r" || $p == "$r"/* ]] && { okr=1; break; }; done
     [[ $okr ]] || refuse "вне разрешённых корней: $p"
-    for seg in secrets hh-scoring clients .codex .git .beads; do [[ $p == */"$seg" || $p == */"$seg"/* ]] && refuse "запрещённый сегмент: $p"; done
+    for seg in secrets hh-scoring .codex .git .beads; do [[ $p == */"$seg" || $p == */"$seg"/* ]] && refuse "запрещённый сегмент: $p"; done
+    [[ $p == */clients/* && $p != */clients/*/.agent-work/* ]] && refuse "запрещённый сегмент: $p"
     [[ /$p/ == */.repowise*/* ]] && refuse "запрещённый сегмент: $p"
     [[ $p == "$BK" || $p == "$BK"/* ]] && refuse "файл под $BK: $p"
-    [[ ${p##*/} == .env* ]] && refuse "запрещённый .env: $p"
+    [[ $p == "$self" ]] && refuse "запрещённый файл: $p"
+    [[ ${p##*/} == .env* || ${p##*/} == *.pem || ${p##*/} == *.key ]] && refuse "запрещённый файл: $p"
     if git_file "$1"; then
       ref="refs/safe-delete/$(date +%Y%m%d%H%M%S%N)-${git_blob:0:12}"
       git -C "$git_repo" update-ref "$ref" "$git_blob" || exit 1
@@ -113,6 +117,7 @@ case "$cmd" in
     elif [[ $typ == file ]]; then
       cp=$(cut -f6 <<< "$line")
       [[ -e $obj ]] && refuse "исходный путь уже существует: $obj"
+      [[ -e $cp || -L $cp ]] || refuse "копия истекла: $cp"
       cp -p "$cp" "$obj" || exit 1
       log file "$obj" - - "$cp" - restored
     elif [[ $typ == git ]]; then
