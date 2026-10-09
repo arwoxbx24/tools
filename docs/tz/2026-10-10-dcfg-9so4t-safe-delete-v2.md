@@ -1,10 +1,10 @@
 # ТЗ dcfg-9so4t — safe-delete v2 (спека projects/specs/007-fix-delete-gate/spec.md §v2)
 
-СЕЙЧАС ВЫПОЛНЯТЬ ТОЛЬКО РАЗДЕЛ: U2 (U1 уже сделан и закоммичен). Остальные разделы — не трогать.
+СЕЙЧАС ВЫПОЛНЯТЬ ТОЛЬКО РАЗДЕЛ: U3a (U1, U2 закоммичены; U3 уже внесён в рабочее дерево — не переписывать). Остальные разделы — не трогать.
 ВНИМАНИЕ ИСПОЛНИТЕЛЮ: ты уже запущен внутри `code-channel`. Правь файлы сам. `code-channel`, `opencode run`, `codex exec` НЕ вызывать. git commit не делать — коммитит оркестратор.
 Разведка — repowise; индекс: repowise/CBM проверен, нет — `tools/bin/code-memory-enable`.
 Файлы (только эти): `bin/safe-delete`, `bin/safe-delete-test`. Стиль файла сохранить (bash, `refuse`, `log` 8 колонок). Принципы: SOLID, DRY, KISS, YAGNI, fail fast; без чистки соседнего кода; ≤100 новых строк на раздел.
-Запуск тестов: `bash bin/safe-delete-test` (все прежние 23 PASS обязаны остаться PASS).
+Запуск тестов: `bash bin/safe-delete-test` (все прежние PASS, сейчас T1–T33, обязаны остаться PASS).
 
 Паспорт источников:
 - git hash-object: https://git-scm.com/docs/git-hash-object — «--no-filters: Hash the contents as is, ignoring any input filter that would have been chosen by the attributes mechanism».
@@ -37,3 +37,8 @@
 3. restore типа `worktree` → `git -C <repo> worktree add <путь> <sha>` и вернуть скопированные файлы (они в ledger отдельными строками `file` — restore по их N).
 Тесты: T34 dir с запретным файлом внутри → rc 2, все файлы на месте; T35 dir обычный → удалён, restore файла → cmp; T36 worktree с процессом `sleep` с cwd внутри → rc 2; T37 грязный worktree → снят, ref есть, грязный файл в копии.
 Проверка: `bash bin/safe-delete-test` → все PASS; `bash -n bin/safe-delete`.
+
+## U3a — ТЗ v2: ложный отказ на зомби-процессе (атом dcfg-9so4t.3)
+Факт: прогон теста 10.10 → `FAIL T36/T37: safe-delete: нечитаемый cwd процесса: 1251326`; `ps -o stat,comm -p 1251326` → `Z<s codex` (зомби). У зомби нет cwd: `readlink /proc/1251326/cwd` → rc 1 (замер на сервере 10.10; источник — вывод команды, не документация).
+Правка — только цикл по `/proc/[0-9]*/cwd` в режиме `worktree` файла `bin/safe-delete`: при ошибке `readlink` — пропуск (`continue`), если каталога `/proc/<pid>` уже нет ИЛИ третье поле `/proc/<pid>/stat` равно `Z`; иначе прежний refuse «нечитаемый cwd процесса». Больше ничего не менять; тесты не трогать.
+Проверка: `bash bin/safe-delete-test` → PASS T1–T38, 0 FAIL; `bash -n bin/safe-delete`.

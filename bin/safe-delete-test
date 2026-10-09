@@ -226,4 +226,33 @@ rm -f "$ecopy"
 err=$("$bin/safe-delete" --bk "$bk" restore "$eline" 2>&1); r33=$?
 if [[ $r33 == 2 && $err == *'копия истекла'* ]]; then echo 'PASS T33'; ok=$((ok+1)); else echo "FAIL T33: rc=$r33 err=$err"; fi
 
-[[ $ok == 33 ]]
+# T34-T37: directories are atomic, and worktrees retain a restorable ref
+mkdir -p "$d/dir-forbidden/secrets"; printf 'keep\n' > "$d/dir-forbidden/keep.txt"; printf 'secret\n' > "$d/dir-forbidden/secrets/k"
+err=$("$bin/safe-delete" --bk "$bk" dir "$d/dir-forbidden" 2>&1); r34=$?
+if [[ $r34 == 2 && $err == *'запрещённый сегмент'* && -f $d/dir-forbidden/keep.txt && -f $d/dir-forbidden/secrets/k ]]; then echo 'PASS T34'; ok=$((ok+1)); else echo "FAIL T34: rc=$r34 err=$err"; fi
+
+mkdir -p "$d/dir-ok/sub"; printf 'dir\n' > "$d/dir-ok/sub/f"; cp "$d/dir-ok/sub/f" "$d/dir.original"
+"$bin/safe-delete" --bk "$bk" dir "$d/dir-ok" >/dev/null; r35=$?
+gone35=0; [[ ! -d $d/dir-ok ]] && gone35=1
+dline=$(awk -F '\t' -v p="$d/dir-ok/sub/f" '$2 == "file" && $3 == p && $8 == "deleted" { n=NR } END { print n }' "$bk/ledger.tsv")
+"$bin/safe-delete" --bk "$bk" restore "$dline" >/dev/null; rr35=$?
+if [[ $r35 == 0 && $gone35 == 1 && $rr35 == 0 ]] && cmp -s "$d/dir.original" "$d/dir-ok/sub/f"; then echo 'PASS T35'; ok=$((ok+1)); else echo "FAIL T35: rc=$r35 restore=$rr35"; fi
+
+git -C "$d/w" worktree add -q -b wt-busy "$d/wt-busy" main
+(cd "$d/wt-busy" && sleep 30) & busy=$!
+err=$("$bin/safe-delete" --bk "$bk" worktree "$d/wt-busy" 2>&1); r36=$?
+kill "$busy" 2>/dev/null; wait "$busy" 2>/dev/null
+if [[ $r36 == 2 && $err == *'процесс использует worktree'* && -d $d/wt-busy ]]; then echo 'PASS T36'; ok=$((ok+1)); else echo "FAIL T36: rc=$r36 err=$err"; fi
+git -C "$d/w" worktree remove --force "$d/wt-busy"
+
+git -C "$d/w" worktree add -q -b wt-dirty "$d/wt-dirty" main
+printf 'dirty\n' > "$d/wt-dirty/dirty.txt"
+"$bin/safe-delete" --bk "$bk" worktree "$d/wt-dirty" >/dev/null; r37=$?
+wtref=$(git -C "$d/w" for-each-ref --format='%(refname)' refs/safe-delete | grep '^refs/safe-delete/wt-' | head -1)
+wtcopy=$(awk -F '\t' -v p="$d/wt-dirty/dirty.txt" '$2 == "file" && $3 == p && $8 == "deleted" { c=$6 } END { print c }' "$bk/ledger.tsv")
+wttype=$(awk -F '\t' -v p="$d/wt-dirty" '$3 == p { t=$2 } END { print t }' "$bk/ledger.tsv")
+if [[ $r37 == 0 && ! -d $d/wt-dirty && -n $wtref && -f $wtcopy && $wttype == worktree ]]; then echo 'PASS T37'; ok=$((ok+1)); else echo "FAIL T37: rc=$r37 ref=$wtref copy=$wtcopy type=$wttype"; fi
+
+mkdir -p "$d/dir-empty-forbidden/secrets"; err=$("$bin/safe-delete" --bk "$bk" dir "$d/dir-empty-forbidden" 2>&1); r38=$?
+if [[ $r38 == 2 && $err == *'запрещённый сегмент'* && -d $d/dir-empty-forbidden/secrets ]]; then echo 'PASS T38'; ok=$((ok+1)); else echo "FAIL T38: rc=$r38 err=$err"; fi
+[[ $ok == 38 ]]

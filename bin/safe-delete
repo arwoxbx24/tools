@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -u
-case ${1:-} in -h|--help) echo "usage: safe-delete [--bk <каталог>] <branch|file|link|restore|purge|repo-autodelete> …  (safely deletes and restores approved files or branches)"; exit 0;; esac
+case ${1:-} in -h|--help) echo "usage: safe-delete [--bk <каталог>] <branch|file|dir|worktree|link|restore|purge|repo-autodelete> …  (safely deletes and restores approved files or branches)"; exit 0;; esac
 BK=${SAFE_DELETE_BK:-/root/workspaces/projects/.agent-work/backup}
 GH=${SAFE_DELETE_GH:-true}
 mkdir -p "$BK"
@@ -13,6 +13,7 @@ refuse(){ echo "safe-delete: $*" >&2; exit 2; }
 repo_of(){ local u=$1; u=${u%.git}; [[ $u =~ ([^/:]+)/([^/]+)$ ]] && echo "${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"; }
 git_file(){
   local raw=$1 entry mark attr head
+  p=$(realpath -e "$raw") || return 1
   git_repo=$(git -C "$(dirname -- "$p")" rev-parse --show-toplevel 2>/dev/null) || return 1
   [[ ! -L $raw ]] || return 1
   git_rel=${p#"$git_repo"/}; [[ $git_rel != "$p" ]] || return 1
@@ -27,7 +28,44 @@ git_file(){
   head=$(git -C "$git_repo" rev-parse "HEAD:$git_rel" 2>/dev/null) || return 1
   [[ $git_blob == "$head" ]]
 }
-[[ $# -ge 1 ]] || refuse 'usage: safe-delete [--bk <каталог>] <branch|file|link|restore|purge|repo-autodelete> …'
+check_path(){
+  p=$(realpath -e "$1") || refuse "нет пути: $1"
+  [[ $p == /etc/claude-code/* || $p == "$HOME"/.ssh/* || $p == "$HOME"/.claude/settings*.json ]] && refuse "запрещённый путь: $p"
+  roots=${SAFE_DELETE_ROOTS:-/root/workspaces/projects:/root/workspaces/tools:/root/workspaces/sandbox:/home/gitmirror/state:/root/.claude/projects/-root-workspaces-projects/memory}
+  if [[ -n ${SAFE_DELETE_ROOTS:-} ]]; then
+    IFS=: read -ra rts <<< "$roots"; for r in "${rts[@]}"; do [[ $r == /tmp/* ]] || refuse "корень не под /tmp: $r"; done
+  fi
+  okr=; IFS=: read -ra rts <<< "$roots"; for r in "${rts[@]}"; do [[ $p == "$r" || $p == "$r"/* ]] && { okr=1; break; }; done
+  [[ $okr ]] || refuse "вне разрешённых корней: $p"
+  for seg in secrets hh-scoring .codex .git .beads; do [[ $p == */"$seg" || $p == */"$seg"/* ]] && refuse "запрещённый сегмент: $p"; done
+  [[ $p == */clients/* && $p != */clients/*/.agent-work/* ]] && refuse "запрещённый сегмент: $p"
+  [[ /$p/ == */.repowise*/* ]] && refuse "запрещённый сегмент: $p"
+  [[ $p == "$BK" || $p == "$BK"/* ]] && refuse "файл под $BK: $p"
+  [[ $p == "$self" ]] && refuse "запрещённый файл: $p"
+  [[ ${p##*/} == .env* || ${p##*/} == *.pem || ${p##*/} == *.key ]] && refuse "запрещённый файл: $p"
+}
+check_file(){ check_path "$1"; [[ -f $p ]] || refuse "не обычный файл: $p"; }
+delete_file(){
+  check_file "$1"
+  if git_file "$1"; then
+    ref="refs/safe-delete/$(date +%Y%m%d%H%M%S%N)-${git_blob:0:12}"
+    git -C "$git_repo" update-ref "$ref" "$git_blob" || return 1
+    log git "$p" "$git_blob" "$git_repo" "$ref" "$git_mode" - || return 1
+    awk -F '\t' -v n="$log_n" -v p="$p" -v b="$git_blob" -v r="$ref" -v m="$git_mode" 'NR==n && $2=="git" && $3==p && $4==b && $6==r && $7==m{ok=1} END{exit !ok}' "$led" || return 1
+    rm -- "$p" || return 1
+    echo "удалено: $p | основание: git $ref | восстановить: safe-delete restore $log_n"
+    return 0
+  fi
+  copy="$BK/files/$(date +%Y%m%d)/${p#/}"
+  [[ -e $copy || -L $copy ]] && copy="$copy.$(date +%H%M%S%N)"
+  mkdir -p "$(dirname -- "$copy")" || return 1
+  cp -p "$p" "$copy" || return 1; touch "$copy"; cmp -s "$p" "$copy" || fail "копия не совпала: $p"
+  b=$(sha256sum "$copy" | cut -d' ' -f1)
+  log file "$p" - - "$copy" "$b" backup-ok || return 1; rm -- "$p" || return 1
+  log file "$p" - - "$copy" "$b" deleted || return 1
+  echo "удалено: $p | основание: копия $copy | восстановить: safe-delete restore $log_n"
+}
+[[ $# -ge 1 ]] || refuse 'usage: safe-delete [--bk <каталог>] <branch|file|dir|worktree|link|restore|purge|repo-autodelete> …'
 if [[ $1 == --bk ]]; then [[ $# -ge 3 ]] || refuse 'usage'; BK=$2; shift 2; mkdir -p "$BK"; led=$BK/ledger.tsv; fi
 cmd=$1; shift
 
@@ -42,43 +80,29 @@ case "$cmd" in
     exit 1
     ;;
   file)
-    [[ $# -ge 1 ]] || refuse 'usage'
-    p=$(realpath -e "$1") || refuse "нет файла: $1"; [[ -f $p ]] || refuse "не обычный файл: $p"
-    [[ $p == /etc/claude-code/* || $p == "$HOME"/.ssh/* || $p == "$HOME"/.claude/settings*.json ]] && refuse "запрещённый путь: $p"
-    roots=${SAFE_DELETE_ROOTS:-/root/workspaces/projects:/root/workspaces/tools:/root/workspaces/sandbox:/home/gitmirror/state:/root/.claude/projects/-root-workspaces-projects/memory}
-    if [[ -n ${SAFE_DELETE_ROOTS:-} ]]; then
-      IFS=: read -ra rts <<< "$roots"
-      for r in "${rts[@]}"; do [[ $r == /tmp/* ]] || refuse "корень не под /tmp: $r"; done
-    fi
-    okr=; IFS=: read -ra rts <<< "$roots"
-    for r in "${rts[@]}"; do [[ $p == "$r" || $p == "$r"/* ]] && { okr=1; break; }; done
-    [[ $okr ]] || refuse "вне разрешённых корней: $p"
-    for seg in secrets hh-scoring .codex .git .beads; do [[ $p == */"$seg" || $p == */"$seg"/* ]] && refuse "запрещённый сегмент: $p"; done
-    [[ $p == */clients/* && $p != */clients/*/.agent-work/* ]] && refuse "запрещённый сегмент: $p"
-    [[ /$p/ == */.repowise*/* ]] && refuse "запрещённый сегмент: $p"
-    [[ $p == "$BK" || $p == "$BK"/* ]] && refuse "файл под $BK: $p"
-    [[ $p == "$self" ]] && refuse "запрещённый файл: $p"
-    [[ ${p##*/} == .env* || ${p##*/} == *.pem || ${p##*/} == *.key ]] && refuse "запрещённый файл: $p"
-    if git_file "$1"; then
-      ref="refs/safe-delete/$(date +%Y%m%d%H%M%S%N)-${git_blob:0:12}"
-      git -C "$git_repo" update-ref "$ref" "$git_blob" || exit 1
-      log git "$p" "$git_blob" "$git_repo" "$ref" "$git_mode" - || exit 1
-      awk -F '\t' -v n="$log_n" -v p="$p" -v b="$git_blob" -v r="$ref" -v m="$git_mode" 'NR==n && $2=="git" && $3==p && $4==b && $6==r && $7==m{ok=1} END{exit !ok}' "$led" || exit 1
-      rm -- "$p" || exit 1
-      echo "удалено: $p | основание: git $ref | восстановить: safe-delete restore $log_n"
-      exit 0
-    fi
-    copy="$BK/files/$(date +%Y%m%d)/${p#/}"
-    [[ -e $copy || -L $copy ]] && copy="$copy.$(date +%H%M%S%N)"
-    mkdir -p "$(dirname -- "$copy")" || exit 1
-    cp -p "$p" "$copy" || exit 1
-    touch "$copy"
-    cmp -s "$p" "$copy" || fail "копия не совпала: $p"
-    b=$(sha256sum "$copy" | cut -d' ' -f1)
-    log file "$p" - - "$copy" "$b" backup-ok || exit 1
-    rm -- "$p" || exit 1
-    log file "$p" - - "$copy" "$b" deleted || exit 1
-    echo "удалено: $p | основание: копия $copy | восстановить: safe-delete restore $log_n"
+    [[ $# -eq 1 ]] || refuse 'usage'; delete_file "$1" || exit 1; exit 0
+    ;;
+  dir)
+    [[ $# -eq 1 ]] || refuse 'usage'; check_path "$1"; dir=$p; [[ -d $dir ]] || refuse "не каталог: $dir"
+    mapfile -d '' entries < <(find "$dir" -depth -print0); for entry in "${entries[@]}"; do check_path "$entry"; done
+    mapfile -d '' files < <(find "$dir" -type f -print0)
+    for f in "${files[@]}"; do check_file "$f"; done
+    for f in "${files[@]}"; do delete_file "$f" || exit 1; done
+    find "$dir" -depth -type d -empty -exec rmdir -- {} \;
+    exit 0
+    ;;
+  worktree)
+    [[ $# -eq 1 ]] || refuse 'usage'; check_path "$1"; wt=$p; [[ -d $wt ]] || refuse "не каталог: $wt"
+    common=$(git -C "$wt" rev-parse --git-common-dir 2>/dev/null) || refuse "не worktree: $wt"; [[ $common != .git ]] || refuse "не linked worktree: $wt"
+    common=$(realpath -e "$common") || exit 1; repo=$(dirname -- "$common")
+    for cwd in /proc/[0-9]*/cwd; do pid=${cwd#/proc/}; pid=${pid%/cwd}; if ! used=$(readlink -- "$cwd"); then [[ ! -d /proc/$pid || $(awk '{print $3}' "/proc/$pid/stat" 2>/dev/null) == Z ]] && continue; refuse "нечитаемый cwd процесса: $pid"; fi; [[ $used == "$wt" || $used == "$wt"/* ]] && refuse "процесс использует worktree: $pid"; done
+    mapfile -d '' files < <(find "$wt" -path "$wt/.git" -prune -o -type f -print0)
+    for f in "${files[@]}"; do check_file "$f"; done
+    sha=$(git -C "$wt" rev-parse HEAD) || exit 1; ref="refs/safe-delete/wt-$(date +%Y%m%d%H%M%S%N)"
+    git -C "$repo" update-ref "$ref" "$sha" || exit 1
+    for f in "${files[@]}"; do git_file "$f" || delete_file "$f" || exit 1; done
+    git -C "$repo" worktree remove --force "$wt" || exit 1
+    log worktree "$wt" "$sha" "$repo" "$ref" - deleted || exit 1
     exit 0
     ;;
   link)
@@ -118,14 +142,21 @@ case "$cmd" in
       cp=$(cut -f6 <<< "$line")
       [[ -e $obj ]] && refuse "исходный путь уже существует: $obj"
       [[ -e $cp || -L $cp ]] || refuse "копия истекла: $cp"
+      mkdir -p "$(dirname -- "$obj")" || exit 1
       cp -p "$cp" "$obj" || exit 1
       log file "$obj" - - "$cp" - restored
     elif [[ $typ == git ]]; then
       blob=$(cut -f4 <<< "$line"); repo=$(cut -f5 <<< "$line"); ref=$(cut -f6 <<< "$line"); mode=$(cut -f7 <<< "$line")
       [[ -e $obj || -L $obj ]] && refuse "исходный путь уже существует: $obj"
+      mkdir -p "$(dirname -- "$obj")" || exit 1
       git -C "$repo" cat-file blob "$blob" >"$obj" || exit 1
       [[ $mode == 100755 ]] && chmod +x "$obj"
       log git "$obj" "$blob" "$repo" "$ref" - restored
+    elif [[ $typ == worktree ]]; then
+      sha=$(cut -f4 <<< "$line"); repo=$(cut -f5 <<< "$line"); ref=$(cut -f6 <<< "$line")
+      [[ -e $obj || -L $obj ]] && refuse "исходный путь уже существует: $obj"
+      git -C "$repo" worktree add "$obj" "$sha" || exit 1
+      log worktree "$obj" "$sha" "$repo" "$ref" - restored
     else refuse "нельзя восстановить тип: $typ"; fi
     exit 0
     ;;
