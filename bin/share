@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+case ${1:-} in -h|--help) echo "usage: share <файл>  (публикует файл)"; exit 0;; esac
 
 [[ $# == 1 ]] || { echo 'usage: share <файл>' >&2; exit 2; }
 file=$1

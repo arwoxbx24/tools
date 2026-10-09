@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+case ${1:-} in -h|--help) echo "usage: beget-api <section/method> [input_data-json]  (вызывает метод Beget API)"; exit 0;; esac
 
 BEGET_API=${BEGET_API:-https://api.beget.com/api}
 BEGET_ENV_FILE=${BEGET_ENV_FILE:-/root/workspaces/secrets/projects/beget.env}

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set +x
 set -euo pipefail
+case ${1:-} in -h|--help) echo "usage: vercel-free MODEL REQUEST.json  (вызывает разрешённую бесплатную модель)"; exit 0;; esac
 [[ $# == 2 ]] || { echo 'usage: vercel-free MODEL REQUEST.json' >&2; exit 64; }
 case "$1" in
   inclusionai/ling-3.1-flash-free) until=20261014; endpoint=chat/completions ;;

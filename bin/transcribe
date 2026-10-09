@@ -1,5 +1,8 @@
 #!/root/workspaces/tools/.venv/bin/python
 import sys
+if sys.argv[1:2] in (["-h"], ["--help"]):
+    print("usage: transcribe <src> [опции]  (транскрибация аудио через облачные движки)")
+    sys.exit(0)
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
