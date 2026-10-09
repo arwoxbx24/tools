@@ -255,4 +255,22 @@ if [[ $r37 == 0 && ! -d $d/wt-dirty && -n $wtref && -f $wtcopy && $wttype == wor
 
 mkdir -p "$d/dir-empty-forbidden/secrets"; err=$("$bin/safe-delete" --bk "$bk" dir "$d/dir-empty-forbidden" 2>&1); r38=$?
 if [[ $r38 == 2 && $err == *'запрещённый сегмент'* && -d $d/dir-empty-forbidden/secrets ]]; then echo 'PASS T38'; ok=$((ok+1)); else echo "FAIL T38: rc=$r38 err=$err"; fi
-[[ $ok == 38 ]]
+
+# T39-T42: tmp deletes only existing paths resolved under /tmp, without copies
+mkdir -p "$d/tmp-file"; printf 'tmp\n' > "$d/tmp-file/f"
+out=$("$bin/safe-delete" --bk "$bk" tmp "$d/tmp-file/f"); r39=$?
+t39=$(awk -F '\t' -v p="$d/tmp-file/f" '$2 == "tmp" && $3 == p && $8 == "deleted" { t=$2 } END { print t }' "$bk/ledger.tsv")
+if [[ $r39 == 0 && ! -e $d/tmp-file/f && $out == *'основание: tmp'* && $t39 == tmp ]]; then echo 'PASS T39'; ok=$((ok+1)); else echo "FAIL T39: rc=$r39 ledger=$t39 out=$out"; fi
+
+mkdir -p "$d/tmp-dir/sub"; printf 'tmp\n' > "$d/tmp-dir/sub/f"
+"$bin/safe-delete" --bk "$bk" tmp "$d/tmp-dir" >/dev/null; r40=$?
+if [[ $r40 == 0 && ! -e $d/tmp-dir ]]; then echo 'PASS T40'; ok=$((ok+1)); else echo "FAIL T40: rc=$r40"; fi
+
+"$bin/safe-delete" --bk "$bk" tmp /etc/hostname >/dev/null 2>&1; r41=$?
+if [[ $r41 == 2 && -e /etc/hostname ]]; then echo 'PASS T41'; ok=$((ok+1)); else echo "FAIL T41: rc=$r41"; fi
+
+ln -s /etc/hostname "$d/tmp-outside"
+"$bin/safe-delete" --bk "$bk" tmp "$d/tmp-outside" >/dev/null 2>&1; r42=$?
+if [[ $r42 == 2 && -L $d/tmp-outside && -e /etc/hostname ]]; then echo 'PASS T42'; ok=$((ok+1)); else echo "FAIL T42: rc=$r42"; fi
+
+[[ $ok == 42 ]]

@@ -1,6 +1,6 @@
 # ТЗ dcfg-9so4t — safe-delete v2 (спека projects/specs/007-fix-delete-gate/spec.md §v2)
 
-СЕЙЧАС ВЫПОЛНЯТЬ ТОЛЬКО РАЗДЕЛ: U3a (U1, U2 закоммичены; U3 уже внесён в рабочее дерево — не переписывать). Остальные разделы — не трогать.
+СЕЙЧАС ВЫПОЛНЯТЬ ТОЛЬКО РАЗДЕЛ: U4 (U1–U3a сделаны и закоммичены). Остальные разделы — не трогать.
 ВНИМАНИЕ ИСПОЛНИТЕЛЮ: ты уже запущен внутри `code-channel`. Правь файлы сам. `code-channel`, `opencode run`, `codex exec` НЕ вызывать. git commit не делать — коммитит оркестратор.
 Разведка — repowise; индекс: repowise/CBM проверен, нет — `tools/bin/code-memory-enable`.
 Файлы (только эти): `bin/safe-delete`, `bin/safe-delete-test`. Стиль файла сохранить (bash, `refuse`, `log` 8 колонок). Принципы: SOLID, DRY, KISS, YAGNI, fail fast; без чистки соседнего кода; ≤100 новых строк на раздел.
@@ -42,3 +42,11 @@
 Факт: прогон теста 10.10 → `FAIL T36/T37: safe-delete: нечитаемый cwd процесса: 1251326`; `ps -o stat,comm -p 1251326` → `Z<s codex` (зомби). У зомби нет cwd: `readlink /proc/1251326/cwd` → rc 1 (замер на сервере 10.10; источник — вывод команды, не документация).
 Правка — только цикл по `/proc/[0-9]*/cwd` в режиме `worktree` файла `bin/safe-delete`: при ошибке `readlink` — пропуск (`continue`), если каталога `/proc/<pid>` уже нет ИЛИ третье поле `/proc/<pid>/stat` равно `Z`; иначе прежний refuse «нечитаемый cwd процесса». Больше ничего не менять; тесты не трогать.
 Проверка: `bash bin/safe-delete-test` → PASS T1–T38, 0 FAIL; `bash -n bin/safe-delete`.
+
+## U4 — режим tmp (атом dcfg-9so4t.4, код-часть; FR-207)
+Зачем: после managed deny `Bash(rm *)` агенту нужен маршрут удаления во временной зоне без копии.
+1. `safe-delete tmp <путь>`: `p=$(realpath -e)`; отказ (refuse, rc 2), если `p` не начинается с `/tmp/` или равен `/tmp`; symlink, указывающий наружу `/tmp`, отсекается этим же realpath. Файл или каталог → `rm -r -- "$p"`, копии нет. Ledger: `log tmp "$p" - - - - deleted` (8 колонок, как соседние). stdout: `удалено: <p> | основание: tmp, без копии`.
+2. Добавить `tmp` в строку `usage:` (`--help` и refuse без аргументов). `restore` записи `tmp` — прежний refuse «нельзя восстановить тип» (не трогать).
+3. Режим `tmp` не проверяет корни и запретную зону (`check_path` не вызывать) — только условие п.1.
+Тесты: T39 файл в `/tmp/<тест>/` → rc 0, файла нет, stdout содержит `основание: tmp`; T40 каталог в `/tmp` → rc 0, каталога нет; T41 путь вне `/tmp` (`/etc/hostname`) → rc 2, файл на месте; T42 symlink в `/tmp` на файл вне `/tmp` (`/etc/hostname`) → rc 2, цель на месте.
+Проверка: `bash bin/safe-delete-test` → PASS T1–T42, 0 FAIL; `bash -n bin/safe-delete`.
