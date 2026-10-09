@@ -273,13 +273,22 @@ ack_delivery(){
 }
 
 write_delivery_receipt(){
- local repo=$1 atom=$2 submitted=$3 remote_head=$4 rf
+ local repo=$1 atom=$2 submitted=$3 remote_head=$4 rf name out
  rf=$(receipt_file "$repo" "$atom" "$submitted")
  mkdir -p "$(dirname "$rf")" || return 1
  jq -n --arg actor "$BEADS_ACTOR" --arg timestamp "$(date -Iseconds)" --arg repo "$repo" --arg atom "$atom" --arg sha "$submitted" --arg head "$remote_head" --argjson proof "$remote_proof" \
   '{actor:$actor,timestamp:$timestamp,stage:"delivered",repo:$repo,atom:$atom,local_sha:$sha,remote_head:$head,remote:$proof}' > "$rf.tmp" && mv "$rf.tmp" "$rf" || return 1
  ack_delivery "$rf" "$atom" || return 1
  echo "delivered $atom $remote_head"
+ # ponytail: basename = имя ga_roots; при расхождении — git-sync даст err:ctx в выводе
+ name=$(basename "$repo")
+ if out=$("$bin/git-sync" "$name" 2>&1); then
+  echo "live $name: $out"
+ else
+  echo "ship-post: live sync $name failed: $out" >&2
+  bd_cmd update "$atom" --append-notes "ship-post live sync $name failed: $out" || true
+ fi
+ return 0
 }
 
 deliver_one(){

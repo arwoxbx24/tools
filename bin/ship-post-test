@@ -77,7 +77,12 @@ reopen) echo open > "$SHIP_POST_TEST_DIR/status" ;;
 close) printf '%s\n' "${2:-}" >> "${SHIP_POST_TEST_DIR}/bd.closes"; exit "${BD_CLOSE_RC:-0}" ;;
 esac
 EOF
-	chmod +x "$d/bin/ship-post" "$d/bin/ship" "$d/bin/gitleaks" "$d/bin/bd" "$d/bin/gh"; : > "$d/ship.calls"; : > "$d/bd.calls"; : > "$d/bd.closes"
+	cat > "$d/bin/git-sync" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$SHIP_POST_TEST_DIR/sync.calls"
+exit "${GIT_SYNC_RC:-0}"
+EOF
+	chmod +x "$d/bin/ship-post" "$d/bin/ship" "$d/bin/gitleaks" "$d/bin/bd" "$d/bin/gh" "$d/bin/git-sync"; : > "$d/ship.calls"; : > "$d/bd.calls"; : > "$d/bd.closes"; : > "$d/sync.calls"
 }
 run_tool(){
 	local d=$1; shift
@@ -198,6 +203,16 @@ test_delivery(){
  out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_GH_FAIL=1; run_tool "$d" 2>&1); rc=$?
  [[ $rc != 0 && ! -s $d/ship.calls ]] && pass unknown_remote || fail unknown_remote "$out"
  compgen -G "$d/state/receipts/*/dcfg-uncertain.1/*.failed" >/dev/null && ! grep -q 'reopen dcfg-uncertain.1' "$d/bd.calls" && pass transient_retains_readiness || fail transient_retains_readiness missing
+}
+
+test_live_sync(){
+ local out rc
+ setup_submit live_sync_ok codex/dcfg-live-sync.1; commit_candidate dcfg-live-sync.1
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex; run_tool "$d" 2>&1); rc=$?
+ [[ $rc == 0 && $(wc -l < "$d/sync.calls") == 1 && $(< "$d/sync.calls") == "$(basename "$d/repo")" ]] && pass 'L1 (110)' || fail 'L1 (110)' "$out rc=$rc"
+ setup_submit live_sync_fail codex/dcfg-live-sync.2; commit_candidate dcfg-live-sync.2
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex GIT_SYNC_RC=1; run_tool "$d" 2>&1); rc=$?
+ [[ $rc == 0 && $out == *"ship-post: live sync $(basename "$d/repo") failed:"* ]] && grep -Fq 'update dcfg-live-sync.2 --append-notes ship-post live sync repo failed:' "$d/bd.calls" && pass 'L2 (111)' || fail 'L2 (111)' "$out rc=$rc"
 }
 
 test_watch(){
@@ -395,7 +410,7 @@ if [[ ${SHIP_POST_TEST_GROUP:-all} == review ]]; then
 elif [[ ${SHIP_POST_TEST_GROUP:-all} == recovery ]]; then
  test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery
 else
- test_dryrun_mocks; test_valid_actors; test_rejections; test_hook_and_retry; test_closed_retry; test_delivery; test_watch; test_recovery; test_stream_errors; test_closed_skip_reason; test_concurrent_repositories; test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery; test_actor_alias
+ test_dryrun_mocks; test_valid_actors; test_rejections; test_hook_and_retry; test_closed_retry; test_delivery; test_live_sync; test_watch; test_recovery; test_stream_errors; test_closed_skip_reason; test_concurrent_repositories; test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery; test_actor_alias
 fi
 echo "checks=$checks failures=$failures"
 [[ $failures == 0 ]]
