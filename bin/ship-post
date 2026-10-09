@@ -2,6 +2,7 @@
 set -u
 umask 077
 bin=$(cd -- "$(dirname -- "$0")" && pwd)
+. "$bin/git-auto-lib"
 
 ship_bin="$bin/ship"
 SHIP_POST_STATE_DIR=${SHIP_POST_STATE_DIR:-/root/workspaces/tools/state/ship-post}
@@ -43,8 +44,28 @@ die(){ echo "ship-post: $*" >&2; exit 1; }
 # ── repo / worktree helpers ──────────────────────────────────────────
 
 resolve_repos(){
-	local list=${SHIP_POST_REPOS:-/root/workspaces/projects:/root/workspaces/tools}
-	IFS=':' read -ra _repos <<< "$list"
+	local list name git_dir repo slug
+	if [[ -n ${SHIP_POST_REPOS:-} ]]; then
+		list=$SHIP_POST_REPOS
+		IFS=':' read -ra _repos <<< "$list"
+		return
+	fi
+	_repos=()
+	while IFS=$'\t' read -r name git_dir repo slug; do
+		[[ -z $(ga_skip_reason "$name") ]] && _repos+=("$repo")
+	done < <(ga_roots)
+}
+
+repo_has_pr_ci(){
+	local repo=$1 base workflow
+	base=$(git -C "$repo" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null) || base=origin/main
+	base=${base#origin/}
+	while IFS= read -r workflow; do
+		case $workflow in
+			*.yml|*.yaml) git -C "$repo" show "origin/$base:.github/workflows/$workflow" 2>/dev/null | grep -q pull_request && return 0 ;;
+		esac
+	done < <(git -C "$repo" ls-tree --name-only "origin/$base:.github/workflows" 2>/dev/null)
+	return 1
 }
 
 slugify(){ printf '%s' "$1" | sha256sum | cut -d ' ' -f1; }
@@ -102,9 +123,12 @@ do_submit(){
 	while IFS= read -r line; do [[ $line == "worktree $wt_real" ]] && registered=1; done < <(git -C "$wt_real" worktree list --porcelain)
 	[[ $registered == 1 ]] || usage_err "not a registered linked worktree: $wt_real"
 
-	local repo common
+	local repo common name reason
 	common=$(git -C "$wt_real" rev-parse --path-format=absolute --git-common-dir) || die "cannot locate repository"
 	repo=$(dirname "$common")
+	name=$(ga_repo_of "$repo" 2>/dev/null) || name=''
+	reason=$(ga_skip_reason "$name")
+	[[ -z $reason ]] || usage_err "repository excluded from courier: $name ($reason)"
 	resolve_repos
 	local allowed=0 candidate cand
 	for candidate in "${_repos[@]}"; do
@@ -280,8 +304,7 @@ write_delivery_receipt(){
   '{actor:$actor,timestamp:$timestamp,stage:"delivered",repo:$repo,atom:$atom,local_sha:$sha,remote_head:$head,remote:$proof}' > "$rf.tmp" && mv "$rf.tmp" "$rf" || return 1
  ack_delivery "$rf" "$atom" || return 1
  echo "delivered $atom $remote_head"
- # ponytail: basename = имя ga_roots; при расхождении — git-sync даст err:ctx в выводе
- name=$(basename "$repo")
+ if ! name=$(ga_repo_of "$repo"); then name=$(basename "$repo"); fi
  if out=$("$bin/git-sync" "$name" 2>&1); then
   echo "live $name: $out"
  else
@@ -289,6 +312,19 @@ write_delivery_receipt(){
   bd_cmd update "$atom" --append-notes "ship-post live sync $name failed: $out" || true
  fi
  return 0
+}
+
+write_wait_owner_no_ci_receipt(){
+	local repo=$1 atom=$2 head=$3 atom_json=$4 rf note
+	note='ship-post: wait-owner no-ci — нет автопроверок, на прод только словом владельца'
+	rf=$(receipt_file "$repo" "$atom" "$head")
+	[[ -f $rf ]] && return 0
+	if ! jq -e --arg note "$note" '.[0].notes // "" | contains($note)' <<<"$atom_json" >/dev/null; then
+		bd_cmd update "$atom" --append-notes "$note" >/dev/null || return 1
+	fi
+	mkdir -p "$(dirname "$rf")" || return 1
+	jq -n --arg actor "$BEADS_ACTOR" --arg timestamp "$(date -Iseconds)" --arg repo "$repo" --arg atom "$atom" --arg sha "$head" \
+		'{actor:$actor,timestamp:$timestamp,stage:"wait-owner no-ci",repo:$repo,atom:$atom,local_sha:$sha}' > "$rf.tmp" && mv "$rf.tmp" "$rf"
 }
 
 deliver_one(){
@@ -363,9 +399,18 @@ scan_repo(){
    echo "reconcile $wt $atom"; continue
   fi
   if [[ -f $rf ]]; then
+		[[ $(jq -r '.stage // empty' "$rf" 2>/dev/null) == 'wait-owner no-ci' ]] && continue
    (BEADS_ACTOR=$actor; ack_delivery "$rf" "$atom") || failed=$((failed+1))
    continue
   fi
+	if [[ $status == closed ]] && ! repo_has_pr_ci "$repo"; then
+		if [[ $dry_run == 1 ]]; then
+			echo "wait-owner $wt $atom no-ci"
+		else
+			(BEADS_ACTOR=$actor; write_wait_owner_no_ci_receipt "$repo" "$atom" "$head" "$st") && ok=$((ok+1)) || failed=$((failed+1))
+		fi
+		continue
+	fi
   if [[ -f $rf.failed || -f $(inflight_file "$repo" "$atom") ]]; then
    remote_result "$wt" "$head" "$branch"; rc=$?
    if [[ $rc == 0 ]]; then

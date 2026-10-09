@@ -2,7 +2,7 @@
 set -uo pipefail
 
 bin=$(cd -- "$(dirname -- "$0")" && pwd)
-root=$(mktemp -d "$bin/.ship-post-test.XXXXXX")
+root=$(mktemp -d)
 trap 'rm -rf -- "$root"' EXIT
 checks=0 failures=0
 pass(){ checks=$((checks + 1)); echo "PASS $1"; }
@@ -24,12 +24,12 @@ make_repo(){
 	local d=$1
 	git init -q --bare "$d/origin.git"; git -C "$d/origin.git" symbolic-ref HEAD refs/heads/main
 	git clone -q "$d/origin.git" "$d/repo"; git -C "$d/repo" config user.email t@t; git -C "$d/repo" config user.name t
-	printf 'base\n' > "$d/repo/base.txt"; git -C "$d/repo" add -- base.txt; git -C "$d/repo" commit -q -m base
+	mkdir -p "$d/repo/.github/workflows"; printf 'base\n' > "$d/repo/base.txt"; printf 'on: pull_request\n' > "$d/repo/.github/workflows/test.yml"; git -C "$d/repo" add -- base.txt .github/workflows/test.yml; git -C "$d/repo" commit -q -m base
 	git -C "$d/repo" push -q origin main; git -C "$d/repo" fetch -q origin
 }
 make_worktree(){ git -C "$1/repo" worktree add -q -b "$3" "$1/.worktrees/${3%%/*}/$2" origin/main; }
 make_mocks(){
-	local d=$1; mkdir -p "$d/bin" "$d/home"; cp -f -- "$bin/ship-post" "$d/bin/ship-post"
+	local d=$1; mkdir -p "$d/bin" "$d/home"; cp -f -- "$bin/ship-post" "$bin/git-auto-lib" "$d/bin/"
 	cat > "$d/bin/ship" <<'MOCKSHIP'
 #!/usr/bin/env bash
 printf '%s|%s|%s\n' "${BEADS_ACTOR:-}" "$*" "$(git -C "$1" rev-parse HEAD)" >> "$SHIP_POST_TEST_DIR/ship.calls"
@@ -354,6 +354,7 @@ ga_repo_of(){ echo test; }
 ga_skip_reason(){ :; }
 ga_base(){ echo 'single main main'; }
 ga_lock(){ shift 2; if (( $# )); then "$@"; fi; }
+ga_ci_wait(){ return 0; }
 ga_ctx(){ GA_SLUG=test/private; }
 gg_log(){ :; }
 leave(){ exit "$1"; }
@@ -405,12 +406,49 @@ test_review_recovery(){
  [[ $(jq -r .seq "$d/state/cursor.json") == 1 && $out != *'malformed journal'* ]] && pass partial_event_retained || fail partial_event_retained "$out"
 }
 
+test_nested_repo(){
+ local n=120 out rc sub_wt sub_tz no_ci_wt no_ci_tz excluded_wt excluded_tz before after ship_before receipt sha repo_name
+ d="$root/nested"; make_repo "$d"
+ git init -q --bare "$d/sub-origin.git"; git init -q -b main "$d/repo/sub"; git -C "$d/repo/sub" config user.email t@t; git -C "$d/repo/sub" config user.name t; git -C "$d/repo/sub" remote add origin "$d/sub-origin.git"
+ mkdir -p "$d/repo/sub/docs/tz" "$d/repo/sub/.github/workflows"; printf '# TZ\n' > "$d/repo/sub/docs/tz/TZ-TEST.md"; printf 'on: pull_request\n' > "$d/repo/sub/.github/workflows/test.yml"
+ git -C "$d/repo/sub" add -- docs/tz/TZ-TEST.md; git -C "$d/repo/sub" commit -q -m base
+ git -C "$d/repo/sub" add -- .github/workflows/test.yml; git -C "$d/repo/sub" commit -q -m ci; git -C "$d/repo/sub" push -q -u origin main
+ git -C "$d/repo/sub" worktree add -q -b claude/dcfg-nest.1 "$d/repo/sub/.worktrees/claude/nest"
+ sub_wt="$d/repo/sub/.worktrees/claude/nest"; sub_tz='docs/tz/TZ-TEST.md'; make_mocks "$d"; printf x > "$sub_wt/file.txt"
+ out=$(export BEADS_ACTOR=Claude BD_ASSIGNEE=Claude GA_PROJECTS="$d" TEST_REPOS="$d/repo:$d/repo/sub"; run_tool "$d" --submit "$sub_wt" --atom dcfg-nest.1 --tz "$sub_tz#U2" --evidence evidence --files "$sub_tz" file.txt 2>&1); rc=$?
+ assert_rc "N1 ($n)" 0 "$rc" "$out"; n=$((n + 1))
+ : > "$d/bd.calls"; out=$(export BEADS_ACTOR=Claude BD_ASSIGNEE=Claude GA_PROJECTS="$d" TEST_REPOS="$d/repo:$d/repo/sub"; run_tool "$d" 2>&1); rc=$?
+ [[ $rc == 0 ]] && grep -q 'show dcfg-nest.1 --json' "$d/bd.calls" && pass "N1 ($n)" || fail "N1 ($n)" "nested atom was not scanned: $out"; n=$((n + 1))
+ git init -q --bare "$d/no-ci-origin.git"; git init -q -b main "$d/repo/no-ci"; git -C "$d/repo/no-ci" config user.email t@t; git -C "$d/repo/no-ci" config user.name t; git -C "$d/repo/no-ci" remote add origin "$d/no-ci-origin.git"
+ mkdir -p "$d/repo/no-ci/docs/tz"; printf '# TZ\n' > "$d/repo/no-ci/docs/tz/TZ-TEST.md"
+ git -C "$d/repo/no-ci" add -- docs/tz/TZ-TEST.md; git -C "$d/repo/no-ci" commit -q -m base; git -C "$d/repo/no-ci" push -q -u origin main
+ git -C "$d/repo/no-ci" worktree add -q -b codex/dcfg-noci.1 "$d/repo/no-ci/.worktrees/codex/no-ci"
+ no_ci_wt="$d/repo/no-ci/.worktrees/codex/no-ci"; no_ci_tz='docs/tz/TZ-TEST.md'; printf x > "$no_ci_wt/file.txt"; before=$(git -C "$no_ci_wt" rev-list --count HEAD)
+ out=$(export BEADS_ACTOR=Codex BD_ASSIGNEE=Codex GA_PROJECTS="$d" TEST_REPOS="$d/repo:$d/repo/no-ci"; run_tool "$d" --submit "$no_ci_wt" --atom dcfg-noci.1 --tz "$no_ci_tz#U2" --evidence evidence --files "$no_ci_tz" file.txt 2>&1); rc=$?; after=$(git -C "$no_ci_wt" rev-list --count HEAD)
+ [[ $rc == 0 && $after -gt $before ]] && pass "N2 ($n)" || fail "N2 ($n)" "rc=$rc before=$before after=$after: $out"; n=$((n + 1))
+ : > "$d/bd.calls"; ship_before=$(wc -l < "$d/ship.calls"); sha=$(git -C "$no_ci_wt" rev-parse HEAD)
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex GA_PROJECTS="$d" TEST_REPOS="$d/repo:$d/repo/no-ci"; run_tool "$d" 2>&1); rc=$?
+ receipt=$(find "$d/state/receipts" -type f 2>/dev/null | head -1)
+ [[ $rc == 0 && $(wc -l < "$d/ship.calls") == "$ship_before" && -n $receipt ]] && jq -e --arg sha "$sha" '.stage == "wait-owner no-ci" and .local_sha == $sha' "$receipt" >/dev/null && grep -Fxc "$d|Codex|update dcfg-noci.1 --append-notes ship-post: wait-owner no-ci — нет автопроверок, на прод только словом владельца" "$d/bd.calls" | grep -qx 1 && pass "N2 ($n)" || fail "N2 ($n)" "no-CI scan delivered or receipt/note missing: $out"; n=$((n + 1))
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex GA_PROJECTS="$d" TEST_REPOS="$d/repo:$d/repo/no-ci"; run_tool "$d" 2>&1); rc=$?
+ [[ $rc == 0 && $(wc -l < "$d/ship.calls") == "$ship_before" && $(grep -Fc 'update dcfg-noci.1 --append-notes ship-post: wait-owner no-ci' "$d/bd.calls") == 1 ]] && pass "N2 ($n)" || fail "N2 ($n)" "no-CI receipt was not final: $out"; n=$((n + 1))
+ mkdir -p "$d/clients"; git init -q --bare "$d/excluded-origin.git"; git init -q -b main "$d/clients/stroyremont"; git -C "$d/clients/stroyremont" config user.email t@t; git -C "$d/clients/stroyremont" config user.name t; git -C "$d/clients/stroyremont" remote add origin "$d/excluded-origin.git"
+ mkdir -p "$d/clients/stroyremont/docs/tz"; printf '# TZ\n' > "$d/clients/stroyremont/docs/tz/TZ-TEST.md"
+ git -C "$d/clients/stroyremont" add -- docs/tz/TZ-TEST.md; git -C "$d/clients/stroyremont" commit -q -m base; git -C "$d/clients/stroyremont" push -q -u origin main
+ repo_name=$(GA_PROJECTS="$d" bash -c '. "$1"; ga_repo_of "$2"' _ "$d/bin/git-auto-lib" "$d/clients/stroyremont")
+ [[ $repo_name == clients/stroyremont ]] && pass "N3 ($n)" || fail "N3 ($n)" "ga_repo_of=$repo_name"; n=$((n + 1))
+ git -C "$d/clients/stroyremont" worktree add -q -b codex/dcfg-excluded.1 "$d/clients/stroyremont/.worktrees/codex/excluded"
+ excluded_wt="$d/clients/stroyremont/.worktrees/codex/excluded"; excluded_tz='docs/tz/TZ-TEST.md'; printf x > "$excluded_wt/file.txt"; before=$(git -C "$excluded_wt" rev-list --count HEAD)
+ out=$(export BEADS_ACTOR=Codex BD_ASSIGNEE=Codex GA_PROJECTS="$d" TEST_REPOS="$d/repo:$d/clients/stroyremont"; run_tool "$d" --submit "$excluded_wt" --atom dcfg-excluded.1 --tz "$excluded_tz#U2" --evidence evidence --files "$excluded_tz" file.txt 2>&1); rc=$?; after=$(git -C "$excluded_wt" rev-list --count HEAD)
+ [[ $rc != 0 && $out == *'repository excluded from courier'* && $before == "$after" ]] && pass "N3 ($n)" || fail "N3 ($n)" "rc=$rc before=$before after=$after: $out"
+}
+
 if [[ ${SHIP_POST_TEST_GROUP:-all} == review ]]; then
  test_review_recovery
 elif [[ ${SHIP_POST_TEST_GROUP:-all} == recovery ]]; then
  test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery
 else
- test_dryrun_mocks; test_valid_actors; test_rejections; test_hook_and_retry; test_closed_retry; test_delivery; test_live_sync; test_watch; test_recovery; test_stream_errors; test_closed_skip_reason; test_concurrent_repositories; test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery; test_actor_alias
+	 test_dryrun_mocks; test_valid_actors; test_rejections; test_hook_and_retry; test_closed_retry; test_delivery; test_live_sync; test_watch; test_recovery; test_stream_errors; test_closed_skip_reason; test_concurrent_repositories; test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery; test_actor_alias; test_nested_repo
 fi
 echo "checks=$checks failures=$failures"
 [[ $failures == 0 ]]
