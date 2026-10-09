@@ -114,17 +114,19 @@ do_submit(){
 	[[ $allowed == 1 ]] || usage_err "repository is not served by courier: $repo"
 	local branch caller
 	branch=$(git -C "$wt_real" symbolic-ref --short -q HEAD 2>/dev/null) || usage_err "cannot get branch"
-	case $BEADS_ACTOR in Codex) caller=codex ;; Claude|'Claude Code') caller=claude ;; *) usage_err "unknown BEADS_ACTOR: ${BEADS_ACTOR:-empty}" ;; esac
+	case $BEADS_ACTOR in Codex|codex) caller=codex ;; Claude|'Claude Code'|claude) caller=claude ;; *) usage_err "unknown BEADS_ACTOR: ${BEADS_ACTOR:-empty}" ;; esac
 	[[ $branch == "$caller/$atom" || $branch == "$caller/$atom"-* ]] || usage_err "branch $branch must match $caller/$atom or $caller/$atom-<topic>"
 	[[ $wt_real == */.worktrees/"$caller"/* ]] || usage_err "worktree must use .worktrees/<agent>/<task>"
 
 	local atom_json
 	atom_json=$(bd_cmd show "$atom" --json 2>/dev/null) || usage_err "bd show $atom failed"
-	local status assignee
+	local status assignee assignee_raw
 	status=$(jq -r '.[0].status // empty' <<< "$atom_json" 2>/dev/null)
-	assignee=$(jq -r '.[0].assignee // empty' <<< "$atom_json" 2>/dev/null)
+	assignee_raw=$(jq -r '.[0].assignee // empty' <<< "$atom_json" 2>/dev/null)
+	assignee=$assignee_raw
 	case $assignee in Codex|codex) assignee=codex ;; Claude|'Claude Code'|claude) assignee=claude ;; esac
 	[[ -n $assignee && $assignee == "$caller" ]] || usage_err "atom $atom assignee must be $caller"
+	BEADS_ACTOR=$assignee_raw
 	[[ $status == in_progress || $status == closed ]] || usage_err "atom $atom status=$status"
 
 	local tz_path=${tz%%#*} tz_suffix="#${tz#*#}" tz_abs

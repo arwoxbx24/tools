@@ -118,6 +118,21 @@ test_valid_actors(){
 	grep -Fxq 'Agent: claude' <<<"$msg" && pass "$n" || fail "$n" "canonical Claude trailer"; n=$((n + 1))
 	compgen -G "$d/state/submissions/*/*/dcfg-valid.2/*" >/dev/null && pass "$n" || fail "$n" "local submission receipt"
 }
+test_actor_alias(){
+	local n=100 out rc head
+	setup_submit alias1 claude/dcfg-alias.1; printf x > "$wt/file.txt"
+	out=$(export BEADS_ACTOR=Claude BD_ASSIGNEE='Claude Code'; submit dcfg-alias.1 "$tz" file.txt 2>&1); rc=$?; head=$(git -C "$wt" rev-parse HEAD)
+	[[ $rc == 0 ]] && grep -Fqx "$d|Claude Code|close dcfg-alias.1 --reason submitted $head: evidence" "$d/bd.calls" && pass "A1 ($n)" || fail "A1 ($n)" "rc=$rc: $out"; n=$((n + 1))
+	setup_submit alias2 claude/dcfg-alias.2; printf x > "$wt/file.txt"
+	out=$(export BEADS_ACTOR=Claude BD_ASSIGNEE=claude; submit dcfg-alias.2 "$tz" file.txt 2>&1); rc=$?; head=$(git -C "$wt" rev-parse HEAD)
+	[[ $rc == 0 ]] && grep -Fqx "$d|claude|close dcfg-alias.2 --reason submitted $head: evidence" "$d/bd.calls" && pass "A2 ($n)" || fail "A2 ($n)" "rc=$rc: $out"; n=$((n + 1))
+	setup_submit alias3 claude/dcfg-alias.3; printf x > "$wt/file.txt"
+	out=$(export BEADS_ACTOR=claude BD_ASSIGNEE='Claude Code'; submit dcfg-alias.3 "$tz" file.txt 2>&1); rc=$?; head=$(git -C "$wt" rev-parse HEAD)
+	[[ $rc == 0 ]] && grep -Fqx "$d|Claude Code|close dcfg-alias.3 --reason submitted $head: evidence" "$d/bd.calls" && pass "A3 ($n)" || fail "A3 ($n)" "rc=$rc: $out"; n=$((n + 1))
+	setup_submit alias4 codex/dcfg-alias.4; printf x > "$wt/file.txt"
+	out=$(export BEADS_ACTOR=codex BD_ASSIGNEE=Codex; submit dcfg-alias.4 "$tz" file.txt 2>&1); rc=$?; head=$(git -C "$wt" rev-parse HEAD)
+	[[ $rc == 0 ]] && grep -Fqx "$d|Codex|close dcfg-alias.4 --reason submitted $head: evidence" "$d/bd.calls" && pass "A4 ($n)" || fail "A4 ($n)" "rc=$rc: $out"
+}
 test_rejections(){
 	local n=13 out rc
 	setup_submit live codex/dcfg-live.1; printf x > "$d/repo/file.txt"
@@ -380,7 +395,7 @@ if [[ ${SHIP_POST_TEST_GROUP:-all} == review ]]; then
 elif [[ ${SHIP_POST_TEST_GROUP:-all} == recovery ]]; then
  test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery
 else
- test_dryrun_mocks; test_valid_actors; test_rejections; test_hook_and_retry; test_closed_retry; test_delivery; test_watch; test_recovery; test_stream_errors; test_closed_skip_reason; test_concurrent_repositories; test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery
+ test_dryrun_mocks; test_valid_actors; test_rejections; test_hook_and_retry; test_closed_retry; test_delivery; test_watch; test_recovery; test_stream_errors; test_closed_skip_reason; test_concurrent_repositories; test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery; test_actor_alias
 fi
 echo "checks=$checks failures=$failures"
 [[ $failures == 0 ]]
