@@ -424,6 +424,10 @@ gate_open() { # -> 0 если предусловие гейта выполнен
     GATE_REASON=restic-unreachable
     return 1
   fi
+  if ! "$RESTIC" check --retry-lock 10m >>"$DR_LOG" 2>&1; then
+    GATE_REASON=restic-check-failed
+    return 1
+  fi
   return 0
 }
 
