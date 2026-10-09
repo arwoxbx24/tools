@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # bd-push: экспорт beads в Dolt после проверки secret-gate.
 set -u
+case ${1:-} in -h|--help) echo "usage: bd-push  (экспортирует beads в Dolt после secret-gate)"; exit 0;; esac
 tmp=$(mktemp) || exit 1
 trap 'rm -f "$tmp"' EXIT HUP INT TERM
 
