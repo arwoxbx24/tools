@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -eu
+case ${1:-} in -h|--help) echo "usage: ship-doc-check [base]  (CI-гейт: правка цепочки bin/ship* требует правки docs/ship-post-ARCHITECTURE.md)"; exit 0;; esac
 
 base=${1:-origin/main}
 doc=docs/ship-post-ARCHITECTURE.md
