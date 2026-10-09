@@ -106,8 +106,11 @@ do_submit(){
 	common=$(git -C "$wt_real" rev-parse --path-format=absolute --git-common-dir) || die "cannot locate repository"
 	repo=$(dirname "$common")
 	resolve_repos
-	local allowed=0 candidate
-	for candidate in "${_repos[@]}"; do [[ $(realpath "$candidate" 2>/dev/null) == "$repo" ]] && allowed=1; done
+	local allowed=0 candidate cand
+	for candidate in "${_repos[@]}"; do
+		cand=$(realpath "$candidate" 2>/dev/null) || continue
+		[[ $repo == "$cand" || $repo == "$cand"/* ]] && allowed=1
+	done
 	[[ $allowed == 1 ]] || usage_err "repository is not served by courier: $repo"
 	local branch caller
 	branch=$(git -C "$wt_real" symbolic-ref --short -q HEAD 2>/dev/null) || usage_err "cannot get branch"
