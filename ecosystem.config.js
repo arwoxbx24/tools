@@ -233,7 +233,7 @@ module.exports = {
       cron_restart: '*/15 * * * *',
       preflight_env_file: '/root/workspaces/secrets/services/pm2-notify.env',
       preflight_env_keys: ['TG_BOT_TOKEN', 'TG_CHAT_ID'],
-      env: formsGwGuardEnv,
+      env: { ...formsGwGuardEnv, GUARD_GW_HOST: 'd5dn462s09a9dpofvl2d.6brbn2wz.apigw.yandexcloud.net', DNS_SWITCH: '/root/workspaces/projects/arwox-v3-src/forms-failover/dns-switch.sh', BEGET_IP: '45.139.76.176', NPM_HOST_ID: '40' },
       error_file: '/root/.pm2/logs/forms-gw-guard-error.log',
       out_file: '/root/.pm2/logs/forms-gw-guard-out.log'
     },
