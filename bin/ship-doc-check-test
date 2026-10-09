@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+set -eu
+
+bin=$(cd -- "$(dirname -- "$0")" && pwd)
+doc="$bin/../docs/ship-post-ARCHITECTURE.md"
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/ship-doc-check-test.XXXXXX")
+trap 'find "$tmp" -depth -delete' EXIT
+
+new_case(){
+  repo="$tmp/$1"
+  mkdir -p "$repo/bin" "$repo/docs"
+  cp "$bin/ship" "$bin/ship-post" "$bin/git-sync" "$bin/git-auto-lib" "$bin/git-state" "$repo/bin/"
+  cp "$doc" "$repo/docs/ship-post-ARCHITECTURE.md"
+  git init -q "$repo"
+  git -C "$repo" config user.email ship-doc-check@example.invalid
+  git -C "$repo" config user.name ship-doc-check
+  git -C "$repo" config core.hooksPath /dev/null
+  git -C "$repo" add .
+  git -C "$repo" commit -qm baseline
+  base=$(git -C "$repo" rev-parse HEAD)
+}
+
+check_case(){
+  set +e
+  output=$(cd "$repo" && bash "$bin/ship-doc-check" "$base" 2>&1)
+  rc=$?
+  set -e
+}
+
+expect(){
+  [[ $rc == "$1" ]] || { echo "ship-doc-check-test: expected rc $1, got $rc: $output" >&2; exit 1; }
+}
+
+new_case missing-doc
+printf '\n# changed\n' >> "$repo/bin/ship-post"
+git -C "$repo" add bin/ship-post
+git -C "$repo" commit -qm missing-doc
+check_case
+expect 1
+
+new_case with-doc
+printf '\n# changed\n' >> "$repo/bin/ship-post"
+printf '\n<!-- changed -->\n' >> "$repo/docs/ship-post-ARCHITECTURE.md"
+git -C "$repo" add bin/ship-post docs/ship-post-ARCHITECTURE.md
+git -C "$repo" commit -qm with-doc
+check_case
+expect 0
+
+new_case bad-anchor
+sed -i 's/`bin\/ship-post:do_submit`/`bin\/ship-post:not_a_function`/' "$repo/docs/ship-post-ARCHITECTURE.md"
+git -C "$repo" add docs/ship-post-ARCHITECTURE.md
+git -C "$repo" commit -qm bad-anchor
+check_case
+expect 1
+
+new_case unrelated
+printf 'changed\n' > "$repo/other.txt"
+git -C "$repo" add other.txt
+git -C "$repo" commit -qm unrelated
+check_case
+expect 0
+
+echo 'ship-doc-check-test: PASS 4/4'

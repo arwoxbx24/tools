@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -eu
+
+base=${1:-origin/main}
+doc=docs/ship-post-ARCHITECTURE.md
+
+changed=$(git diff --name-only "$base...HEAD")
+if printf '%s\n' "$changed" | grep -Eq '^bin/(ship|ship-post|git-sync|git-auto-lib|git-state)$' \
+  && ! printf '%s\n' "$changed" | grep -Fxq "$doc"; then
+  echo 'ship-doc-check: цепочка изменена без docs/ship-post-ARCHITECTURE.md' >&2
+  exit 1
+fi
+
+failed=0
+while IFS= read -r anchor; do
+  target=${anchor#\`}
+  target=${target%\`}
+  file=${target%%:*}
+  function=${target#*:}
+  if [[ ! -f $file ]] || ! grep -qE "^(function )?${function}\\(\\)" "$file"; then
+    echo "ship-doc-check: $anchor" >&2
+    failed=1
+  fi
+done < <(grep -oE '`bin/[[:alnum:]._-]+:[[:alpha:]_][[:alnum:]_]*`' "$doc" || true)
+
+exit "$failed"
