@@ -2,6 +2,7 @@
 # pm2-loop-guard: crash-loop watchdog for PM2.
 # Evidence uses a JSON white list; never collect PM2's raw process detail output.
 set -uo pipefail
+case ${1:-} in -h|--help) echo "usage: pm2-loop-guard  (watches PM2 processes for restart loops)"; exit 0;; esac
 
 PM2_HOME="${PM2_HOME:-/root/.pm2}"
 GUARD_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

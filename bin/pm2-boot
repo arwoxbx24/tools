@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -uo pipefail
+case ${1:-} in -h|--help) echo "usage: pm2-boot [--only name|--dry-run|status]  (runs PM2 boot preflight and startup)"; exit 0;; esac
 
 PM2_HOME="${PM2_HOME:-/root/.pm2}"
 PM2_BIN="${PM2_BIN:-/root/bin/pm2}"
