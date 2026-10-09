@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -eu
+case ${1:-} in -h|--help) echo "usage: code-memory-enable [--untrack] <abs-project-path> | --template <hooks-dir>  (enables or removes code-memory tracking)"; exit 0;; esac
 
 : "${CME_MIN_MEM_MB:=3072}"
 : "${CME_MIN_SWAP_MB:=1024}"

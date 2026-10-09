@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set +x
 set -uo pipefail
+case ${1:-} in -h|--help) echo "usage: code-channel <form> <project> <tz> [--model provider/model]  (runs the selected code or audit provider)"; exit 0;; esac
 # spec:035: only this invocation's temporary files are cleaned; no stale-file sweep.
 fail() { printf 'code-channel: %s\n' "$*" >&2; }
 S=${CODE_CHANNEL_STATE:-/root/workspaces/tools/state/code-channel}

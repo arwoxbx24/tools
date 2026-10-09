@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -u
+case ${1:-} in -h|--help) echo "usage: safe-delete [--bk <каталог>] <branch|file|link|restore|purge|repo-autodelete> …  (safely deletes and restores approved files or branches)"; exit 0;; esac
 BK=${SAFE_DELETE_BK:-/root/workspaces/projects/.agent-work/backup}
 GH=${SAFE_DELETE_GH:-true}
 mkdir -p "$BK"

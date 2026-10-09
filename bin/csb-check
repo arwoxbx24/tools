@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Check a CSB transcript against one eval contract.
 set -u -o pipefail
+case ${1:-} in -h|--help) echo "usage: csb-check <eval-id> <transcript.jsonl> [--evals <path>] [--no-journal]  (checks a CSB transcript against an eval contract)"; exit 0;; esac
 
 EVALS=/root/workspaces/projects/.claude/skills/csb/evals/evals.json
 JOURNAL=${CSB_JOURNAL_DIR:-/root/workspaces/projects/docs/csb-updates}

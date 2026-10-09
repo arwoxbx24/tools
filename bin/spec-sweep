@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -u
+case ${1:-} in -h|--help) echo "usage: spec-sweep [--dry-run|--apply]  (finds or archives completed specs and stale task records)"; exit 0;; esac
 # spec-sweep (spec:094 U1): еженедельная автоуборка реализованных спек,
 # старых ТЗ/планов/исследований и закрытых задач. По умолчанию --dry-run.
 bin=$(cd -- "$(dirname -- "$0")" && pwd)
