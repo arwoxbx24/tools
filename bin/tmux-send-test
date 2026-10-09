@@ -7,22 +7,32 @@ srv="tmux-send-test-$$"
 unset TMUX
 export TMUX_SEND_SOCKET="$srv"
 e="/tmp/tmux-send-test-$$.err"
-trap 'rm -f "$e"; tmux -L "$srv" kill-server 2>/dev/null' EXIT
+ok=0
+tmux_calls="/tmp/tmux-send-test-$$.calls"
+tmux_stub="/tmp/tmux-send-test-$$.bin"
+trap 'rm -f "$e" "$tmux_calls"; rm -rf "$tmux_stub"; tmux -L "$srv" kill-server 2>/dev/null' EXIT
+
+: > "$tmux_calls"
+mkdir -p "$tmux_stub"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "$*" >> "$TMUX_CALLS"' 'exit 99' > "$tmux_stub/tmux"
+chmod +x "$tmux_stub/tmux"
+export TMUX_CALLS="$tmux_calls"
+help=$(PATH="$tmux_stub:$PATH" "$bin/tmux-send" --help); rc=$?
+[[ $rc == 0 && $help == *usage:* && ! -s "$tmux_calls" ]] && { echo 'PASS 1'; ok=$((ok+1)); } || echo "FAIL 1: rc=$rc tmux_calls=$(wc -l < "$tmux_calls")"
 
 tmux -L "$srv" new-session -d -s t -x 80 -y 24
 pbash=$(tmux -L "$srv" display -p -t "t:0.0" '#{pane_id}')
-ok=0
 
 [[ -n ${TMUX_SEND_SOCKET:-} ]] || { echo 'FAIL нет TMUX_SEND_SOCKET' >&2; exit 3; }
 
 "$bin/tmux-send" "$pbash" 'echo OK-123' --expect '^OK-123$' >/dev/null 2>"$e"; rc=$?
-[[ $rc == 0 ]] && { echo 'PASS 1'; ok=$((ok+1)); } || echo "FAIL 1: rc=$rc"
+[[ $rc == 0 ]] && { echo 'PASS 2'; ok=$((ok+1)); } || echo "FAIL 2: rc=$rc"
 
 "$bin/tmux-send" "$pbash" 'echo OK-123' --expect '^NEVER$' >/dev/null 2>"$e"; rc=$?
-[[ $rc == 1 && -s "$e" ]] && { echo 'PASS 2'; ok=$((ok+1)); } || echo "FAIL 2: rc=$rc"
+[[ $rc == 1 && -s "$e" ]] && { echo 'PASS 3'; ok=$((ok+1)); } || echo "FAIL 3: rc=$rc"
 
 "$bin/tmux-send" "t:nosuch" 'x' >/dev/null 2>"$e"; rc=$?
-[[ $rc == 2 && -s "$e" ]] && { echo 'PASS 3'; ok=$((ok+1)); } || echo "FAIL 3: rc=$rc"
+[[ $rc == 2 && -s "$e" ]] && { echo 'PASS 4'; ok=$((ok+1)); } || echo "FAIL 4: rc=$rc"
 
 tmux -L "$srv" new-window -d -n cat 'cat'
 pcat=$(tmux -L "$srv" display -p -t "t:cat" '#{pane_id}')
@@ -30,7 +40,7 @@ tmux -L "$srv" resize-window -t "t:cat" -y 4
 "$bin/tmux-send" "$pcat" 'abcXYZ' --expect '^QWERTY$' >/dev/null 2>"$e"; rc=$?
 cap=$(tmux -L "$srv" capture-pane -p -t "$pcat")
 blank=$(awk 'BEGIN{n=0} /^[[:space:]]*$/ {n++; next} {n=0} END{print n}' <<<"$cap")
-[[ $rc == 1 && $blank -le 3 ]] && { echo 'PASS 4'; ok=$((ok+1)); } || echo "FAIL 4: rc=$rc blank=$blank"
+[[ $rc == 1 && $blank -le 3 ]] && { echo 'PASS 5'; ok=$((ok+1)); } || echo "FAIL 5: rc=$rc blank=$blank"
 
-echo "PASS $ok/4"
-[[ $ok == 4 ]]
+echo "PASS $ok/5"
+[[ $ok == 5 ]]
