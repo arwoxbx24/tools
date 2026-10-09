@@ -110,5 +110,72 @@ class AgentToolsTest(unittest.TestCase):
         self.assertNotIn("value", result.stdout.lower())
 
 
+class ToolHelpContractTest(unittest.TestCase):
+    def test_executable_tools_show_help_without_external_actions(self):
+        listing = subprocess.run(
+            ["git", "ls-files", "-s", "bin/"],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        scripts = []
+        for entry in listing.stdout.splitlines():
+            metadata, name = entry.split("\t", 1)
+            mode = metadata.split(maxsplit=1)[0]
+            if mode != "100755" or name.endswith("-test"):
+                continue
+            # dcfg-9uhb3 owns the --help fixes for these scripts.
+            if name in {"bin/ship", "bin/ship-post"}:
+                continue
+            scripts.append((name, ROOT / name))
+
+        with tempfile.TemporaryDirectory() as temporary:
+            temporary = Path(temporary)
+            stubs = temporary / "stubs"
+            home = temporary / "home"
+            stub_log = temporary / "stub.log"
+            stubs.mkdir()
+            home.mkdir()
+            for command in (
+                "git", "gh", "tmux", "curl", "wget", "pm2", "bd", "ssh", "scp",
+                "rsync", "opencode", "codex", "gitleaks", "docker", "npx",
+            ):
+                stub = stubs / command
+                stub.write_text(
+                    "#!/usr/bin/python3\n"
+                    "from pathlib import Path\n"
+                    f"with Path({str(stub_log)!r}).open('a') as log:\n"
+                    "    log.write(Path(__file__).name + '\\n')\n"
+                    "raise SystemExit(99)\n"
+                )
+                stub.chmod(0o755)
+
+            env = os.environ.copy()
+            env.update({
+                "PATH": f"{stubs}:{env['PATH']}",
+                "HOME": str(home),
+            })
+            for name, path in scripts:
+                command = [str(path), "--help"]
+                shebang = path.read_text().splitlines()[0]
+                if shebang.startswith("#!") and not shebang.startswith("#!/usr/bin/env"):
+                    interpreter = Path(shebang[2:].split(maxsplit=1)[0])
+                    if not interpreter.exists():
+                        command = [sys.executable, str(path), "--help"]
+                with self.subTest(script=name):
+                    result = subprocess.run(
+                        command,
+                        env=env,
+                        stdin=subprocess.DEVNULL,
+                        timeout=10,
+                        capture_output=True,
+                        text=True,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertIn("usage:", result.stdout)
+                    self.assertFalse(stub_log.exists() and stub_log.stat().st_size)
+
+
 if __name__ == "__main__":
     unittest.main()
