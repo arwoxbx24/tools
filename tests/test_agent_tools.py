@@ -164,6 +164,7 @@ class ToolHelpContractTest(unittest.TestCase):
                     if not os.path.exists(interpreter):
                         command = [sys.executable, str(path), "--help"]
                 with self.subTest(script=name):
+                    stub_log.unlink(missing_ok=True)
                     result = subprocess.run(
                         command,
                         env=env,
