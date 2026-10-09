@@ -161,7 +161,7 @@ class ToolHelpContractTest(unittest.TestCase):
                 shebang = path.read_text().splitlines()[0]
                 if shebang.startswith("#!") and not shebang.startswith("#!/usr/bin/env"):
                     interpreter = Path(shebang[2:].split(maxsplit=1)[0])
-                    if not interpreter.exists():
+                    if not os.path.exists(interpreter):
                         command = [sys.executable, str(path), "--help"]
                 with self.subTest(script=name):
                     result = subprocess.run(
