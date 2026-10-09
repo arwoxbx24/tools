@@ -3,6 +3,7 @@ set -u
 
 t(){ tmux ${TMUX_SEND_SOCKET:+-L "$TMUX_SEND_SOCKET"} "$@"; }
 
+case ${1:-} in -h|--help) echo "usage: tmux-send <target> '<текст>' [--expect '<regex>']  (env TMUX_SEND_SOCKET, TMUX_SEND_SLEEP; до 3 повторов Enter, rc 0 — ожидание найдено, 1 — нет, 2 — ошибка tmux)"; exit 0;; esac
 target=${1:-}
 text=${2:-}
 expect=Working
