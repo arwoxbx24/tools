@@ -77,6 +77,8 @@ if cmd == "init":
 elif cmd == "cat" and len(args) > 1 and args[1] == "config":
     if not (root / "config").is_file():
         sys.exit(1)
+elif cmd == "check":
+    sys.exit(int(os.environ.get("RESTIC_CHECK_RC", "0")))
 elif cmd == "backup":
     listfile = option("--files-from-verbatim")
     if not listfile:
@@ -631,6 +633,20 @@ scenario_22() { # paths deleted by verify are not re-backed up in this same gate
   fi
 }
 
+scenario_23() { # restic check failure closes the gate before any candidate deletion
+  fixture scen23
+  printf 'check failure payload\n' >"$A"
+  local rc
+  run_rotate GATE_MODE=enforce DR_USAGE_PCT=85 RESTIC_CHECK_RC=1 -- >/dev/null 2>&1
+  rc=$?
+  if [ "$rc" -eq 5 ] && [ -f "$A" ] \
+     && grep -q $'\tgate-closed:restic-check-failed$' "$JOURNAL" 2>/dev/null; then
+    report 23 "restic check closes gate" PASS
+  else
+    report 23 "restic check closes gate (rc=$rc)" FAIL
+  fi
+}
+
 if [ "${1:-}" = accounting ]; then
   scenario_16
   exit "$FAILS"
@@ -658,8 +674,9 @@ scenario_19
 scenario_20
 scenario_21
 scenario_22
+scenario_23
 
-echo "PASS $((22 - FAILS))/22"
+echo "PASS $((23 - FAILS))/23"
 [ "$FAILS" -eq 0 ] && exit 0
-echo "$FAILS/22 FAILED"
+echo "$FAILS/23 FAILED"
 exit 1
