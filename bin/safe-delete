@@ -5,10 +5,27 @@ BK=${SAFE_DELETE_BK:-/root/workspaces/projects/.agent-work/backup}
 GH=${SAFE_DELETE_GH:-true}
 mkdir -p "$BK"
 led=$BK/ledger.tsv
-log(){ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date +%Y-%m-%dT%H:%M:%S)" "$@" >>"$led"; }
+log_n=
+log(){ { flock -x 9 || return 1; printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date +%Y-%m-%dT%H:%M:%S)" "$@" >>"$led" || return 1; log_n=$(wc -l <"$led"); log_n=${log_n//[[:space:]]/}; } 9>>"$led.lock"; }
 fail(){ echo "safe-delete: $*" >&2; exit 1; }
 refuse(){ echo "safe-delete: $*" >&2; exit 2; }
 repo_of(){ local u=$1; u=${u%.git}; [[ $u =~ ([^/:]+)/([^/]+)$ ]] && echo "${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"; }
+git_file(){
+  local raw=$1 entry mark attr head
+  git_repo=$(git -C "$(dirname -- "$p")" rev-parse --show-toplevel 2>/dev/null) || return 1
+  [[ ! -L $raw ]] || return 1
+  git_rel=${p#"$git_repo"/}; [[ $git_rel != "$p" ]] || return 1
+  git -C "$git_repo" ls-files --error-unmatch -- "$git_rel" >/dev/null 2>&1 || return 1
+  entry=$(git -C "$git_repo" ls-files -s -- "$git_rel") || return 1
+  git_mode=${entry%% *}; [[ $git_mode == 100644 || $git_mode == 100755 ]] || return 1
+  mark=$(git -C "$git_repo" ls-files -v -- "$git_rel") || return 1
+  [[ ${mark:0:1} == H ]] || return 1
+  attr=$(git -C "$git_repo" check-attr filter -- "$git_rel") || return 1
+  [[ $attr != *': lfs'* ]] || return 1
+  git_blob=$(git -C "$git_repo" hash-object --no-filters "$p") || return 1
+  head=$(git -C "$git_repo" rev-parse "HEAD:$git_rel" 2>/dev/null) || return 1
+  [[ $git_blob == "$head" ]]
+}
 [[ $# -ge 1 ]] || refuse 'usage: safe-delete [--bk <каталог>] <branch|file|link|restore|purge|repo-autodelete> …'
 if [[ $1 == --bk ]]; then [[ $# -ge 3 ]] || refuse 'usage'; BK=$2; shift 2; mkdir -p "$BK"; led=$BK/ledger.tsv; fi
 cmd=$1; shift
@@ -38,6 +55,15 @@ case "$cmd" in
     [[ /$p/ == */.repowise*/* ]] && refuse "запрещённый сегмент: $p"
     [[ $p == "$BK" || $p == "$BK"/* ]] && refuse "файл под $BK: $p"
     [[ ${p##*/} == .env* ]] && refuse "запрещённый .env: $p"
+    if git_file "$1"; then
+      ref="refs/safe-delete/$(date +%Y%m%d%H%M%S%N)-${git_blob:0:12}"
+      git -C "$git_repo" update-ref "$ref" "$git_blob" || exit 1
+      log git "$p" "$git_blob" "$git_repo" "$ref" "$git_mode" - || exit 1
+      awk -F '\t' -v n="$log_n" -v p="$p" -v b="$git_blob" -v r="$ref" -v m="$git_mode" 'NR==n && $2=="git" && $3==p && $4==b && $6==r && $7==m{ok=1} END{exit !ok}' "$led" || exit 1
+      rm -- "$p" || exit 1
+      echo "удалено: $p | основание: git $ref | восстановить: safe-delete restore $log_n"
+      exit 0
+    fi
     copy="$BK/files/$(date +%Y%m%d)/${p#/}"
     [[ -e $copy || -L $copy ]] && copy="$copy.$(date +%H%M%S%N)"
     mkdir -p "$(dirname -- "$copy")" || exit 1
@@ -45,9 +71,10 @@ case "$cmd" in
     touch "$copy"
     cmp -s "$p" "$copy" || fail "копия не совпала: $p"
     b=$(sha256sum "$copy" | cut -d' ' -f1)
-    log file "$p" - - "$copy" "$b" backup-ok
+    log file "$p" - - "$copy" "$b" backup-ok || exit 1
     rm -- "$p" || exit 1
-    log file "$p" - - "$copy" "$b" deleted
+    log file "$p" - - "$copy" "$b" deleted || exit 1
+    echo "удалено: $p | основание: копия $copy | восстановить: safe-delete restore $log_n"
     exit 0
     ;;
   link)
@@ -88,6 +115,12 @@ case "$cmd" in
       [[ -e $obj ]] && refuse "исходный путь уже существует: $obj"
       cp -p "$cp" "$obj" || exit 1
       log file "$obj" - - "$cp" - restored
+    elif [[ $typ == git ]]; then
+      blob=$(cut -f4 <<< "$line"); repo=$(cut -f5 <<< "$line"); ref=$(cut -f6 <<< "$line"); mode=$(cut -f7 <<< "$line")
+      [[ -e $obj || -L $obj ]] && refuse "исходный путь уже существует: $obj"
+      git -C "$repo" cat-file blob "$blob" >"$obj" || exit 1
+      [[ $mode == 100755 ]] && chmod +x "$obj"
+      log git "$obj" "$blob" "$repo" "$ref" - restored
     else refuse "нельзя восстановить тип: $typ"; fi
     exit 0
     ;;

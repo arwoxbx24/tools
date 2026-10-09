@@ -168,4 +168,34 @@ if [[ $r23a == 2 && $r23b == 2 && -f $d/regular-link && -L $d/live-link ]]; then
   echo 'PASS T23'; ok=$((ok+1))
 else echo "FAIL T23: file=$r23a link=$r23b"; fi
 
-[[ $ok == 23 ]]
+# T24-T28: tracked clean files use a git ref and restore from its blob
+printf 'clean\n' > "$d/w/clean.txt"
+chmod +x "$d/w/clean.txt"
+cp "$d/w/clean.txt" "$d/clean.original"
+git -C "$d/w" add clean.txt && git -C "$d/w" commit -q -m clean
+out=$("$bin/safe-delete" --bk "$bk" file "$d/w/clean.txt"); r24=$?
+gdel=$(awk -F '\t' -v p="$d/w/clean.txt" '$2 == "git" && $3 == p && $7 == "100755" { n=NR } END { print n }' "$bk/ledger.tsv")
+gref=$(git -C "$d/w" for-each-ref --format='%(refname)' refs/safe-delete | head -1)
+if [[ $r24 == 0 && ! -e $d/w/clean.txt && -n $gref && -n $gdel ]]; then echo 'PASS T24'; ok=$((ok+1)); else echo "FAIL T24: rc=$r24 ref=$gref line=$gdel"; fi
+
+git -C "$d/w" add -u
+"$bin/safe-delete" --bk "$bk" restore "$gdel"; r25=$?
+if [[ $r25 == 0 && -x $d/w/clean.txt ]] && cmp -s "$d/clean.original" "$d/w/clean.txt"; then echo 'PASS T25'; ok=$((ok+1)); else echo "FAIL T25: rc=$r25"; fi
+
+printf 'tracked\n' > "$d/w/changed.txt"
+git -C "$d/w" add changed.txt && git -C "$d/w" commit -q -m changed
+printf 'modified\n' > "$d/w/changed.txt"
+"$bin/safe-delete" --bk "$bk" file "$d/w/changed.txt" >/dev/null; r26=$?
+ctype=$(awk -F '\t' -v p="$d/w/changed.txt" '$3 == p { t=$2 } END { print t }' "$bk/ledger.tsv")
+if [[ $r26 == 0 && $ctype == file ]]; then echo 'PASS T26'; ok=$((ok+1)); else echo "FAIL T26: rc=$r26 type=$ctype"; fi
+
+printf 'target\n' > "$d/w/link-target.txt"
+ln -s link-target.txt "$d/w/git-link.txt"
+git -C "$d/w" add link-target.txt git-link.txt && git -C "$d/w" commit -q -m link
+"$bin/safe-delete" --bk "$bk" file "$d/w/git-link.txt" >/dev/null; r27=$?
+ltype=$(awk -F '\t' -v p="$d/w/link-target.txt" '$3 == p { t=$2 } END { print t }' "$bk/ledger.tsv")
+if [[ $r27 == 0 && $ltype == file ]]; then echo 'PASS T27'; ok=$((ok+1)); else echo "FAIL T27: rc=$r27 type=$ltype"; fi
+
+if [[ $out == *'восстановить: safe-delete restore '* ]]; then echo 'PASS T28'; ok=$((ok+1)); else echo 'FAIL T28: stdout'; fi
+
+[[ $ok == 28 ]]
