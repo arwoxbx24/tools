@@ -25,6 +25,7 @@
 | `tmux send-keys` | сообщение другому агенту: `-l "<текст>"` → отдельный `Enter` → `capture-pane` | см. `/root/CLAUDE.md` tmux | Claude ↔ Codex | штатно |
 | `tmux-send` | отправить текст другому агенту на изолированном сервере tmux; сервер выбирается через `TMUX_SEND_SOCKET` (`-L`, по умолчанию — текущий) | `TMUX_SEND_SOCKET=<сокет> bin/tmux-send <target> '<текст>' [--expect '<regex>']` | Claude ↔ Codex | штатно |
 | `repowise` (MCP) | разведка кода первой ступенью | `get_answer/search_codebase/get_context` | Claude | штатно |
+| `bin/ship-post` | доставка завершённых атомов: локальный submit и courier | [docs/ship-post-ARCHITECTURE.md](docs/ship-post-ARCHITECTURE.md) | Claude, Codex | штатно |
 | `jq`, `grep`, `wc`, `ls`, `git`, `gh` | чтение, замеры, git-слой (I11) | одна команда на вызов | все | штатно |
 | `python3 <файл из tools/ или проекта>` | штатные скрипты (`layout_check.py`, `deploy_manifest.py`, тесты проектов) | путь к файлу, без `-c` | все | штатно |
 | `Workflow name=audit|verify|bd-slice|code-atom` | делегирование (csb стадия 7) | по имени, args `{atom,path,tz}` | Claude | штатно |
