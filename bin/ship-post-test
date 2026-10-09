@@ -203,6 +203,10 @@ test_delivery(){
  out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_GH_FAIL=1; run_tool "$d" 2>&1); rc=$?
  [[ $rc != 0 && ! -s $d/ship.calls ]] && pass unknown_remote || fail unknown_remote "$out"
  compgen -G "$d/state/receipts/*/dcfg-uncertain.1/*.failed" >/dev/null && ! grep -q 'reopen dcfg-uncertain.1' "$d/bd.calls" && pass transient_retains_readiness || fail transient_retains_readiness missing
+	setup_submit ci_absent_open codex/dcfg-ci-absent.1; commit_candidate dcfg-ci-absent.1; h=$(git -C "$wt" rev-parse HEAD)
+	out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_PR_HEAD="$h" MOCK_SHIP_RC=30; run_tool "$d" 2>&1); rc=$?
+	marker=$(find "$d/state/receipts" -type f -name "$h.failed" -print -quit)
+	[[ $rc != 0 && -n $marker && $(<"$marker") == 30 ]] && pass 'D1 (130)' || fail 'D1 (130)' "$out rc=$rc marker=${marker:-missing}"
 }
 
 test_live_sync(){

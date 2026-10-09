@@ -89,7 +89,12 @@ case $1:$2 in
 			&& git -C "$tmp" push -q origin "HEAD:refs/heads/$base" && git -C "$tmp" rev-parse HEAD > "$GH_TEST_DIR/merge-sha" \
 			|| { echo "merge-fail base=$base branch=$branch" >> "$GH_TEST_DIR/merge-dbg"; git -C "$tmp" branch -a >> "$GH_TEST_DIR/merge-dbg" 2>&1; git -C "$tmp" merge --abort >/dev/null 2>&1; exit 1; }
 		rm -rf "$tmp" ;;
-	pr:view) cat "$GH_TEST_DIR/merge-sha" ;;
+	pr:view)
+		if [[ " $* " == *' --json mergeable '* ]]; then
+			printf '%s\n' "${GH_MERGEABLE:-MERGEABLE}"
+		else
+			cat "$GH_TEST_DIR/merge-sha"
+		fi ;;
 esac
 exit 0
 EOF
@@ -271,6 +276,13 @@ mkrepo r13; w13=$(mkwt r13 claude/c13); printf 's13\n' >> "$w13/f.txt"
 ship "$w13" >/dev/null 2>&1; rc=$?
 rm -f "$d/merge-fail"
 [[ $rc == 50 ]] && p 13 || f 13
+
+# 41: конфликтующий PR завершается до merge.
+mkrepo r41 1; w41=$(mkwt r41 claude/c41); printf 's41\n' >> "$w41/f.txt"
+before=$(grep -c '^pr merge' "$GH_JOURNAL" || true)
+out=$(GH_MERGEABLE=CONFLICTING ship "$w41" 2>&1); rc=$?
+after=$(grep -c '^pr merge' "$GH_JOURNAL" || true)
+[[ $rc == 50 && $out == *'конфликтует с main'* && $before == "$after" ]] && p 41 || f 41
 
 mkrepo r14; w14=$(mkwt r14 claude/c14); printf 's14\n' >> "$w14/f.txt"
 out=$(ship "$w14"); rc=$?

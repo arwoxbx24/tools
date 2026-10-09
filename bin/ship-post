@@ -355,7 +355,7 @@ deliver_one(){
   remote_result "$wt" "$head" "$branch"; rc=$?
   if [[ $rc == 0 ]]; then write_delivery_receipt "$repo" "$atom" "$head" "$head"; return $?; fi
   if [[ $rc == 23 ]]; then ship_rc=23
-  elif [[ $ship_rc == 30 ]] && { [[ $rc == 22 ]] || grep -qiE 'could not resolve|could not connect|connection (reset|refused|timed out)|network is unreachable|HTTP 50[234]|TLS connection' "$rf.log"; }; then ship_rc=70
+  elif [[ $ship_rc == 30 ]] && grep -qiE 'could not resolve|could not connect|connection (reset|refused|timed out)|network is unreachable|HTTP 50[234]|TLS connection' "$rf.log"; then ship_rc=70
   elif [[ $rc == 22 && $ship_rc == 40 ]]; then
    # A pending check or unavailable CI API is not a confirmed product failure.
    jq -e 'any(.statusCheckRollup[]?; (.conclusion=="FAILURE" or .conclusion=="CANCELLED" or .conclusion=="TIMED_OUT" or .state=="FAILURE" or .state=="ERROR"))' <<<"$remote_open" >/dev/null || ship_rc=70
