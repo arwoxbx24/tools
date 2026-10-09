@@ -88,6 +88,7 @@ run_form() (
     command -v "$tool" >/dev/null || { fail "нет инструмента $tool"; exit 3; }
     if [[ $n == 2 ]]; then
         orig_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+        prompt=$(printf 'Ты уже исполнитель внутри code-channel: правь файлы сам; code-channel, opencode run, codex exec не вызывай\n\n%s' "$prompt")
         prompt=$(printf 'Не создавай и не переключай ветки; пиши и коммить только в текущую ветку\n\n%s' "$prompt")
         prompt=$(printf 'Не вызывай bd: трекер ведёт оркестратор\n\n%s' "$prompt")
         started=$SECONDS

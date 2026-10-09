@@ -72,7 +72,7 @@ check 14 '[[ $rc == 0 ]] && [[ $(git -C "$project" rev-parse --abbrev-ref HEAD) 
 gcd=$(git -C "$project" rev-parse --path-format=absolute --git-common-dir)
 check 15 '[[ $rc == 0 ]] && grep -Fq -- "--add-dir '"$gcd"'" "$log" && grep -Fq -- "-c sandbox_workspace_write.network_access=true" "$log"' \
   env CODEX_RC=0 "$root/bin/code-channel" 2 "$project" "$root/AGENTS.md"
-check 16 '[[ $rc == 0 ]] && grep -Fq -- "-c sandbox_workspace_write.network_access=true Не вызывай bd: трекер ведёт оркестратор" "$log" && grep -Fq -- "Не создавай и не переключай ветки; пиши и коммить только в текущую ветку" "$log"' \
+check 16 '[[ $rc == 0 ]] && grep -Fq -- "-c sandbox_workspace_write.network_access=true Не вызывай bd: трекер ведёт оркестратор" "$log" && grep -Fq -- "Не создавай и не переключай ветки; пиши и коммить только в текущую ветку" "$log" && grep -Fq -- "Ты уже исполнитель внутри code-channel: правь файлы сам; code-channel, opencode run, codex exec не вызывай" "$log"' \
   env CODEX_RC=0 "$root/bin/code-channel" 2 "$project" "$root/AGENTS.md"
 check 17 '[[ $rc == 24 ]] && grep -Fq -- "form=2 среда: read-only" "$tmp/err"' \
   env CODEX_ERR='Read-only file system' CODEX_RC=1 "$root/bin/code-channel" 2 "$project" "$root/AGENTS.md"
@@ -80,7 +80,7 @@ check 17 '[[ $rc == 24 ]] && grep -Fq -- "form=2 среда: read-only" "$tmp/er
 git -C "$project" clean -fdq
 check 18 '[[ $rc == 13 && $err == *4.2* && $err == *4* ]] && ! grep -q "opencode" "$log"' \
   env CURL_USAGE_DAILY=4.2 "$root/bin/code-channel" 3 "$project" "$root/AGENTS.md"
-check 19 'grep -Fq -- "codex " "$log" && ! grep -q "opencode" "$log" && [[ $err == *"форма 3 пропущена"* ]]' \
+check 19 'grep -Fq -- "codex " "$log" && ! grep -q "^opencode " "$log" && [[ $err == *"форма 3 пропущена"* ]]' \
   env CURL_CODE=401 CURL_KEY_CODE=200 CURL_USAGE_DAILY=4.2 "$root/bin/code-channel" auto "$project" "$root/AGENTS.md"
 check 20 '[[ $rc == 0 ]] && grep -Fq -- /key "$log" && grep -Fq -- "opencode" "$log"' \
   env SQLITE_RESULT='openrouter|deepseek/deepseek-v4-flash' CURL_USAGE_DAILY=0.4 "$root/bin/code-channel" 3 "$project" "$root/AGENTS.md"
