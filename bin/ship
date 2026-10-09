@@ -53,7 +53,6 @@ branch=$(git -C "$wtr" symbolic-ref --short -q HEAD 2>/dev/null) || leave 10 pre
 [[ $branch != main && $branch != master && $branch == "$agent/"* ]] || leave 10 preflight
 
 name=$(ga_repo_of "$wtr") || leave 10 preflight
-[[ -z $(ga_skip_reason "$name") ]] || leave 10 preflight
 
 hp=$(git -C "$wtr" config --get-all core.hooksPath)
 [[ $hp == /root/workspaces/tools/git-hooks ]] || { echo 'hooksPath подменён' >&2; leave 10 preflight; }
@@ -63,6 +62,8 @@ if [[ -z $base ]]; then
 	echo 'ship: основная ветка origin не определена' >&2
 	leave 10 preflight
 fi
+class=$(ga_class "$name" "$mode")
+gg_log 0 "class=$class"
 
 # Политика (FR-006): --reload запрещён в режиме двух веток.
 if [[ $mode == two && -n $reload ]]; then
@@ -91,6 +92,12 @@ else
 		--trailer "Atom: $atom" --trailer "ТЗ: $tz" --trailer "Agent: $agent" \
 		|| leave 30 commit
 fi
+fi
+
+if [[ $class == guarded ]]; then
+	g update-ref "refs/dev-ready/$branch" HEAD
+	echo "prod:hold guarded $(ga_skip_reason "$name")"
+	leave 0 prod-hold
 fi
 
 locked_core(){
@@ -151,20 +158,23 @@ fi
 printf 'pr:%s\n' "$num"
 if [[ $ci == none ]]; then
 	echo ci:none
-else
-	mg=$(gh pr view "$num" -R "$slug" --json mergeable -q .mergeable 2>/dev/null)
-	if [[ $mg == CONFLICTING ]]; then
-		echo "ship: PR #$num конфликтует с $base — rebase ветки агента" >&2
-		leave 50 conflict
-	fi
-	ga_ci_wait pr "$slug" "$num" "${expected_head:-$(git -C "$wtr" rev-parse HEAD)}"
-	ci_rc=$?
-	if [[ $ci_rc == 30 ]]; then
-		echo 'ship: CI не появился' >&2
-		leave 30 ci-absent
-	elif [[ $ci_rc != 0 ]]; then
-		leave 40 ci
-	fi
+	echo 'prod:wait-owner no-ci'
+	g update-ref "refs/dev-ready/$branch" "${expected_head:-HEAD}"
+	bd update "$atom" --append-notes "wait-owner no-ci: PR https://github.com/$slug/pull/$num — без автопроверок, на прод только ship-promote по слову владельца" >/dev/null 2>&1 || true
+	leave 0 wait-owner
+fi
+mg=$(gh pr view "$num" -R "$slug" --json mergeable -q .mergeable 2>/dev/null)
+if [[ $mg == CONFLICTING ]]; then
+	echo "ship: PR #$num конфликтует с $base — rebase ветки агента" >&2
+	leave 50 conflict
+fi
+ga_ci_wait pr "$slug" "$num" "${expected_head:-$(git -C "$wtr" rev-parse HEAD)}"
+ci_rc=$?
+if [[ $ci_rc == 30 ]]; then
+	echo 'ship: CI не появился' >&2
+	leave 30 ci-absent
+elif [[ $ci_rc != 0 ]]; then
+	leave 40 ci
 fi
 
 gh_or70(){ local e; e=$("$@" 2>&1 >/dev/null) && return 0; echo "ship: gh: $e" >&2; grep -qiE 'HTTP 40[13]|HTTP 5[0-9][0-9]|authentication|could not connect|timeout|Something went wrong' <<<"$e" && leave 70 gh; return 1; }
