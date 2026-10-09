@@ -5,7 +5,8 @@ git -C "$d/origin-u61.git" symbolic-ref HEAD refs/heads/master
 git clone -q "$d/origin-u61.git" "$GA_PROJECTS/u61"
 git -C "$GA_PROJECTS/u61" config user.email t@t
 git -C "$GA_PROJECTS/u61" config user.name t
-( cd "$GA_PROJECTS/u61" && printf 'x\n' > f.txt && git add . && git commit -q -m base \
+( cd "$GA_PROJECTS/u61" && mkdir -p .github/workflows && printf 'on:\n  pull_request:\n' > .github/workflows/ci.yml \
+	&& printf 'x\n' > f.txt && git add . && git commit -q -m base \
 	&& git branch -M master && git push -q -u origin master && git fetch -q origin )
 git -C "$d/tzrepo" checkout -q main
 ( cd "$d/tzrepo" && printf 'Файлы: f.txt, x.txt\nПроверка: test -n "$(git diff --name-only origin/master...HEAD)" && echo 3\n' > tz-u6-1.md \

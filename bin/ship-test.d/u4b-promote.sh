@@ -81,7 +81,7 @@ grep -q 'prod-ci: red' "$d/bd.log" && n5=1 || n5=0
 [[ $rc == 60 && $s5 == 1 && $n5 == 1 ]] && p u4b-5 || f u4b-5
 
 # u4b-6 (AE7): ship из codex-worktree атома — репо без dev и с dev; оба 0, bd close есть.
-mkrepo b6m
+mkrepo b6m 1
 git -C "$GA_PROJECTS/b6m" worktree add -q -b "codex/$atom-x" "$GA_WT_ROOT/codex/$atom" origin/main
 printf 's\n' >> "$GA_WT_ROOT/codex/$atom/f.txt"
 git -C "$GA_WT_ROOT/codex/$atom" add -A

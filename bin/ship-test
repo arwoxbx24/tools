@@ -222,7 +222,12 @@ git -C "$GA_PROJECTS/stroyremont" remote add origin "$d/origin-sr.git"
 git -C "$GA_PROJECTS/stroyremont" push -q -u origin main
 git -C "$GA_PROJECTS/stroyremont" fetch -q origin
 git -C "$GA_PROJECTS/stroyremont" worktree add -q -b claude/z "$GA_WT_ROOT/claude/sr-x" main
-ship "$GA_WT_ROOT/claude/sr-x" >/dev/null 2>&1; [[ $? == 10 ]] && p 7 || f 7
+printf 'guarded\n' > "$GA_WT_ROOT/claude/sr-x/f.txt"
+: > "$GH_JOURNAL"
+out=$(ship "$GA_WT_ROOT/claude/sr-x" 2>&1); rc=$?
+sr_ready=$(git -C "$GA_PROJECTS/stroyremont" rev-parse --verify refs/dev-ready/claude/z 2>/dev/null)
+git -C "$d/origin-sr.git" show-ref --verify --quiet refs/heads/claude/z; sr_push=$?
+[[ $rc == 0 && $out == *'prod:hold guarded'* && -n $sr_ready && $sr_push != 0 && ! -s $GH_JOURNAL ]] && p 7 || f 7
 
 git init -q --bare "$d/origin-r2.git"
 git -C "$d/origin-r2.git" symbolic-ref HEAD refs/heads/main
@@ -246,13 +251,14 @@ git -C "$GA_PROJECTS/r2" fetch -q origin
 git -C "$GA_PROJECTS/r2" worktree add -q -b claude/nine "$GA_WT_ROOT/claude/r2-nine" origin/main
 r9="$GA_WT_ROOT/claude/r2-nine"
 printf 'nine\n' >> "$r9/f.txt"
+: > "$GH_JOURNAL"
 out=$( ( cd "$r9" && GH_ORIGIN="$(git -C "$r9" config remote.origin.url)" "$bin/ship" "$r9" --atom "$atom" --tz "$tz#U1" ) ); rc=$?
-live="$GA_PROJECTS/r2"
-git -C "$live" rev-parse HEAD >/dev/null 2>&1 && head=$(git -C "$live" rev-parse HEAD) || head=''
-git -C "$live" rev-parse --verify claude/nine >/dev/null 2>&1; branch_rc=$?
-[[ $rc == 0 && $out == *'ci:none'* && $head == "$(cat "$d/merge-sha")" && ! -d $r9 && $branch_rc != 0 ]] && p 9 || f 9
+git -C "$d/origin-r2.git" show-ref --verify --quiet refs/heads/claude/nine; pushed9=$?
+grep -q '^pr merge' "$GH_JOURNAL"; merge9=$?
+[[ $rc == 0 && $out == *'prod:wait-owner no-ci'* && $merge9 != 0 && -d $r9 && $pushed9 == 0 ]] && p 9 || f 9
 
 mkrepo r10 1; w10=$(mkwt r10 claude/c10); printf 's10\n' >> "$w10/f.txt"
+rm -f "$GH_CREATED"
 printf '[]\n' > "$d/checks.json"; rm -f "$d/checks-late" "$d/ci-poll"
 printf '[{"name":"min-ci","bucket":"pass"}]\n' > "$d/checks-late"
 out=$(GA_CI_APPEAR=15 GH_CI_DELAY=3 ship "$w10"); rc=$?
@@ -271,7 +277,7 @@ GA_CI_APPEAR=2 ship "$w12" >/dev/null 2>&1; rc=$?
 rm -f "$d/bucket"
 [[ $rc == 30 ]] && p 12 || f 12
 
-mkrepo r13; w13=$(mkwt r13 claude/c13); printf 's13\n' >> "$w13/f.txt"
+mkrepo r13 1; w13=$(mkwt r13 claude/c13); printf 's13\n' >> "$w13/f.txt"
 : > "$d/merge-fail"
 ship "$w13" >/dev/null 2>&1; rc=$?
 rm -f "$d/merge-fail"
@@ -284,20 +290,20 @@ out=$(GH_MERGEABLE=CONFLICTING ship "$w41" 2>&1); rc=$?
 after=$(grep -c '^pr merge' "$GH_JOURNAL" || true)
 [[ $rc == 50 && $out == *'конфликтует с main'* && $before == "$after" ]] && p 41 || f 41
 
-mkrepo r14; w14=$(mkwt r14 claude/c14); printf 's14\n' >> "$w14/f.txt"
+mkrepo r14 1; w14=$(mkwt r14 claude/c14); printf 's14\n' >> "$w14/f.txt"
 out=$(ship "$w14"); rc=$?
 [[ $rc == 0 && $out == *'live:deferred'* && -d "$w14" ]] && p 14 || f 14
 
-mkrepo r15; w15=$(mkwt r15 claude/c15); printf 's15\n' >> "$w15/f.txt"
+mkrepo r15 1; w15=$(mkwt r15 claude/c15); printf 's15\n' >> "$w15/f.txt"
 printf '9999999999999\n' > "$d/uptime"
 ( cd "$w15" && GH_ORIGIN="$(git -C "$w15" config remote.origin.url)" "$bin/ship" "$w15" --atom "$atom" --tz "$tz#U1" --reload app >/dev/null 2>&1 ); rc1=$?
-mkrepo r15b; w15b=$(mkwt r15b claude/c15b); printf 's15b\n' >> "$w15b/f.txt"
+mkrepo r15b 1; w15b=$(mkwt r15b claude/c15b); printf 's15b\n' >> "$w15b/f.txt"
 printf '1000\n' > "$d/uptime"
 ( cd "$w15b" && GH_ORIGIN="$(git -C "$w15b" config remote.origin.url)" "$bin/ship" "$w15b" --atom "$atom" --tz "$tz#U1" --reload app >/dev/null 2>&1 ); rc2=$?
 rm -f "$d/uptime"
 [[ $rc1 == 0 && $rc2 == 60 && ! -d $w15b ]] && p 15 || f 15
 
-mkrepo r16; w16=$(mkwt r16 claude/c16)
+mkrepo r16 1; w16=$(mkwt r16 claude/c16)
 printf 's16\n' >> "$w16/f.txt"; git -C "$w16" add -A; git -C "$w16" commit -q -m s16
 before=$(git -C "$w16" rev-parse HEAD)
 : > "$d/gh-401"
@@ -306,7 +312,7 @@ after=$(git -C "$w16" rev-parse HEAD)
 rm -f "$d/gh-401"
 [[ $rc == 70 && $before == "$after" && -d "$w16" ]] && p 16 || f 16
 
-mkrepo r17; w17=$(mkwt r17 claude/c17); printf 's17\n' >> "$w17/f.txt"
+mkrepo r17 1; w17=$(mkwt r17 claude/c17); printf 's17\n' >> "$w17/f.txt"
 out=$( ( cd "$w17" && GH_ORIGIN="$(git -C "$w17" config remote.origin.url)" "$bin/ship" "$w17" --atom "$atom" --tz "$tz#U1" ) 2>"$d/ship17.err" ); rc=$?
 err=$(<"$d/ship17.err")
 [[ $rc == 0 && $err != *getcwd* && $err != *'Unable to read current working directory'* && $out == *'r17'* ]] && p 17 || f 17
@@ -321,10 +327,27 @@ git -C "$w18" merge -q origin/main || true
 printf 'merged\n' > "$w18/x.txt"; git -C "$w18" add -A
 git -C "$w18" commit -q -m mergeconf
 mc=$(git -C "$w18" rev-parse HEAD)
+: > "$GH_JOURNAL"
 out=$(ship "$w18"); rc=$?
 pushed=$(git -C "$GA_PROJECTS/r18" rev-parse refs/remotes/origin/claude/c18 2>/dev/null)
 git -C "$w18" merge-base --is-ancestor "$mc" "$pushed" 2>/dev/null && anc=1 || anc=0
-[[ $rc == 0 && $out == *'ci:none'* && $anc == 1 ]] && p 18 || f 18
+git -C "$d/origin-r18.git" show-ref --verify --quiet refs/heads/claude/c18; pushed18=$?
+grep -q '^pr merge' "$GH_JOURNAL"; merge18=$?
+[[ $rc == 0 && $out == *'prod:wait-owner no-ci'* && $merge18 != 0 && -d $w18 && $pushed18 == 0 && $anc == 1 ]] && p 18 || f 18
+
+# 42: классификация закрыта по умолчанию; two всегда staged.
+. "$bin/git-auto-lib"
+[[ $(ga_class x one) == plain && $(ga_class x two) == staged \
+	&& $(ga_class stroyremont one) == guarded && $(ga_class hh-scoring-dev one) == guarded \
+	&& $(ga_class stroyremont two) == staged ]] && p 42 || f 42
+
+# 43: hh-scoring-dev без pushurl остаётся guarded и не выходит в сеть.
+mkrepo hh-scoring-dev; git -C "$GA_PROJECTS/hh-scoring-dev" config --unset-all remote.origin.pushurl || true
+whh=$(mkwt hh-scoring-dev claude/hhguard); printf 'guarded\n' >> "$whh/f.txt"
+: > "$GH_JOURNAL"
+out=$(ship "$whh" 2>&1); rc=$?
+git -C "$d/origin-hh-scoring-dev.git" show-ref --verify --quiet refs/heads/claude/hhguard; hh_push=$?
+[[ $rc == 0 && $out == *'prod:hold guarded'* && ! -s $GH_JOURNAL && $hh_push != 0 ]] && p 43 || f 43
 
 # U4: код-архив вызывается только для slug arwoxbx24/<имя> после доставки.
 # ship через симлинк в $d/bin, чтобы $bin=$d/bin и $bin/code-archive был заглушкой.
@@ -334,16 +357,18 @@ ln -sf "$bin/git-sync" "$d/bin/git-sync"
 ln -sf "$bin/git-state" "$d/bin/git-state"
 
 # отрицательный: локальный origin (slug не из arwoxbx24/) -> вызова нет
-mkrepo r20; w20=$(mkwt r20 claude/c20); printf 's20\n' >> "$w20/f.txt"
+mkrepo r20 1; w20=$(mkwt r20 claude/c20); printf 's20\n' >> "$w20/f.txt"
 rm -f "$d/code-archive-calls"
+rm -f "$GH_CREATED"
 ( cd "$w20" && GH_ORIGIN="$(git -C "$w20" config remote.origin.url)" GA_ARCHIVE_ORG=arwoxbx24 "$d/bin/ship" "$w20" --atom "$atom" --tz "$tz#U1" ) >/dev/null 2>&1; rc=$?
 [[ $rc == 0 && ! -e "$d/code-archive-calls" ]] && neg=0 || neg=1
 
 # положительный: slug arwoxbx24/<имя>; git-fetch переписан на локальный bare
-mkrepo r19; w19=$(mkwt r19 claude/c19); printf 's19\n' >> "$w19/f.txt"
+mkrepo r19 1; w19=$(mkwt r19 claude/c19); printf 's19\n' >> "$w19/f.txt"
 git -C "$GA_PROJECTS/r19" remote set-url origin 'git@github.com:arwoxbx24/archive-name'
 git -C "$GA_PROJECTS/r19" config "url.$d/origin-r19.git.insteadOf" 'git@github.com:arwoxbx24/archive-name'
 rm -f "$d/code-archive-calls"
+rm -f "$GH_CREATED"
 ( cd "$w19" && GH_ORIGIN="$d/origin-r19.git" GA_ARCHIVE_ORG=arwoxbx24 "$d/bin/ship" "$w19" --atom "$atom" --tz "$tz#U1" ) >/dev/null 2>&1; rc=$?
 calls=''
 for _ in $(seq 1 50); do
@@ -377,21 +402,21 @@ entry=$(tail -n +"$last" "$GH_JOURNAL" | awk 'NR==1{print; next} /^pr list/{exit
 [[ $rc == 0 && $entry == *'3'* ]] && p 31 || f 31
 
 # 32: успешная доставка — bd close залогирован с выводом проверки и ссылкой на PR
-mkrepo r32; w32=$(mkwt r32 claude/c32); printf 's32\n' >> "$w32/f.txt"
+mkrepo r32 1; w32=$(mkwt r32 claude/c32); printf 's32\n' >> "$w32/f.txt"
 : > "$d/bd.log"
 out=$(ship "$w32" 2>&1); rc=$?
 log=$(<"$d/bd.log")
 [[ $rc == 0 && $log == *close* && $log == *'3'* && $log == *'/pull/'* ]] && p 32 || f 32
 
 # 33: сбой bd close -> rc != 0, stderr содержит готовую команду
-mkrepo r33; w33=$(mkwt r33 claude/c33); printf 's33\n' >> "$w33/f.txt"
+mkrepo r33 1; w33=$(mkwt r33 claude/c33); printf 's33\n' >> "$w33/f.txt"
 ( cd "$w33" && GH_ORIGIN="$(git -C "$w33" config remote.origin.url)" BD_FAIL=1 "$bin/ship" "$w33" --atom "$atom" --tz "$tz#U1" --handover ) 2>"$d/s33.err" >/dev/null
 rc=$?
 err=$(<"$d/s33.err")
 [[ $rc != 0 && $err == *'bd close'* ]] && p 33 || f 33
 
 # 34: успешная доставка — reason содержит PR-ссылку и ТЗ
-mkrepo r34; w34=$(mkwt r34 claude/c34); printf 's34\n' >> "$w34/f.txt"
+mkrepo r34 1; w34=$(mkwt r34 claude/c34); printf 's34\n' >> "$w34/f.txt"
 : > "$d/bd.log"
 ship "$w34" >/dev/null 2>&1; rc=$?
 closeline=$(grep 'close' "$d/bd.log" | tail -n1)
