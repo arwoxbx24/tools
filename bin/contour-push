@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
 # contour-push: push текущей ветки bare-репозитория контура.
 set -e
+case ${1:-} in -h|--help) echo "usage: contour-push  (отправляет текущую ветку контура)"; exit 0;; esac
 git -C /root --git-dir=/root/workspaces/system/contour-config.git push origin "$(git -C /root --git-dir=/root/workspaces/system/contour-config.git branch --show-current)"

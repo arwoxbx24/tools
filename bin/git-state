@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -u
+case ${1:-} in -h|--help) echo "usage: git-state [--live <name> <sha>] [--json] [--no-fetch]  (показывает состояние репозиториев)"; exit 0;; esac
 bin=$(cd -- "$(dirname -- "$0")" && pwd)
 . "$bin/git-auto-lib"
 
