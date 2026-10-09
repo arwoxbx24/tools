@@ -151,4 +151,21 @@ if [[ $(grep -c '/root/.claude/projects/-root-workspaces-projects/memory' "$bin/
   echo 'PASS T18'; ok=$((ok+1))
 else echo 'FAIL T18: roots'; fi
 
-[[ $ok == 21 ]]
+# T22: delete dangling symlink and log it
+ln -s "$d/missing-target" "$d/dangling-link"
+"$bin/safe-delete" --bk "$bk" link "$d/dangling-link" 2>/dev/null; r22=$?
+if [[ $r22 == 0 && ! -L $d/dangling-link ]] && grep -Eq $'\tlink\t.*\tdeleted$' "$bk/ledger.tsv"; then
+  echo 'PASS T22'; ok=$((ok+1))
+else echo "FAIL T22: rc=$r22"; fi
+
+# T23: reject regular file and live symlink
+printf 'regular\n' > "$d/regular-link"
+printf 'live\n' > "$d/live-target"
+ln -s "$d/live-target" "$d/live-link"
+"$bin/safe-delete" --bk "$bk" link "$d/regular-link" 2>/dev/null; r23a=$?
+"$bin/safe-delete" --bk "$bk" link "$d/live-link" 2>/dev/null; r23b=$?
+if [[ $r23a == 2 && $r23b == 2 && -f $d/regular-link && -L $d/live-link ]]; then
+  echo 'PASS T23'; ok=$((ok+1))
+else echo "FAIL T23: file=$r23a link=$r23b"; fi
+
+[[ $ok == 23 ]]
