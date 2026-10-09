@@ -4,7 +4,8 @@ export SAFE_DELETE_GH=false
 bin=$(cd -- "$(dirname -- "$0")" && pwd)
 d=/tmp/safe-delete-test-$$
 export SAFE_DELETE_ROOTS="$d"
-trap 'rm -rf "$d"' EXIT
+outside=/tmp/safe-delete-outside-$$
+trap 'rm -rf "$d" "$outside"' EXIT
 mkdir -p "$d"
 git init -q --bare "$d/origin.git"
 git clone -q "$d/origin.git" "$d/w"
@@ -168,4 +169,108 @@ if [[ $r23a == 2 && $r23b == 2 && -f $d/regular-link && -L $d/live-link ]]; then
   echo 'PASS T23'; ok=$((ok+1))
 else echo "FAIL T23: file=$r23a link=$r23b"; fi
 
-[[ $ok == 23 ]]
+# T24-T28: tracked clean files use a git ref and restore from its blob
+printf 'clean\n' > "$d/w/clean.txt"
+chmod +x "$d/w/clean.txt"
+cp "$d/w/clean.txt" "$d/clean.original"
+git -C "$d/w" add clean.txt && git -C "$d/w" commit -q -m clean
+out=$("$bin/safe-delete" --bk "$bk" file "$d/w/clean.txt"); r24=$?
+gdel=$(awk -F '\t' -v p="$d/w/clean.txt" '$2 == "git" && $3 == p && $7 == "100755" { n=NR } END { print n }' "$bk/ledger.tsv")
+gref=$(git -C "$d/w" for-each-ref --format='%(refname)' refs/safe-delete | head -1)
+if [[ $r24 == 0 && ! -e $d/w/clean.txt && -n $gref && -n $gdel ]]; then echo 'PASS T24'; ok=$((ok+1)); else echo "FAIL T24: rc=$r24 ref=$gref line=$gdel"; fi
+
+git -C "$d/w" add -u
+"$bin/safe-delete" --bk "$bk" restore "$gdel"; r25=$?
+if [[ $r25 == 0 && -x $d/w/clean.txt ]] && cmp -s "$d/clean.original" "$d/w/clean.txt"; then echo 'PASS T25'; ok=$((ok+1)); else echo "FAIL T25: rc=$r25"; fi
+
+printf 'tracked\n' > "$d/w/changed.txt"
+git -C "$d/w" add changed.txt && git -C "$d/w" commit -q -m changed
+printf 'modified\n' > "$d/w/changed.txt"
+"$bin/safe-delete" --bk "$bk" file "$d/w/changed.txt" >/dev/null; r26=$?
+ctype=$(awk -F '\t' -v p="$d/w/changed.txt" '$3 == p { t=$2 } END { print t }' "$bk/ledger.tsv")
+if [[ $r26 == 0 && $ctype == file ]]; then echo 'PASS T26'; ok=$((ok+1)); else echo "FAIL T26: rc=$r26 type=$ctype"; fi
+
+printf 'target\n' > "$d/w/link-target.txt"
+ln -s link-target.txt "$d/w/git-link.txt"
+git -C "$d/w" add link-target.txt git-link.txt && git -C "$d/w" commit -q -m link
+"$bin/safe-delete" --bk "$bk" file "$d/w/git-link.txt" >/dev/null; r27=$?
+ltype=$(awk -F '\t' -v p="$d/w/link-target.txt" '$3 == p { t=$2 } END { print t }' "$bk/ledger.tsv")
+if [[ $r27 == 0 && $ltype == file ]]; then echo 'PASS T27'; ok=$((ok+1)); else echo "FAIL T27: rc=$r27 type=$ltype"; fi
+
+if [[ $out == *'восстановить: safe-delete restore '* ]]; then echo 'PASS T28'; ok=$((ok+1)); else echo 'FAIL T28: stdout'; fi
+
+# T29-T33: forbidden paths, clients exception, and expired copies
+printf 'env\n' > "$d/.env"
+"$bin/safe-delete" --bk "$bk" file "$d/.env" >/dev/null 2>&1; r29=$?
+if [[ $r29 == 2 && -f $d/.env ]]; then echo 'PASS T29'; ok=$((ok+1)); else echo "FAIL T29: rc=$r29"; fi
+
+printf 'outside\n' > "$outside"
+ln -s "$outside" "$d/escape"
+"$bin/safe-delete" --bk "$bk" file "$d/escape" >/dev/null 2>&1; r30=$?
+if [[ $r30 == 2 && -L $d/escape && -f $outside ]]; then echo 'PASS T30'; ok=$((ok+1)); else echo "FAIL T30: rc=$r30"; fi
+
+mkdir -p "$d/clients/x/.agent-work"; printf 'work\n' > "$d/clients/x/.agent-work/f"
+"$bin/safe-delete" --bk "$bk" file "$d/clients/x/.agent-work/f" >/dev/null; r31=$?
+t31=$(awk -F '\t' -v p="$d/clients/x/.agent-work/f" '$3 == p { t=$2 } END { print t }' "$bk/ledger.tsv")
+if [[ $r31 == 0 && ! -e $d/clients/x/.agent-work/f && $t31 == file ]]; then echo 'PASS T31'; ok=$((ok+1)); else echo "FAIL T31: rc=$r31 type=$t31"; fi
+
+printf 'client\n' > "$d/clients/x/f"
+"$bin/safe-delete" --bk "$bk" file "$d/clients/x/f" >/dev/null 2>&1; r32=$?
+if [[ $r32 == 2 && -f $d/clients/x/f ]]; then echo 'PASS T32'; ok=$((ok+1)); else echo "FAIL T32: rc=$r32"; fi
+
+printf 'expired\n' > "$d/expired.txt"
+"$bin/safe-delete" --bk "$bk" file "$d/expired.txt" >/dev/null
+eline=$(awk -F '\t' -v p="$d/expired.txt" '$2 == "file" && $3 == p && $8 == "deleted" { n=NR } END { print n }' "$bk/ledger.tsv")
+ecopy=$(sed -n "${eline}p" "$bk/ledger.tsv" | cut -f6)
+rm -f "$ecopy"
+err=$("$bin/safe-delete" --bk "$bk" restore "$eline" 2>&1); r33=$?
+if [[ $r33 == 2 && $err == *'копия истекла'* ]]; then echo 'PASS T33'; ok=$((ok+1)); else echo "FAIL T33: rc=$r33 err=$err"; fi
+
+# T34-T37: directories are atomic, and worktrees retain a restorable ref
+mkdir -p "$d/dir-forbidden/secrets"; printf 'keep\n' > "$d/dir-forbidden/keep.txt"; printf 'secret\n' > "$d/dir-forbidden/secrets/k"
+err=$("$bin/safe-delete" --bk "$bk" dir "$d/dir-forbidden" 2>&1); r34=$?
+if [[ $r34 == 2 && $err == *'запрещённый сегмент'* && -f $d/dir-forbidden/keep.txt && -f $d/dir-forbidden/secrets/k ]]; then echo 'PASS T34'; ok=$((ok+1)); else echo "FAIL T34: rc=$r34 err=$err"; fi
+
+mkdir -p "$d/dir-ok/sub"; printf 'dir\n' > "$d/dir-ok/sub/f"; cp "$d/dir-ok/sub/f" "$d/dir.original"
+"$bin/safe-delete" --bk "$bk" dir "$d/dir-ok" >/dev/null; r35=$?
+gone35=0; [[ ! -d $d/dir-ok ]] && gone35=1
+dline=$(awk -F '\t' -v p="$d/dir-ok/sub/f" '$2 == "file" && $3 == p && $8 == "deleted" { n=NR } END { print n }' "$bk/ledger.tsv")
+"$bin/safe-delete" --bk "$bk" restore "$dline" >/dev/null; rr35=$?
+if [[ $r35 == 0 && $gone35 == 1 && $rr35 == 0 ]] && cmp -s "$d/dir.original" "$d/dir-ok/sub/f"; then echo 'PASS T35'; ok=$((ok+1)); else echo "FAIL T35: rc=$r35 restore=$rr35"; fi
+
+git -C "$d/w" worktree add -q -b wt-busy "$d/wt-busy" main
+(cd "$d/wt-busy" && sleep 30) & busy=$!
+err=$("$bin/safe-delete" --bk "$bk" worktree "$d/wt-busy" 2>&1); r36=$?
+kill "$busy" 2>/dev/null; wait "$busy" 2>/dev/null
+if [[ $r36 == 2 && $err == *'процесс использует worktree'* && -d $d/wt-busy ]]; then echo 'PASS T36'; ok=$((ok+1)); else echo "FAIL T36: rc=$r36 err=$err"; fi
+git -C "$d/w" worktree remove --force "$d/wt-busy"
+
+git -C "$d/w" worktree add -q -b wt-dirty "$d/wt-dirty" main
+printf 'dirty\n' > "$d/wt-dirty/dirty.txt"
+"$bin/safe-delete" --bk "$bk" worktree "$d/wt-dirty" >/dev/null; r37=$?
+wtref=$(git -C "$d/w" for-each-ref --format='%(refname)' refs/safe-delete | grep '^refs/safe-delete/wt-' | head -1)
+wtcopy=$(awk -F '\t' -v p="$d/wt-dirty/dirty.txt" '$2 == "file" && $3 == p && $8 == "deleted" { c=$6 } END { print c }' "$bk/ledger.tsv")
+wttype=$(awk -F '\t' -v p="$d/wt-dirty" '$3 == p { t=$2 } END { print t }' "$bk/ledger.tsv")
+if [[ $r37 == 0 && ! -d $d/wt-dirty && -n $wtref && -f $wtcopy && $wttype == worktree ]]; then echo 'PASS T37'; ok=$((ok+1)); else echo "FAIL T37: rc=$r37 ref=$wtref copy=$wtcopy type=$wttype"; fi
+
+mkdir -p "$d/dir-empty-forbidden/secrets"; err=$("$bin/safe-delete" --bk "$bk" dir "$d/dir-empty-forbidden" 2>&1); r38=$?
+if [[ $r38 == 2 && $err == *'запрещённый сегмент'* && -d $d/dir-empty-forbidden/secrets ]]; then echo 'PASS T38'; ok=$((ok+1)); else echo "FAIL T38: rc=$r38 err=$err"; fi
+
+# T39-T42: tmp deletes only existing paths resolved under /tmp, without copies
+mkdir -p "$d/tmp-file"; printf 'tmp\n' > "$d/tmp-file/f"
+out=$("$bin/safe-delete" --bk "$bk" tmp "$d/tmp-file/f"); r39=$?
+t39=$(awk -F '\t' -v p="$d/tmp-file/f" '$2 == "tmp" && $3 == p && $8 == "deleted" { t=$2 } END { print t }' "$bk/ledger.tsv")
+if [[ $r39 == 0 && ! -e $d/tmp-file/f && $out == *'основание: tmp'* && $t39 == tmp ]]; then echo 'PASS T39'; ok=$((ok+1)); else echo "FAIL T39: rc=$r39 ledger=$t39 out=$out"; fi
+
+mkdir -p "$d/tmp-dir/sub"; printf 'tmp\n' > "$d/tmp-dir/sub/f"
+"$bin/safe-delete" --bk "$bk" tmp "$d/tmp-dir" >/dev/null; r40=$?
+if [[ $r40 == 0 && ! -e $d/tmp-dir ]]; then echo 'PASS T40'; ok=$((ok+1)); else echo "FAIL T40: rc=$r40"; fi
+
+"$bin/safe-delete" --bk "$bk" tmp /etc/hostname >/dev/null 2>&1; r41=$?
+if [[ $r41 == 2 && -e /etc/hostname ]]; then echo 'PASS T41'; ok=$((ok+1)); else echo "FAIL T41: rc=$r41"; fi
+
+ln -s /etc/hostname "$d/tmp-outside"
+"$bin/safe-delete" --bk "$bk" tmp "$d/tmp-outside" >/dev/null 2>&1; r42=$?
+if [[ $r42 == 2 && -L $d/tmp-outside && -e /etc/hostname ]]; then echo 'PASS T42'; ok=$((ok+1)); else echo "FAIL T42: rc=$r42"; fi
+
+[[ $ok == 42 ]]
