@@ -33,8 +33,9 @@ Claude/Codex agent
 3. A worker finds a clean closed worktree; `bin/ship-post:scan_repo` verifies trailers, owner, branch and receipt state.
 4. `bin/ship-post:deliver_one` reconciles an existing GitHub result or calls `bin/ship:locked_core` through `ship --handover`. `bin/git-auto-lib:ga_class` marks the repository `plain`, `staged`, or `guarded`: mode `two` is staged; a skip reason in mode `one` is guarded.
 5. A guarded delivery commits locally, writes `refs/dev-ready/<branch>`, prints `prod:hold guarded <reason>` and stops before fetch, push or GitHub. A plain delivery reaches `bin/ship:locked_core`, which pushes the fixed head; the remaining `ship` flow creates/uses a PR. A nonempty all-`.md` diff without pull-request CI prints `gate:auto docs-only`, checks mergeability, and merges the exact head without a CI wait. Other no-CI changes write `refs/dev-ready/<branch>`, record `wait-owner no-ci`, print `prod:wait-owner no-ci` and stop without merge, close, live sync or worktree cleanup. CI-backed plain delivery waits for CI and merges the exact head.
-6. `bin/ship-post:write_delivery_receipt` stores remote proof, appends the Beads delivery note and runs `bin/git-sync:sync_one`.
-7. `bin/git-sync:sync_one` fast-forwards the live checkout or preserves local work under rescue refs; `bin/git-state:emit` exposes delivery/sync alarms.
+6. `ship-promote` has two owner-quoted prod paths: `staged` (mode `two`) keeps the existing Dev-to-Prod fast-forward after Dev CI; `plain` (mode `one`) finds the atom's open PR, requires `refs/dev-ready/<head>` to equal its head SHA, then squash-merges with `--match-head-commit`. It records `promote:`, runs live sync, and closes only an open or in-progress atom. `guarded` ends with `prod:hold` and never calls GitHub.
+7. `bin/ship-post:write_delivery_receipt` stores remote proof, appends the Beads delivery note and runs `bin/git-sync:sync_one`.
+8. `bin/git-sync:sync_one` fast-forwards the live checkout or preserves local work under rescue refs; `bin/git-state:emit` exposes delivery/sync alarms.
 
 ## 4. Состояние
 

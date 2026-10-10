@@ -1,5 +1,6 @@
 # u3: ship-promote preflight — всё до сети; журнал gh пуст, 0 push в origin
 : > "$GH_JOURNAL"
+rm -f "$GH_CREATED" "$GH_TEST_DIR/pr-base" "$GH_TEST_DIR/pr-empty"
 gj0(){ wc -l < "$GH_JOURNAL" 2>/dev/null || echo 0; }
 nopush(){ git -C "$GA_PROJECTS/$1" ls-remote origin "refs/heads/claude/$1" 2>/dev/null; }
 
@@ -19,12 +20,12 @@ mkrepo p1; b=$(gj0)
 
 mkrepo p2; b=$(gj0)
 ( cd "$GA_PROJECTS/p2" && "$bin/ship-promote" "$GA_PROJECTS/p2" --atom a2 --quote 'Цитата 2' ) 2>"$d/u32" >/dev/null; r=$?
-[[ $r == 10 && $(<"$d/u32") == *'режим одной ветки'* && $(gj0) == "$b" && -z "$(nopush p2)" ]] && p u3-2 || f u3-2
+[[ $r == 10 && $(<"$d/u32") == *'у атома нет открытого PR'* && $(gj0) == $((b + 1)) && -z "$(nopush p2)" ]] && p u3-2 || f u3-2
 
 mkrepo p3; printf 'closed\n' > "$d/bd-status"; b=$(gj0)
 ( cd "$GA_PROJECTS/p3" && "$bin/ship-promote" "$GA_PROJECTS/p3" --atom a3 --quote 'Цитата 3' ) 2>"$d/u33" >/dev/null; r=$?
 rm -f "$d/bd-status"
-[[ $r == 10 && $(<"$d/u33") == *'атом закрыт'* && $(gj0) == "$b" && -z "$(nopush p3)" ]] && p u3-3 || f u3-3
+[[ $r == 10 && $(<"$d/u33") == *'у атома нет открытого PR'* && $(gj0) == $((b + 1)) && -z "$(nopush p3)" ]] && p u3-3 || f u3-3
 
 mkrepo p4
 git -C "$GA_PROJECTS/p4" branch dev; git -C "$GA_PROJECTS/p4" push -q -u origin dev; git -C "$GA_PROJECTS/p4" fetch -q origin
