@@ -680,18 +680,17 @@ scenario_25() { # current и самый новый релизы остаются
   fi
 }
 
-scenario_26() { # старая сессия сначала фиксируется restic и остаётся на диске
+scenario_26() { # старая сессия Codex не фиксируется и не удаляется (владелец 10.10)
   fixture scen26
   local session="$S/codex/sessions/old/session.jsonl"
   mkdir -p "${session%/*}"
   printf 'old session\n' >"$session"; touch -d '15 days ago' "$session"
   run_rotate GATE_MODE=enforce DR_USAGE_PCT=85 DR_CODEX_HOME="$S/codex" -- >/dev/null 2>&1
-  if [ -f "$session" ] && snapshots --tag predelete 2>/dev/null | grep -q predelete \
-     && grep -qF "$session" "$STATE" 2>/dev/null \
-     && grep -q $'\tcodex-sessions\tfixed\t' "$JOURNAL" 2>/dev/null; then
-    report 26 "codex sessions predelete" PASS
+  if [ -f "$session" ] && ! grep -qF "$session" "$STATE" 2>/dev/null \
+     && ! grep -q 'codex-sessions' "$JOURNAL" 2>/dev/null; then
+    report 26 "codex sessions untouched" PASS
   else
-    report 26 "codex sessions predelete" FAIL
+    report 26 "codex sessions untouched" FAIL
   fi
 }
 

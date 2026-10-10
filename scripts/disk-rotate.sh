@@ -80,12 +80,11 @@ PROJECTS_ALLOW=(
   '/root/workspaces/projects/.worktrees/codex/*'
   '/root/workspaces/projects/.worktrees/claude/*'
 )
-# Три узкие базы Codex, которые чистит cleanup_codex; под ними DENY_LIST не действует,
+# Две узкие базы Codex, которые чистит cleanup_codex; под ними DENY_LIST не действует,
 # остальной /root/.codex/** остаётся под запретом.
 CODEX_ALLOW=(
   "$DR_CODEX_HOME/plugins/data/auto-review-just-every/turns"
   "$DR_CODEX_HOME/packages/standalone/releases"
-  "$DR_CODEX_HOME/sessions"
 )
 NEVER_LIST=(
   '*hh-scoring*' '*/secrets/*' '*/.claude/*' '*/system/archives/*'
@@ -564,7 +563,6 @@ verify_and_delete() { # class -> удаление по гейту: провер�
     # ponytail: six-column state uses path ownership; add class metadata if classes share paths.
     case "$class" in
       projects) for p in "${PROJECTS_ALLOW[@]}"; do [[ "$path" == $p ]] && { own=1; break; }; done ;;
-      codex-sessions) [[ "$path" == "$DR_CODEX_HOME/sessions/"* ]] && own=1 ;;
       test-irreplaceable) [ -n "${DR_TEST_IRREPLACEABLE_DIR:-}" ] && [[ "$path" == "$DR_TEST_IRREPLACEABLE_DIR/"* ]] && own=1 ;;
     esac
     if [ "$own" -eq 0 ] || [ "${#rec[@]}" -ne 6 ]; then
@@ -756,15 +754,14 @@ cleanup_always() { # только существующая vendor log rotation, 
   fi
 }
 
-# Три узкие базы Codex (владелец 10.10, spec dcfg-demsy.10): review-файлы и релизы
-# заменимые, сессии незаменимые — через гейт. Базы перечислены в CODEX_ALLOW,
+# Две узкие базы Codex (владелец 10.10, spec dcfg-demsy.10): review-файлы и релизы
+# заменимые, сессии Codex не трогаются (владелец 10.10). Базы перечислены в CODEX_ALLOW,
 # DENY_LIST на них не действует.
 cleanup_codex() {
   local turns="$DR_CODEX_HOME/plugins/data/auto-review-just-every/turns"
   local standalone="$DR_CODEX_HOME/packages/standalone"
   local releases="$standalone/releases"
-  local sessions="$DR_CODEX_HOME/sessions"
-  local current d mt newest newest_mt list
+  local current d mt newest newest_mt
 
   # codex-review: заменимые turn-файлы старше 24 ч
   if [ -d "$turns" ]; then
@@ -792,19 +789,6 @@ cleanup_codex() {
     done
     if [ "$MODE" = run ]; then
       find "$releases" -mindepth 1 -type d -empty -delete 2>/dev/null
-    fi
-  fi
-
-  # codex-sessions: незаменимое старше 14 дней; в run — копия restic и гейт
-  if [ -d "$sessions" ]; then
-    if [ "$MODE" = run ]; then
-      list=$(mktemp) || return 1
-      find -P "$sessions" -type f -mtime +14 -print 2>/dev/null >"$list"
-      REFIX_PATHS=()
-      gate_process codex-sessions "$list" || true
-      rm -f -- "$list"
-    else
-      handle codex-sessions < <(find -P "$sessions" -type f -mtime +14 -print0 2>/dev/null)
     fi
   fi
 }
