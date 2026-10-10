@@ -52,20 +52,8 @@ resolve_repos(){
 	fi
 	_repos=()
 	while IFS=$'\t' read -r name git_dir repo slug; do
-		[[ -z $(ga_skip_reason "$name") ]] && _repos+=("$repo")
+		_repos+=("$repo")
 	done < <(ga_roots)
-}
-
-repo_has_pr_ci(){
-	local repo=$1 base workflow
-	base=$(git -C "$repo" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null) || base=origin/main
-	base=${base#origin/}
-	while IFS= read -r workflow; do
-		case $workflow in
-			*.yml|*.yaml) git -C "$repo" show "origin/$base:.github/workflows/$workflow" 2>/dev/null | grep -q pull_request && return 0 ;;
-		esac
-	done < <(git -C "$repo" ls-tree --name-only "origin/$base:.github/workflows" 2>/dev/null)
-	return 1
 }
 
 slugify(){ printf '%s' "$1" | sha256sum | cut -d ' ' -f1; }
@@ -123,12 +111,10 @@ do_submit(){
 	while IFS= read -r line; do [[ $line == "worktree $wt_real" ]] && registered=1; done < <(git -C "$wt_real" worktree list --porcelain)
 	[[ $registered == 1 ]] || usage_err "not a registered linked worktree: $wt_real"
 
-	local repo common name reason
+	local repo common name
 	common=$(git -C "$wt_real" rev-parse --path-format=absolute --git-common-dir) || die "cannot locate repository"
 	repo=$(dirname "$common")
 	name=$(ga_repo_of "$repo" 2>/dev/null) || name=''
-	reason=$(ga_skip_reason "$name")
-	[[ -z $reason ]] || usage_err "repository excluded from courier: $name ($reason)"
 	resolve_repos
 	local allowed=0 candidate cand
 	for candidate in "${_repos[@]}"; do
@@ -251,11 +237,13 @@ actor_name(){
 
 remote_result(){
  local wt=$1 head=$2 branch=$3 origin result
+	remote_list='[]'
  origin=$(git -C "$wt" remote get-url origin) || return 23
  result=$(gh repo view "$origin" --json isPrivate 2>/dev/null) || return 23
  [[ $(jq -r '.isPrivate' <<<"$result") == true ]] || return 23
  result=$(gh pr list -R "$origin" --head "$branch" --state all --json headRefOid,state,url,mergeCommit,statusCheckRollup 2>/dev/null) || return 23
  jq -e 'type == "array"' <<<"$result" >/dev/null || return 23
+	remote_list=$result
  remote_proof=$(jq -c --arg h "$head" '[.[] | select(.headRefOid==$h and .state=="MERGED" and (.mergeCommit.oid|type)=="string")][0] // empty' <<<"$result")
  [[ -n $remote_proof ]] && return 0
  [[ $(jq 'length' <<<"$result") == 0 ]] && return 21
@@ -314,21 +302,19 @@ write_delivery_receipt(){
  return 0
 }
 
-write_wait_owner_no_ci_receipt(){
-	local repo=$1 atom=$2 head=$3 atom_json=$4 rf note
-	note='ship-post: wait-owner no-ci — нет автопроверок, на прод только словом владельца'
+write_final_receipt(){
+	local repo=$1 atom=$2 head=$3 stage=$4 pr=$5 rf note
+	note='ship-post: wait-owner — PR открыт, на прод только ship-promote по слову владельца'
+	[[ $stage == prod-hold ]] && note='ship-post: prod-hold guarded — защищённое репо, на прод только словом владельца по закону'
 	rf=$(receipt_file "$repo" "$atom" "$head")
-	[[ -f $rf ]] && return 0
-	if ! jq -e --arg note "$note" '.[0].notes // "" | contains($note)' <<<"$atom_json" >/dev/null; then
-		bd_cmd update "$atom" --append-notes "$note" >/dev/null || return 1
-	fi
-	mkdir -p "$(dirname "$rf")" || return 1
-	jq -n --arg actor "$BEADS_ACTOR" --arg timestamp "$(date -Iseconds)" --arg repo "$repo" --arg atom "$atom" --arg sha "$head" \
-		'{actor:$actor,timestamp:$timestamp,stage:"wait-owner no-ci",repo:$repo,atom:$atom,local_sha:$sha}' > "$rf.tmp" && mv "$rf.tmp" "$rf"
+	bd_cmd update "$atom" --append-notes "$note" >/dev/null || return 1
+	jq -n --arg actor "$BEADS_ACTOR" --arg timestamp "$(date -Iseconds)" --arg repo "$repo" --arg atom "$atom" --arg sha "$head" --arg stage "$stage" --arg pr "$pr" \
+		'{actor:$actor,timestamp:$timestamp,stage:$stage,repo:$repo,atom:$atom,local_sha:$sha,pr:$pr}' > "$rf.tmp" && mv "$rf.tmp" "$rf" || return 1
+	echo "$stage $atom${pr:+ pr:$pr}"
 }
 
 deliver_one(){
- local wt=$1 atom=$2 tz=$3 head=$4 repo=$5 branch=$6 rf inflight rc final_head ship_rc remote_proof='' remote_open=''
+ local wt=$1 atom=$2 tz=$3 head=$4 repo=$5 branch=$6 rf inflight rc final_head ship_rc remote_proof='' remote_open='' remote_list='' superseded=0 log_start ship_out stage
  rf=$(receipt_file "$repo" "$atom" "$head"); inflight=$(inflight_file "$repo" "$atom")
  [[ -f $rf ]] && { ack_delivery "$rf" "$atom"; return $?; }
  mkdir -p "$(dirname "$rf")" "$(dirname "$inflight")" || return 1
@@ -337,17 +323,23 @@ deliver_one(){
   write_delivery_receipt "$repo" "$atom" "$head" "$head" || return 1
   return 0
  fi
+ if [[ -f $inflight && $(cat "$inflight") != "$head" ]] && git -C "$wt" merge-base --is-ancestor "$(cat "$inflight")" "$head" 2>/dev/null \
+  && ! jq -e 'any(.[]?; .state=="MERGED")' <<<"${remote_list:-[]}" >/dev/null; then
+  printf '%s superseded %s -> %s\n' "$(date -Iseconds)" "$(cat "$inflight")" "$head" >> "$rf.log"
+  superseded=1; [[ $rc == 24 ]] && rc=22
+ fi
  if [[ $rc != 21 && $rc != 22 ]]; then
   echo "ship-post: remote outcome unresolved for $atom" >&2
   record_failure "$repo" "$atom" "$head" "$rc"; return 1
  fi
- if [[ -f $inflight && $(cat "$inflight") != "$head" ]]; then
+ if [[ $superseded == 0 && -f $inflight && $(cat "$inflight") != "$head" ]]; then
   echo "ship-post: prior in-flight SHA differs for $atom" >&2
   record_failure "$repo" "$atom" "$head" 24; return 1
  fi
  printf '%s\n' "$head" > "$inflight.tmp" && mv "$inflight.tmp" "$inflight" || return 1
  # Existing ship owns private origin, secret scan, CI and exact-head merge gates.
  printf '%s actor=%s atom=%s sha=%s stage=ship\n' "$(date -Iseconds)" "$BEADS_ACTOR" "$atom" "$head" >> "$rf.log"
+ log_start=$(stat -c %s "$rf.log" 2>/dev/null || echo 0)
  (cd "$SHIP_POST_BEADS_ROOT" && env BEADS_ACTOR="$BEADS_ACTOR" "$ship_bin" "$wt" --atom "$atom" --tz "$tz" --handover --expected-head "$head") >> "$rf.log" 2>&1
  rc=$?
  if [[ $rc != 0 ]]; then
@@ -362,6 +354,14 @@ deliver_one(){
   fi
   record_failure "$repo" "$atom" "$head" "$ship_rc"; return 1
  fi
+ ship_out=$(tail -c +"$((log_start + 1))" "$rf.log")
+ stage=''
+ grep -q '^prod:wait-owner' <<<"$ship_out" && stage=wait-owner
+ grep -q '^prod:hold' <<<"$ship_out" && stage=prod-hold
+ if [[ -n $stage ]]; then
+  write_final_receipt "$repo" "$atom" "$head" "$stage" "$(sed -n 's/^pr://p' <<<"$ship_out" | tail -1)" || return 1
+  rm -f -- "$inflight"; return 0
+ fi
  final_head=$head # Accepted delivery never rebases or commits another SHA.
  remote_result "$wt" "$final_head" "$branch" || { record_failure "$repo" "$atom" "$head" 23; return 1; }
  write_delivery_receipt "$repo" "$atom" "$head" "$final_head" || return 1
@@ -369,7 +369,7 @@ deliver_one(){
 }
 
 scan_repo(){
- local repo=$1 lk fd line wt head branch msg atom tz st status owner agent actor dirty base rf code rc remote_proof='' remote_open=''
+ local repo=$1 lk fd line wt head branch msg atom tz st status owner agent actor dirty base rf code rc remote_proof='' remote_open='' remote_list=''
  local ok=0 failed=0 skip=0
  [[ -d $repo ]] || return 1
  repo=$(realpath "$repo") || return 1
@@ -399,18 +399,12 @@ scan_repo(){
    echo "reconcile $wt $atom"; continue
   fi
   if [[ -f $rf ]]; then
-		[[ $(jq -r '.stage // empty' "$rf" 2>/dev/null) == 'wait-owner no-ci' ]] && continue
-   (BEADS_ACTOR=$actor; ack_delivery "$rf" "$atom") || failed=$((failed+1))
-   continue
+	  case $(jq -r '.stage // empty' "$rf" 2>/dev/null) in
+	   wait-owner|prod-hold) continue ;;
+	   'wait-owner no-ci') rm -f -- "$rf" ;; # legacy dcfg-ta2r0: ship never ran; run it once
+	   *) (BEADS_ACTOR=$actor; ack_delivery "$rf" "$atom") || failed=$((failed+1)); continue ;;
+	  esac
   fi
-	if [[ $status == closed ]] && ! repo_has_pr_ci "$repo"; then
-		if [[ $dry_run == 1 ]]; then
-			echo "wait-owner $wt $atom no-ci"
-		else
-			(BEADS_ACTOR=$actor; write_wait_owner_no_ci_receipt "$repo" "$atom" "$head" "$st") && ok=$((ok+1)) || failed=$((failed+1))
-		fi
-		continue
-	fi
   if [[ -f $rf.failed || -f $(inflight_file "$repo" "$atom") ]]; then
    remote_result "$wt" "$head" "$branch"; rc=$?
    if [[ $rc == 0 ]]; then
@@ -425,6 +419,7 @@ scan_repo(){
     *) (BEADS_ACTOR=$actor; record_failure "$repo" "$atom" "$head" "$code") || failed=$((failed+1)); continue ;;
    esac
   fi
+  if [[ -f $rf.failed ]]; then case $(cat "$rf.failed") in 10|50|80) skip=$((skip+1)); continue ;; esac; fi
   [[ $status == closed ]] || { skip=$((skip+1)); continue; }
   dirty=$(git -C "$wt" status --porcelain=v1 --untracked-files=all) || { failed=$((failed+1)); continue; }
   [[ -z $dirty ]] || { echo "skip $atom dirty worktree"; skip=$((skip+1)); continue; }
