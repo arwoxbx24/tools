@@ -170,4 +170,10 @@ CC_CONFIG=$go check 45 '[[ $rc == 0 ]] && [[ -f "$project/.agent-work/added.txt"
 CC_CONFIG=$go check 46 'grep -Eq "^code-channel: mode=code .* model=opencode-go/mimo-v2.6-flash precheck=" "$tmp/err"' \
   env OPENCODE_RC=0 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
 
-[[ $ok == 46 ]] && echo 'PASS 46/46'
+git -C "$project" clean -fdq
+mkdir -p "$project/.agent-work"
+printf 'orig\n' >"$project/.agent-work/untracked.txt"
+CC_CONFIG=$go check 47 '[[ $rc == 0 ]] && ! grep -Fq -- "без изменений" "$tmp/err"' \
+  env OPENCODE_RC=0 OPENCODE_TOUCH=.agent-work/untracked.txt SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" auto "$project" "$tz"
+
+[[ $ok == 47 ]] && echo 'PASS 47/47'
