@@ -6,7 +6,7 @@ case ${1:-} in -h|--help) printf '%s\n' 'usage: code-channel <form> <project> <t
 fail() { printf 'code-channel: %s\n' "$*" >&2; }
 root=$(cd -- "$(dirname -- "$0")/.." && pwd) || exit 3
 config=${CODE_CHANNEL_CONFIG:-"$root/config/code-channel.json"}
-jq -e '(.ladder | type == "array") and ([.ladder[].id] | length == (unique | length)) and all(.ladder[]; (.id | type == "string") and (.enabled | type == "boolean") and (.model | type == "string") and ((.key? // "") | type == "string") and ((.secret? // "") | type == "string") and ((.base? // "") | type == "string") and ((.effort? // "") | type == "string"))' "$config" >/dev/null 2>&1 || { fail "конфиг $config не читается"; exit 3; }
+jq -e '(.ladder | type == "array") and ([.ladder[].id] | length == (unique | length)) and all(.ladder[]; (.id | type == "string") and (.enabled | type == "boolean") and (.model | type == "string") and ((.resume_model? // "") | type == "string") and ((.key? // "") | type == "string") and ((.secret? // "") | type == "string") and ((.base? // "") | type == "string") and ((.effort? // "") | type == "string"))' "$config" >/dev/null 2>&1 || { fail "конфиг $config не читается"; exit 3; }
 if [[ $# == 1 && $1 == --plan ]]; then
     jq -r '.ladder[] | select(.enabled) | [.id, (.model | if . == "" then "-" else . end), ((.effort // "") | if . == "" then "-" else . end)] | join(" ")' "$config"
     exit 0
@@ -53,7 +53,11 @@ form_snap() { local s; s=$( { git rev-parse HEAD 2>/dev/null; git status --porce
 run_form() (
     export CODE_CHANNEL_ACTIVE=1
     id=$1; start=$SECONDS; pre=-; run=-; hdr=; tmpjson=; resphdr=; respbody=; codetmp=
-    IFS=$'\034' read -r model name secret base effort < <(entry_for "$id" | jq -r '[.model,.key // "",.secret // "",.base // "",.effort // ""] | join("\u001c")') || exit 3
+    IFS=$'\034' read -r model resume_model name secret base effort < <(entry_for "$id" | jq -r '[.model,.resume_model // "",.key // "",.secret // "",.base // "",.effort // ""] | join("\u001c")') || exit 3
+    if [[ -n $override && $override != "$model" && $override != "$resume_model" ]]; then
+        fail "модель не в конфиге: $override"
+        exit 3
+    fi
     model=${override:-$model}
     id_run="cc-$(date +%s)-$$"
     write_journal() {
@@ -225,7 +229,17 @@ run_form() (
     else
         timeout 590 opencode run --title "$id_run" -m "$model" "$prompt"; run=$?
     fi
-    reconcile "$run"; exit $?
+    if [[ $mode == code && $run == 124 && -n $resume_model ]]; then
+        db=${CODE_CHANNEL_OPENCODE_DB:-/root/.local/share/opencode/opencode.db}
+        session=$(sqlite3 -readonly "$db" "select id from session where title='$id_run' order by time_created desc limit 1" 2>/dev/null)
+        if [[ -n $session ]]; then
+            printf 'code-channel: resume session=%s model=%s\n' "$session" "$resume_model" >&2
+            timeout 590 opencode run --session "$session" -m "$resume_model" 'Продолжи ТЗ с места остановки: доделай только невыполненное, сделанное не переделывай.'; run=$?
+        fi
+    fi
+    reconcile "$run"; rc=$?
+    [[ $run != 124 || $rc != 0 ]] || exit 124
+    exit "$rc"
 )
 if [[ $form != auto && $form != audit ]]; then
     run_form "$form"
