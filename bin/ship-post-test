@@ -529,7 +529,7 @@ test_u15(){
  setup_submit u15_conf codex/dcfg-u15conf.1; commit_candidate dcfg-u15conf.1
  out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_RC=50; run_tool "$d" 2>&1); rc=$?
  key=$(printf %s "$d/repo" | sha256sum | cut -d ' ' -f1); h=$(git -C "$wt" rev-parse HEAD); rf="$d/state/receipts/$key/dcfg-u15conf.1/$h"
- [[ $rc != 0 && $(<"$rf.failed") == 50 ]] && grep -Fq '|reopen dcfg-u15conf.1' "$d/bd.calls" && grep -Fq 'update dcfg-u15conf.1 --append-notes ship-post exit 50: конфликт с `origin/<base>`; действие:' "$d/bd.calls" && ! grep -q '|create ' "$d/bd.calls" && pass u15_code50_reopens_atom || fail u15_code50_reopens_atom "rc=$rc: $out"
+ for i in $(seq 1 50); do [[ -f $rf.failed.reported ]] && break; sleep 0.2; done; [[ -f $rf.failed && $(<"$rf.failed") == 50 ]] && grep -Fq '|reopen dcfg-u15conf.1' "$d/bd.calls" && grep -Fq 'update dcfg-u15conf.1 --append-notes ship-post exit 50: конфликт с `origin/<base>`; действие:' "$d/bd.calls" && ! grep -q '|create ' "$d/bd.calls" && pass u15_code50_reopens_atom || fail u15_code50_reopens_atom "rc=$rc: $out"
  setup_submit u15_foreign_undelivered codex/dcfg-other-x; commit_candidate dcfg-u15foreign.1
  out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex; run_tool "$d" 2>&1); rc=$?
  [[ $rc == 0 && ! -s $d/ship.calls ]] && grep -Fq '|reopen dcfg-u15foreign.1' "$d/bd.calls" && grep -Fq 'ship-post exit 10: branch codex/dcfg-other-x != codex/dcfg-u15foreign.1; ветка codex/dcfg-other-x названа по другой задаче, коммит не в origin/main; действие: сдай через ship-post --submit' "$d/bd.calls" && pass u15_foreign_branch_undelivered_reports || fail u15_foreign_branch_undelivered_reports "rc=$rc: $out"
@@ -540,7 +540,7 @@ test_u15(){
 }
 
 test_adr30(){
- local out rc start elapsed i w atom
+ local out rc start elapsed i w atom out_file
  setup_submit adr30 codex/dcfg-adr30.1
  make_worktree "$d" wt2 codex/dcfg-adr30.2 || exit 1
  make_worktree "$d" wt3 codex/dcfg-adr30.3 || exit 1
@@ -551,11 +551,30 @@ test_adr30(){
   i=$((i + 1))
  done
  start=$(date +%s%3N)
- out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_DELAY=2 SHIP_POST_JOBS=8 TEST_TIMEOUT=10; run_tool "$d" 2>&1); rc=$?
+ out_file="$d/adr30-first.out"
+ ( export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_DELAY=2 SHIP_POST_JOBS=8 TEST_TIMEOUT=10; run_tool "$d" ) >"$out_file" 2>&1; rc=$?
+ out=$(<"$out_file")
  elapsed=$(( $(date +%s%3N) - start ))
- [[ $rc == 0 && $out == *'ok=3 failed=0 skip=0'* ]] && pass adr30_parallel_summary || fail adr30_parallel_summary "rc=$rc elapsed=${elapsed}ms: $out"
+ [[ $rc == 0 && $out == *'started=3'* ]] && pass adr30_parallel_summary || fail adr30_parallel_summary "rc=$rc elapsed=${elapsed}ms: $out"
+ [[ $elapsed -lt 1500 ]] && pass adr30_scan_under_1500ms || fail adr30_scan_under_1500ms "elapsed=${elapsed}ms"
+ timeout 5 bash -c 'while [[ $(wc -l < "$1") -lt 3 ]]; do sleep 0.05; done' _ "$d/ship.calls"
  [[ $(wc -l < "$d/ship.calls") == 3 ]] && pass adr30_three_ships || fail adr30_three_ships "$out"
- [[ $elapsed -lt 5000 ]] && pass adr30_scan_under_5s || fail adr30_scan_under_5s "elapsed=${elapsed}ms"
+ out_file="$d/adr30-second.out"
+ ( export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_DELAY=2 SHIP_POST_JOBS=8 TEST_TIMEOUT=10; run_tool "$d" ) >"$out_file" 2>&1; rc=$?
+ out=$(<"$out_file")
+ [[ $rc == 0 && $(wc -l < "$d/ship.calls") == 3 ]] && pass adr30_atom_lock || fail adr30_atom_lock "rc=$rc: $out"
+ setup_submit adr30_retry codex/dcfg-adr30retry.1; commit_candidate dcfg-adr30retry.1; : > "$d/events"
+ cat > "$d/bin/ship" <<'MOCKSHIP'
+#!/usr/bin/env bash
+printf '%s|%s|%s\n' "${BEADS_ACTOR:-}" "$*" "$(git -C "$1" rev-parse HEAD)" >> "$SHIP_POST_TEST_DIR/ship.calls"
+if [[ ! -e $SHIP_POST_TEST_DIR/ship.retry ]]; then touch "$SHIP_POST_TEST_DIR/ship.retry"; exit 70; fi
+printf '%s\n' "$(git -C "$1" rev-parse HEAD)" >> "$SHIP_POST_TEST_DIR/merged"
+MOCKSHIP
+ chmod +x "$d/bin/ship"
+ out_file="$d/adr30-retry.out"
+ ( export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex TEST_TIMEOUT=4; run_tool "$d" --watch ) >"$out_file" 2>&1; rc=$?
+ out=$(<"$out_file")
+ [[ $(wc -l < "$d/ship.calls") == 2 && $(wc -l < "$d/merged") == 1 ]] && pass adr30_transient_retries || fail adr30_transient_retries "rc=$rc: $out"
 }
 
 if [[ ${SHIP_POST_TEST_GROUP:-all} == review ]]; then

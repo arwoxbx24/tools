@@ -420,8 +420,7 @@ deliver_one(){
 
 scan_repo(){
  local repo=$1 lk fd line wt head branch msg atom tz st status owner agent actor dirty base rf code rc remote_proof='' remote_open='' remote_list=''
- local ok=0 failed=0 skip=0 jobs_max p
- local -a pids=()
+ local ok=0 failed=0 skip=0 started=0 jobs_max p
  jobs_max=${SHIP_POST_JOBS:-8}
  [[ $jobs_max =~ ^[1-9][0-9]*$ ]] || jobs_max=8
  [[ -d $repo ]] || return 1
@@ -482,11 +481,10 @@ scan_repo(){
    [[ ${tz%%#*} == "$wt/"* && -f ${tz%%#*} ]] || { [[ $status != closed ]] || { echo "skip $atom tz not a file in worktree"; report_closed_skip "$repo" "$atom" "$head" "$branch" "$status" 'tz not a file in worktree' "$wt" || failed=$((failed+1)); }; skip=$((skip+1)); continue; }
   if [[ $dry_run == 1 ]]; then echo "ready $wt $atom"; continue; fi
   while (( $(jobs -rp | wc -l) >= jobs_max )); do wait -n; done
-  (BEADS_ACTOR=$actor; deliver_one "$wt" "$atom" "$tz" "$head" "$repo" "$branch") & pids+=("$!")
+  ( exec {fd}>&-; exec {afd}>"$lk.$atom"; flock -n "$afd" || exit 0; BEADS_ACTOR=$actor; if ! deliver_one "$wt" "$atom" "$tz" "$head" "$repo" "$branch"; then [[ -d $SHIP_POST_STATE_DIR/pending ]] && touch "$SHIP_POST_STATE_DIR/pending/$(slugify "$repo")"; fi ) & started=$((started+1))
  done < <(git -C "$repo" worktree list --porcelain)
- for p in "${pids[@]}"; do wait "$p" && ok=$((ok+1)) || failed=$((failed+1)); done
  exec {fd}>&-
- echo "ok=$ok failed=$failed skip=$skip"
+ echo "ok=$ok failed=$failed skip=$skip started=$started"
  [[ $failed == 0 ]]
 }
 
