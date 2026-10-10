@@ -67,7 +67,7 @@ Default state root is `/root/workspaces/tools/state/ship-post` (`SHIP_POST_STATE
 | `ship-post` | 23 | GitHub query failed or repository is not private | query failure may be temporary; privacy denial is not |
 | `ship-post` | 24 | remote result does not match the submitted SHA/state | no, reconcile before retry |
 
-`ship-post` records 23, 70 and 75 as retryable observations in `bin/ship-post:record_failure`; after a `ship` result, 10, 50 and 80 are final for that submitted SHA, while 70 remains repeatable. Other delivery errors reopen the atom and create/reuse a diagnostic task.
+`ship-post` records 23, 70 and 75 as retryable observations in `bin/ship-post:record_failure`; after a `ship` result, 10, 50 and 80 are final for that submitted SHA, while 70 remains repeatable. Other delivery errors reopen the atom and append one note `ship-post exit <code>: <cause>; действие: <action>` to it; no separate task (ADR-28/29).
 
 ## 6. Отказы и восстановление
 
@@ -77,6 +77,7 @@ Default state root is `/root/workspaces/tools/state/ship-post` (`SHIP_POST_STATE
 - No CI: a nonempty all-`.md` diff prints `gate:auto docs-only` and merges after the mergeability check; other changes return `prod:wait-owner no-ci` after branch push and PR creation, and production requires the owner’s word through `ship-promote`.
 - Guarded repository: `bin/git-auto-lib:ga_skip_reason` returns `allowlist` or `hh-scoring`; `ship` returns `prod:hold guarded <reason>` after local commit and dev-ready ref, before any remote action. `ship-post` serves these roots and stores a final `prod-hold` receipt; `git-sync` emits `skip:<reason>`.
 - Nested `.git` without a work tree (`<repo>/.git/.git`): `bin/git-auto-lib:ga_roots` skips it silently — `--show-toplevel` is empty and `realpath` stderr is discarded, so `ship` output carries no `realpath: ''` line (dcfg-rtbvl, test T10 in `bin/git-auto-lib-test`).
+- Closed atom skipped (ADR-29): `bin/ship-post:report_closed_skip` turns any skip of a closed atom on branch `claude|codex/<atom>-*` (no assignee, branch/agent mismatch, dirty worktree, TЗ outside worktree) into `record_failure` code 10 with action `сдай через ship-post --submit`, once per atom+SHA.
 - `bin/git-auto-lib` начинается с `#!/usr/bin/env bash`, чтобы repowise индексировал функции `ga_*`.
 
 ## 7. Наблюдаемость

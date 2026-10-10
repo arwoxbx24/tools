@@ -266,7 +266,7 @@ test_recovery(){
  out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_RC=40; run_tool "$d" 2>&1); rc=$?
  [[ $rc != 0 ]] && grep -q 'reopen dcfg-failure.1' "$d/bd.calls" && pass ci_failure || fail ci_failure "$out"
  out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_RC=40; run_tool "$d" 2>&1)
- [[ $(wc -l < "$d/ship.calls") == 1 && $(grep -c 'create ' "$d/bd.calls") == 1 ]] && pass failure_dedup || fail failure_dedup "$out"
+ [[ $(wc -l < "$d/ship.calls") == 1 && $(grep -c 'create ' "$d/bd.calls") == 0 ]] && pass failure_dedup || fail failure_dedup "$out"
  setup_submit excluded codex/dcfg-excluded.1; commit_candidate dcfg-excluded.1
  out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex TEST_REPOS="$d/not-allowlisted"; run_tool "$d" 2>&1)
  [[ ! -s $d/ship.calls ]] && pass allowlist || fail allowlist "$out"
@@ -342,7 +342,7 @@ test_recovery_boundaries(){
  rm "$d/dep-down"
  out=$(export BEADS_ACTOR=Codex BD_STATUS=open; run_tool "$d" 2>&1)
  key=$(printf %s "$d/repo" | sha256sum | cut -d ' ' -f1); h=$(git -C "$wt" rev-parse HEAD); rf="$d/state/receipts/$key/dcfg-reg.1/$h"
- [[ -f $rf.failed.reported && $(grep -c '^.*|create ' "$d/bd.calls") == 1 && $(wc -l < "$d/ship.calls") == 1 ]] && pass failure_registration_resumes || fail failure_registration_resumes "$out"
+ [[ -f $rf.failed.reported && $(grep -c '^.*|create ' "$d/bd.calls") == 0 && $(wc -l < "$d/ship.calls") == 1 ]] && pass failure_registration_resumes || fail failure_registration_resumes "$out"
  setup_submit ack_crash codex/dcfg-ack.1; commit_candidate dcfg-ack.1
  out=$(export BEADS_ACTOR=Codex BD_STATUS=closed; run_tool "$d" 2>&1)
  key=$(printf %s "$d/repo" | sha256sum | cut -d ' ' -f1); h=$(git -C "$wt" rev-parse HEAD); rf="$d/state/receipts/$key/dcfg-ack.1/$h"
@@ -516,6 +516,21 @@ test_final_states(){
 	[[ ! -s $d/ship.calls && $out == *'code=24'* ]] && pass '149b non-ancestor' || fail '149b non-ancestor' "$out"
 }
 
+test_u15(){
+ local out rc key h rf
+ setup_submit u15_skip codex/dcfg-u15skip.1; commit_candidate dcfg-u15skip.1
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=; run_tool "$d" 2>&1); rc=$?
+ key=$(printf %s "$d/repo" | sha256sum | cut -d ' ' -f1); h=$(git -C "$wt" rev-parse HEAD); rf="$d/state/receipts/$key/dcfg-u15skip.1/$h"
+ [[ $rc == 0 && -f $rf.failed && -f $rf.failed.reported && ! -s $d/ship.calls ]] && grep -Fq '|reopen dcfg-u15skip.1' "$d/bd.calls" && grep -Fq 'update dcfg-u15skip.1 --append-notes ship-post exit 10: no assignee; действие: сдай через ship-post --submit' "$d/bd.calls" && ! grep -q '|create ' "$d/bd.calls" && pass u15_skip_reports_exit10 || fail u15_skip_reports_exit10 "rc=$rc: $out"
+ echo closed > "$d/status"
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=; run_tool "$d" 2>&1); rc=$?
+ [[ $rc == 0 && $(grep -c 'exit 10' "$d/bd.calls") == 1 && ! -s $d/ship.calls ]] && pass u15_repeat_no_second_note || fail u15_repeat_no_second_note "rc=$rc: $out"
+ setup_submit u15_conf codex/dcfg-u15conf.1; commit_candidate dcfg-u15conf.1
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_RC=50; run_tool "$d" 2>&1); rc=$?
+ key=$(printf %s "$d/repo" | sha256sum | cut -d ' ' -f1); h=$(git -C "$wt" rev-parse HEAD); rf="$d/state/receipts/$key/dcfg-u15conf.1/$h"
+ [[ $rc != 0 && $(<"$rf.failed") == 50 ]] && grep -Fq '|reopen dcfg-u15conf.1' "$d/bd.calls" && grep -Fq 'update dcfg-u15conf.1 --append-notes ship-post exit 50: конфликт с `origin/<base>`; действие:' "$d/bd.calls" && ! grep -q '|create ' "$d/bd.calls" && pass u15_code50_reopens_atom || fail u15_code50_reopens_atom "rc=$rc: $out"
+}
+
 if [[ ${SHIP_POST_TEST_GROUP:-all} == review ]]; then
  test_review_recovery
 elif [[ ${SHIP_POST_TEST_GROUP:-all} == recovery ]]; then
@@ -524,8 +539,10 @@ elif [[ ${SHIP_POST_TEST_GROUP:-all} == recovery ]]; then
 	 test_final_states; test_nested_repo
 	elif [[ ${SHIP_POST_TEST_GROUP:-all} == u14 ]]; then
 	 test_submit_conflict_preflight
+	elif [[ ${SHIP_POST_TEST_GROUP:-all} == u15 ]]; then
+	 test_u15
 else
-	 test_dryrun_mocks; test_valid_actors; test_rejections; test_hook_and_retry; test_closed_retry; test_delivery; test_live_sync; test_watch; test_recovery; test_stream_errors; test_closed_skip_reason; test_concurrent_repositories; test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery; test_actor_alias; test_nested_repo; test_final_states; test_submit_conflict_preflight
+	 test_dryrun_mocks; test_valid_actors; test_rejections; test_hook_and_retry; test_closed_retry; test_delivery; test_live_sync; test_watch; test_recovery; test_stream_errors; test_closed_skip_reason; test_concurrent_repositories; test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery; test_actor_alias; test_nested_repo; test_final_states; test_submit_conflict_preflight; test_u15
 fi
 echo "checks=$checks failures=$failures"
 [[ $failures == 0 ]]
