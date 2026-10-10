@@ -273,4 +273,17 @@ ln -s /etc/hostname "$d/tmp-outside"
 "$bin/safe-delete" --bk "$bk" tmp "$d/tmp-outside" >/dev/null 2>&1; r42=$?
 if [[ $r42 == 2 && -L $d/tmp-outside && -e /etc/hostname ]]; then echo 'PASS T42'; ok=$((ok+1)); else echo "FAIL T42: rc=$r42"; fi
 
-[[ $ok == 42 ]]
+# T43-T44: worktree skips segment checks for git-clean files only
+git -C "$d/w" worktree add -q -b wt-clean "$d/wt-clean" main
+mkdir -p "$d/wt-clean/.beads"; printf 'c\n' > "$d/wt-clean/.beads/config.yaml"
+git -C "$d/wt-clean" add -f .beads/config.yaml && git -C "$d/wt-clean" commit -q -m beads
+err=$("$bin/safe-delete" --bk "$bk" worktree "$d/wt-clean" 2>&1); r43=$?
+if [[ $r43 == 0 && ! -d $d/wt-clean ]]; then echo 'PASS T43'; ok=$((ok+1)); else echo "FAIL T43: rc=$r43 err=$err"; fi
+
+git -C "$d/w" worktree add -q -b wt-dirty-beads "$d/wt-dirty-beads" main
+mkdir -p "$d/wt-dirty-beads/.beads"; printf 'x\n' > "$d/wt-dirty-beads/.beads/x"
+err=$("$bin/safe-delete" --bk "$bk" worktree "$d/wt-dirty-beads" 2>&1); r44=$?
+if [[ $r44 == 2 && $err == *'запрещённый сегмент'* && -d $d/wt-dirty-beads ]]; then echo 'PASS T44'; ok=$((ok+1)); else echo "FAIL T44: rc=$r44 err=$err"; fi
+git -C "$d/w" worktree remove --force "$d/wt-dirty-beads"
+
+[[ $ok == 44 ]]
