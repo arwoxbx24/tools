@@ -104,7 +104,7 @@ run_form() (
         [[ -z $resphdr ]] || unlink -- "$resphdr"
         [[ -z $respbody ]] || unlink -- "$respbody"
         [[ -z $codetmp ]] || unlink -- "$codetmp"
-        printf 'code-channel: mode=%s form=%s provider=%s precheck=%s run=%s t=%s\n' "$mode" "$id" "$provider" "$pre" "$run" "$((SECONDS-start))" >&2
+        printf 'code-channel: mode=%s form=%s provider=%s model=%s precheck=%s run=%s t=%s\n' "$mode" "$id" "$provider" "$model" "$pre" "$run" "$((SECONDS-start))" >&2
         trap - EXIT; exit "$rc"
     }
     trap finish EXIT
@@ -238,6 +238,7 @@ run_form() (
         session=$(sqlite3 -readonly "$db" "select id from session where title='$id_run' order by time_created desc limit 1" 2>/dev/null)
         if [[ -n $session ]]; then
             printf 'code-channel: resume session=%s model=%s\n' "$session" "$resume_model" >&2
+            model=$resume_model
             timeout 290 opencode run --session "$session" -m "$resume_model" 'Продолжи ТЗ с места остановки: доделай только невыполненное, сделанное не переделывай.'; run=$?
         fi
     fi

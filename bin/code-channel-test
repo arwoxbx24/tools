@@ -167,4 +167,7 @@ printf 'old\n' >"$project/.agent-work/old.txt"
 CC_CONFIG=$go check 45 '[[ $rc == 0 ]] && [[ -f "$project/.agent-work/added.txt" ]] && ! grep -Fq -- "без изменений" "$tmp/err"' \
   env OPENCODE_RC=0 OPENCODE_TOUCH=.agent-work/added.txt SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
 
-[[ $ok == 45 ]] && echo 'PASS 45/45'
+CC_CONFIG=$go check 46 'grep -Eq "^code-channel: mode=code .* model=opencode-go/mimo-v2.6-flash precheck=" "$tmp/err"' \
+  env OPENCODE_RC=0 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
+
+[[ $ok == 46 ]] && echo 'PASS 46/46'
