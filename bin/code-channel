@@ -227,14 +227,16 @@ run_form() (
     if [[ $mode == audit ]]; then
         timeout 590 opencode run --agent audit --title "$id_run" -m "$model" "$prompt"; run=$?
     else
-        timeout 590 opencode run --title "$id_run" -m "$model" "$prompt"; run=$?
+        tmo=590
+        [[ -n $resume_model ]] && tmo=290
+        timeout "$tmo" opencode run --title "$id_run" -m "$model" "$prompt"; run=$?
     fi
     if [[ $mode == code && $run == 124 && -n $resume_model ]]; then
         db=${CODE_CHANNEL_OPENCODE_DB:-/root/.local/share/opencode/opencode.db}
         session=$(sqlite3 -readonly "$db" "select id from session where title='$id_run' order by time_created desc limit 1" 2>/dev/null)
         if [[ -n $session ]]; then
             printf 'code-channel: resume session=%s model=%s\n' "$session" "$resume_model" >&2
-            timeout 590 opencode run --session "$session" -m "$resume_model" 'Продолжи ТЗ с места остановки: доделай только невыполненное, сделанное не переделывай.'; run=$?
+            timeout 290 opencode run --session "$session" -m "$resume_model" 'Продолжи ТЗ с места остановки: доделай только невыполненное, сделанное не переделывай.'; run=$?
         fi
     fi
     reconcile "$run"; rc=$?
