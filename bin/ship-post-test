@@ -678,6 +678,23 @@ test_adr35(){
  [[ $(grep -c '|show dcfg-adr35.b --json' "$d/bd.calls") == 0 && $(wc -c < "$d/ship.calls") == 0 ]] && pass adr35_cli_filter_not_broadened || fail adr35_cli_filter_not_broadened "rc=$rc: $out"
 }
 
+test_park_live(){
+ [[ ${SHIP_POST_LIVE_BD:-0} == 1 ]] || { echo "SKIP park_live (SHIP_POST_LIVE_BD!=1)"; return 0; }
+ local atom=${SHIP_POST_LIVE_ATOM:?SHIP_POST_LIVE_ATOM required} live_root=${SHIP_POST_LIVE_ROOT:-/root/workspaces/projects} real_bd=${SHIP_POST_LIVE_BD_BIN:-/root/.local/bin/bd} out inc i st lbl
+ setup_submit park_live "claude/$atom-live"; commit_candidate "$atom" claude
+ rm -f -- "$d/bin/bd"; ln -s "$real_bd" "$d/bin/bd"
+ out=$(env HOME="$HOME" PATH="$d/bin:/usr/bin:/bin" SHIP_POST_TEST_DIR="$d" SHIP_POST_REPOS="$d/repo" SHIP_POST_STATE_DIR="$d/state" \
+  SHIP_POST_BEADS_ROOT="$live_root" SHIP_POST_RETRY_SECONDS=1 BEADS_ACTOR='Claude Code' MOCK_SHIP_RC=71 \
+  timeout --kill-after=2 60 "$d/bin/ship-post" 2>&1)
+ for i in $(seq 1 50); do [[ -f $d/state/incidents/parked/$atom ]] && break; sleep 0.2; done
+ inc=$(cat "$d/state/incidents/71" 2>/dev/null)
+ echo "park_live: incident=$inc"
+ st=$(cd "$live_root" && "$real_bd" show "$inc" --json 2>/dev/null | jq -r '.[0] | "\(.status) \(.priority) \(.issue_type) \((.labels // []) | join(","))"')
+ lbl=$(cd "$live_root" && "$real_bd" show "$atom" --json 2>/dev/null | jq -r '.[0] | "\(.status) \((.labels // []) | join(","))"')
+ echo "park_live: incident_show=$st atom_show=$lbl"
+ [[ -n $inc && $out == *"ship-post: parked: $atom incident $inc"* && $st == "open 0 bug contour:delivery" && $lbl == "closed "*delivery-blocked* ]] && pass park_live || fail park_live "out=$out st=$st lbl=$lbl"
+}
+
 if [[ ${SHIP_POST_TEST_GROUP:-all} == review ]]; then
  test_review_recovery
 elif [[ ${SHIP_POST_TEST_GROUP:-all} == recovery ]]; then
@@ -690,9 +707,11 @@ elif [[ ${SHIP_POST_TEST_GROUP:-all} == recovery ]]; then
 	 test_u15
 	elif [[ ${SHIP_POST_TEST_GROUP:-all} == adr30 ]]; then
 	 test_adr30
-	elif [[ ${SHIP_POST_TEST_GROUP:-all} == park ]]; then
-	 test_park
-	elif [[ ${SHIP_POST_TEST_GROUP:-all} == lock ]]; then
+ elif [[ ${SHIP_POST_TEST_GROUP:-all} == park ]]; then
+  test_park
+ elif [[ ${SHIP_POST_TEST_GROUP:-all} == park-live ]]; then
+  test_park_live
+ elif [[ ${SHIP_POST_TEST_GROUP:-all} == lock ]]; then
 	 test_watch_lock_released
 	elif [[ ${SHIP_POST_TEST_GROUP:-all} == adr35 ]]; then
 	 test_adr35
