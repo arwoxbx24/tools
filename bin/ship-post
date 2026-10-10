@@ -215,6 +215,23 @@ do_submit(){
 		echo "ship-post: committed $atom"
 	fi
 
+	local _ base merge_tree merge_rc conflicts
+	read -r _ base _ <<< "$(ga_base "$wt_real")"
+	if ! git -C "$wt_real" fetch -q origin "$base"; then
+		echo "ship-post: fetch origin/$base failed" >&2
+		return 70
+	fi
+	merge_tree=$(git -C "$wt_real" merge-tree --write-tree --name-only "origin/$base" HEAD)
+	merge_rc=$?
+	if [[ $merge_rc == 1 ]]; then
+		conflicts=$(sed '1d' <<< "$merge_tree")
+		conflicts=${conflicts//$'\n'/ }
+		echo "ship-post: conflict with origin/$base: $conflicts" >&2
+		echo "ship-post: fix: git -C $wt_real fetch origin && git -C $wt_real merge origin/$base; resolve files; test; bd close; submit again" >&2
+		return 50
+	fi
+	[[ $merge_rc == 0 ]] || { echo "ship-post: merge-tree origin/$base failed (rc $merge_rc)" >&2; return 70; }
+
 	head_sha=$(git -C "$wt_real" rev-parse HEAD)
 	[[ -z $(git -C "$wt_real" status --porcelain=v1 --untracked-files=all) ]] || die "worktree not clean after commit"
 
