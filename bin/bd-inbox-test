@@ -61,5 +61,18 @@ out="$(STUB_RC=1 run cl:7)"; rc=$?
 [ "$rc" -eq 0 ] || fail 6
 [ -z "$out" ] || fail 6
 
-echo "PASS 6/6"
+# 7) TMUX_PANE пуст, предок в таблице панелей (cl:9) -> additionalContext
+printf '%s\n' '[{"id":"t-1","metadata":{"tmux":"cl:9"},"comment_count":1}]' > "$DATA/list.json"
+printf '%s\n' '[{"id":"c1","issue_id":"t-1","author":"B","text":"От …","created_at":"2026-10-10T10:00:00Z"}]' > "$DATA/comments.t-1.json"
+out="$(BD_INBOX_PANES="$BASHPID cl:9" env -u TMUX_PANE BD_BIN="$TMP/bd" STUB_DATA="$DATA" BD_INBOX_WINDOW= "$inbox" 2>/dev/null)"; rc=$?
+[ "$rc" -eq 0 ] || fail 7
+echo "$out" | jq -e '.hookSpecificOutput.hookEventName == "PostToolUse"' >/dev/null 2>&1 || fail 7
+echo "$out" | jq -r '.hookSpecificOutput.additionalContext' 2>/dev/null | grep -qF 't-1: От …' || fail 7
+
+# 8) TMUX_PANE пуст, ни один предок не в таблице -> пусто, rc 0
+out="$(BD_INBOX_PANES='99999 cl:9' env -u TMUX_PANE BD_BIN="$TMP/bd" STUB_DATA="$DATA" BD_INBOX_WINDOW= "$inbox" 2>/dev/null)"; rc=$?
+[ "$rc" -eq 0 ] || fail 8
+[ -z "$out" ] || fail 8
+
+echo "PASS 8/8"
 exit 0
