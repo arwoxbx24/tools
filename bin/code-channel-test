@@ -5,7 +5,7 @@ root=$(cd -- "$(dirname -- "$0")/.." && pwd)
 tmp=$(mktemp -d "$root/.code-channel-test.XXXXXX")
 nogit=$(mktemp -d /tmp/cc-nogit.XXXXXX)
 trap 'rm -rf -- "$tmp" "$nogit"' EXIT
-bin=$tmp/bin project=$tmp/project tz=$tmp/tz secret=$tmp/secret.env log=$tmp/args.log runs=$tmp/runs.jsonl
+bin=$tmp/bin project=$tmp/project tz=$tmp/tz secret=$tmp/secret.env log=$tmp/args.log runs=$tmp/runs.jsonl tlog=$tmp/timeout.args
 legacy=$tmp/legacy.json disabled=$tmp/disabled.json go=$tmp/go.json ladder=$tmp/ladder.json resume=$tmp/resume.json
 mkdir -p "$bin" "$project" "$tmp/state"
 printf 'VIBECODE_API_KEY=x\nOPENROUTER_API_KEY=x\n' >"$secret"
@@ -136,4 +136,13 @@ CC_CONFIG=$resume check 36 '[[ $rc == 0 && $(grep -c "^opencode " "$log") == 2 &
 CC_CONFIG=$go check 37 '[[ $rc == 124 && $(grep -c "^opencode " "$log") == 1 ]]' \
   env OPENCODE_RC=124 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
 
-[[ $ok == 37 ]] && echo 'PASS 37/37'
+printf '%s\n' '#!/usr/bin/env bash' "printf '%s\n' \"\$1\" >>\"$tlog\"" 'shift; exec "$@"' >"$bin/timeout"
+chmod +x "$bin/timeout"
+: >"$tlog"
+CC_CONFIG=$resume check 38 '[[ $rc == 0 && $(<"$tlog") == $'"'"'290\n290'"'"' ]]' \
+  env OPENCODE_SEQUENCE=124,0 SQLITE_SESSION_ID=session-123 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
+: >"$tlog"
+CC_CONFIG=$go check 39 '[[ $rc == 0 && $(<"$tlog") == 590 ]]' \
+  env OPENCODE_RC=0 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
+
+[[ $ok == 39 ]] && echo 'PASS 39/39'
