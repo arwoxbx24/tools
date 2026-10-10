@@ -36,7 +36,8 @@ fi
 hook="$(git rev-parse --git-common-dir)/hooks/$name"
 if [ -x "$hook" ]; then
   if [ "$name" = "pre-push" ] && [ -n "$tmp" ]; then
-    exec "$hook" "$@" < "$tmp"
+    "$hook" "$@" < "$tmp"
+    exit $?
   else
     exec "$hook" "$@"
   fi
@@ -44,7 +45,8 @@ elif [ "$(git rev-parse --is-bare-repository 2>/dev/null)" = "false" ]; then
   hook="$(git rev-parse --show-toplevel)/.beads/hooks/$name"
   if [ -x "$hook" ]; then
     if [ "$name" = "pre-push" ] && [ -n "$tmp" ]; then
-      exec "$hook" "$@" < "$tmp"
+      "$hook" "$@" < "$tmp"
+      exit $?
     else
       exec "$hook" "$@"
     fi
