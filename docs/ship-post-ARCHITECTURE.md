@@ -32,7 +32,7 @@ Claude/Codex agent
 2. Watcher queues a repository after a closed Beads event; `bin/ship-post:do_watch` persists the cursor only after queueing.
 3. A worker finds a clean closed worktree; `bin/ship-post:scan_repo` verifies trailers, owner, branch and receipt state.
 4. `bin/ship-post:deliver_one` reconciles an existing GitHub result or calls `bin/ship:locked_core` through `ship --handover`. `bin/git-auto-lib:ga_class` marks the repository `plain`, `staged`, or `guarded`: mode `two` is staged; a skip reason in mode `one` is guarded.
-5. A guarded delivery commits locally, writes `refs/dev-ready/<branch>`, prints `prod:hold guarded <reason>` and stops before fetch, push or GitHub. A plain delivery reaches `bin/ship:locked_core`, which pushes the fixed head; the remaining `ship` flow creates/uses a PR. A nonempty all-`.md` diff without pull-request CI prints `gate:auto docs-only`, checks mergeability, and merges the exact head without a CI wait. Other no-CI changes write `refs/dev-ready/<branch>`, record `wait-owner no-ci`, print `prod:wait-owner no-ci` and stop without merge, close, live sync or worktree cleanup. CI-backed plain delivery waits for CI and merges the exact head.
+5. A guarded delivery commits locally, writes `refs/dev-ready/<branch>`, prints `prod:hold guarded <reason>` and stops before fetch, push or GitHub. A plain delivery reaches `bin/ship:locked_core`, which pushes the fixed head; the remaining `ship` flow creates/uses a PR. A nonempty all-`.md` diff without pull-request CI prints `gate:auto docs-only`, checks mergeability, and merges the exact head without a CI wait. Other no-CI changes write `refs/dev-ready/<branch>`, record `wait-owner no-ci`, print `prod:wait-owner no-ci` and stop without merge, close, live sync or worktree cleanup. CI-backed plain delivery waits for CI and merges the exact head. `ship-post` обслуживает все репозитории `ga_roots`; после `ship` rc 0 читает вывод последнего запуска: `prod:wait-owner` создаёт квитанцию `wait-owner` с номером PR, `prod:hold` — `prod-hold`; обе стадии финальны, старая `wait-owner no-ci` один раз проходит через `ship`, коды `ship` 10/50/80 финальны, 70 повторяется, а новый SHA поверх отправленного предка при неслитом PR пишет `superseded`, не code 24.
 6. `ship-promote` has two owner-quoted prod paths: `staged` (mode `two`) keeps the existing Dev-to-Prod fast-forward after Dev CI; `plain` (mode `one`) finds the atom's open PR, requires `refs/dev-ready/<head>` to equal its head SHA, then squash-merges with `--match-head-commit`. It records `promote:`, runs live sync, and closes only an open or in-progress atom. `guarded` ends with `prod:hold` and never calls GitHub.
 7. `bin/ship-post:write_delivery_receipt` stores remote proof, appends the Beads delivery note and runs `bin/git-sync:sync_one`.
 8. `bin/git-sync:sync_one` fast-forwards the live checkout or preserves local work under rescue refs; `bin/git-state:emit` exposes delivery/sync alarms.
@@ -67,14 +67,14 @@ Default state root is `/root/workspaces/tools/state/ship-post` (`SHIP_POST_STATE
 | `ship-post` | 23 | GitHub query failed or repository is not private | query failure may be temporary; privacy denial is not |
 | `ship-post` | 24 | remote result does not match the submitted SHA/state | no, reconcile before retry |
 
-`ship-post` records 23, 70 and 75 as retryable observations in `bin/ship-post:record_failure`; other delivery errors reopen the atom and create/reuse a diagnostic task.
+`ship-post` records 23, 70 and 75 as retryable observations in `bin/ship-post:record_failure`; after a `ship` result, 10, 50 and 80 are final for that submitted SHA, while 70 remains repeatable. Other delivery errors reopen the atom and create/reuse a diagnostic task.
 
 ## 6. Отказы и восстановление
 
 - Conflict (50): `ship` reports a conflicting PR or failed rebase/merge. Rebase or otherwise reconcile the agent branch, then submit/deliver the corrected head.
-- SHA change: an `inflight` record with another SHA becomes code 24 in `bin/ship-post:deliver_one`; inspect remote state before any retry.
+- SHA change: an `inflight` record with another SHA becomes code 24 in `bin/ship-post:deliver_one`, except when the old SHA is an ancestor of the new SHA and its PR is not merged: the courier records `superseded <old> -> <new>` and continues with the new head.
 - No CI: a nonempty all-`.md` diff prints `gate:auto docs-only` and merges after the mergeability check; other changes return `prod:wait-owner no-ci` after branch push and PR creation, and production requires the owner’s word through `ship-promote`.
-- Guarded repository: `bin/git-auto-lib:ga_skip_reason` returns `allowlist` or `hh-scoring`; `ship` returns `prod:hold guarded <reason>` after local commit and dev-ready ref, before any remote action. `ship-post` excludes these roots and `git-sync` emits `skip:<reason>`.
+- Guarded repository: `bin/git-auto-lib:ga_skip_reason` returns `allowlist` or `hh-scoring`; `ship` returns `prod:hold guarded <reason>` after local commit and dev-ready ref, before any remote action. `ship-post` serves these roots and stores a final `prod-hold` receipt; `git-sync` emits `skip:<reason>`.
 
 ## 7. Наблюдаемость
 
