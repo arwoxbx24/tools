@@ -41,6 +41,8 @@ Claude/Codex agent
 
 Default state root is `/root/workspaces/tools/state/ship-post` (`SHIP_POST_STATE_DIR`). It contains:
 
+INFRA-отказы (30/70/71/75/прочие) паркуются: метка `delivery-blocked`, инцидент `contour:delivery` на код (`state/ship-post/incidents/<rc>`), повтор каждым проходом, при успехе метка снимается (spec:099 v8, dcfg-c3gu3.2).
+
 - `submissions/<repo-hash>/<worktree-hash>/<atom>/<sha>` — local submission receipt;
 - `receipts/<repo-hash>/<atom>/<sha>` plus `.log`, `.failed`, `.reported`, `.ack` — delivery and diagnostic records;
 - `inflight/<repo-hash>/<atom>` — one submitted SHA while delivery is unresolved;

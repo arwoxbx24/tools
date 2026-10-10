@@ -609,6 +609,50 @@ MOCKSHIP
  [[ $(wc -l < "$d/ship.calls") == 2 && $(wc -l < "$d/merged") == 1 ]] && pass adr30_transient_retries || fail adr30_transient_retries "rc=$rc: $out"
 }
 
+test_park(){
+ local out rc h i w atom park_out park_rc park_ok=0 pdup_ok=0 pci_ok=0 psubmit_ok=0 unpark_ok=0
+ setup_submit park codex/dcfg-park.1; commit_candidate dcfg-park.1
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_RC=71; run_tool "$d" 2>&1); rc=$?
+ for i in $(seq 1 50); do grep -q '|create \[ship-post\] INFRA exit 71' "$d/bd.calls" && break; sleep 0.2; done
+ park_out=$out; park_rc=$rc
+ [[ $rc == 0 && ! $(grep -c '|reopen dcfg-park.1' "$d/bd.calls") -gt 0 && $(grep -c '|create \[ship-post\] INFRA exit 71.*contour:delivery' "$d/bd.calls") == 1 && $(grep -c '|update dcfg-park.1 --add-label delivery-blocked' "$d/bd.calls") == 1 && $out == *'ship-post: parked: dcfg-park.1 incident test-infra'* ]] && park_ok=1
+
+ setup_submit pdup codex/dcfg-pdup.1; commit_candidate dcfg-pdup.1
+ make_worktree "$d" wt2 codex/dcfg-pdup.2; make_worktree "$d" wt3 codex/dcfg-pdup.3
+ i=2
+ for w in "$d/.worktrees/codex/wt2" "$d/.worktrees/codex/wt3"; do
+  atom="dcfg-pdup.$i"; git -C "$w" commit -q --allow-empty -m candidate -m "$(printf 'ТЗ: %s#U2\nAtom: %s\nAgent: codex' "$w/$tz" "$atom")"; i=$((i + 1))
+ done
+ echo open > "$d/status.test-infra"
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_RC=30; run_tool "$d" 2>&1); rc=$?
+ for i in $(seq 1 50); do [[ $(grep -c 'update test-infra --append-notes dcfg-pdup.' "$d/bd.calls") == 3 ]] && break; sleep 0.2; done
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_RC=30; run_tool "$d" 2>&1); rc=$?
+ [[ $rc == 0 && $(grep -c '|create ' "$d/bd.calls") == 1 && $(grep -c 'update test-infra --append-notes dcfg-pdup.' "$d/bd.calls") == 3 ]] && pdup_ok=1
+
+ setup_submit pci codex/dcfg-pci.1; commit_candidate dcfg-pci.1
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_RC=40; run_tool "$d" 2>&1); rc=$?
+ for i in $(seq 1 50); do grep -q '|reopen dcfg-pci.1' "$d/bd.calls" && break; sleep 0.2; done
+ [[ $rc == 0 && $(grep -c '|reopen dcfg-pci.1' "$d/bd.calls") == 1 && ! -s <(grep '|create ' "$d/bd.calls") && ! -s <(grep 'delivery-blocked' "$d/bd.calls") ]] && pci_ok=1
+
+ setup_submit psubmit codex/dcfg-psubmit.1; commit_candidate dcfg-psubmit.1
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_RC=50; run_tool "$d" 2>&1); rc=$?
+ for i in $(seq 1 50); do grep -q '|reopen dcfg-psubmit.1' "$d/bd.calls" && break; sleep 0.2; done
+ [[ $rc == 0 && $(grep -c '|reopen dcfg-psubmit.1' "$d/bd.calls") == 1 && ! -s <(grep '|create ' "$d/bd.calls") && ! -s <(grep 'delivery-blocked' "$d/bd.calls") ]] && psubmit_ok=1
+
+ setup_submit unpark codex/dcfg-unpark.1; commit_candidate dcfg-unpark.1; echo open > "$d/status.test-infra"
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_RC=30; run_tool "$d" 2>&1); rc=$?
+ for i in $(seq 1 50); do [[ -f $d/state/incidents/parked/dcfg-unpark.1 ]] && break; sleep 0.2; done
+ h=$(git -C "$wt" rev-parse HEAD)
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex; run_tool "$d" 2>&1); rc=$?
+ for i in $(seq 1 50); do grep -Fqx "$h" "$d/merged" 2>/dev/null && break; sleep 0.2; done
+ [[ $rc == 0 && $(grep -c '|update dcfg-unpark.1 --remove-label delivery-blocked' "$d/bd.calls") == 1 && $(grep -c "|update test-infra --append-notes delivered dcfg-unpark.1 $h" "$d/bd.calls") == 1 && ! -f $d/state/incidents/parked/dcfg-unpark.1 && $(grep -c -F "$h" "$d/merged") == 1 ]] && unpark_ok=1
+ [[ $pdup_ok == 1 ]] && pass park_dedup || fail park_dedup "rc=$rc: $out"
+ [[ $pci_ok == 1 ]] && pass park_ci_author || fail park_ci_author "rc=$rc: $out"
+ [[ $psubmit_ok == 1 ]] && pass park_submit_author || fail park_submit_author "rc=$rc: $out"
+ [[ $unpark_ok == 1 ]] && pass park_unpark || fail park_unpark "rc=$rc: $out"
+ [[ $park_ok == 1 ]] && pass park_infra || fail park_infra "rc=$park_rc: $park_out"
+}
+
 test_adr35(){
  local out rc wt_a wt_b
  setup_submit adr35 codex/dcfg-adr35.a; wt_a=$wt; commit_candidate dcfg-adr35.a
@@ -646,12 +690,14 @@ elif [[ ${SHIP_POST_TEST_GROUP:-all} == recovery ]]; then
 	 test_u15
 	elif [[ ${SHIP_POST_TEST_GROUP:-all} == adr30 ]]; then
 	 test_adr30
+	elif [[ ${SHIP_POST_TEST_GROUP:-all} == park ]]; then
+	 test_park
 	elif [[ ${SHIP_POST_TEST_GROUP:-all} == lock ]]; then
 	 test_watch_lock_released
 	elif [[ ${SHIP_POST_TEST_GROUP:-all} == adr35 ]]; then
 	 test_adr35
 else
-	 test_dryrun_mocks; test_valid_actors; test_rejections; test_hook_and_retry; test_closed_retry; test_delivery; test_live_sync; test_watch; test_recovery; test_stream_errors; test_closed_skip_reason; test_concurrent_repositories; test_watch_lock_released; test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery; test_actor_alias; test_nested_repo; test_final_states; test_submit_conflict_preflight; test_u15; test_adr30; test_adr35
+	 test_dryrun_mocks; test_valid_actors; test_rejections; test_hook_and_retry; test_closed_retry; test_delivery; test_live_sync; test_watch; test_recovery; test_stream_errors; test_closed_skip_reason; test_concurrent_repositories; test_watch_lock_released; test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery; test_actor_alias; test_nested_repo; test_final_states; test_submit_conflict_preflight; test_u15; test_adr30; test_park; test_adr35
 fi
 echo "checks=$checks failures=$failures"
 [[ $failures == 0 ]]
