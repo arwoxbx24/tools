@@ -149,11 +149,14 @@ run_form() (
         fi
     fi
     model=${override:-$model}
+    # 10.10 владелец: форма 3 + --model opencode-go/<id> — подписка OpenCode Go, whitelist OpenRouter не применяется
+    if [[ $n != 3 || $model != opencode-go/* ]]; then
     [[ $model == "$provider/"* ]] || exit 15
     mid=${model#*/}
     config=${XDG_CONFIG_HOME:-$HOME/.config}/opencode/opencode.jsonc
     ids=$(jq -Rs --argjson n "$n" 'gsub("(?m)^\\s*//[^\\n]*"; "") | gsub(",\\s*(?<end>[}\\]])"; .end) | fromjson | if $n == 1 then .provider.bitrixgpt.models | keys else .provider.openrouter.whitelist end' "$config" 2>/dev/null) || exit 15
     jq -e --arg id "$mid" 'index($id) != null' <<<"$ids" >/dev/null 2>&1 || exit 15
+    fi
     if [[ $n == 1 ]]; then
         resphdr=$(mktemp "${TMPDIR:-/tmp}/code-channel-resphdr-XXXXXX") || exit 3
         respbody=$(mktemp "${TMPDIR:-/tmp}/code-channel-respbody-XXXXXX") || exit 3
