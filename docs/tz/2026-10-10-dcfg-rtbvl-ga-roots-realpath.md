@@ -17,6 +17,8 @@
    ```
    Последнюю строку заменить на `[[ $sum == 15 ]]`.
 
+3. `docs/ship-post-ARCHITECTURE.md` §6 — строка о молчаливом пропуске `<repo>/.git/.git` в `ga_roots` (гейт CI `bin/ship-doc-check`: правка `bin/git-auto-lib` требует правки этой доки).
+
 Не менять: `bin/ship`, `bin/ship-post`, `bin/ship-promote`, `bin/git-sync`, прочие строки `bin/git-auto-lib`.
 
 Паспорт источников:
