@@ -352,5 +352,13 @@ printf 'x\n' > "$d/stand2/repo/.beads/config"
 err=$("$bin/safe-delete" --bk "$bk" dir "$d/stand2" 2>&1); r51=$?
 if [[ $r51 == 2 && $err == *'запрещённый сегмент'* && -d $d/stand2 ]]; then echo 'PASS T51 beads_still_refused'; ok=$((ok+1)); else echo "FAIL T51 beads_still_refused: rc=$r51 err=$err"; fi
 
-[[ $ok == 51 ]] || exit 1
-echo "итог: PASS 51, FAIL 0"
+# T52: dir removes live symlink, target outside d survives
+mkdir -p "$d/dir-symlink"
+printf 'f\n' > "$d/dir-symlink/f"
+printf 'target\n' > "$d/dir-symlink-target"
+ln -s "$d/dir-symlink-target" "$d/dir-symlink/l"
+"$bin/safe-delete" --bk "$bk" dir "$d/dir-symlink" >/dev/null; r52=$?
+if [[ $r52 == 0 && ! -d $d/dir-symlink && -f $d/dir-symlink-target ]]; then echo 'PASS T52 dir_symlink_removed'; ok=$((ok+1)); else echo "FAIL T52: rc=$r52"; fi
+
+[[ $ok == 52 ]] || exit 1
+echo "итог: PASS 52, FAIL 0"

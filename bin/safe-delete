@@ -121,10 +121,18 @@ case "$cmd" in
   dir)
     [[ $# -eq 1 ]] || refuse 'usage'; check_path "$1"; dir=$p; [[ -d $dir ]] || refuse "не каталог: $dir"
     if self_contained "$dir"; then allow_git_under=$dir; else allow_git_under=; fi
-    mapfile -d '' entries < <(find "$dir" -depth -print0); for entry in "${entries[@]}"; do check_path "$entry"; done
+    mapfile -d '' entries < <(find "$dir" -depth -print0); for entry in "${entries[@]}"; do [[ -L $entry ]] || check_path "$entry"; done
     mapfile -d '' files < <(find "$dir" -type f -print0)
     for f in "${files[@]}"; do check_file "$f"; done
     for f in "${files[@]}"; do delete_file "$f" || exit 1; done
+    mapfile -d '' links < <(find "$dir" -type l -print0)
+    for link in "${links[@]}"; do
+      [[ $link == "$dir" || $link == "$dir"/* ]] || refuse "ссылка вне dir: $link"
+      t=$(readlink -- "$link") || exit 1
+      log link "$link" - - "$t" - deleted || exit 1
+      rm -- "$link" || exit 1
+      echo "удалено: $link -> $t | основание: симлинк внутри dir, цель не тронута"
+    done
     find "$dir" -depth -type d -empty -exec rmdir -- {} \;
     exit 0
     ;;
