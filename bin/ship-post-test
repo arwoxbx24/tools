@@ -327,6 +327,19 @@ test_concurrent_repositories(){
  [[ $(wc -l < "$d/ship.calls") == 2 ]] && pass restart_no_duplicate || fail restart_no_duplicate "$out"
 }
 
+test_watch_lock_released(){
+ local out t m w a i
+ setup_submit lockrel codex/dcfg-lockrel.1; commit_candidate dcfg-lockrel.1; : > "$d/events"
+ ( export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_DELAY=6 TEST_TIMEOUT=12; run_tool "$d" --watch ) >"$d/a.log" 2>&1 & a=$!
+ for i in $(seq 1 50); do [[ -s $d/ship.calls ]] && break; sleep 0.2; done
+ t=$(pgrep -n -f "^timeout .*$d/bin/ship-post --watch"); m=$(pgrep -P "$t")
+ w=$(pgrep -o -P "$m"); kill -TERM "$w" "$m"
+ for i in $(seq 1 25); do kill -0 "$w" 2>/dev/null || break; sleep 0.2; done
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex TEST_TIMEOUT=2; run_tool "$d" --watch 2>&1)
+ [[ -n $m && $out != *'watcher already active'* ]] && pass watch_lock_released || fail watch_lock_released "m=$m $out"
+ wait "$a"
+}
+
 test_service_recovery(){
  local out rc key h receipt
  setup_submit api_recover codex/dcfg-api.1; commit_candidate dcfg-api.1
@@ -633,10 +646,12 @@ elif [[ ${SHIP_POST_TEST_GROUP:-all} == recovery ]]; then
 	 test_u15
 	elif [[ ${SHIP_POST_TEST_GROUP:-all} == adr30 ]]; then
 	 test_adr30
+	elif [[ ${SHIP_POST_TEST_GROUP:-all} == lock ]]; then
+	 test_watch_lock_released
 	elif [[ ${SHIP_POST_TEST_GROUP:-all} == adr35 ]]; then
 	 test_adr35
 else
-	 test_dryrun_mocks; test_valid_actors; test_rejections; test_hook_and_retry; test_closed_retry; test_delivery; test_live_sync; test_watch; test_recovery; test_stream_errors; test_closed_skip_reason; test_concurrent_repositories; test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery; test_actor_alias; test_nested_repo; test_final_states; test_submit_conflict_preflight; test_u15; test_adr30; test_adr35
+	 test_dryrun_mocks; test_valid_actors; test_rejections; test_hook_and_retry; test_closed_retry; test_delivery; test_live_sync; test_watch; test_recovery; test_stream_errors; test_closed_skip_reason; test_concurrent_repositories; test_watch_lock_released; test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery; test_actor_alias; test_nested_repo; test_final_states; test_submit_conflict_preflight; test_u15; test_adr30; test_adr35
 fi
 echo "checks=$checks failures=$failures"
 [[ $failures == 0 ]]

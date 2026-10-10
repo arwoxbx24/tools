@@ -554,6 +554,7 @@ do_watch() (
  trap 'exit 143' TERM INT
  for repo in "${_repos[@]}"; do
   (
+   exec {watcher_lock}>&-
    local pending atoms atom failed
    pending="$SHIP_POST_STATE_DIR/pending/$(slugify "$repo")"
    while [[ ! -f $tmp/stop ]]; do
@@ -584,7 +585,7 @@ do_watch() (
   ) & workers+=("$!")
  done
  # Native --follow owns the journal polling. The coordinator never starts a model.
- coproc JOURNAL { cd "$SHIP_POST_BEADS_ROOT" && exec env BEADS_ACTOR="${BEADS_ACTOR:-Codex}" bd events tail --since "$seq" --follow --json 2>&1; }
+ coproc JOURNAL { exec {watcher_lock}>&-; cd "$SHIP_POST_BEADS_ROOT" && exec env BEADS_ACTOR="${BEADS_ACTOR:-Codex}" bd events tail --since "$seq" --follow --json 2>&1; }
  journal_pid=$JOURNAL_PID; exec {reader_fd}<&"${JOURNAL[0]}"
  while :; do
   for pid in "${workers[@]}"; do kill -0 "$pid" 2>/dev/null || die 'repository worker exited; restart required'; done
