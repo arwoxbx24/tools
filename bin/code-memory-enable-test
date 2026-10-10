@@ -161,6 +161,12 @@ OUT="$TMP/out/child"; mkrepo "$OUT"
 set +e; "$enable" "$OUT" >/dev/null 2>&1; rc=$?; set -e
 [ "$rc" -eq 2 ] || fail "о: outside-root rc=$rc (want 2)"
 
+# (о2) CME_TOOLS_ROOT itself passes allowlist (line 191) — no skip, rc != 2
+T4="$TMP/tools-root"; mkrepo "$T4"
+set +e; out="$(CME_TOOLS_ROOT="$T4" "$enable" "$T4" 2>&1)"; rc=$?; set -e
+[ "$rc" -ne 2 ] || fail "о2: rc=$rc (want != 2)"
+echo "$out" | grep -q '^skip:' && fail "о2: skip output" || true
+
 # (п) no .repowise -> init; .repowise without state.json -> init;
 #     .repowise with state.json -> update --index-only
 P="$TMP/p"; mkrepo "$P"
