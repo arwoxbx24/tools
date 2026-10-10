@@ -303,9 +303,21 @@ record_failure(){
 }
 
 report_closed_skip(){
- local repo=$1 atom=$2 head=$3 branch=$4 status=$5 cause=$6 key
+ local repo=$1 atom=$2 head=$3 branch=$4 status=$5 cause=$6 wt=$7 key base foreign=0 rc
  [[ $dry_run == 0 && $status == closed ]] || return 0
- case $branch in claude/"$atom"|claude/"$atom"-*|codex/"$atom"|codex/"$atom"-*) ;; *) return 0 ;; esac
+ case $branch in
+  claude/"$atom"|claude/"$atom"-*|codex/"$atom"|codex/"$atom"-*) ;;
+  claude/*|codex/*) foreign=1 ;;
+  *) return 0 ;;
+ esac
+ if [[ $foreign == 1 ]]; then
+  read -r _ base _ <<< "$(ga_base "$wt")"
+  [[ -n $base ]] || return 0
+  git -C "$wt" fetch -q origin "$base" || return 0
+  git -C "$wt" merge-base --is-ancestor "$head" "origin/$base"; rc=$?
+  case $rc in 0) return 0 ;; 1) ;; *) return 0 ;; esac
+  cause="$cause; ветка $branch названа по другой задаче, коммит не в origin/$base"
+ fi
  key=$(receipt_file "$repo" "$atom" "$head")
  [[ -f $key.failed.reported ]] && return 0
  record_failure "$repo" "$atom" "$head" 10 "$cause"
@@ -431,10 +443,10 @@ scan_repo(){
   branch=$(git -C "$wt" symbolic-ref --short -q HEAD) || { skip=$((skip+1)); continue; }
   st=$(bd_cmd show "$atom" --json) || { failed=$((failed+1)); continue; }
   status=$(jq -r '.[0].status' <<<"$st")
-   owner=$(jq -r '.[0].assignee // empty' <<<"$st"); actor=$(actor_name "$owner") || { [[ -n $owner || $status != closed ]] || { echo "skip $atom no assignee"; report_closed_skip "$repo" "$atom" "$head" "$branch" "$status" 'no assignee' || failed=$((failed+1)); }; skip=$((skip+1)); continue; }
+   owner=$(jq -r '.[0].assignee // empty' <<<"$st"); actor=$(actor_name "$owner") || { [[ -n $owner || $status != closed ]] || { echo "skip $atom no assignee"; report_closed_skip "$repo" "$atom" "$head" "$branch" "$status" 'no assignee' "$wt" || failed=$((failed+1)); }; skip=$((skip+1)); continue; }
    owner=codex; [[ $actor == 'Claude Code' ]] && owner=claude
-   [[ $branch == "$owner/$atom" || $branch == "$owner/$atom"-* ]] || { [[ $status != closed ]] || { echo "skip $atom branch $branch != $owner/$atom"; report_closed_skip "$repo" "$atom" "$head" "$branch" "$status" "branch $branch != $owner/$atom" || failed=$((failed+1)); }; skip=$((skip+1)); continue; }
-   [[ -z $agent || $(actor_name "$agent") == "$actor" ]] || { [[ $status != closed ]] || { echo "skip $atom agent mismatch"; report_closed_skip "$repo" "$atom" "$head" "$branch" "$status" 'agent mismatch' || failed=$((failed+1)); }; skip=$((skip+1)); continue; }
+   [[ $branch == "$owner/$atom" || $branch == "$owner/$atom"-* ]] || { [[ $status != closed ]] || { echo "skip $atom branch $branch != $owner/$atom"; report_closed_skip "$repo" "$atom" "$head" "$branch" "$status" "branch $branch != $owner/$atom" "$wt" || failed=$((failed+1)); }; skip=$((skip+1)); continue; }
+   [[ -z $agent || $(actor_name "$agent") == "$actor" ]] || { [[ $status != closed ]] || { echo "skip $atom agent mismatch"; report_closed_skip "$repo" "$atom" "$head" "$branch" "$status" 'agent mismatch' "$wt" || failed=$((failed+1)); }; skip=$((skip+1)); continue; }
   rf=$(receipt_file "$repo" "$atom" "$head")
   if [[ $dry_run == 1 && ( -f $rf || -f $rf.failed || -f $(inflight_file "$repo" "$atom") ) ]]; then
    echo "reconcile $wt $atom"; continue
@@ -463,11 +475,11 @@ scan_repo(){
   if [[ -f $rf.failed ]]; then case $(cat "$rf.failed") in 10|50|80) skip=$((skip+1)); continue ;; esac; fi
   [[ $status == closed ]] || { skip=$((skip+1)); continue; }
   dirty=$(git -C "$wt" status --porcelain=v1 --untracked-files=all) || { failed=$((failed+1)); continue; }
-   [[ -z $dirty ]] || { echo "skip $atom dirty worktree"; report_closed_skip "$repo" "$atom" "$head" "$branch" "$status" 'dirty worktree' || failed=$((failed+1)); skip=$((skip+1)); continue; }
+   [[ -z $dirty ]] || { echo "skip $atom dirty worktree"; report_closed_skip "$repo" "$atom" "$head" "$branch" "$status" 'dirty worktree' "$wt" || failed=$((failed+1)); skip=$((skip+1)); continue; }
   # Normalize legacy absolute and current worktree-relative TZ without escaping the worktree.
   [[ $tz == /* ]] || tz="$wt/$tz"
   tz="$(realpath -m "${tz%%#*}")#${tz#*#}"
-   [[ ${tz%%#*} == "$wt/"* && -f ${tz%%#*} ]] || { [[ $status != closed ]] || { echo "skip $atom tz not a file in worktree"; report_closed_skip "$repo" "$atom" "$head" "$branch" "$status" 'tz not a file in worktree' || failed=$((failed+1)); }; skip=$((skip+1)); continue; }
+   [[ ${tz%%#*} == "$wt/"* && -f ${tz%%#*} ]] || { [[ $status != closed ]] || { echo "skip $atom tz not a file in worktree"; report_closed_skip "$repo" "$atom" "$head" "$branch" "$status" 'tz not a file in worktree' "$wt" || failed=$((failed+1)); }; skip=$((skip+1)); continue; }
   if [[ $dry_run == 1 ]]; then echo "ready $wt $atom"; continue; fi
   while (( $(jobs -rp | wc -l) >= jobs_max )); do wait -n; done
   (BEADS_ACTOR=$actor; deliver_one "$wt" "$atom" "$tz" "$head" "$repo" "$branch") & pids+=("$!")

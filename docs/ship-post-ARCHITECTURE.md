@@ -77,7 +77,7 @@ Default state root is `/root/workspaces/tools/state/ship-post` (`SHIP_POST_STATE
 - No CI: a nonempty all-`.md` diff prints `gate:auto docs-only` and merges after the mergeability check; other changes return `prod:wait-owner no-ci` after branch push and PR creation, and production requires the owner’s word through `ship-promote`.
 - Guarded repository: `bin/git-auto-lib:ga_skip_reason` returns `allowlist` or `hh-scoring`; `ship` returns `prod:hold guarded <reason>` after local commit and dev-ready ref, before any remote action. `ship-post` serves these roots and stores a final `prod-hold` receipt; `git-sync` emits `skip:<reason>`.
 - Nested `.git` without a work tree (`<repo>/.git/.git`): `bin/git-auto-lib:ga_roots` skips it silently — `--show-toplevel` is empty and `realpath` stderr is discarded, so `ship` output carries no `realpath: ''` line (dcfg-rtbvl, test T10 in `bin/git-auto-lib-test`).
-- Closed atom skipped (ADR-29): `bin/ship-post:report_closed_skip` turns any skip of a closed atom on branch `claude|codex/<atom>-*` (no assignee, branch/agent mismatch, dirty worktree, TЗ outside worktree) into `record_failure` code 10 with action `сдай через ship-post --submit`, once per atom+SHA.
+- Closed atom skipped (ADR-29): `bin/ship-post:report_closed_skip` turns any skip of a closed atom on branch `claude|codex/<atom>-*` (no assignee, branch/agent mismatch, dirty worktree, TЗ outside worktree), and a differently named `claude|codex/*` branch whose SHA is not in `origin/<base>`, into `record_failure` code 10 with action `сдай через ship-post --submit`, once per atom+SHA.
 - `bin/git-auto-lib` начинается с `#!/usr/bin/env bash`, чтобы repowise индексировал функции `ga_*`.
 
 ## 7. Наблюдаемость
