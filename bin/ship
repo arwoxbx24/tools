@@ -196,7 +196,7 @@ fi
 gh_or70(){ local e; e=$("$@" 2>&1 >/dev/null) && return 0; echo "ship: gh: $e" >&2; grep -qiE 'HTTP 40[13]|HTTP 5[0-9][0-9]|authentication|could not connect|timeout|Something went wrong' <<<"$e" && leave 70 gh; return 1; }
 
 ga_lock "$name" 60
-gh_or70 gh pr merge "$num" -R "$slug" --squash --match-head-commit "${expected_head:-$(git -C "$wtr" rev-parse HEAD)}" || leave 50 merge
+gh_or70 gh pr merge "$num" -R "$slug" --merge --match-head-commit "${expected_head:-$(git -C "$wtr" rev-parse HEAD)}" || leave 50 merge
 merge_sha=$(gh pr view "$num" -R "$slug" --json mergeCommit --jq .mergeCommit.oid)
 gg_log 0 "merged $num $merge_sha"
 merge_ms=$(( $(date +%s) * 1000 ))

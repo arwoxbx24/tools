@@ -84,8 +84,11 @@ case $1:$2 in
 		git clone -q "$origin" "$tmp" && git -C "$tmp" config user.email t@t \
 			&& git -C "$tmp" config user.name t \
 			&& git -C "$tmp" fetch -q origin "refs/heads/$base:refs/remotes/origin/$base" "$branch:refs/remotes/origin/$branch" \
-			&& git -C "$tmp" checkout -q -B "$base" "origin/$base" && git -C "$tmp" merge --squash "origin/$branch" \
-			&& git -C "$tmp" commit -q -m squash \
+			&& git -C "$tmp" checkout -q -B "$base" "origin/$base" && case " $* " in
+				*" --merge "*) git -C "$tmp" merge -q --no-ff --no-edit "origin/$branch" ;;
+				*" --squash "*) git -C "$tmp" merge --squash "origin/$branch" && git -C "$tmp" commit -q -m squash ;;
+				*) false ;;
+			esac \
 			&& git -C "$tmp" push -q origin "HEAD:refs/heads/$base" && git -C "$tmp" rev-parse HEAD > "$GH_TEST_DIR/merge-sha" \
 			|| { echo "merge-fail base=$base branch=$branch" >> "$GH_TEST_DIR/merge-dbg"; git -C "$tmp" branch -a >> "$GH_TEST_DIR/merge-dbg" 2>&1; git -C "$tmp" merge --abort >/dev/null 2>&1; exit 1; }
 		rm -rf "$tmp" ;;
@@ -145,6 +148,24 @@ ship(){ ( cd "$1" && GH_ORIGIN="$(git -C "$1" config remote.origin.url)" "$bin/s
 p(){ echo "PASS $1"; ok=$((ok+1)); }
 f(){ echo "FAIL $1"; bad=1; }
 ok=0
+
+ship_stack(){ # ADR-26: parent remains an ancestor of main, so the child can ship.
+	local n=$1 a b parent rca rcb ancestor
+	rm -f "$GH_CREATED"
+	mkrepo "$n" 1
+	a=$(mkwt "$n" "claude/$n-a")
+	printf 'parent\n' >> "$a/f.txt"
+	ship "$a" >/dev/null 2>&1; rca=$?
+	parent=$(git -C "$a" rev-parse HEAD)
+	rm -f "$GH_CREATED"
+	b="$GA_WT_ROOT/claude/$n-b"
+	git -C "$GA_PROJECTS/$n" worktree add -q -b "claude/$n-b" "$b" "$parent"
+	printf 'child\n' >> "$b/f.txt"
+	ship "$b" >/dev/null 2>&1; rcb=$?
+	git -C "$GA_PROJECTS/$n" fetch -q origin main
+	git -C "$b" merge-base --is-ancestor "$parent" origin/main; ancestor=$?
+	[[ $rca == 0 && $rcb == 0 && $ancestor == 0 ]]
+}
 
 mkrepo(){ # name [ci] — bare+clone в GA_PROJECTS, main; [ci] добавляет workflow в origin/main
 	local n=$1 ci=${2:-0}
@@ -348,6 +369,9 @@ whh=$(mkwt hh-scoring-dev claude/hhguard); printf 'guarded\n' >> "$whh/f.txt"
 out=$(ship "$whh" 2>&1); rc=$?
 git -C "$d/origin-hh-scoring-dev.git" show-ref --verify --quiet refs/heads/claude/hhguard; hh_push=$?
 [[ $rc == 0 && $out == *'prod:hold guarded'* && ! -s $GH_JOURNAL && $hh_push != 0 ]] && p 43 || f 43
+
+# U13 (ADR-26): branch B starts at A and remains mergeable after A reaches main.
+ship_stack u13stack && p U13-stack || f U13-stack
 
 # U4: код-архив вызывается только для slug arwoxbx24/<имя> после доставки.
 # ship через симлинк в $d/bin, чтобы $bin=$d/bin и $bin/code-archive был заглушкой.
