@@ -126,5 +126,7 @@ check 32 '[[ $rc == 0 && $err == *"форма codex: git только для ч�
   env CODEX_ERR='Read-only file system' CODEX_RC=1 CODEX_TOUCH=codex-change "$root/bin/code-channel" 2 "$project" "$tz"
 CC_CONFIG=$disabled check 33 '[[ $rc == 0 ]]' \
   env OPENCODE_RC=1 CODEX_RC=0 "$root/bin/code-channel" auto "$nogit" "$tz"
+CC_CONFIG=$disabled check 34 '[[ $rc == 3 && $err == *"выключен в конфиге"* ]]' \
+  "$root/bin/code-channel" 3 "$project" "$tz"
 
-[[ $ok == 33 ]] && echo 'PASS 33/33'
+[[ $ok == 34 ]] && echo 'PASS 34/34'

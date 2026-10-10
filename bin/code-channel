@@ -43,7 +43,7 @@ esac
 if [[ $form == auto || $form == audit ]]; then
     [[ -z $override ]] || exit 3
 else
-    enabled=$(entry_for "$form" | jq -er '.enabled') || exit 3
+    enabled=$(entry_for "$form" | jq -r '.enabled') || exit 3
     [[ $enabled == true ]] || { fail "провайдер $form выключен в конфиге"; exit 3; }
 fi
 [[ -r $tz ]] || { fail 'нет файла ТЗ'; exit 3; }
