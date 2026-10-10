@@ -88,6 +88,8 @@ PM2 declares `/root/.pm2/logs/ship-post-out.log` and `/root/.pm2/logs/ship-post-
 
 `ship-post` reads `SHIP_POST_STATE_DIR`, `SHIP_POST_JOBS`, `SHIP_POST_BEADS_ROOT`, `SHIP_POST_SINCE`, `SHIP_POST_RETRY_SECONDS`, `SHIP_POST_REPOS` and `BEADS_ACTOR`. `git-auto-lib` defaults include `GA_PROJECTS=/root/workspaces/projects`, `GA_TOOLS=/root/workspaces/tools`, `GA_CONTOUR_GITDIR=/root/workspaces/system/contour-config.git` and `GA_CONTOUR_WT=/root`; `git-sync` and `git-state` use `GA_LOG_DIR` when set. `ship` defaults `BEADS_DIR` to `/root/workspaces/projects/.beads` and discovers worktrees under `/root/workspaces/projects/.worktrees` unless `GA_WT_ROOT` is set. PM2 hard-codes `/root/workspaces/tools/bin/ship-post` in `ecosystem.config.js`.
 
+pm2 restarts `ship-post` when `bin/ship-post` or `bin/git-auto-lib` changes (`watch` in `ecosystem.config.js`); an interrupted delivery is reconciled from GitHub on startup.
+
 ## 9. Тесты и CI
 
 `bin/ship-post-test` is the isolated behavioural suite for submit, courier, receipts, watcher and actor parity. `bin/ship-test` exercises the lower `ship` delivery flow. `bin/ship-doc-check` fails a chain-script diff without this document and checks every backticked anchor in the `file:function` form. `bin/ship-doc-check-test` covers its four required temporary-repository cases.
