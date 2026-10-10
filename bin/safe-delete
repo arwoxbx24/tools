@@ -202,7 +202,17 @@ case "$cmd" in
       refuse "некорректный SAFE_DELETE_GH: $GH"
     fi
     shah=$(git -C "$repo" ls-remote origin "refs/heads/$br" | awk -v r="refs/heads/$br" '$2==r{print $1}') || exit 1
-    [[ -n $shah ]] || refuse "нет на origin: $br"; sha=$shah
+    if [[ -z $shah ]]; then
+      sha=$(git -C "$repo" rev-parse --verify --quiet "refs/heads/$br") || sha=
+      git -C "$repo" merge-base --is-ancestor "$sha" origin/main 2>/dev/null || {
+        [[ -n $sha && $GH == true ]] || refuse "нет на origin: $br"
+        m=$(gh pr list --head "$br" --state merged --repo "$rr" --json headRefOid -q '.[].headRefOid') || fail "gh pr list --state merged"
+        grep -qxF -- "$sha" <<<"$m" || refuse "нет на origin: $br"; }
+      git -C "$repo" update-ref -d "refs/heads/$br" "$sha" || exit 1
+      log branch "$(realpath "$repo"):$br" "$sha" - - - deleted || exit 1
+      exit 0
+    fi
+    sha=$shah
     git -C "$repo" fetch -q origin "$br" main || exit 1
     est=$(git -C "$repo" bundle create - "refs/remotes/origin/$br" --not origin/main 2>/dev/null | wc -c)
     avail=$(df --output=avail -B1 "$BK" | tail -1)
