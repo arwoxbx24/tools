@@ -75,6 +75,7 @@ Default state root is `/root/workspaces/tools/state/ship-post` (`SHIP_POST_STATE
 - SHA change: an `inflight` record with another SHA becomes code 24 in `bin/ship-post:deliver_one`, except when the old SHA is an ancestor of the new SHA and its PR is not merged: the courier records `superseded <old> -> <new>` and continues with the new head.
 - No CI: a nonempty all-`.md` diff prints `gate:auto docs-only` and merges after the mergeability check; other changes return `prod:wait-owner no-ci` after branch push and PR creation, and production requires the owner’s word through `ship-promote`.
 - Guarded repository: `bin/git-auto-lib:ga_skip_reason` returns `allowlist` or `hh-scoring`; `ship` returns `prod:hold guarded <reason>` after local commit and dev-ready ref, before any remote action. `ship-post` serves these roots and stores a final `prod-hold` receipt; `git-sync` emits `skip:<reason>`.
+- Nested `.git` without a work tree (`<repo>/.git/.git`): `bin/git-auto-lib:ga_roots` skips it silently — `--show-toplevel` is empty and `realpath` stderr is discarded, so `ship` output carries no `realpath: ''` line (dcfg-rtbvl, test T10 in `bin/git-auto-lib-test`).
 
 ## 7. Наблюдаемость
 
