@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set +x
 set -uo pipefail
-case ${1:-} in -h|--help) echo "usage: code-channel <form> <project> <tz> [--model provider/model]  (runs the selected code or audit provider)"; exit 0;; esac
+case ${1:-} in -h|--help) printf '%s\n' 'usage: code-channel <form> <project> <tz> [--model provider/model]  (runs the selected code or audit provider)' 'конфиг: config/code-channel.json; справка: docs/code-channel.md'; exit 0;; esac
 # spec:035: only this invocation's temporary files are cleaned; no stale-file sweep.
 fail() { printf 'code-channel: %s\n' "$*" >&2; }
 root=$(cd -- "$(dirname -- "$0")/.." && pwd) || exit 3
@@ -11,6 +11,7 @@ if [[ $# == 1 && $1 == --plan ]]; then
     jq -r '.ladder[] | select(.enabled) | [.id, (.model | if . == "" then "-" else . end), ((.effort // "") | if . == "" then "-" else . end)] | join(" ")' "$config"
     exit 0
 fi
+[[ -z ${CODE_CHANNEL_ACTIVE:-} ]] || { fail 'рекурсия запрещена (CODE_CHANNEL_ACTIVE)'; exit 30; }
 S=${CODE_CHANNEL_STATE:-/root/workspaces/tools/state/code-channel}
 mkdir -p "$S" || exit 3
 write_block() {
@@ -42,15 +43,17 @@ esac
 if [[ $form == auto || $form == audit ]]; then
     [[ -z $override ]] || exit 3
 else
-    enabled=$(entry_for "$form" | jq -er '.enabled') || exit 3
+    enabled=$(entry_for "$form" | jq -r '.enabled') || exit 3
     [[ $enabled == true ]] || { fail "провайдер $form выключен в конфиге"; exit 3; }
 fi
 [[ -r $tz ]] || { fail 'нет файла ТЗ'; exit 3; }
 prompt=$(cat -- "$tz") || exit 3
 cd -- "$project" || exit 3
+form_snap() { local s; s=$( { git rev-parse HEAD 2>/dev/null; git status --porcelain 2>/dev/null; git diff HEAD 2>/dev/null; } ); [[ -z $s ]] && return 0; printf '%s\n' "$s" | cksum; }
 run_form() (
+    export CODE_CHANNEL_ACTIVE=1
     id=$1; start=$SECONDS; pre=-; run=-; hdr=; tmpjson=; resphdr=; respbody=; codetmp=
-    IFS=$'\034' read -r model name secret base < <(entry_for "$id" | jq -r '[.model,.key // "",.secret // "",.base // ""] | join("\u001c")') || exit 3
+    IFS=$'\034' read -r model name secret base effort < <(entry_for "$id" | jq -r '[.model,.key // "",.secret // "",.base // "",.effort // ""] | join("\u001c")') || exit 3
     model=${override:-$model}
     id_run="cc-$(date +%s)-$$"
     write_journal() {
@@ -107,21 +110,29 @@ run_form() (
         [[ -z $override || $model == ?*/?* ]] || exit 15
         orig_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
         prompt=$(printf 'Ты уже исполнитель внутри code-channel: правь файлы сам; code-channel, opencode run, codex exec не вызывай\n\n%s' "$prompt")
-        prompt=$(printf 'Не создавай и не переключай ветки; пиши и коммить только в текущую ветку\n\n%s' "$prompt")
+        prompt=$(printf 'Не создавай и не переключай ветки; не делай git add и git commit — коммит делает оркестратор\n\n%s' "$prompt")
         prompt=$(printf 'Не вызывай bd: трекер ведёт оркестратор\n\n%s' "$prompt")
+        codex_args=(-c "model_reasoning_effort=\"$effort\"")
+        [[ -z $model ]] || codex_args+=(-m "$model")
         started=$SECONDS
         if [[ $mode == audit ]]; then
-            timeout 590 codex exec -p quota-terra -s read-only "$prompt"; run=$?
+            timeout 590 codex exec -p quota-terra "${codex_args[@]}" -s read-only "$prompt"; run=$?
         else
             gcd=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
             add_dir=()
             [[ -n $gcd ]] && add_dir+=(--add-dir "$gcd")
             codetmp=$(mktemp "${TMPDIR:-/tmp}/code-channel-codex-XXXXXX") || exit 3
-            timeout 590 codex exec -p quota-terra -s workspace-write "${add_dir[@]}" \
+            codex_before=$(form_snap)
+            timeout 590 codex exec -p quota-terra "${codex_args[@]}" -s workspace-write "${add_dir[@]}" \
                 -c sandbox_workspace_write.network_access=true "$prompt" 2> >(tee -- "$codetmp" >&2); run=$?
             if [[ $run != 0 ]] && grep -q -- 'Read-only file system' "$codetmp"; then
-                printf 'code-channel: form=codex среда: read-only\n' >&2
-                exit 24
+                if [[ $(form_snap) != "$codex_before" ]]; then
+                    printf 'code-channel: форма codex: git только для чтения, правки есть\n' >&2
+                    run=0
+                else
+                    printf 'code-channel: form=codex среда: read-only\n' >&2
+                    exit 24
+                fi
             fi
         fi
         [[ $run == 0 || $run == 124 || $((SECONDS-started)) -gt 30 ]] || exit 21
@@ -222,7 +233,6 @@ if [[ $form != auto && $form != audit ]]; then
 fi
 mapfile -t ladder < <(jq -r '.ladder[] | select(.enabled) | .id' "$config")
 [[ ${#ladder[@]} -gt 0 ]] || exit 3
-form_snap() { local s; s=$( { git rev-parse HEAD 2>/dev/null; git status --porcelain 2>/dev/null; git diff HEAD 2>/dev/null; } ); [[ -z $s ]] && return 0; printf '%s\n' "$s" | cksum; }
 for i in "${!ladder[@]}"; do
     id=${ladder[$i]}
     if [[ $id == bitrixgpt && -f $S/bitrixgpt.block ]]; then
@@ -244,7 +254,7 @@ for i in "${!ladder[@]}"; do
                 exit 22
             fi
             exit 0
-        elif [[ $after == "$before" ]]; then
+        elif [[ -n $before || -n $after ]] && [[ $after == "$before" ]]; then
             printf 'code-channel: form=%s rc=0 без изменений\n' "$id" >&2
             (( i + 1 == ${#ladder[@]} )) && exit 16
             rc=1
