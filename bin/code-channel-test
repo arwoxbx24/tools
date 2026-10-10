@@ -148,4 +148,7 @@ CC_CONFIG=$go check 39 '[[ $rc == 0 && $(<"$tlog") == 590 ]]' \
 check 40 '[[ $rc == 3 && $err == *"project must be absolute path"* ]]' \
   "$root/bin/code-channel" auto rel/path "$tz"
 
-[[ $ok == 40 ]] && echo 'PASS 40/40'
+CC_CONFIG=$go check 41 '[[ $rc == 0 ]] && grep -Fq -- "не делай git add и git commit" "$log"' \
+  env OPENCODE_RC=0 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
+
+[[ $ok == 41 ]] && echo 'PASS 41/41'
