@@ -70,8 +70,8 @@ events) [[ -z ${EVENT_STDERR:-} ]] || printf '%s\n' "$EVENT_STDERR" >&2
   printf '%s\n' '{"seq":2,"op":"close","issue":{"status":"closed"}}'
  fi
  while :; do /bin/sleep 1; done ;;
-create) echo "$2" > "$SHIP_POST_TEST_DIR/issue-title"; echo test-infra ;;
-search) if [[ -f $SHIP_POST_TEST_DIR/issue-title ]]; then jq -n --arg title "$(cat "$SHIP_POST_TEST_DIR/issue-title")" '[{id:"test-infra",title:$title,status:"open"}]'; else echo '[]'; fi ;;
+create) printf 'test-infra-%s|%s\n' "$(( $(wc -l < "$SHIP_POST_TEST_DIR/issues" 2>/dev/null || echo 0) + 1 ))" "$2" >> "$SHIP_POST_TEST_DIR/issues"; tail -n 1 "$SHIP_POST_TEST_DIR/issues" | cut -d'|' -f1 ;;
+search) [[ -f $SHIP_POST_TEST_DIR/issues ]] && jq -Rn '[inputs | split("|") | {id: .[0], title: .[1], status:"open"}]' "$SHIP_POST_TEST_DIR/issues" || echo '[]' ;;
 update) [[ ! -f $SHIP_POST_TEST_DIR/notes-down ]] || exit 1; printf '%s\n' "${4:-}" >> "$SHIP_POST_TEST_DIR/bd.notes" ;;
 dep) [[ ! -f $SHIP_POST_TEST_DIR/dep-down ]] || exit 1 ;;
 reopen) echo open > "$SHIP_POST_TEST_DIR/status" ;;
@@ -83,7 +83,7 @@ EOF
 printf '%s\n' "$*" >> "$SHIP_POST_TEST_DIR/sync.calls"
 exit "${GIT_SYNC_RC:-0}"
 EOF
-	chmod +x "$d/bin/ship-post" "$d/bin/ship" "$d/bin/gitleaks" "$d/bin/bd" "$d/bin/gh" "$d/bin/git-sync"; : > "$d/ship.calls"; : > "$d/bd.calls"; : > "$d/bd.closes"; : > "$d/sync.calls"
+	chmod +x "$d/bin/ship-post" "$d/bin/ship" "$d/bin/gitleaks" "$d/bin/bd" "$d/bin/gh" "$d/bin/git-sync"; : > "$d/ship.calls"; : > "$d/bd.calls"; : > "$d/bd.closes"; : > "$d/sync.calls"; : > "$d/issues"
 }
 run_tool(){
 	local d=$1; shift
@@ -257,6 +257,15 @@ test_recovery(){
  setup_submit excluded codex/dcfg-excluded.1; commit_candidate dcfg-excluded.1
  out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex TEST_REPOS="$d/not-allowlisted"; run_tool "$d" 2>&1)
  [[ ! -s $d/ship.calls ]] && pass allowlist || fail allowlist "$out"
+}
+test_failure_issue_isolation(){
+	local out rc rc2 first_wt second_wt
+	setup_submit failure_isolation codex/dcfg-failure-a.1; commit_candidate dcfg-failure-a.1; first_wt=$wt
+	make_worktree "$d" second codex/dcfg-failure-b.1; second_wt="$d/.worktrees/codex/second"; wt=$second_wt; commit_candidate dcfg-failure-b.1; wt=$first_wt
+	out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_RC=40; run_tool "$d" --atom dcfg-failure-b.1 2>&1); rc=$?
+	rm -f -- "$d/status"
+	out+=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_RC=40; run_tool "$d" --atom dcfg-failure-a.1 2>&1); rc2=$?
+	[[ $rc != 0 && $rc2 != 0 && $(grep -c '^.*|create ' "$d/bd.calls") == 2 && $(grep -Fc '|dep add dcfg-failure-b.1 test-infra-1' "$d/bd.calls") == 1 && $(grep -Fc '|dep add dcfg-failure-a.1 test-infra-2' "$d/bd.calls") == 1 ]] && pass failure_issue_isolation || fail failure_issue_isolation "$out"
 }
 test_stream_errors(){
  local out rc
@@ -506,11 +515,11 @@ test_final_states(){
 if [[ ${SHIP_POST_TEST_GROUP:-all} == review ]]; then
  test_review_recovery
 elif [[ ${SHIP_POST_TEST_GROUP:-all} == recovery ]]; then
- test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery
+ test_service_recovery; test_failure_issue_isolation; test_recovery_boundaries; test_accepted_ship; test_review_recovery
 	elif [[ ${SHIP_POST_TEST_GROUP:-all} == v4 ]]; then
 	 test_final_states; test_nested_repo
 else
-	 test_dryrun_mocks; test_valid_actors; test_rejections; test_hook_and_retry; test_closed_retry; test_delivery; test_live_sync; test_watch; test_recovery; test_stream_errors; test_closed_skip_reason; test_concurrent_repositories; test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery; test_actor_alias; test_nested_repo; test_final_states
+ test_dryrun_mocks; test_valid_actors; test_rejections; test_hook_and_retry; test_closed_retry; test_delivery; test_live_sync; test_watch; test_recovery; test_stream_errors; test_closed_skip_reason; test_concurrent_repositories; test_service_recovery; test_failure_issue_isolation; test_recovery_boundaries; test_accepted_ship; test_review_recovery; test_actor_alias; test_nested_repo; test_final_states
 fi
 echo "checks=$checks failures=$failures"
 [[ $failures == 0 ]]

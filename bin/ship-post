@@ -262,7 +262,7 @@ record_failure(){
  case $rc in 23|70|75) return 0 ;; esac
  bd_cmd reopen "$atom" >/dev/null || return 1
  bd_cmd update "$atom" --append-notes "ship-post delivery failed: exit $rc; local commit $head retained; inspect courier receipt before retry." >/dev/null || return 1
- t="[ship-post] delivery failure $(basename "$repo") exit $rc"
+ t="[ship-post] delivery failure $(basename "$repo") $atom exit $rc"
  issue=$(bd_cmd search "$t" --status open,in_progress,blocked --json) || return 1
  issue=$(jq -r --arg t "$t" '[.[] | select(.title==$t and .status!="closed")][0].id // empty' <<<"$issue") || return 1
  if [[ -z $issue ]]; then
