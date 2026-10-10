@@ -31,6 +31,37 @@ save_fail() {
     chmod 600 "$S/bitrixgpt-last-fail.txt"
 }
 entry_for() { jq -cer --arg id "$1" '.ladder[] | select(.id == $id)' "$config"; }
+run_guarded() {
+    local tmo=$1 tpid logf size last silent=0 killed=0 rc
+    shift
+    logf=$(mktemp "${TMPDIR:-/tmp}/code-channel-run-XXXXXX") || return 3
+    timeout "$tmo" "$@" >"$logf" 2>&1 &
+    tpid=$!
+    last=$(stat -c %s -- "$logf" 2>/dev/null || echo 0)
+    while kill -0 "$tpid" 2>/dev/null; do
+        sleep 2
+        size=$(stat -c %s -- "$logf" 2>/dev/null || echo 0)
+        if (( size == last )); then
+            silent=$((silent + 2))
+            if (( silent >= ${CODE_CHANNEL_SILENCE:-120} )); then
+                kill "$tpid" 2>/dev/null
+                killed=1
+                break
+            fi
+        else
+            silent=0
+            last=$size
+        fi
+    done
+    wait "$tpid" 2>/dev/null
+    rc=$?
+    cat -- "$logf"
+    rm -f -- "$logf"
+    if (( killed )); then
+        return 124
+    fi
+    return "$rc"
+}
 [[ $# == 3 || $# == 5 ]] || { fail 'usage: form project tz [--model provider/model]'; exit 3; }
 form=$1; project=$2; tz=$3; override=${5:-}
 [[ $project == /* ]] || { fail 'project must be absolute path'; exit 3; }
@@ -231,14 +262,16 @@ run_form() (
     else
         tmo=590
         [[ -n $resume_model ]] && tmo=290
-        timeout "$tmo" opencode run --title "$id_run" -m "$model" "$prompt"; run=$?
+        run_guarded "$tmo" opencode run --title "$id_run" -m "$model" "$prompt"
+        run=$?
     fi
     if [[ $mode == code && $run == 124 && -n $resume_model ]]; then
         db=${CODE_CHANNEL_OPENCODE_DB:-/root/.local/share/opencode/opencode.db}
         session=$(sqlite3 -readonly "$db" "select id from session where title='$id_run' order by time_created desc limit 1" 2>/dev/null)
         if [[ -n $session ]]; then
             printf 'code-channel: resume session=%s model=%s\n' "$session" "$resume_model" >&2
-            timeout 290 opencode run --session "$session" -m "$resume_model" 'Продолжи ТЗ с места остановки: доделай только невыполненное, сделанное не переделывай.'; run=$?
+            run_guarded 290 opencode run --session "$session" -m "$resume_model" 'Продолжи ТЗ с места остановки: доделай только невыполненное, сделанное не переделывай.'
+            run=$?
         fi
     fi
     reconcile "$run"; rc=$?
