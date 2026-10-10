@@ -33,6 +33,7 @@ save_fail() {
 entry_for() { jq -cer --arg id "$1" '.ladder[] | select(.id == $id)' "$config"; }
 [[ $# == 3 || $# == 5 ]] || { fail 'usage: form project tz [--model provider/model]'; exit 3; }
 form=$1; project=$2; tz=$3; override=${5:-}
+[[ $project == /* ]] || { fail 'project must be absolute path'; exit 3; }
 [[ -n $form && $project == /* && ( $# == 3 || $4 == --model ) && ( $# == 3 || -n $override ) ]] || exit 3
 [[ $form == audit ]] && mode=audit || mode=code
 case $form in

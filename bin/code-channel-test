@@ -145,4 +145,7 @@ CC_CONFIG=$resume check 38 '[[ $rc == 0 && $(<"$tlog") == $'"'"'290\n290'"'"' ]]
 CC_CONFIG=$go check 39 '[[ $rc == 0 && $(<"$tlog") == 590 ]]' \
   env OPENCODE_RC=0 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
 
-[[ $ok == 39 ]] && echo 'PASS 39/39'
+check 40 '[[ $rc == 3 && $err == *"project must be absolute path"* ]]' \
+  "$root/bin/code-channel" auto rel/path "$tz"
+
+[[ $ok == 40 ]] && echo 'PASS 40/40'
