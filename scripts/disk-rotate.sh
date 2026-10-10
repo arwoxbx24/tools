@@ -842,7 +842,10 @@ cleanup_backups() {
     els=()
     for el in $mask; do
       [ -e "$el" ] && [ ! -L "$el" ] || continue
-      els+=("$(stat -c %Y "$el" 2>/dev/null || echo 0)"$'\t'"$el")
+      mt=$(stat -c %Y "$el" 2>/dev/null || echo 0)
+      # только бэкапы старше подтверждения владельца (10.10 13:35); новые не трогаются
+      [ "$mt" -lt "${DR_BACKUPS_BEFORE:-0}" ] || continue
+      els+=("$mt"$'\t'"$el")
     done
     [ "${#els[@]}" -gt 0 ] || continue
     keep=(); cnt=0
