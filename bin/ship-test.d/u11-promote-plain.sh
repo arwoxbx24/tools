@@ -27,8 +27,7 @@ case $1:$2 in
 			&& git -C "$tmp" config user.name t \
 			&& git -C "$tmp" fetch -q origin "refs/heads/$head:refs/remotes/origin/$head" \
 			&& git -C "$tmp" checkout -q -B "$prod" "origin/$prod" \
-			&& git -C "$tmp" merge --squash "origin/$head" \
-			&& git -C "$tmp" commit -q -m squash \
+			&& git -C "$tmp" merge -q --no-ff -m merge "origin/$head" \
 			&& git -C "$tmp" push -q origin "HEAD:refs/heads/$prod" \
 			&& git -C "$tmp" rev-parse HEAD > "$GH_TEST_DIR/u11-merge-sha" || exit 1 ;;
 	pr:view) cat "$GH_TEST_DIR/u11-merge-sha" ;;
@@ -63,7 +62,7 @@ u11_repo u11plain
 : > "$GH_JOURNAL"; : > "$d/bd.log"; rm -f "$d/u11-status" "$d/u11-notes"
 ( cd "$GA_PROJECTS/u11plain" && "$bin/ship-promote" "$GA_PROJECTS/u11plain" --atom "$atom" --quote 'цитата U11' ) 2>"$d/u111.err" >/dev/null; rc=$?
 sha=$(<"$d/u11-head-oid"); merge_sha=$(<"$d/u11-merge-sha")
-grep -Fq "pr merge 17 -R - --squash --match-head-commit $sha" "$GH_JOURNAL" && merge_ok=1 || merge_ok=0
+grep -Fq "pr merge 17 -R - --merge --match-head-commit $sha" "$GH_JOURNAL" && merge_ok=1 || merge_ok=0
 grep -Fq "promote: $merge_sha pr=17 dev=$sha quote=цитата U11" "$d/bd.log" && note_ok=1 || note_ok=0
 [[ $rc == 0 && $merge_ok == 1 && $note_ok == 1 && $(<"$d/bd.log") == *close* ]] && p u11-1 || f u11-1
 

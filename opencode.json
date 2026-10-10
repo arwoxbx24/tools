@@ -1,0 +1,6 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "repowise": {"type": "local", "command": ["/root/.local/bin/repowise", "mcp", "--no-workspace", "/root/workspaces/tools"], "enabled": true}
+  }
+}

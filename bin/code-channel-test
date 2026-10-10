@@ -3,14 +3,17 @@ set -u
 
 root=$(cd -- "$(dirname -- "$0")/.." && pwd)
 tmp=$(mktemp -d "$root/.code-channel-test.XXXXXX")
-trap 'rm -rf -- "$tmp"' EXIT
-bin=$tmp/bin project=$tmp/project secret=$tmp/secret.env log=$tmp/args.log runs=$tmp/runs.jsonl
+nogit=$(mktemp -d /tmp/cc-nogit.XXXXXX)
+trap 'rm -rf -- "$tmp" "$nogit"' EXIT
+bin=$tmp/bin project=$tmp/project tz=$tmp/tz secret=$tmp/secret.env log=$tmp/args.log runs=$tmp/runs.jsonl
+legacy=$tmp/legacy.json disabled=$tmp/disabled.json go=$tmp/go.json ladder=$tmp/ladder.json
 mkdir -p "$bin" "$project" "$tmp/state"
 printf 'VIBECODE_API_KEY=x\nOPENROUTER_API_KEY=x\n' >"$secret"
 git -C "$project" init -q
 git -C "$project" config user.email test@example.invalid
 git -C "$project" config user.name test
 printf 'base\n' >"$project/base"
+printf 'test\n' >"$tz"
 git -C "$project" add base
 git -C "$project" commit -qm init
 mkdir -p "$tmp/secrets/services"
@@ -19,10 +22,14 @@ mkdir -p "$tmp/bitrix-secrets/services" "$tmp/config/opencode" "$tmp/config-allo
 printf 'VIBECODE_API_KEY=x\n' >"$tmp/bitrix-secrets/services/vibecode.env"
 printf '%s\n' '{"provider":{"bitrixgpt":{"models":{"bitrix/bitrixgpt-5.6-agent":{}}},"openrouter":{"whitelist":["other/model"]}}}' >"$tmp/config/opencode/opencode.jsonc"
 printf '%s\n' '{"provider":{"bitrixgpt":{"models":{"bitrix/bitrixgpt-5.6-agent":{}}},"openrouter":{"whitelist":["deepseek/deepseek-v4-flash"]}}}' >"$tmp/config-allow/opencode/opencode.jsonc"
+printf '%s\n' '{"ladder":[{"id":"bitrixgpt","enabled":true,"model":"bitrixgpt/bitrix/bitrixgpt-5.6-agent","key":"VIBECODE_API_KEY","secret":"vibecode","base":"https://vibecode.bitrix24.tech/v1"},{"id":"openrouter","enabled":true,"model":"openrouter/deepseek/deepseek-v4-flash","key":"OPENROUTER_API_KEY","secret":"openrouter","base":"https://openrouter.ai/api/v1"},{"id":"codex","enabled":true,"model":"","effort":"high"}]}' >"$legacy"
+printf '%s\n' '{"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash"},{"id":"openrouter","enabled":false,"model":"openrouter/deepseek/deepseek-v4-flash","key":"OPENROUTER_API_KEY","secret":"openrouter","base":"https://openrouter.ai/api/v1"},{"id":"codex","enabled":true,"model":"","effort":"high"}]}' >"$disabled"
+printf '%s\n' '{"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash"}]}' >"$go"
+printf '%s\n' '{"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash"},{"id":"codex","enabled":true,"model":"","effort":"high"},{"id":"openrouter","enabled":true,"model":"openrouter/deepseek/deepseek-v4-flash","key":"OPENROUTER_API_KEY","secret":"openrouter","base":"https://openrouter.ai/api/v1"}]}' >"$ladder"
 
 printf '%s\n' '#!/usr/bin/env bash' 'printf "curl %s\\n" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'out=' 'url=${!#}' 'while [[ $# -gt 0 ]]; do' '  [[ $1 == -o ]] && { out=$2; shift 2; continue; }' '  shift' 'done' 'if [[ $url == */key ]]; then' '  if [[ ${CURL_USAGE_DAILY:-0.4} == none ]]; then' '    body="{\"data\":{\"limit_remaining\":${CURL_LIMIT_REMAINING:-1}}}"' '  else' '    body="{\"data\":{\"limit_remaining\":${CURL_LIMIT_REMAINING:-1},\"usage_daily\":${CURL_USAGE_DAILY:-0.4}}}"' '  fi' '  printf "%s\n" "$body" >"$out"' '  printf "%s" "${CURL_KEY_CODE:-${CURL_CODE:-200}}"' 'elif [[ $url == */chat/completions ]]; then' '  printf "%s\n" "insecure api_key=secret token=x authorization=y cookie=z" >"$out"' '  printf "%s" "${CURL_CHAT_CODE:-200}"' 'else' '  printf "%s\n" "{\"data\":[{\"id\":\"bitrix/bitrixgpt-5.6-agent\"},{\"id\":\"deepseek/deepseek-v4-flash\"}]}" >"$out"' '  printf "%s" "${CURL_CODE:-200}"' 'fi' >"$bin/curl"
-printf '%s\n' '#!/usr/bin/env bash' 'printf "opencode %s\\n" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "REPORT\\n"' '[[ ${OPENCODE_TOUCH:-} ]] && printf x >"$CODE_CHANNEL_TEST_PROJECT/$OPENCODE_TOUCH"' 'exit "${OPENCODE_RC:-0}"' >"$bin/opencode"
-printf '%s\n' '#!/usr/bin/env bash' 'printf "codex %s\\n" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "REPORT\\n"' '[[ ${CODEX_SWITCH_BRANCH:-} ]] && git -C "$CODE_CHANNEL_TEST_PROJECT" switch -c "codex/x-branch"' '[[ ${CODEX_ERR:-} ]] && printf "%s\n" "$CODEX_ERR" >&2' 'exit "${CODEX_RC:-0}"' >"$bin/codex"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "opencode active=%s %s\\n" "${CODE_CHANNEL_ACTIVE:-}" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "REPORT\\n"' '[[ ${OPENCODE_TOUCH:-} ]] && printf x >"$CODE_CHANNEL_TEST_PROJECT/$OPENCODE_TOUCH"' 'exit "${OPENCODE_RC:-0}"' >"$bin/opencode"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "codex active=%s %s\\n" "${CODE_CHANNEL_ACTIVE:-}" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "REPORT\\n"' '[[ ${CODEX_SWITCH_BRANCH:-} ]] && git -C "$CODE_CHANNEL_TEST_PROJECT" switch -c "codex/x-branch"' '[[ ${CODEX_TOUCH:-} ]] && printf x >"$CODE_CHANNEL_TEST_PROJECT/$CODEX_TOUCH"' '[[ ${CODEX_ERR:-} ]] && printf "%s\n" "$CODEX_ERR" >&2' 'exit "${CODEX_RC:-0}"' >"$bin/codex"
 printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "${SQLITE_RESULT:-bitrixgpt|bitrix/bitrixgpt-5.6-agent}"' >"$bin/sqlite3"
 chmod +x "$bin/curl" "$bin/opencode" "$bin/codex" "$bin/sqlite3"
 
@@ -31,14 +38,19 @@ check() {
   local n=$1 want=$2 out err rc ov
   local -a env_args=("TMPDIR=$tmp" "PATH=$bin:$PATH" "XDG_CONFIG_HOME=$tmp/config-allow" "CODE_CHANNEL_TEST_LOG=$log" "CODE_CHANNEL_TEST_PROJECT=$project" "CODE_CHANNEL_STATE=$tmp/state" "CODE_CHANNEL_RUNS_LOG=$runs")
   shift 2
+  if [[ ${CC_CONFIG+x} ]]; then
+    [[ -z $CC_CONFIG ]] || env_args+=("CODE_CHANNEL_CONFIG=$CC_CONFIG")
+  else
+    env_args+=("CODE_CHANNEL_CONFIG=$legacy")
+  fi
   : >"$log"
   : >"$runs"
   ov=${CC_OVERRIDE-$secret}
   [[ -n $ov ]] && env_args+=("CODE_CHANNEL_SECRET_OVERRIDE=$ov")
   [[ -n ${CC_ROOT:-} ]] && env_args+=("CODE_CHANNEL_SECRETS_ROOT=$CC_ROOT")
-  out=$(env "${env_args[@]}" "$@" 2>"$tmp/err")
+  out=$(env -u CODE_CHANNEL_ACTIVE "${env_args[@]}" "$@" 2>"$tmp/err")
   rc=$?; err=$(<"$tmp/err")
-  if eval "$want"; then echo "PASS $n"; ((ok++)); else echo "FAIL $n: rc=$rc out=$out err=$err log=$(<"$log")"; fi
+  if eval "$want"; then echo "PASS $n"; ((ok++)); else echo "FAIL $n: rc=$rc out=$out err=$err log=$(<"$log") branch=$(git -C "$project" branch --show-current) runs=$(<"$runs")"; fi
 }
 
 check 1 '[[ $rc == 0 && $out == *REPORT* ]] && grep -Fq -- "--agent audit" "$log"' \
@@ -66,25 +78,55 @@ check 12 '[[ $rc == 23 ]] && grep -Fq -- "сверка провайдера не
 check 13 '[[ $rc == 12 ]] && [[ $(stat -c %a "$tmp/state/bitrixgpt-last-fail.txt") == 600 ]] && [[ $(grep -ci '"'"'api_key'"'"' "$tmp/state/bitrixgpt-last-fail.txt") == 0 ]]' \
   env CURL_CHAT_CODE=429 "$root/bin/code-channel" 1 "$project" "$root/AGENTS.md"
 orig=$(git -C "$project" rev-parse --abbrev-ref HEAD)
-check 14 '[[ $rc == 0 ]] && [[ $(git -C "$project" rev-parse --abbrev-ref HEAD) == "$orig" ]] && grep -Fq -- "форма 2 сменила ветку, возвращено" "$tmp/err" && grep -q '"'"'provider_actual":"codex"'"'"' "$runs"' \
+check 14 '[[ $rc == 0 ]] && [[ $(git -C "$project" rev-parse --abbrev-ref HEAD) == "$orig" ]] && grep -Fq -- "форма codex сменила ветку, возвращено" "$tmp/err" && grep -q '"'"'provider_actual":"codex"'"'"' "$runs"' \
   env CODEX_SWITCH_BRANCH=1 CODEX_RC=0 "$root/bin/code-channel" 2 "$project" "$root/AGENTS.md"
 
 gcd=$(git -C "$project" rev-parse --path-format=absolute --git-common-dir)
 check 15 '[[ $rc == 0 ]] && grep -Fq -- "--add-dir '"$gcd"'" "$log" && grep -Fq -- "-c sandbox_workspace_write.network_access=true" "$log"' \
   env CODEX_RC=0 "$root/bin/code-channel" 2 "$project" "$root/AGENTS.md"
-check 16 '[[ $rc == 0 ]] && grep -Fq -- "-c sandbox_workspace_write.network_access=true Не вызывай bd: трекер ведёт оркестратор" "$log" && grep -Fq -- "Не создавай и не переключай ветки; пиши и коммить только в текущую ветку" "$log" && grep -Fq -- "Ты уже исполнитель внутри code-channel: правь файлы сам; code-channel, opencode run, codex exec не вызывай" "$log"' \
+check 16 '[[ $rc == 0 ]] && grep -Fq -- "-c sandbox_workspace_write.network_access=true Не вызывай bd: трекер ведёт оркестратор" "$log" && grep -Fq -- "Не создавай и не переключай ветки; не делай git add и git commit — коммит делает оркестратор" "$log" && grep -Fq -- "Ты уже исполнитель внутри code-channel: правь файлы сам; code-channel, opencode run, codex exec не вызывай" "$log"' \
   env CODEX_RC=0 "$root/bin/code-channel" 2 "$project" "$root/AGENTS.md"
-check 17 '[[ $rc == 24 ]] && grep -Fq -- "form=2 среда: read-only" "$tmp/err"' \
+git -C "$project" clean -fdq
+check 17 '[[ $rc == 24 ]] && grep -Fq -- "form=codex среда: read-only" "$tmp/err"' \
   env CODEX_ERR='Read-only file system' CODEX_RC=1 "$root/bin/code-channel" 2 "$project" "$root/AGENTS.md"
 
 git -C "$project" clean -fdq
 check 18 '[[ $rc == 13 && $err == *4.2* && $err == *4* ]] && ! grep -q "opencode" "$log"' \
   env CURL_USAGE_DAILY=4.2 "$root/bin/code-channel" 3 "$project" "$root/AGENTS.md"
-check 19 'grep -Fq -- "codex " "$log" && ! grep -q "^opencode " "$log" && [[ $err == *"форма 3 пропущена"* ]]' \
+check 19 'grep -Fq -- "codex " "$log" && ! grep -q "^opencode " "$log" && [[ $err == *"форма openrouter пропущена"* ]]' \
   env CURL_CODE=401 CURL_KEY_CODE=200 CURL_USAGE_DAILY=4.2 "$root/bin/code-channel" auto "$project" "$root/AGENTS.md"
 check 20 '[[ $rc == 0 ]] && grep -Fq -- /key "$log" && grep -Fq -- "opencode" "$log"' \
   env SQLITE_RESULT='openrouter|deepseek/deepseek-v4-flash' CURL_USAGE_DAILY=0.4 "$root/bin/code-channel" 3 "$project" "$root/AGENTS.md"
 check 21 '[[ $rc == 13 && $err == *"нет usage_daily"* ]]' \
   env CURL_USAGE_DAILY=none "$root/bin/code-channel" 3 "$project" "$root/AGENTS.md"
 
-[[ $ok == 21 ]] && echo 'PASS 21/21'
+CC_CONFIG='' check 22 '[[ $rc == 0 && $out == $'"'"'go opencode-go/mimo-v2.6-flash -\ncodex - high'"'"' ]]' \
+  "$root/bin/code-channel" --plan
+CC_CONFIG=$disabled check 23 '[[ $rc == 16 ]] && ! grep -Fq -- /models "$log" && grep -Fq -- "codex " "$log"' \
+  env OPENCODE_RC=1 bash -c 'plan=$("$1" --plan) || exit $?; [[ $plan != *openrouter* ]] || exit 90; "$1" auto "$2" "$3"' _ "$root/bin/code-channel" "$project" "$root/AGENTS.md"
+CC_CONFIG=$disabled check 24 '[[ $rc == 3 ]] && [[ ! -s $log ]]' \
+  "$root/bin/code-channel" openrouter "$project" "$root/AGENTS.md"
+CC_CONFIG=$go check 25 '[[ $rc == 0 ]] && [[ $err != *"сверка провайдера не прошла"* ]]' \
+  env SQLITE_RESULT='opencode-go|mimo-v2.6-flash' OPENCODE_TOUCH=go-change "$root/bin/code-channel" go "$project" "$root/AGENTS.md"
+CC_CONFIG=$ladder check 26 '[[ $rc == 23 ]] && grep -Fq -- /key "$log"' \
+  env OPENCODE_RC=1 CODEX_RC=1 "$root/bin/code-channel" auto "$project" "$root/AGENTS.md"
+check 27 '[[ $rc == 3 ]] && [[ ! -s $log ]]' \
+  "$root/bin/code-channel" auto "$project" "$root/AGENTS.md" --model x/y
+
+check 28 '[[ $rc == 30 && ! -s $log ]]' \
+  env CODE_CHANNEL_ACTIVE=1 "$root/bin/code-channel" auto "$project" "$tz"
+check 29 '[[ $rc == 0 ]] && grep -Fq -- "-p quota-terra -c model_reasoning_effort=\"high\"" "$log"' \
+  env CODEX_RC=0 "$root/bin/code-channel" 2 "$project" "$tz"
+check 30 '[[ $rc == 0 ]] && ! grep -Eq -- "(^| )-m( |$)" "$log"' \
+  env CODEX_RC=0 "$root/bin/code-channel" 2 "$project" "$tz"
+CC_CONFIG=$ladder check 31 '[[ $rc == 0 ]] && grep -Fq -- "opencode active=1" "$log" && grep -Fq -- "codex active=1" "$log"' \
+  env OPENCODE_RC=1 CODEX_RC=0 CODEX_TOUCH=active-change "$root/bin/code-channel" auto "$project" "$tz"
+git -C "$project" clean -fdq
+check 32 '[[ $rc == 0 && $err == *"форма codex: git только для чтения, правки есть"* && $err != *"среда: read-only"* ]]' \
+  env CODEX_ERR='Read-only file system' CODEX_RC=1 CODEX_TOUCH=codex-change "$root/bin/code-channel" 2 "$project" "$tz"
+CC_CONFIG=$disabled check 33 '[[ $rc == 0 ]]' \
+  env OPENCODE_RC=1 CODEX_RC=0 "$root/bin/code-channel" auto "$nogit" "$tz"
+CC_CONFIG=$disabled check 34 '[[ $rc == 3 && $err == *"выключен в конфиге"* ]]' \
+  "$root/bin/code-channel" 3 "$project" "$tz"
+
+[[ $ok == 34 ]] && echo 'PASS 34/34'

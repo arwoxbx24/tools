@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# bd-inbox: комментарии других агентов в моих атомах → PostToolUse additionalContext. Код всегда 0.
+case ${1:-} in -h|--help) echo 'usage: bd-inbox  (PostToolUse hook: новые "От …"-комментарии в атомах твоего tmux-окна → additionalContext)'; exit 0;; esac
+
+win=${BD_INBOX_WINDOW:-}
+if [ -z "$win" ]; then
+  [ -n "${TMUX_PANE:-}" ] || exit 0
+  win=$(tmux display-message -p -t "$TMUX_PANE" '#S:#I' 2>/dev/null) || win=
+fi
+[ -n "$win" ] || exit 0
+
+BD=${BD_BIN:-bd}
+DB=/root/workspaces/projects
+ids=$("$BD" -C "$DB" list --status in_progress --limit 0 --json -q 2>/dev/null \
+  | jq -r --arg w "$win" '.[] | select(.metadata.tmux == $w and .comment_count > 0) | .id' 2>/dev/null)
+[ -n "$ids" ] || exit 0
+
+lines=
+while IFS= read -r id; do
+  [ -n "$id" ] || continue
+  out=$("$BD" -C "$DB" comments "$id" --json 2>/dev/null | jq -r --arg i "$id" '
+    ((map(select(((.text // "") | startswith("принято:")) or ((.text // "") | startswith("вне цели:"))))
+      | map(.created_at) | max) // "") as $last
+    | .[] | select((.text // "") | startswith("От "))
+    | select((.created_at // "") > $last)
+    | "\($i): \(.text[0:500])"' 2>/dev/null)
+  if [ -n "$out" ]; then lines+="$out"$'\n'; fi
+done <<< "$ids"
+[ -n "$lines" ] || exit 0
+ctx='Комментарии других агентов в твоих атомах — ответь bd comments add <атом> "принято: …" или "вне цели: CR <id>":'$'\n'"$lines"
+jq -n --arg c "$ctx" '{hookSpecificOutput:{hookEventName:"PostToolUse",additionalContext:$c}}' 2>/dev/null
+exit 0

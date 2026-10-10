@@ -6,6 +6,7 @@ case ${1:-} in -h|--help) echo "usage: code-memory-enable [--untrack] <abs-proje
 : "${CME_MIN_SWAP_MB:=1024}"
 : "${CME_PROJECTS_ROOT:=/root/workspaces/projects}"
 : "${CME_CLIENTS_ROOT:=$CME_PROJECTS_ROOT/clients}"
+: "${CME_TOOLS_ROOT:=/root/workspaces/tools}"
 : "${CME_PARENT_REV:=}"
 : "${CME_DENY:=/root/workspaces/tools/config/code-memory.deny}"
 : "${CME_LOCK:=/tmp/code-memory.lock}"
@@ -188,7 +189,7 @@ if [ "$path" = "$CME_PROJECTS_ROOT" ] && [ "$untrack" -eq 0 ]; then
   exit 0
 fi
 
-if [ "$(dirname "$path")" != "$CME_PROJECTS_ROOT" ] && [ "$(dirname "$path")" != "$CME_CLIENTS_ROOT" ]; then
+if [ "$(dirname "$path")" != "$CME_PROJECTS_ROOT" ] && [ "$(dirname "$path")" != "$CME_CLIENTS_ROOT" ] && [ "$path" != "$CME_TOOLS_ROOT" ]; then
   echo "skip: $path"
   exit 2
 fi

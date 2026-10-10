@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # bin/git-auto-lib — sourced, defines ga_* helpers. No execution on source.
 
 _ga_url_slug(){ # $1 git_dir $2 work_tree -> OWNER/REPO or -

@@ -1,9 +1,17 @@
 #!/usr/bin/env bash
 set +x
 set -uo pipefail
-case ${1:-} in -h|--help) echo "usage: code-channel <form> <project> <tz> [--model provider/model]  (runs the selected code or audit provider)"; exit 0;; esac
+case ${1:-} in -h|--help) printf '%s\n' 'usage: code-channel <form> <project> <tz> [--model provider/model]  (runs the selected code or audit provider)' 'конфиг: config/code-channel.json; справка: docs/code-channel.md'; exit 0;; esac
 # spec:035: only this invocation's temporary files are cleaned; no stale-file sweep.
 fail() { printf 'code-channel: %s\n' "$*" >&2; }
+root=$(cd -- "$(dirname -- "$0")/.." && pwd) || exit 3
+config=${CODE_CHANNEL_CONFIG:-"$root/config/code-channel.json"}
+jq -e '(.ladder | type == "array") and ([.ladder[].id] | length == (unique | length)) and all(.ladder[]; (.id | type == "string") and (.enabled | type == "boolean") and (.model | type == "string") and ((.key? // "") | type == "string") and ((.secret? // "") | type == "string") and ((.base? // "") | type == "string") and ((.effort? // "") | type == "string"))' "$config" >/dev/null 2>&1 || { fail "конфиг $config не читается"; exit 3; }
+if [[ $# == 1 && $1 == --plan ]]; then
+    jq -r '.ladder[] | select(.enabled) | [.id, (.model | if . == "" then "-" else . end), ((.effort // "") | if . == "" then "-" else . end)] | join(" ")' "$config"
+    exit 0
+fi
+[[ -z ${CODE_CHANNEL_ACTIVE:-} ]] || { fail 'рекурсия запрещена (CODE_CHANNEL_ACTIVE)'; exit 30; }
 S=${CODE_CHANNEL_STATE:-/root/workspaces/tools/state/code-channel}
 mkdir -p "$S" || exit 3
 write_block() {
@@ -22,45 +30,56 @@ save_fail() {
     } > "$S/bitrixgpt-last-fail.txt"
     chmod 600 "$S/bitrixgpt-last-fail.txt"
 }
+entry_for() { jq -cer --arg id "$1" '.ladder[] | select(.id == $id)' "$config"; }
 [[ $# == 3 || $# == 5 ]] || { fail 'usage: form project tz [--model provider/model]'; exit 3; }
 form=$1; project=$2; tz=$3; override=${5:-}
+[[ -n $form && $project == /* && ( $# == 3 || $4 == --model ) && ( $# == 3 || -n $override ) ]] || exit 3
 [[ $form == audit ]] && mode=audit || mode=code
-[[ $form =~ ^(1|2|3|auto|audit)$ && $project == /* && ( $# == 3 || $4 == --model ) ]] || exit 3
+case $form in
+    1) form=bitrixgpt;;
+    2) form=codex;;
+    3) form=openrouter;;
+esac
+if [[ $form == auto || $form == audit ]]; then
+    [[ -z $override ]] || exit 3
+else
+    enabled=$(entry_for "$form" | jq -r '.enabled') || exit 3
+    [[ $enabled == true ]] || { fail "провайдер $form выключен в конфиге"; exit 3; }
+fi
 [[ -r $tz ]] || { fail 'нет файла ТЗ'; exit 3; }
 prompt=$(cat -- "$tz") || exit 3
 cd -- "$project" || exit 3
+form_snap() { local s; s=$( { git rev-parse HEAD 2>/dev/null; git status --porcelain 2>/dev/null; git diff HEAD 2>/dev/null; } ); [[ -z $s ]] && return 0; printf '%s\n' "$s" | cksum; }
 run_form() (
-    n=$1; start=$SECONDS; pre=-; run=-; hdr=; tmpjson=; resphdr=; respbody=; codetmp=
-    id="cc-$(date +%s)-$$"
-    case $n in
-        1) provider=bitrixgpt; name=VIBECODE_API_KEY; secret=vibecode; base=https://vibecode.bitrix24.tech/v1; model=bitrixgpt/bitrix/bitrixgpt-5.6-agent;;
-        2) provider=codex;;
-        3) provider=openrouter; name=OPENROUTER_API_KEY; secret=openrouter; base=https://openrouter.ai/api/v1; model=openrouter/deepseek/deepseek-v4-flash;;
-    esac
+    export CODE_CHANNEL_ACTIVE=1
+    id=$1; start=$SECONDS; pre=-; run=-; hdr=; tmpjson=; resphdr=; respbody=; codetmp=
+    IFS=$'\034' read -r model name secret base effort < <(entry_for "$id" | jq -r '[.model,.key // "",.secret // "",.base // "",.effort // ""] | join("\u001c")') || exit 3
+    model=${override:-$model}
+    id_run="cc-$(date +%s)-$$"
     write_journal() {
         local pa=$1 ma=$2 r=$3
         local j=${CODE_CHANNEL_RUNS_LOG:-$S/runs.jsonl}
         mkdir -p -- "$(dirname -- "$j")"
-        jq -nc --arg ts "$(date +%s)" --arg id "$id" --arg mode "$mode" --arg form "$n" \
+        jq -nc --arg ts "$(date +%s)" --arg id "$id_run" --arg mode "$mode" --arg form "$id" \
             --arg pe "$provider" --arg pa "$pa" --arg ma "$ma" --argjson rc "$r" \
             '{ts:$ts,id:$id,mode:$mode,form:$form,provider_expected:$pe,provider_actual:$pa,model_actual:$ma,rc:$rc}' \
             >>"$j"
     }
     reconcile() {
         local r=$1 pa= ma=
-        if [[ $n == 2 ]]; then
+        if [[ $id == codex ]]; then
             local cur
             cur=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
             if [[ $cur != "$orig_branch" ]]; then
                 git switch "$orig_branch" 2>/dev/null || true
-                printf 'code-channel: форма 2 сменила ветку, возвращено\n' >&2
+                printf 'code-channel: форма codex сменила ветку, возвращено\n' >&2
             fi
             write_journal codex "" "$r"
             return 0
         fi
         local db=${CODE_CHANNEL_OPENCODE_DB:-/root/.local/share/opencode/opencode.db}
         local row
-        row=$(sqlite3 -readonly "$db" "select json_extract(model,'$.providerID')||'|'||json_extract(model,'$.id') from session where title='$id' order by time_created desc limit 1" 2>/dev/null)
+        row=$(sqlite3 -readonly "$db" "select json_extract(model,'$.providerID')||'|'||json_extract(model,'$.id') from session where title='$id_run' order by time_created desc limit 1" 2>/dev/null)
         if [[ -z $row ]]; then
             row=$(sqlite3 -readonly "$db" "select json_extract(model,'$.providerID')||'|'||json_extract(model,'$.id') from session where directory='$project' and time_created >= $run_start_ms order by time_created desc limit 1" 2>/dev/null)
         fi
@@ -80,84 +99,90 @@ run_form() (
         [[ -z $resphdr ]] || unlink -- "$resphdr"
         [[ -z $respbody ]] || unlink -- "$respbody"
         [[ -z $codetmp ]] || unlink -- "$codetmp"
-        printf 'code-channel: mode=%s form=%s provider=%s precheck=%s run=%s t=%s\n' "$mode" "$n" "$provider" "$pre" "$run" "$((SECONDS-start))" >&2
+        printf 'code-channel: mode=%s form=%s provider=%s precheck=%s run=%s t=%s\n' "$mode" "$id" "$provider" "$pre" "$run" "$((SECONDS-start))" >&2
         trap - EXIT; exit "$rc"
     }
     trap finish EXIT
-    for tool in curl jq; do command -v "$tool" >/dev/null || { fail "нет инструмента $tool"; exit 3; }; done
-    tool=opencode; [[ $n != 2 ]] || tool=codex
+    tool=opencode; [[ $id != codex ]] || tool=codex
     command -v "$tool" >/dev/null || { fail "нет инструмента $tool"; exit 3; }
-    if [[ $n == 2 ]]; then
+    if [[ $id == codex ]]; then
+        provider=codex
+        [[ -z $override || $model == ?*/?* ]] || exit 15
         orig_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
         prompt=$(printf 'Ты уже исполнитель внутри code-channel: правь файлы сам; code-channel, opencode run, codex exec не вызывай\n\n%s' "$prompt")
-        prompt=$(printf 'Не создавай и не переключай ветки; пиши и коммить только в текущую ветку\n\n%s' "$prompt")
+        prompt=$(printf 'Не создавай и не переключай ветки; не делай git add и git commit — коммит делает оркестратор\n\n%s' "$prompt")
         prompt=$(printf 'Не вызывай bd: трекер ведёт оркестратор\n\n%s' "$prompt")
+        codex_args=(-c "model_reasoning_effort=\"$effort\"")
+        [[ -z $model ]] || codex_args+=(-m "$model")
         started=$SECONDS
         if [[ $mode == audit ]]; then
-            timeout 590 codex exec -p quota-terra -s read-only "$prompt"; run=$?
+            timeout 590 codex exec -p quota-terra "${codex_args[@]}" -s read-only "$prompt"; run=$?
         else
             gcd=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
             add_dir=()
             [[ -n $gcd ]] && add_dir+=(--add-dir "$gcd")
             codetmp=$(mktemp "${TMPDIR:-/tmp}/code-channel-codex-XXXXXX") || exit 3
-            timeout 590 codex exec -p quota-terra -s workspace-write "${add_dir[@]}" \
+            codex_before=$(form_snap)
+            timeout 590 codex exec -p quota-terra "${codex_args[@]}" -s workspace-write "${add_dir[@]}" \
                 -c sandbox_workspace_write.network_access=true "$prompt" 2> >(tee -- "$codetmp" >&2); run=$?
             if [[ $run != 0 ]] && grep -q -- 'Read-only file system' "$codetmp"; then
-                printf 'code-channel: form=2 среда: read-only\n' >&2
-                exit 24
+                if [[ $(form_snap) != "$codex_before" ]]; then
+                    printf 'code-channel: форма codex: git только для чтения, правки есть\n' >&2
+                    run=0
+                else
+                    printf 'code-channel: form=codex среда: read-only\n' >&2
+                    exit 24
+                fi
             fi
         fi
         [[ $run == 0 || $run == 124 || $((SECONDS-started)) -gt 30 ]] || exit 21
         reconcile "$run"; exit $?
     fi
-    secrets_root=${CODE_CHANNEL_SECRETS_ROOT:-/root/workspaces/secrets}
-    f=${CODE_CHANNEL_SECRET_OVERRIDE:-}
-    if [[ -z $f ]]; then
-        for cand in "$secrets_root/projects/$secret.env" "$secrets_root/services/$secret.env"; do
-            [[ -r $cand ]] && { f=$cand; break; }
-        done
-    fi
-    [[ -r $f ]] || { fail "нет секрета $name"; exit 5; }
-    val=$(sed -n "s/^\(export \)\{0,1\}${name}=//p" "$f" | head -1 | tr -d "\"'")
-    [[ -n $val && $val != *$'\r'* && $val != *$'\n'* ]] || { fail "нет секрета $name"; exit 5; }
-    export "$name=$val"
-    umask 077
-    hdr=$(mktemp "${TMPDIR:-/tmp}/code-channel-hdr-XXXXXX") || exit 3
-    tmpjson=$(mktemp "${TMPDIR:-/tmp}/code-channel-json-XXXXXX") || exit 3
-    printf 'Authorization: Bearer %s\n' "$val" > "$hdr" || exit 3
-    unset val
-    case $n in
-        3) endpoint="${CODE_CHANNEL_BASEURL_OVERRIDE:-$base}/key";;
-        *) endpoint="${CODE_CHANNEL_BASEURL_OVERRIDE:-$base}/models";;
-    esac
-    pre=$(curl -sS -m 5 -o "$tmpjson" -w '%{http_code}' -H @"$hdr" "$endpoint")
-    rc=$?
-    [[ $rc == 0 ]] || exit 14
-    case $pre in 200) ;; 401|403) exit 11;; 429) exit 12;; 402) exit 13;; 5??) exit 14;; 4??) exit 11;; *) exit 14;; esac
-    [[ $n != 3 ]] || jq -e '.data.limit_remaining == null or ((.data.limit_remaining | type) == "number" and .data.limit_remaining > 0)' "$tmpjson" >/dev/null 2>&1 || exit 13
-    if [[ $n == 3 ]]; then
-        usage=$(jq -r '.data.usage_daily // empty' "$tmpjson" 2>/dev/null)
-        if [[ -z $usage || ! $usage =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-            printf 'code-channel: нет usage_daily, форма 3 пропущена\n' >&2
-            exit 13
-        fi
-        stop=${OR_DAILY_STOP:-4}
-        [[ $stop =~ ^[0-9]+([.][0-9]+)?$ ]] || { stop=4; printf 'code-channel: OR_DAILY_STOP не число, по умолчанию 4\n' >&2; }
-        if awk "BEGIN{exit !($usage >= $stop)}"; then
-            printf 'code-channel: usage_daily=%s >= stop=%s, форма 3 пропущена\n' "$usage" "$stop" >&2
-            exit 13
-        fi
-    fi
-    model=${override:-$model}
-    # 10.10 владелец: форма 3 + --model opencode-go/<id> — подписка OpenCode Go, whitelist OpenRouter не применяется
-    if [[ $n != 3 || $model != opencode-go/* ]]; then
-    [[ $model == "$provider/"* ]] || exit 15
+    [[ $model == ?*/?* ]] || exit 15
+    provider=${model%%/*}
     mid=${model#*/}
-    config=${XDG_CONFIG_HOME:-$HOME/.config}/opencode/opencode.jsonc
-    ids=$(jq -Rs --argjson n "$n" 'gsub("(?m)^\\s*//[^\\n]*"; "") | gsub(",\\s*(?<end>[}\\]])"; .end) | fromjson | if $n == 1 then .provider.bitrixgpt.models | keys else .provider.openrouter.whitelist end' "$config" 2>/dev/null) || exit 15
-    jq -e --arg id "$mid" 'index($id) != null' <<<"$ids" >/dev/null 2>&1 || exit 15
+    if [[ -n $name ]]; then
+        command -v curl >/dev/null || { fail 'нет инструмента curl'; exit 3; }
+        secrets_root=${CODE_CHANNEL_SECRETS_ROOT:-/root/workspaces/secrets}
+        f=${CODE_CHANNEL_SECRET_OVERRIDE:-}
+        if [[ -z $f ]]; then
+            for cand in "$secrets_root/projects/$secret.env" "$secrets_root/services/$secret.env"; do
+                [[ -r $cand ]] && { f=$cand; break; }
+            done
+        fi
+        [[ -r $f ]] || { fail "нет секрета $name"; exit 5; }
+        val=$(sed -n "s/^\\(export \\)\\{0,1\\}${name}=//p" "$f" | head -1 | tr -d "\\\"'")
+        [[ -n $val && $val != *$'\r'* && $val != *$'\n'* ]] || { fail "нет секрета $name"; exit 5; }
+        export "$name=$val"
+        umask 077
+        hdr=$(mktemp "${TMPDIR:-/tmp}/code-channel-hdr-XXXXXX") || exit 3
+        tmpjson=$(mktemp "${TMPDIR:-/tmp}/code-channel-json-XXXXXX") || exit 3
+        printf 'Authorization: Bearer %s\n' "$val" > "$hdr" || exit 3
+        unset val
+        [[ $id == openrouter ]] && endpoint="${CODE_CHANNEL_BASEURL_OVERRIDE:-$base}/key" || endpoint="${CODE_CHANNEL_BASEURL_OVERRIDE:-$base}/models"
+        pre=$(curl -sS -m 5 -o "$tmpjson" -w '%{http_code}' -H @"$hdr" "$endpoint")
+        rc=$?
+        [[ $rc == 0 ]] || exit 14
+        case $pre in 200) ;; 401|403) exit 11;; 429) exit 12;; 402) exit 13;; 5??) exit 14;; 4??) exit 11;; *) exit 14;; esac
+        [[ $id != openrouter ]] || jq -e '.data.limit_remaining == null or ((.data.limit_remaining | type) == "number" and .data.limit_remaining > 0)' "$tmpjson" >/dev/null 2>&1 || exit 13
+        if [[ $id == openrouter ]]; then
+            usage=$(jq -r '.data.usage_daily // empty' "$tmpjson" 2>/dev/null)
+            if [[ -z $usage || ! $usage =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+                printf 'code-channel: нет usage_daily, форма openrouter пропущена\n' >&2
+                exit 13
+            fi
+            stop=${OR_DAILY_STOP:-4}
+            [[ $stop =~ ^[0-9]+([.][0-9]+)?$ ]] || { stop=4; printf 'code-channel: OR_DAILY_STOP не число, по умолчанию 4\n' >&2; }
+            if awk "BEGIN{exit !($usage >= $stop)}"; then
+                printf 'code-channel: usage_daily=%s >= stop=%s, форма openrouter пропущена\n' "$usage" "$stop" >&2
+                exit 13
+            fi
+        fi
+        config_opencode=${XDG_CONFIG_HOME:-$HOME/.config}/opencode/opencode.jsonc
+        ids=$(jq -Rs --arg id "$id" 'gsub("(?m)^\\s*//[^\\n]*"; "") | gsub(",\\s*(?<end>[}\\]])"; .end) | fromjson | if $id == "bitrixgpt" then .provider.bitrixgpt.models | keys else .provider.openrouter.whitelist end' "$config_opencode" 2>/dev/null) || exit 15
+        jq -e --arg id "$mid" 'index($id) != null' <<<"$ids" >/dev/null 2>&1 || exit 15
     fi
-    if [[ $n == 1 ]]; then
+    if [[ $id == bitrixgpt ]]; then
         resphdr=$(mktemp "${TMPDIR:-/tmp}/code-channel-resphdr-XXXXXX") || exit 3
         respbody=$(mktemp "${TMPDIR:-/tmp}/code-channel-respbody-XXXXXX") || exit 3
         payload=$(printf '{"model":"%s","messages":[{"role":"user","content":"ok"}],"max_tokens":1}' "$mid")
@@ -196,43 +221,47 @@ run_form() (
     fi
     run_start_ms=$(date +%s%3N)
     if [[ $mode == audit ]]; then
-        timeout 590 opencode run --agent audit --title "$id" -m "$model" "$prompt"; run=$?
+        timeout 590 opencode run --agent audit --title "$id_run" -m "$model" "$prompt"; run=$?
     else
-        timeout 590 opencode run --title "$id" -m "$model" "$prompt"; run=$?
+        timeout 590 opencode run --title "$id_run" -m "$model" "$prompt"; run=$?
     fi
     reconcile "$run"; exit $?
 )
-if [[ $form =~ ^[123]$ ]]; then run_form "$form"; exit $?; fi
-form_snap() { local s; s=$( { git rev-parse HEAD 2>/dev/null; git status --porcelain 2>/dev/null; git diff HEAD 2>/dev/null; } ); [[ -z $s ]] && return 0; printf '%s\n' "$s" | cksum; }
-for n in 1 3 2; do
-    if [[ $n == 1 && -f $S/bitrixgpt.block ]]; then
+if [[ $form != auto && $form != audit ]]; then
+    run_form "$form"
+    exit $?
+fi
+mapfile -t ladder < <(jq -r '.ladder[] | select(.enabled) | .id' "$config")
+[[ ${#ladder[@]} -gt 0 ]] || exit 3
+for i in "${!ladder[@]}"; do
+    id=${ladder[$i]}
+    if [[ $id == bitrixgpt && -f $S/bitrixgpt.block ]]; then
         read -r blk_until _ blk_code < "$S/bitrixgpt.block"
         if [[ $blk_until =~ ^[0-9]+$ ]] && (( blk_until > $(date +%s) )); then
-            printf 'code-channel: form=1 пропуск: лимит bitrixgpt до %s (%s)\n' \
+            printf 'code-channel: form=bitrixgpt пропуск: лимит bitrixgpt до %s (%s)\n' \
                 "$(date -d "@$blk_until" +%H:%M)" "$blk_code" >&2
             continue
         fi
     fi
     before=$(form_snap)
-    run_form "$n"; rc=$?
-    case $rc in 3|5|15) exit "$rc";; esac
+    run_form "$id"; rc=$?
+    case $rc in 3|5|15|22|24) exit "$rc";; esac
     if [[ $rc == 0 ]]; then
         after=$(form_snap)
         if [[ $mode == audit ]]; then
             if [[ $after != "$before" ]]; then
-                printf 'code-channel: mode=audit form=%s изменено рабочее дерево — отчёт не принят\n' "$n" >&2
+                printf 'code-channel: mode=audit form=%s изменено рабочее дерево — отчёт не принят\n' "$id" >&2
                 exit 22
             fi
             exit 0
         elif [[ -n $before || -n $after ]] && [[ $after == "$before" ]]; then
-            printf 'code-channel: form=%s rc=0 без изменений\n' "$n" >&2
-            [[ $n == 2 ]] && exit 16
+            printf 'code-channel: form=%s rc=0 без изменений\n' "$id" >&2
+            (( i + 1 == ${#ladder[@]} )) && exit 16
             rc=1
         else
-            exit "$rc"
+            exit 0
         fi
     fi
-    [[ $n == 2 ]] && exit "$rc"
-    case $n in 1) nx=3;; 3) nx=2;; esac
-    printf 'code-channel: switch %s→%s rc=%s\n' "$n" "$nx" "$rc" >&2
+    (( i + 1 == ${#ladder[@]} )) && exit "$rc"
+    printf 'code-channel: switch %s→%s rc=%s\n' "$id" "${ladder[$((i + 1))]}" "$rc" >&2
 done
