@@ -820,6 +820,11 @@ cleanup_codex() {
 cleanup_backups() {
   local rule n mask el list mt cnt
   local -a els keep
+  # FR-032: живой режим класса — только после подтверждения владельцем списка сухого прогона.
+  if [ "$MODE" = run ] && [ "${DR_BACKUPS_APPROVED:-0}" != 1 ]; then
+    echo "BACKUPS-HOLD нет DR_BACKUPS_APPROVED=1 — класс backups не трогается" >>"$DR_LOG"
+    return 0
+  fi
   for rule in "${BACKUP_RULES[@]}"; do
     n=${rule%%|*}; mask=${rule#*|}
     els=()
