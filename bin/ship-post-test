@@ -29,7 +29,7 @@ make_repo(){
 }
 make_worktree(){ git -C "$1/repo" worktree add -q -b "$3" "$1/.worktrees/${3%%/*}/$2" origin/main; }
 make_mocks(){
-	local d=$1; mkdir -p "$d/bin" "$d/home"; cp -f -- "$bin/ship-post" "$bin/git-auto-lib" "$d/bin/"
+	local d=$1 impl=${SHIP_POST_TEST_IMPL:-"$bin/ship-post"}; mkdir -p "$d/bin" "$d/home"; cp -f -- "$impl" "$bin/git-auto-lib" "$d/bin/"
 	cat > "$d/bin/ship" <<'MOCKSHIP'
 #!/usr/bin/env bash
 printf '%s|%s|%s\n' "${BEADS_ACTOR:-}" "$*" "$(git -C "$1" rev-parse HEAD)" >> "$SHIP_POST_TEST_DIR/ship.calls"
@@ -98,6 +98,19 @@ setup_submit(){
 	make_worktree "$d" wt "$branch" || exit 1; wt="$d/.worktrees/${branch%%/*}/wt"; tz='docs/tz/TZ-TEST.md'; make_mocks "$d"
 }
 submit(){ run_tool "$d" --submit "$wt" --atom "$1" --tz "$2#U2" --evidence evidence --files "$tz" "${@:3}"; }
+
+test_submit_conflict_preflight(){
+	local out rc
+	setup_submit conflict codex/dcfg-conflict.1
+	printf 'origin\n' > "$d/repo/base.txt"; git -C "$d/repo" add -- base.txt; git -C "$d/repo" commit -q -m origin-change; git -C "$d/repo" push -q origin main
+	printf 'branch\n' > "$wt/base.txt"
+	out=$(export BEADS_ACTOR=Codex BD_ASSIGNEE=Codex; submit dcfg-conflict.1 "$tz" base.txt 2>&1); rc=$?
+	[[ $rc == 50 && $out == *"ship-post: conflict with origin/main: base.txt"* && $out == *"ship-post: fix: git -C $wt fetch origin && git -C $wt merge origin/main; resolve files; test; bd close; submit again"* && ! -e $d/state && ! -s $d/bd.closes ]] && pass U14_conflict_before_state || fail U14_conflict_before_state "rc=$rc: $out"
+
+	setup_submit clean codex/dcfg-clean.1; printf x > "$wt/file.txt"
+	out=$(export BEADS_ACTOR=Codex BD_ASSIGNEE=Codex; submit dcfg-clean.1 "$tz" file.txt 2>&1); rc=$?
+	[[ $rc == 0 && -s $d/bd.closes && -e $d/state/submissions ]] && pass U14_clean_submit_unchanged || fail U14_clean_submit_unchanged "rc=$rc: $out"
+}
 
 test_dryrun_mocks(){
 	local n=1 out rc
@@ -509,8 +522,10 @@ elif [[ ${SHIP_POST_TEST_GROUP:-all} == recovery ]]; then
  test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery
 	elif [[ ${SHIP_POST_TEST_GROUP:-all} == v4 ]]; then
 	 test_final_states; test_nested_repo
+	elif [[ ${SHIP_POST_TEST_GROUP:-all} == u14 ]]; then
+	 test_submit_conflict_preflight
 else
-	 test_dryrun_mocks; test_valid_actors; test_rejections; test_hook_and_retry; test_closed_retry; test_delivery; test_live_sync; test_watch; test_recovery; test_stream_errors; test_closed_skip_reason; test_concurrent_repositories; test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery; test_actor_alias; test_nested_repo; test_final_states
+	 test_dryrun_mocks; test_valid_actors; test_rejections; test_hook_and_retry; test_closed_retry; test_delivery; test_live_sync; test_watch; test_recovery; test_stream_errors; test_closed_skip_reason; test_concurrent_repositories; test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery; test_actor_alias; test_nested_repo; test_final_states; test_submit_conflict_preflight
 fi
 echo "checks=$checks failures=$failures"
 [[ $failures == 0 ]]
