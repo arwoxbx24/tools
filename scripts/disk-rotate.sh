@@ -543,7 +543,10 @@ fix_candidates() { # class listfile -> 0/1; фиксирует незамени�
   fi
   fix_list=$(mktemp)
   printf '%s\n' "${fix_paths[@]}" >"$fix_list"
-  dump=$("$RESTIC" backup --files-from-verbatim "$fix_list" --tag predelete --host "$(hostname)" --json)
+  local tags=predelete
+  # backups: копия — единственная после удаления, forget её не трогает (владелец 10.10)
+  [ "$class" = backups ] && tags=predelete,keep-archive
+  dump=$("$RESTIC" backup --files-from-verbatim "$fix_list" --tag "$tags" --host "$(hostname)" --json)
   rc=$?
   if [ "$rc" -ne 0 ]; then
     for p in "${fix_paths[@]}"; do
@@ -687,7 +690,7 @@ gate_process() { # class listfile -> 0, либо RC_GATE_CLOSED при закр�
   fi
   rm -f "$tmp"
   # срок хранения снимков predelete: 10 дней (владелец 02.10, CR-02 §6 п.4); неудача не блокирует прогон
-  if ! "$RESTIC" forget --tag predelete --group-by host,tags --keep-within 10d >>"$DR_LOG" 2>&1; then
+  if ! "$RESTIC" forget --tag predelete --group-by host,tags --keep-within 10d --keep-tag keep-archive >>"$DR_LOG" 2>&1; then
     journal_row gate forget-skipped - 0 - - forget-locked
   fi
   # при занятости >=95% свежие снимки проходят правило 24 ч сразу
