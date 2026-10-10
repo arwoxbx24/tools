@@ -67,7 +67,7 @@ Default state root is `/root/workspaces/tools/state/ship-post` (`SHIP_POST_STATE
 | `ship-post` | 23 | GitHub query failed or repository is not private | query failure may be temporary; privacy denial is not |
 | `ship-post` | 24 | remote result does not match the submitted SHA/state | no, reconcile before retry |
 
-`ship-post` records 23, 70 and 75 as retryable observations in `bin/ship-post:record_failure`; after a `ship` result, 10, 50 and 80 are final for that submitted SHA, while 70 remains repeatable. Other delivery errors reopen the atom and create/reuse a diagnostic task.
+`ship-post` records 23, 70 and 75 as retryable observations in `bin/ship-post:record_failure`; after a `ship` result, 10, 50 and 80 are final for that submitted SHA, while 70 remains repeatable. Other delivery errors reopen the atom and create/reuse a diagnostic task titled `[ship-post] delivery failure <repo> <atom> exit <rc>`: one task per atom, so one atom's failure never blocks another atom (dcfg-hd5at.9).
 
 ## 6. Отказы и восстановление
 
