@@ -20,7 +20,7 @@ export TMUX_CALLS="$tmux_calls"
 help=$(PATH="$tmux_stub:$PATH" "$bin/tmux-send" --help); rc=$?
 [[ $rc == 0 && $help == *usage:* && ! -s "$tmux_calls" ]] && { echo 'PASS 1'; ok=$((ok+1)); } || echo "FAIL 1: rc=$rc tmux_calls=$(wc -l < "$tmux_calls")"
 
-tmux -L "$srv" new-session -d -s t -x 80 -y 24
+tmux -L "$srv" -f /dev/null new-session -d -s t -x 80 -y 24
 pbash=$(tmux -L "$srv" display -p -t "t:0.0" '#{pane_id}')
 
 [[ -n ${TMUX_SEND_SOCKET:-} ]] || { echo 'FAIL нет TMUX_SEND_SOCKET' >&2; exit 3; }
@@ -34,7 +34,7 @@ pbash=$(tmux -L "$srv" display -p -t "t:0.0" '#{pane_id}')
 "$bin/tmux-send" "t:nosuch" 'x' >/dev/null 2>"$e"; rc=$?
 [[ $rc == 2 && -s "$e" ]] && { echo 'PASS 4'; ok=$((ok+1)); } || echo "FAIL 4: rc=$rc"
 
-tmux -L "$srv" new-window -d -n cat 'cat'
+tmux -L "$srv" new-window -d -t t: -n cat 'cat'
 pcat=$(tmux -L "$srv" display -p -t "t:cat" '#{pane_id}')
 tmux -L "$srv" resize-window -t "t:cat" -y 4
 "$bin/tmux-send" "$pcat" 'abcXYZ' --expect '^QWERTY$' >/dev/null 2>"$e"; rc=$?
@@ -42,5 +42,19 @@ cap=$(tmux -L "$srv" capture-pane -p -t "$pcat")
 blank=$(awk 'BEGIN{n=0} /^[[:space:]]*$/ {n++; next} {n=0} END{print n}' <<<"$cap")
 [[ $rc == 1 && $blank -le 3 ]] && { echo 'PASS 5'; ok=$((ok+1)); } || echo "FAIL 5: rc=$rc blank=$blank"
 
-echo "PASS $ok/5"
-[[ $ok == 5 ]]
+tmux -L "$srv" new-window -d -t t: -n cd-forms.arwox 'cat'
+for _ in {1..10}; do
+	wdot=$(tmux -L "$srv" list-windows -t t -F '#{window_name} #{window_id}' | awk '$1 == "cd-forms.arwox" { print $2; exit }')
+	[[ -n $wdot ]] && tmux -L "$srv" capture-pane -p -t "$wdot" >/dev/null 2>&1 && break
+	sleep 0.1
+done
+"$bin/tmux-send" 't:cd-forms.arwox' 'DOT-1' --expect 'DOT-1' >/dev/null 2>"$e"; rc=$?
+dotcap=$(tmux -L "$srv" capture-pane -p -t "$wdot")
+[[ $rc == 0 && $dotcap == *DOT-1* ]] && { echo 'PASS 6'; ok=$((ok+1)); } || echo "FAIL 6: rc=$rc"
+
+"$bin/tmux-send" 't:0' 'echo IDX-7' --expect '^IDX-7$' >/dev/null 2>"$e"; rc=$?
+cap0=$(tmux -L "$srv" capture-pane -p -t 't:0')
+[[ $rc == 0 && $cap0 == *IDX-7* && $cap != *IDX-7* ]] && { echo 'PASS 7'; ok=$((ok+1)); } || echo "FAIL 7: rc=$rc"
+
+echo "PASS $ok/7"
+[[ $ok == 7 ]]

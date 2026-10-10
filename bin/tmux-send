@@ -19,6 +19,36 @@ err=$(mktemp)
 die(){ echo "tmux-send: $(<"$err")" >&2; exit 2; }
 trap 'rm -f "$err"' EXIT
 
+if [[ ! $target =~ ^[%@][0-9]+$ ]]; then
+	if [[ $target == *:* ]]; then
+		sess=${target%%:*}
+		win=${target#*:}
+	else
+		sess=
+		win=$target
+	fi
+	windows=$(t list-windows -a -F $'#{session_name}\t#{window_index}\t#{window_name}\t#{window_id}' 2>"$err") || die
+	matches=()
+	while IFS=$'\t' read -r session_name window_index window_name window_id; do
+		if [[ -n $window_id && $win == "$window_name" ]] && [[ -z $sess || $sess == "$session_name" ]]; then
+			matches+=("$window_id")
+		fi
+	done <<< "$windows"
+	if ((${#matches[@]} == 0)); then
+		while IFS=$'\t' read -r session_name window_index window_name window_id; do
+			if [[ -n $window_id && $win == "$window_index" ]] && [[ -z $sess || $sess == "$session_name" ]]; then
+				matches+=("$window_id")
+			fi
+		done <<< "$windows"
+	fi
+	if ((${#matches[@]} == 1)); then
+		target=${matches[0]}
+	elif ((${#matches[@]} > 1)); then
+		echo "tmux-send: ambiguous target $target" >&2
+		exit 2
+	fi
+fi
+
 t send-keys -t "$target" -l "$text" 2>"$err" || die
 t send-keys -t "$target" Enter 2>>"$err" || die
 
