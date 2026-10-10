@@ -578,7 +578,7 @@ verify_and_delete() { # class -> удаление по гейту: провер�
   [ -f "$DR_STATE_FILE" ] || return 0
   local tmp now_s path size mtime sha256 snapshot_id fixed_ts sid_path line own
   local -a rec
-  local -A snap_path=() snap_done=()
+  local -A snap_path=() snap_done=() snap_kept=()
   local p s m ms meta snap_size snap_mtime
   tmp=$(mktemp)
   now_s=$(date +%s)
@@ -609,12 +609,20 @@ verify_and_delete() { # class -> удаление по гейту: провер�
     fi
     if [ -z "${snap_done[$snapshot_id]:-}" ]; then
       snap_done[$snapshot_id]=1
+      [ "$class" = backups ] && snap_kept[$snapshot_id]=$("$RESTIC" snapshots --json "$snapshot_id" 2>/dev/null \
+        | jq -r '.[0].tags // [] | index("keep-archive") != null' 2>/dev/null)
       while IFS=$'\t' read -r p s m; do
         [ -n "$p" ] || continue
         ms=$(date -d "$m" +%s 2>/dev/null || echo 0)
         snap_path["$snapshot_id"$'\x1f'"$p"]="$s"$'\t'"$ms"
       done < <("$RESTIC" ls --json "$snapshot_id" 2>/dev/null \
         | jq -r 'select(.struct_type=="node" and .type=="file") | [.path, (.size|tostring), .mtime] | @tsv')
+    fi
+    # backups: удаление только при бессрочной копии (keep-archive), иначе перефиксация с меткой (владелец 10.10)
+    if [ "$class" = backups ] && [ "${snap_kept[$snapshot_id]:-}" != true ]; then
+      journal_row "$class" snapshot-not-kept "$path" "$size" "$snapshot_id" - -
+      REFIX_PATHS+=("$path")
+      continue
     fi
     sid_path="$snapshot_id"$'\x1f'"$path"
     if [ -z "${snap_path[$sid_path]+set}" ]; then
