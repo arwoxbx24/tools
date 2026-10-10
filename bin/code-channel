@@ -50,7 +50,7 @@ fi
 [[ -r $tz ]] || { fail 'нет файла ТЗ'; exit 3; }
 prompt=$(cat -- "$tz") || exit 3
 cd -- "$project" || exit 3
-form_snap() { local s; s=$( { git rev-parse HEAD 2>/dev/null; git status --porcelain 2>/dev/null; git diff HEAD 2>/dev/null; } ); [[ -z $s ]] && return 0; printf '%s\n' "$s" | cksum; }
+form_snap() { local s; s=$( { git rev-parse HEAD 2>/dev/null; git status --porcelain --untracked-files=all 2>/dev/null; git diff HEAD 2>/dev/null; } ); [[ -z $s ]] && return 0; printf '%s\n' "$s" | cksum; }
 run_form() (
     export CODE_CHANNEL_ACTIVE=1
     id=$1; start=$SECONDS; pre=-; run=-; hdr=; tmpjson=; resphdr=; respbody=; codetmp=
