@@ -286,4 +286,24 @@ err=$("$bin/safe-delete" --bk "$bk" worktree "$d/wt-dirty-beads" 2>&1); r44=$?
 if [[ $r44 == 2 && $err == *'запрещённый сегмент'* && -d $d/wt-dirty-beads ]]; then echo 'PASS T44'; ok=$((ok+1)); else echo "FAIL T44: rc=$r44 err=$err"; fi
 git -C "$d/w" worktree remove --force "$d/wt-dirty-beads"
 
-[[ $ok == 44 ]]
+# T45: local branch merged into origin/main and already gone from origin
+git -C "$d/w" checkout -q -b done/z main
+git -C "$d/w" commit -q --allow-empty -m t45
+git -C "$d/w" checkout -q main
+git -C "$d/w" merge -q --ff-only done/z
+git -C "$d/w" push -q origin main done/z
+git -C "$d/w" push -q origin :done/z
+"$bin/safe-delete" --bk "$bk" branch "$d/w" done/z; rc=$?
+gone45=$(git -C "$d/w" branch --list done/z)
+if [[ $rc == 0 && -z $gone45 ]]; then echo 'PASS T45'; ok=$((ok+1)); else echo "FAIL T45: rc=$rc br=$gone45"; fi
+
+# T46: local branch with an unmerged commit, absent from origin, must stay
+git -C "$d/w" checkout -q -b local/z main
+git -C "$d/w" commit -q --allow-empty -m t46
+git -C "$d/w" checkout -q main
+"$bin/safe-delete" --bk "$bk" branch "$d/w" local/z 2>/dev/null; rc=$?
+kept46=$(git -C "$d/w" branch --list local/z)
+if [[ $rc == 2 && -n $kept46 ]]; then echo 'PASS T46'; ok=$((ok+1)); else echo "FAIL T46: rc=$rc br=$kept46"; fi
+
+[[ $ok == 46 ]] || exit 1
+echo "итог: PASS 46 (+2 к 44), FAIL 0"
