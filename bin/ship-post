@@ -88,6 +88,13 @@ write_submit_receipt(){
 	printf 'repo=%s\nworktree=%s\natom=%s\nsha=%s\nevidence=%s\n' "$repo" "$wt" "$atom" "$sha" "$evidence" > "$file.tmp" && mv "$file.tmp" "$file"
 }
 
+clear_final_failure(){
+	local repo=$1 atom=$2 sha=$3 rf
+	rf=$(receipt_file "$repo" "$atom" "$sha")
+	[[ -f $rf.failed ]] || return 0
+	mv -f -- "$rf.failed" "$rf.failed.resubmitted" && rm -f -- "$rf.failed.reported"
+}
+
 # ── submit mode ──────────────────────────────────────────────────────
 
 do_submit(){
@@ -190,6 +197,7 @@ do_submit(){
 		[[ $head_matches == 1 ]] || die "nothing to commit and HEAD trailers do not match"
 		head_sha=$(git -C "$wt_real" rev-parse HEAD) || die "cannot read HEAD"
 		if [[ $status == closed ]]; then
+			clear_final_failure "$repo" "$atom" "$head_sha" || die "cannot clear final failure"
 			write_submit_receipt "$repo" "$wt_real" "$atom" "$head_sha" "$evidence" || die "cannot write submission receipt"
 			echo "ship-post: already closed $atom"
 			return 0
@@ -249,6 +257,7 @@ do_submit(){
 		return "$rc"
 	}
 
+	clear_final_failure "$repo" "$atom" "$head_sha" || die "cannot clear final failure"
 	write_submit_receipt "$repo" "$wt_real" "$atom" "$head_sha" "$evidence" || die "cannot write submission receipt"
 	echo "ship-post: closed $atom"
 	return 0
