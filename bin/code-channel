@@ -112,6 +112,7 @@ run_form() (
     command -v "$tool" >/dev/null || { fail "нет инструмента $tool"; exit 3; }
     prompt=$(printf 'Ты уже исполнитель внутри code-channel: правь файлы сам; code-channel, opencode run, codex exec не вызывай\n\n%s' "$prompt")
     prompt=$(printf 'Не создавай и не переключай ветки; не делай git add и git commit — коммит делает оркестратор\n\n%s' "$prompt")
+    prompt=$(printf 'Разведка кода — только через индекс: repowise (repowise context|symbol|risk <путь> --path <корень репо>) и codebase-memory; файл кода читай только перед его правкой\n\n%s' "$prompt")
     prompt=$(printf 'Не вызывай bd: трекер ведёт оркестратор\n\n%s' "$prompt")
     if [[ $id == codex ]]; then
         provider=codex
