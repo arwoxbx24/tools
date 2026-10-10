@@ -226,12 +226,14 @@ test_delivery(){
  setup_submit uncertain codex/dcfg-uncertain.1
  git -C "$wt" commit -q --allow-empty -m uncertain -m "$(printf 'ТЗ: %s#U2\nAtom: dcfg-uncertain.1' "$wt/$tz")"
  out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_GH_FAIL=1; run_tool "$d" 2>&1); rc=$?
- [[ $rc != 0 && ! -s $d/ship.calls ]] && pass unknown_remote || fail unknown_remote "$out"
+	for i in $(seq 1 50); do compgen -G "$d/state/receipts/*/dcfg-uncertain.1/*.failed" >/dev/null && break; sleep 0.2; done
+	[[ $rc == 0 && ! -s $d/ship.calls ]] && pass unknown_remote || fail unknown_remote "$out"
  compgen -G "$d/state/receipts/*/dcfg-uncertain.1/*.failed" >/dev/null && ! grep -q 'reopen dcfg-uncertain.1' "$d/bd.calls" && pass transient_retains_readiness || fail transient_retains_readiness missing
 	setup_submit ci_absent_open codex/dcfg-ci-absent.1; commit_candidate dcfg-ci-absent.1; h=$(git -C "$wt" rev-parse HEAD)
 	out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_PR_HEAD="$h" MOCK_SHIP_RC=30; run_tool "$d" 2>&1); rc=$?
+	for i in $(seq 1 50); do marker=$(find "$d/state/receipts" -type f -name "$h.failed" -print -quit); [[ -n $marker ]] && break; sleep 0.2; done
 	marker=$(find "$d/state/receipts" -type f -name "$h.failed" -print -quit)
-	[[ $rc != 0 && -n $marker && $(<"$marker") == 30 ]] && pass 'D1 (130)' || fail 'D1 (130)' "$out rc=$rc marker=${marker:-missing}"
+	[[ $rc == 0 && -n $marker && $(<"$marker") == 30 ]] && pass 'D1 (130)' || fail 'D1 (130)' "$out rc=$rc marker=${marker:-missing}"
 }
 
 test_live_sync(){
@@ -275,7 +277,8 @@ test_recovery(){
  [[ $rc == 0 ]] && grep -q '^Claude Code|' "$d/ship.calls" && pass claude_delivery || fail claude_delivery "$out"
  setup_submit failure codex/dcfg-failure.1; commit_candidate dcfg-failure.1
  out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_RC=40; run_tool "$d" 2>&1); rc=$?
- [[ $rc != 0 ]] && grep -q 'reopen dcfg-failure.1' "$d/bd.calls" && pass ci_failure || fail ci_failure "$out"
+	for i in $(seq 1 50); do grep -q 'reopen dcfg-failure.1' "$d/bd.calls" && break; sleep 0.2; done
+	[[ $rc == 0 ]] && grep -q 'reopen dcfg-failure.1' "$d/bd.calls" && pass ci_failure || fail ci_failure "$out"
  out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_RC=40; run_tool "$d" 2>&1)
  [[ $(wc -l < "$d/ship.calls") == 1 && $(grep -c 'create ' "$d/bd.calls") == 0 ]] && pass failure_dedup || fail failure_dedup "$out"
  setup_submit excluded codex/dcfg-excluded.1; commit_candidate dcfg-excluded.1
@@ -491,7 +494,8 @@ test_final_states(){
 	git -C "$wt" commit -q --allow-empty -m fs3 -m "$(printf 'ТЗ: %s#U2\nAtom: dcfg-fs.3\nAgent: codex' "$wt/$tz")"
 	key=$(printf %s "$d/repo" | sha256sum | cut -d ' ' -f1); h=$(git -C "$wt" rev-parse HEAD); rf="$d/state/receipts/$key/dcfg-fs.3/$h"
 	out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_RC=50; run_tool "$d" 2>&1); rc=$?
-	[[ $rc != 0 && $(wc -l < "$d/ship.calls") == 1 && $(<"$rf.failed") == 50 ]] && pass '144 code 50 recorded' || fail '144 code 50 recorded' "$out"
+	for i in $(seq 1 50); do [[ -f $rf.failed ]] && break; sleep 0.2; done
+	[[ $rc == 0 && $(wc -l < "$d/ship.calls") == 1 && $(<"$rf.failed") == 50 ]] && pass '144 code 50 recorded' || fail '144 code 50 recorded' "$out"
 	out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_RC=50; run_tool "$d" 2>&1); rc=$?
 	[[ $(wc -l < "$d/ship.calls") == 1 ]] && pass '145 code 50 final' || fail '145 code 50 final' "$out"
 

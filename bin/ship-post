@@ -225,7 +225,7 @@ do_submit(){
 	fi
 
 	local _ base merge_tree merge_rc conflicts
-	read -r _ base _ <<< "$(ga_base "$wt_real")"
+	read -r _ base _ <<< "$(ga_base "$wt_real" local)"
 	if ! git -C "$wt_real" fetch -q origin "$base"; then
 		echo "ship-post: fetch origin/$base failed" >&2
 		return 70
