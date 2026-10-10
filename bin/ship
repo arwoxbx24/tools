@@ -103,6 +103,7 @@ fi
 locked_core(){
 	local osha=''
 	g fetch -q origin "$base" || return 70
+	ci_base=$(g rev-parse origin/$base)
 	if [[ -n $expected_head ]]; then
 		accepted_clean || return 10
 	elif ! g merge-base --is-ancestor origin/$base HEAD 2>/dev/null; then
@@ -115,9 +116,10 @@ locked_core(){
 	else
 		g push -q -u origin "${expected_head:-HEAD}":refs/heads/"$branch" || return 30
 	fi
+	printf '%s' "$ci_base"
 	return 0
 }
-ga_lock "$name" 60 locked_core
+ci_base=$(ga_lock "$name" 60 locked_core)
 rc=$?
 if [[ $rc -ne 0 ]]; then
 	case $rc in
@@ -193,10 +195,55 @@ if [[ $docs_only == 0 ]]; then
 	fi
 fi
 
-gh_or70(){ local e; e=$("$@" 2>&1 >/dev/null) && return 0; echo "ship: gh: $e" >&2; grep -qiE 'HTTP 40[13]|HTTP 5[0-9][0-9]|authentication|could not connect|timeout|Something went wrong' <<<"$e" && leave 70 gh; return 1; }
+gh_or70(){ local e; e=$("$@" 2>&1 >/dev/null) && return 0; echo "ship: gh: $e" >&2; grep -qiE 'HTTP 40[13]|HTTP 5[0-9][0-9]|authentication|could not connect|timeout|Something went wrong' <<<"$e" && return 70; return 1; }
 
-ga_lock "$name" 60
-gh_or70 gh pr merge "$num" -R "$slug" --merge --match-head-commit "${expected_head:-$(git -C "$wtr" rev-parse HEAD)}" || leave 50 merge
+merge_after_ci(){
+	local new moved mine head rc
+	g fetch -q origin "$base" || return 70
+	new=$(g rev-parse origin/$base) || return 70
+	head=${expected_head:-$(git -C "$wtr" rev-parse HEAD)}
+	if [[ $new != "$ci_base" ]]; then
+		moved=$(g diff --name-only "$ci_base" "$new") || return 50
+		mine=$(g diff --name-only "$new...$head") || return 50
+		if [[ -z $(comm -12 <(printf '%s\n' "$moved" | sort -u) <(printf '%s\n' "$mine" | sort -u)) ]] \
+			&& ! grep -qE '^bin/(ship|ship-post|git-sync|git-auto-lib|git-state)$|^bin/ship-test$' <<<"$moved"; then
+			printf 'ship: base moved %.7s..%.7s, disjoint, no re-CI\n' "$ci_base" "$new" >&2
+		else
+			printf 'ship: base moved %.7s..%.7s, re-CI #%s round %s\n' "$ci_base" "$new" "$num" "$round" >&2
+			printf '%s' "$new"
+			return 2
+		fi
+	fi
+	gh_or70 gh pr merge "$num" -R "$slug" --merge --match-head-commit "$head"; rc=$?
+	[[ $rc == 70 ]] && return 71
+	return "$rc"
+}
+
+for ((round=1; round<=5; round++)); do
+	new=$(ga_lock "$name" 60 merge_after_ci); merge_rc=$?
+	case $merge_rc in
+		0) break ;;
+		2)
+			since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+			gh_or70 gh pr close "$num" -R "$slug"; gh_rc=$?
+			[[ $gh_rc == 70 ]] && leave 70 gh
+			[[ $gh_rc == 0 ]] || leave 50 close
+			gh_or70 gh pr reopen "$num" -R "$slug"; gh_rc=$?
+			[[ $gh_rc == 70 ]] && leave 70 gh
+			[[ $gh_rc == 0 ]] || leave 50 reopen
+			ci_base=$new
+			ga_ci_wait pr "$slug" "$num" "${expected_head:-$(git -C "$wtr" rev-parse HEAD)}" "$since"
+			ci_rc=$?
+			[[ $ci_rc == 30 ]] && leave 30 ci-absent
+			[[ $ci_rc == 0 ]] || leave 40 ci
+			;;
+		70) leave 70 fetch ;;
+		71) leave 70 gh ;;
+		75) leave 75 lock ;;
+		*) leave 50 merge ;;
+	esac
+done
+(( round <= 5 )) || leave 70 base-moving
 merge_sha=$(gh pr view "$num" -R "$slug" --json mergeCommit --jq .mergeCommit.oid)
 gg_log 0 "merged $num $merge_sha"
 merge_ms=$(( $(date +%s) * 1000 ))
