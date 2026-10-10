@@ -263,7 +263,7 @@ for i in "${!ladder[@]}"; do
     fi
     before=$(form_snap)
     run_form "$id"; rc=$?
-    case $rc in 3|5|15|22|24) exit "$rc";; esac
+    case $rc in 3|5|15|22|24|124) exit "$rc";; esac
     if [[ $rc == 0 ]]; then
         after=$(form_snap)
         if [[ $mode == audit ]]; then
