@@ -647,6 +647,54 @@ scenario_23() { # restic check failure closes the gate before any candidate dele
   fi
 }
 
+scenario_24() { # turns старше 24 ч удаляются, свежие остаются
+  fixture scen24
+  local turns="$S/codex/plugins/data/auto-review-just-every/turns/run"
+  local old="$turns/old.jsonl" fresh="$turns/fresh.jsonl"
+  mkdir -p "$turns"
+  printf 'old turn\n' >"$old"; touch -d '25 hours ago' "$old"
+  printf 'fresh turn\n' >"$fresh"
+  run_rotate GATE_MODE=enforce DR_USAGE_PCT=85 DR_CODEX_HOME="$S/codex" -- >/dev/null 2>&1
+  if [ ! -e "$old" ] && [ -f "$fresh" ]; then
+    report 24 "codex review retention" PASS
+  else
+    report 24 "codex review retention" FAIL
+  fi
+}
+
+scenario_25() { # current и самый новый релизы остаются, старый удаляется
+  fixture scen25
+  local standalone="$S/codex/packages/standalone"
+  local releases="$standalone/releases"
+  local old="$releases/old" active="$releases/current" newest="$releases/newest"
+  mkdir -p "$old" "$active" "$newest"
+  printf 'old release\n' >"$old/file"; touch -d '3 days ago' "$old"
+  printf 'active release\n' >"$active/file"; touch -d '2 days ago' "$active"
+  printf 'new release\n' >"$newest/file"; touch -d '1 day ago' "$newest"
+  ln -s releases/current "$standalone/current"
+  run_rotate GATE_MODE=enforce DR_USAGE_PCT=85 DR_CODEX_HOME="$S/codex" -- >/dev/null 2>&1
+  if [ ! -e "$old/file" ] && [ -f "$active/file" ] && [ -f "$newest/file" ]; then
+    report 25 "codex release retention" PASS
+  else
+    report 25 "codex release retention" FAIL
+  fi
+}
+
+scenario_26() { # старая сессия сначала фиксируется restic и остаётся на диске
+  fixture scen26
+  local session="$S/codex/sessions/old/session.jsonl"
+  mkdir -p "${session%/*}"
+  printf 'old session\n' >"$session"; touch -d '15 days ago' "$session"
+  run_rotate GATE_MODE=enforce DR_USAGE_PCT=85 DR_CODEX_HOME="$S/codex" -- >/dev/null 2>&1
+  if [ -f "$session" ] && snapshots --tag predelete 2>/dev/null | grep -q predelete \
+     && grep -qF "$session" "$STATE" 2>/dev/null \
+     && grep -q $'\tcodex-sessions\tfixed\t' "$JOURNAL" 2>/dev/null; then
+    report 26 "codex sessions predelete" PASS
+  else
+    report 26 "codex sessions predelete" FAIL
+  fi
+}
+
 if [ "${1:-}" = accounting ]; then
   scenario_16
   exit "$FAILS"
@@ -675,8 +723,11 @@ scenario_20
 scenario_21
 scenario_22
 scenario_23
+scenario_24
+scenario_25
+scenario_26
 
-echo "PASS $((23 - FAILS))/23"
+echo "PASS $((26 - FAILS))/26"
 [ "$FAILS" -eq 0 ] && exit 0
-echo "$FAILS/23 FAILED"
+echo "$FAILS/26 FAILED"
 exit 1
