@@ -152,4 +152,10 @@ grep -qx sup <<<"$names" || ok=0
 grep -qx 'sup/sub' <<<"$names" && ok=0
 [[ $ok == 1 ]] && pass T9 || fail "T9: $names"
 
-[[ $sum == 14 ]]
+# T10: nested .git/.git skipped silently
+mkdir -p "$proj/real/.git/.git"
+err=$(ga_roots 2>&1 >/dev/null)
+names=$(ga_roots 2>/dev/null | cut -f1)
+[[ -z $err ]] && ! grep -qx 'real/.git' <<<"$names" && pass T10 || fail "T10: err=$err"
+
+[[ $sum == 15 ]]
