@@ -44,7 +44,7 @@ Default state root is `/root/workspaces/tools/state/ship-post` (`SHIP_POST_STATE
 - `submissions/<repo-hash>/<worktree-hash>/<atom>/<sha>` — local submission receipt;
 - `receipts/<repo-hash>/<atom>/<sha>` plus `.log`, `.failed`, `.reported`, `.ack` — delivery and diagnostic records;
 - `inflight/<repo-hash>/<atom>` — one submitted SHA while delivery is unresolved;
-- `locks/<repo-hash>.lock`, `watch.lock`, `pending/` — repository and watcher serialization;
+- `locks/<repo-hash>.lock`, `watch.lock`, `pending/` — repository and watcher serialization; only the `bin/ship-post:do_watch` parent holds `watch.lock`: repository workers and the journal coproc close it, so deliveries that outlive a pm2 restart do not block the next watcher (dcfg-zd4ja);
 - `cursor.json` — Beads ledger identity and last acknowledged event sequence.
 
 `bin/ship:locked_core` writes `refs/delivered/<branch>` for a successful handover. `bin/git-sync:sync_one` keeps recoverable local work under `refs/rescue/<timestamp>/...`; `bin/git-state:emit` counts those refs.
