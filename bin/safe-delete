@@ -105,7 +105,7 @@ case "$cmd" in
     common=$(git -C "$wt" rev-parse --git-common-dir 2>/dev/null) || refuse "не worktree: $wt"; [[ $common != .git ]] || refuse "не linked worktree: $wt"
     common=$(realpath -e "$common") || exit 1; repo=$(dirname -- "$common")
     for cwd in /proc/[0-9]*/cwd; do pid=${cwd#/proc/}; pid=${pid%/cwd}; if ! used=$(readlink -- "$cwd"); then [[ ! -d /proc/$pid || $(awk '{print $3}' "/proc/$pid/stat" 2>/dev/null) == Z ]] && continue; refuse "нечитаемый cwd процесса: $pid"; fi; [[ $used == "$wt" || $used == "$wt"/* ]] && refuse "процесс использует worktree: $pid"; done
-    mapfile -d '' files < <(find "$wt" -path "$wt/.git" -prune -o -type f -print0)
+    mapfile -d '' files < <({ git -C "$wt" ls-files -z --others; git -C "$wt" ls-files -z --modified; git -C "$wt" diff -z --name-only --cached HEAD; } | while IFS= read -r -d '' rel; do f=$wt/$rel; [[ -f $f && ! -L $f ]] && printf '%s\0' "$f"; done | sort -zu)
     for f in "${files[@]}"; do git_file "$f" || check_file "$f"; done
     sha=$(git -C "$wt" rev-parse HEAD) || exit 1; ref="refs/safe-delete/wt-$(date +%Y%m%d%H%M%S%N)"
     git -C "$repo" update-ref "$ref" "$sha" || exit 1
