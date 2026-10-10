@@ -198,7 +198,7 @@ fi
 gh_or70(){ local e; e=$("$@" 2>&1 >/dev/null) && return 0; echo "ship: gh: $e" >&2; grep -qiE 'HTTP 40[13]|HTTP 5[0-9][0-9]|authentication|could not connect|timeout|Something went wrong' <<<"$e" && return 70; return 1; }
 
 merge_after_ci(){
-	local new moved mine head rc
+	local new moved mine head rc method
 	g fetch -q origin "$base" || return 70
 	new=$(g rev-parse origin/$base) || return 70
 	head=${expected_head:-$(git -C "$wtr" rev-parse HEAD)}
@@ -214,7 +214,12 @@ merge_after_ci(){
 			return 2
 		fi
 	fi
-	gh_or70 gh pr merge "$num" -R "$slug" --merge --match-head-commit "$head"; rc=$?
+	# U22: squash-only репо не принимает merge-коммиты; ошибка запроса -> прежнее --merge.
+	method=--merge
+	if [[ $(gh api "repos/$slug" --jq .allow_merge_commit 2>/dev/null) == false ]]; then
+		method=--squash
+	fi
+	gh_or70 gh pr merge "$num" -R "$slug" "$method" --match-head-commit "$head"; rc=$?
 	[[ $rc == 70 ]] && return 71
 	return "$rc"
 }

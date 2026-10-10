@@ -98,6 +98,8 @@ case $1:$2 in
 		else
 			cat "$GH_TEST_DIR/merge-sha"
 		fi ;;
+	api:repos/*)
+		cat "$GH_TEST_DIR/allow-merge" 2>/dev/null || echo true ;;
 esac
 exit 0
 EOF
