@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+set -u
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+inbox="$here/bd-inbox"
+TMP="$(mktemp -d /tmp/bd-inbox-test-XXXXXX)"
+trap 'rm -rf "$TMP"' EXIT
+DATA="$TMP/data"
+mkdir -p "$DATA"
+
+cat > "$TMP/bd" <<'STUB'
+#!/usr/bin/env bash
+if [ "${STUB_RC:-0}" != 0 ]; then exit "$STUB_RC"; fi
+if [ "${1:-}" = "-C" ]; then shift 2; fi
+case "${1:-}" in
+  list) cat "$STUB_DATA/list.json" ;;
+  comments) cat "$STUB_DATA/comments.$2.json" 2>/dev/null || echo '[]' ;;
+  *) exit 1 ;;
+esac
+STUB
+chmod +x "$TMP/bd"
+
+run() {
+  env -u TMUX_PANE BD_BIN="$TMP/bd" STUB_DATA="$DATA" STUB_RC="${STUB_RC:-0}" \
+    BD_INBOX_WINDOW="$1" "$inbox" 2>/dev/null
+}
+fail() { echo "FAIL $1"; exit 1; }
+
+# 1) --help -> rc 0, usage на stdout
+out="$("$inbox" --help)"; rc=$?
+[ "$rc" -eq 0 ] || fail 1
+case "$out" in *usage*) ;; *) fail 1;; esac
+
+# 2) без окна -> rc 0, stdout пуст
+out="$(env -u TMUX_PANE BD_INBOX_WINDOW= "$inbox" 2>/dev/null)"; rc=$?
+[ "$rc" -eq 0 ] || fail 2
+[ -z "$out" ] || fail 2
+
+# 3) свой атом с "От …" без ответа -> additionalContext
+printf '%s\n' '[{"id":"t-1","metadata":{"tmux":"cl:7"},"comment_count":1}]' > "$DATA/list.json"
+printf '%s\n' '[{"id":"c1","issue_id":"t-1","author":"B","text":"От X: факт","created_at":"2026-10-10T10:00:00Z"}]' > "$DATA/comments.t-1.json"
+out="$(run cl:7)"; rc=$?
+[ "$rc" -eq 0 ] || fail 3
+echo "$out" | jq -e '.hookSpecificOutput.hookEventName == "PostToolUse"' >/dev/null 2>&1 || fail 3
+echo "$out" | jq -r '.hookSpecificOutput.additionalContext' 2>/dev/null | grep -qF 't-1: От X: факт' || fail 3
+
+# 4) позже "принято: ок" -> stdout пуст
+printf '%s\n' '[{"id":"c1","issue_id":"t-1","author":"B","text":"От X: факт","created_at":"2026-10-10T10:00:00Z"},{"id":"c2","issue_id":"t-1","author":"B","text":"принято: ок","created_at":"2026-10-10T11:00:00Z"}]' > "$DATA/comments.t-1.json"
+out="$(run cl:7)"; rc=$?
+[ "$rc" -eq 0 ] || fail 4
+[ -z "$out" ] || fail 4
+
+# 5) чужое окно -> stdout пуст
+printf '%s\n' '[{"id":"t-1","metadata":{"tmux":"cl:999"},"comment_count":1}]' > "$DATA/list.json"
+out="$(run cl:7)"; rc=$?
+[ "$rc" -eq 0 ] || fail 5
+[ -z "$out" ] || fail 5
+
+# 6) заглушка bd выходит с rc 1 -> rc 0, stdout пуст
+printf '%s\n' '[{"id":"t-1","metadata":{"tmux":"cl:7"},"comment_count":1}]' > "$DATA/list.json"
+out="$(STUB_RC=1 run cl:7)"; rc=$?
+[ "$rc" -eq 0 ] || fail 6
+[ -z "$out" ] || fail 6
+
+echo "PASS 6/6"
+exit 0
