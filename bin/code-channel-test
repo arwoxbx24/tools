@@ -162,4 +162,9 @@ CC_CONFIG=$codexone check 43 '[[ $rc == 0 ]] && grep -Fq -- "только чер
 CC_CONFIG=$gocodex check 44 '[[ $rc == 124 ]] && ! grep -q "^codex " "$log" && [[ $err != *switch* ]]' \
   env OPENCODE_RC=124 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" auto "$project" "$tz"
 
-[[ $ok == 44 ]] && echo 'PASS 44/44'
+mkdir -p "$project/.agent-work"
+printf 'old\n' >"$project/.agent-work/old.txt"
+CC_CONFIG=$go check 45 '[[ $rc == 0 ]] && [[ -f "$project/.agent-work/added.txt" ]] && ! grep -Fq -- "без изменений" "$tmp/err"' \
+  env OPENCODE_RC=0 OPENCODE_TOUCH=.agent-work/added.txt SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
+
+[[ $ok == 45 ]] && echo 'PASS 45/45'
