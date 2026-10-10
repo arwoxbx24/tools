@@ -86,13 +86,35 @@ CODEX_ALLOW=(
   "$DR_CODEX_HOME/plugins/data/auto-review-just-every/turns"
   "$DR_CODEX_HOME/packages/standalone/releases"
 )
+# Класс backups (spec:054 CR FR-027/029, владелец 10.10): N|маска; N новейших остаются локально,
+# остальные — только через гейт restic. Новый вид бэкапа = одна строка.
+BACKUP_RULES=(
+  '0|/root/backups/docker/20*_*'
+  '0|/root/backups/hh-scoring-snapshots/*.tar.gz'
+  '1|/root/workspaces/projects/rss-tg-ins/data/backups/rss-tg-ins-*.tar.gz'
+  '0|/root/workspaces/projects/stroyremont/*backup*.sql'
+  '0|/root/workspaces/projects/stroyremont/backups/*.sql'
+  '0|/root/workspaces/system/infra/minio-b244/minio_backup_*.tar.gz'
+  '0|/root/workspaces/system/archives/*'
+)
 NEVER_LIST=(
   '*hh-scoring*' '*/secrets/*' '*/.claude/*' '*/system/archives/*'
   '*/client-materials/*' '*.db' '*-wal'
 )
 
+backup_rule_match() { # path -> 0, если путь — элемент маски правила или файл внутри такого элемента
+  local p=$1 rule mask
+  for rule in "${BACKUP_RULES[@]}"; do
+    mask=${rule#*|}
+    [[ "$p" == $mask || "$p" == $mask/* ]] && return 0
+  done
+  return 1
+}
+
 denied() { # path -> 0 если путь в запретном списке
   local p=$1 pat b
+  # правила backups сильнее NEVER_LIST и DENY_LIST, но действуют только на свои маски
+  backup_rule_match "$p" && return 1
   for pat in "${NEVER_LIST[@]}"; do [[ "$p" == $pat ]] && return 0; done
   for pat in "${PROJECTS_ALLOW[@]}"; do [[ "$p" == $pat ]] && return 1; done
   # узкие базы CODEX_ALLOW не считаются запрещёнными (см. cleanup_codex)
@@ -521,7 +543,10 @@ fix_candidates() { # class listfile -> 0/1; фиксирует незамени�
   fi
   fix_list=$(mktemp)
   printf '%s\n' "${fix_paths[@]}" >"$fix_list"
-  dump=$("$RESTIC" backup --files-from-verbatim "$fix_list" --tag predelete --host "$(hostname)" --json)
+  local tags=predelete
+  # backups: копия — единственная после удаления, forget её не трогает (владелец 10.10)
+  [ "$class" = backups ] && tags=predelete,keep-archive
+  dump=$("$RESTIC" backup --files-from-verbatim "$fix_list" --tag "$tags" --host "$(hostname)" --json)
   rc=$?
   if [ "$rc" -ne 0 ]; then
     for p in "${fix_paths[@]}"; do
@@ -553,7 +578,7 @@ verify_and_delete() { # class -> удаление по гейту: провер�
   [ -f "$DR_STATE_FILE" ] || return 0
   local tmp now_s path size mtime sha256 snapshot_id fixed_ts sid_path line own
   local -a rec
-  local -A snap_path=() snap_done=()
+  local -A snap_path=() snap_done=() snap_kept=()
   local p s m ms meta snap_size snap_mtime
   tmp=$(mktemp)
   now_s=$(date +%s)
@@ -563,6 +588,7 @@ verify_and_delete() { # class -> удаление по гейту: провер�
     # ponytail: six-column state uses path ownership; add class metadata if classes share paths.
     case "$class" in
       projects) for p in "${PROJECTS_ALLOW[@]}"; do [[ "$path" == $p ]] && { own=1; break; }; done ;;
+      backups) backup_rule_match "$path" && own=1 ;;
       test-irreplaceable) [ -n "${DR_TEST_IRREPLACEABLE_DIR:-}" ] && [[ "$path" == "$DR_TEST_IRREPLACEABLE_DIR/"* ]] && own=1 ;;
     esac
     if [ "$own" -eq 0 ] || [ "${#rec[@]}" -ne 6 ]; then
@@ -583,12 +609,20 @@ verify_and_delete() { # class -> удаление по гейту: провер�
     fi
     if [ -z "${snap_done[$snapshot_id]:-}" ]; then
       snap_done[$snapshot_id]=1
+      [ "$class" = backups ] && snap_kept[$snapshot_id]=$("$RESTIC" snapshots --json "$snapshot_id" 2>/dev/null \
+        | jq -r '.[0].tags // [] | index("keep-archive") != null' 2>/dev/null)
       while IFS=$'\t' read -r p s m; do
         [ -n "$p" ] || continue
         ms=$(date -d "$m" +%s 2>/dev/null || echo 0)
         snap_path["$snapshot_id"$'\x1f'"$p"]="$s"$'\t'"$ms"
       done < <("$RESTIC" ls --json "$snapshot_id" 2>/dev/null \
         | jq -r 'select(.struct_type=="node" and .type=="file") | [.path, (.size|tostring), .mtime] | @tsv')
+    fi
+    # backups: удаление только при бессрочной копии (keep-archive), иначе перефиксация с меткой (владелец 10.10)
+    if [ "$class" = backups ] && [ "${snap_kept[$snapshot_id]:-}" != true ]; then
+      journal_row "$class" snapshot-not-kept "$path" "$size" "$snapshot_id" - -
+      REFIX_PATHS+=("$path")
+      continue
     fi
     sid_path="$snapshot_id"$'\x1f'"$path"
     if [ -z "${snap_path[$sid_path]+set}" ]; then
@@ -664,7 +698,7 @@ gate_process() { # class listfile -> 0, либо RC_GATE_CLOSED при закр�
   fi
   rm -f "$tmp"
   # срок хранения снимков predelete: 10 дней (владелец 02.10, CR-02 §6 п.4); неудача не блокирует прогон
-  if ! "$RESTIC" forget --tag predelete --group-by host,tags --keep-within 10d >>"$DR_LOG" 2>&1; then
+  if ! "$RESTIC" forget --tag predelete --group-by host,tags --keep-within 10d --keep-tag keep-archive >>"$DR_LOG" 2>&1; then
     journal_row gate forget-skipped - 0 - - forget-locked
   fi
   # при занятости >=95% свежие снимки проходят правило 24 ч сразу
@@ -793,6 +827,52 @@ cleanup_codex() {
   fi
 }
 
+# Класс backups (владелец 10.10, spec:054 FR-027/029): в каждом правиле N новейших
+# элементов маски остаются локально, остальные идут только через гейт restic.
+cleanup_backups() {
+  local rule n mask el list mt cnt
+  local -a els keep
+  # FR-032: живой режим класса — только после подтверждения владельцем списка сухого прогона.
+  if [ "$MODE" = run ] && [ "${DR_BACKUPS_APPROVED:-0}" != 1 ]; then
+    echo "BACKUPS-HOLD нет DR_BACKUPS_APPROVED=1 — класс backups не трогается" >>"$DR_LOG"
+    return 0
+  fi
+  for rule in "${BACKUP_RULES[@]}"; do
+    n=${rule%%|*}; mask=${rule#*|}
+    els=()
+    for el in $mask; do
+      [ -e "$el" ] && [ ! -L "$el" ] || continue
+      mt=$(stat -c %Y "$el" 2>/dev/null || echo 0)
+      # только бэкапы старше подтверждения владельца (10.10 13:35); новые не трогаются
+      [ "$mt" -lt "${DR_BACKUPS_BEFORE:-0}" ] || continue
+      els+=("$mt"$'\t'"$el")
+    done
+    [ "${#els[@]}" -gt 0 ] || continue
+    keep=(); cnt=0
+    while IFS=$'\t' read -r mt el; do
+      [ -n "$el" ] || continue
+      cnt=$((cnt + 1))
+      [ "$cnt" -le "$n" ] && continue
+      keep+=("$el")
+    done < <(printf '%s\n' "${els[@]}" | sort -t$'\t' -k1,1nr)
+    [ "${#keep[@]}" -gt 0 ] || continue
+    if [ "$MODE" = run ]; then
+      list=$(mktemp) || continue
+      for el in "${keep[@]}"; do find -P "$el" -type f 2>/dev/null >>"$list"; done
+      REFIX_PATHS=()
+      gate_process backups "$list" || true
+      rm -f -- "$list"
+      for el in "${keep[@]}"; do
+        [ -d "$el" ] && [ ! -L "$el" ] && find "$el" -type d -empty -delete 2>/dev/null
+      done
+    else
+      for el in "${keep[@]}"; do
+        handle backups < <(find -P "$el" -type f -print0 2>/dev/null)
+      done
+    fi
+  done
+}
+
 projects_candidates() { # -> безопасные files; WT_CANDIDATES для remove только после gate
   local agent=/root/workspaces/projects/.agent-work p rel top wt tmp ts zone path cls size after freed rc state line self_dir
   WT_CANDIDATES=(); PROJECTS_NOTICES=()
@@ -894,6 +974,7 @@ elif [ "$MODE" != report ]; then
   if [ "$GATE_RC" -eq 0 ]; then
     cleanup_always
     cleanup_codex
+    cleanup_backups
     if [ "$state" = soft ] || [ "$state" = hard ]; then
       cleanup_cache
     fi
