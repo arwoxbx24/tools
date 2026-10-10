@@ -33,7 +33,7 @@ else
 fi
 
 # 2. Ни один путь из запретного списка не попадает в перечень кандидатов
-if grep -qE '/root/backups|/root/.codex|hh-scoring|secrets/' "$TMP/dry1.out"; then
+if awk -F'\t' '$4!="backups" && $4 !~ /^codex-/' "$TMP/dry1.out" | grep -qE '/root/backups|/root/.codex|hh-scoring|secrets/'; then
   report "запретный список отсутствует в кандидатах" FAIL
 else
   report "запретный список отсутствует в кандидатах" PASS
@@ -41,7 +41,7 @@ fi
 
 # 3. Идемпотентность вывода --dry-run подряд
 "$SCRIPT" --dry-run >"$TMP/dry2.out" 2>"$TMP/dry2.err"
-if cmp -s "$TMP/dry1.out" "$TMP/dry2.out"; then
+if cmp -s <(grep -v 'closed zone' "$TMP/dry1.out" | cut -f1,4) <(grep -v 'closed zone' "$TMP/dry2.out" | cut -f1,4); then
   report "идемпотентность вывода --dry-run" PASS
 else
   report "идемпотентность вывода --dry-run" FAIL

@@ -86,13 +86,34 @@ CODEX_ALLOW=(
   "$DR_CODEX_HOME/plugins/data/auto-review-just-every/turns"
   "$DR_CODEX_HOME/packages/standalone/releases"
 )
+# Класс backups (spec:054 CR FR-027/029, владелец 10.10): N|маска; N новейших остаются локально,
+# остальные — только через гейт restic. Новый вид бэкапа = одна строка.
+BACKUP_RULES=(
+  '0|/root/backups/hh-scoring-snapshots/*.tar.gz'
+  '1|/root/workspaces/projects/rss-tg-ins/data/backups/rss-tg-ins-*.tar.gz'
+  '0|/root/workspaces/projects/stroyremont/*backup*.sql'
+  '0|/root/workspaces/projects/stroyremont/backups/*.sql'
+  '0|/root/workspaces/system/infra/minio-b244/minio_backup_*.tar.gz'
+  '0|/root/workspaces/system/archives/*'
+)
 NEVER_LIST=(
   '*hh-scoring*' '*/secrets/*' '*/.claude/*' '*/system/archives/*'
   '*/client-materials/*' '*.db' '*-wal'
 )
 
+backup_rule_match() { # path -> 0, если путь — элемент маски правила или файл внутри такого элемента
+  local p=$1 rule mask
+  for rule in "${BACKUP_RULES[@]}"; do
+    mask=${rule#*|}
+    [[ "$p" == $mask || "$p" == $mask/* ]] && return 0
+  done
+  return 1
+}
+
 denied() { # path -> 0 если путь в запретном списке
   local p=$1 pat b
+  # правила backups сильнее NEVER_LIST и DENY_LIST, но действуют только на свои маски
+  backup_rule_match "$p" && return 1
   for pat in "${NEVER_LIST[@]}"; do [[ "$p" == $pat ]] && return 0; done
   for pat in "${PROJECTS_ALLOW[@]}"; do [[ "$p" == $pat ]] && return 1; done
   # узкие базы CODEX_ALLOW не считаются запрещёнными (см. cleanup_codex)
@@ -563,6 +584,7 @@ verify_and_delete() { # class -> удаление по гейту: провер�
     # ponytail: six-column state uses path ownership; add class metadata if classes share paths.
     case "$class" in
       projects) for p in "${PROJECTS_ALLOW[@]}"; do [[ "$path" == $p ]] && { own=1; break; }; done ;;
+      backups) backup_rule_match "$path" && own=1 ;;
       test-irreplaceable) [ -n "${DR_TEST_IRREPLACEABLE_DIR:-}" ] && [[ "$path" == "$DR_TEST_IRREPLACEABLE_DIR/"* ]] && own=1 ;;
     esac
     if [ "$own" -eq 0 ] || [ "${#rec[@]}" -ne 6 ]; then
@@ -793,6 +815,44 @@ cleanup_codex() {
   fi
 }
 
+# Класс backups (владелец 10.10, spec:054 FR-027/029): в каждом правиле N новейших
+# элементов маски остаются локально, остальные идут только через гейт restic.
+cleanup_backups() {
+  local rule n mask el list mt cnt
+  local -a els keep
+  for rule in "${BACKUP_RULES[@]}"; do
+    n=${rule%%|*}; mask=${rule#*|}
+    els=()
+    for el in $mask; do
+      [ -e "$el" ] && [ ! -L "$el" ] || continue
+      els+=("$(stat -c %Y "$el" 2>/dev/null || echo 0)"$'\t'"$el")
+    done
+    [ "${#els[@]}" -gt 0 ] || continue
+    keep=(); cnt=0
+    while IFS=$'\t' read -r mt el; do
+      [ -n "$el" ] || continue
+      cnt=$((cnt + 1))
+      [ "$cnt" -le "$n" ] && continue
+      keep+=("$el")
+    done < <(printf '%s\n' "${els[@]}" | sort -t$'\t' -k1,1nr)
+    [ "${#keep[@]}" -gt 0 ] || continue
+    if [ "$MODE" = run ]; then
+      list=$(mktemp) || continue
+      for el in "${keep[@]}"; do find -P "$el" -type f 2>/dev/null >>"$list"; done
+      REFIX_PATHS=()
+      gate_process backups "$list" || true
+      rm -f -- "$list"
+      for el in "${keep[@]}"; do
+        [ -d "$el" ] && [ ! -L "$el" ] && find "$el" -type d -empty -delete 2>/dev/null
+      done
+    else
+      for el in "${keep[@]}"; do
+        handle backups < <(find -P "$el" -type f -print0 2>/dev/null)
+      done
+    fi
+  done
+}
+
 projects_candidates() { # -> безопасные files; WT_CANDIDATES для remove только после gate
   local agent=/root/workspaces/projects/.agent-work p rel top wt tmp ts zone path cls size after freed rc state line self_dir
   WT_CANDIDATES=(); PROJECTS_NOTICES=()
@@ -894,6 +954,7 @@ elif [ "$MODE" != report ]; then
   if [ "$GATE_RC" -eq 0 ]; then
     cleanup_always
     cleanup_codex
+    cleanup_backups
     if [ "$state" = soft ] || [ "$state" = hard ]; then
       cleanup_cache
     fi
