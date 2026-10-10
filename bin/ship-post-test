@@ -100,12 +100,13 @@ setup_submit(){
 submit(){ run_tool "$d" --submit "$wt" --atom "$1" --tz "$2#U2" --evidence evidence --files "$tz" "${@:3}"; }
 
 test_submit_conflict_preflight(){
-	local out rc
+	local out rc want
 	setup_submit conflict codex/dcfg-conflict.1
 	printf 'origin\n' > "$d/repo/base.txt"; git -C "$d/repo" add -- base.txt; git -C "$d/repo" commit -q -m origin-change; git -C "$d/repo" push -q origin main
 	printf 'branch\n' > "$wt/base.txt"
 	out=$(export BEADS_ACTOR=Codex BD_ASSIGNEE=Codex; submit dcfg-conflict.1 "$tz" base.txt 2>&1); rc=$?
-	[[ $rc == 50 && $out == *"ship-post: conflict with origin/main: base.txt"* && $out == *"ship-post: fix: git -C $wt fetch origin && git -C $wt merge origin/main; resolve files; test; bd close; submit again"* && ! -e $d/state && ! -s $d/bd.closes ]] && pass U14_conflict_before_state || fail U14_conflict_before_state "rc=$rc: $out"
+	want="ship-post: fix: git -C $wt fetch origin && git -C $wt merge origin/main -m \"dcfg-conflict.1: merge origin/main\" -m \"ТЗ: $wt/docs/tz/TZ-TEST.md#U2\" -m \"Atom: dcfg-conflict.1\" -m \"Agent: codex\"; resolve files; git -C $wt commit --no-edit; test; submit again"
+	[[ $rc == 50 && $out == *"ship-post: conflict with origin/main: base.txt"* && $out == *"$want"* && ! -e $d/state && ! -s $d/bd.closes ]] && pass U14_conflict_before_state || fail U14_conflict_before_state "rc=$rc: $out"
 
 	setup_submit clean codex/dcfg-clean.1; printf x > "$wt/file.txt"
 	out=$(export BEADS_ACTOR=Codex BD_ASSIGNEE=Codex; submit dcfg-clean.1 "$tz" file.txt 2>&1); rc=$?
@@ -531,6 +532,25 @@ test_u15(){
  [[ $rc != 0 && $(<"$rf.failed") == 50 ]] && grep -Fq '|reopen dcfg-u15conf.1' "$d/bd.calls" && grep -Fq 'update dcfg-u15conf.1 --append-notes ship-post exit 50: конфликт с `origin/<base>`; действие:' "$d/bd.calls" && ! grep -q '|create ' "$d/bd.calls" && pass u15_code50_reopens_atom || fail u15_code50_reopens_atom "rc=$rc: $out"
 }
 
+test_adr30(){
+ local out rc start elapsed i w atom
+ setup_submit adr30 codex/dcfg-adr30.1
+ make_worktree "$d" wt2 codex/dcfg-adr30.2 || exit 1
+ make_worktree "$d" wt3 codex/dcfg-adr30.3 || exit 1
+ i=1
+ for w in "$wt" "$d/.worktrees/codex/wt2" "$d/.worktrees/codex/wt3"; do
+  atom="dcfg-adr30.$i"
+  git -C "$w" commit -q --allow-empty -m candidate -m "$(printf 'ТЗ: %s#U2\nAtom: %s\nAgent: codex' "$w/$tz" "$atom")"
+  i=$((i + 1))
+ done
+ start=$(date +%s%3N)
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_DELAY=2 SHIP_POST_JOBS=8 TEST_TIMEOUT=10; run_tool "$d" 2>&1); rc=$?
+ elapsed=$(( $(date +%s%3N) - start ))
+ [[ $rc == 0 && $out == *'ok=3 failed=0 skip=0'* ]] && pass adr30_parallel_summary || fail adr30_parallel_summary "rc=$rc elapsed=${elapsed}ms: $out"
+ [[ $(wc -l < "$d/ship.calls") == 3 ]] && pass adr30_three_ships || fail adr30_three_ships "$out"
+ [[ $elapsed -lt 5000 ]] && pass adr30_scan_under_5s || fail adr30_scan_under_5s "elapsed=${elapsed}ms"
+}
+
 if [[ ${SHIP_POST_TEST_GROUP:-all} == review ]]; then
  test_review_recovery
 elif [[ ${SHIP_POST_TEST_GROUP:-all} == recovery ]]; then
@@ -541,8 +561,10 @@ elif [[ ${SHIP_POST_TEST_GROUP:-all} == recovery ]]; then
 	 test_submit_conflict_preflight
 	elif [[ ${SHIP_POST_TEST_GROUP:-all} == u15 ]]; then
 	 test_u15
+	elif [[ ${SHIP_POST_TEST_GROUP:-all} == adr30 ]]; then
+	 test_adr30
 else
-	 test_dryrun_mocks; test_valid_actors; test_rejections; test_hook_and_retry; test_closed_retry; test_delivery; test_live_sync; test_watch; test_recovery; test_stream_errors; test_closed_skip_reason; test_concurrent_repositories; test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery; test_actor_alias; test_nested_repo; test_final_states; test_submit_conflict_preflight; test_u15
+	 test_dryrun_mocks; test_valid_actors; test_rejections; test_hook_and_retry; test_closed_retry; test_delivery; test_live_sync; test_watch; test_recovery; test_stream_errors; test_closed_skip_reason; test_concurrent_repositories; test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery; test_actor_alias; test_nested_repo; test_final_states; test_submit_conflict_preflight; test_u15; test_adr30
 fi
 echo "checks=$checks failures=$failures"
 [[ $failures == 0 ]]
