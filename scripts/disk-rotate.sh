@@ -25,6 +25,10 @@ DR_TEST_ONLY=${DR_TEST_ONLY:-}
 DR_TEST_IRREPLACEABLE_DIR=${DR_TEST_IRREPLACEABLE_DIR:-}
 DR_TEST_REPLACEABLE_DIR=${DR_TEST_REPLACEABLE_DIR:-}
 DR_JOURNAL_COPY=${DR_JOURNAL_COPY:-/root/workspaces/system/tools/scripts/data/disk-rotate-deletions.tsv}
+# Тест подменяет корень Codex; явно заданный путь отличаем от значения по умолчанию,
+# чтобы тестовый режим без DR_CODEX_HOME не трогал боевой /root/.codex.
+CODEX_HOME_EXPLICIT=${DR_CODEX_HOME:+1}
+DR_CODEX_HOME=${DR_CODEX_HOME:-/root/.codex}
 NOTIFY_ENV=${NOTIFY_ENV:-/root/workspaces/secrets/services/pm2-notify.env}
 ECOSYSTEM="${0%/*}/../ecosystem.config.js"
 RUN_ID=$(date +%Y%m%d-%H%M%S)
@@ -76,15 +80,26 @@ PROJECTS_ALLOW=(
   '/root/workspaces/projects/.worktrees/codex/*'
   '/root/workspaces/projects/.worktrees/claude/*'
 )
+# Три узкие базы Codex, которые чистит cleanup_codex; под ними DENY_LIST не действует,
+# остальной /root/.codex/** остаётся под запретом.
+CODEX_ALLOW=(
+  "$DR_CODEX_HOME/plugins/data/auto-review-just-every/turns"
+  "$DR_CODEX_HOME/packages/standalone/releases"
+  "$DR_CODEX_HOME/sessions"
+)
 NEVER_LIST=(
   '*hh-scoring*' '*/secrets/*' '*/.claude/*' '*/system/archives/*'
   '*/client-materials/*' '*.db' '*-wal'
 )
 
 denied() { # path -> 0 если путь в запретном списке
-  local p=$1 pat
+  local p=$1 pat b
   for pat in "${NEVER_LIST[@]}"; do [[ "$p" == $pat ]] && return 0; done
   for pat in "${PROJECTS_ALLOW[@]}"; do [[ "$p" == $pat ]] && return 1; done
+  # узкие базы CODEX_ALLOW не считаются запрещёнными (см. cleanup_codex)
+  for b in "${CODEX_ALLOW[@]}"; do
+    [[ "$p" == "$b" || "$p" == "$b"/* ]] && return 1
+  done
   for pat in "${DENY_LIST[@]}"; do
     [[ "$p" == $pat ]] && return 0
   done
@@ -549,6 +564,7 @@ verify_and_delete() { # class -> удаление по гейту: провер�
     # ponytail: six-column state uses path ownership; add class metadata if classes share paths.
     case "$class" in
       projects) for p in "${PROJECTS_ALLOW[@]}"; do [[ "$path" == $p ]] && { own=1; break; }; done ;;
+      codex-sessions) [[ "$path" == "$DR_CODEX_HOME/sessions/"* ]] && own=1 ;;
       test-irreplaceable) [ -n "${DR_TEST_IRREPLACEABLE_DIR:-}" ] && [[ "$path" == "$DR_TEST_IRREPLACEABLE_DIR/"* ]] && own=1 ;;
     esac
     if [ "$own" -eq 0 ] || [ "${#rec[@]}" -ne 6 ]; then
@@ -740,6 +756,59 @@ cleanup_always() { # только существующая vendor log rotation, 
   fi
 }
 
+# Три узкие базы Codex (владелец 10.10, spec dcfg-demsy.10): review-файлы и релизы
+# заменимые, сессии незаменимые — через гейт. Базы перечислены в CODEX_ALLOW,
+# DENY_LIST на них не действует.
+cleanup_codex() {
+  local turns="$DR_CODEX_HOME/plugins/data/auto-review-just-every/turns"
+  local standalone="$DR_CODEX_HOME/packages/standalone"
+  local releases="$standalone/releases"
+  local sessions="$DR_CODEX_HOME/sessions"
+  local current d mt newest newest_mt list
+
+  # codex-review: заменимые turn-файлы старше 24 ч
+  if [ -d "$turns" ]; then
+    handle codex-review < <(find -P "$turns" -mindepth 2 -type f -mmin +1440 -print0 2>/dev/null)
+    if [ "$MODE" = run ]; then
+      find "$turns" -mindepth 1 -type d -empty -delete 2>/dev/null
+    fi
+  fi
+
+  # codex-releases: кроме цели current и одного самого нового после неё
+  if [ -d "$releases" ]; then
+    current=$(readlink -f "$standalone/current" 2>/dev/null || true)
+    newest=; newest_mt=-1
+    for d in "$releases"/*; do
+      [ -d "$d" ] || continue
+      [ "$(readlink -f -- "$d" 2>/dev/null)" = "$current" ] && continue
+      mt=$(stat -c %Y "$d" 2>/dev/null || echo 0)
+      if [ "$mt" -gt "$newest_mt" ]; then newest=$d; newest_mt=$mt; fi
+    done
+    for d in "$releases"/*; do
+      [ -d "$d" ] || continue
+      [ "$(readlink -f -- "$d" 2>/dev/null)" = "$current" ] && continue
+      [ "$d" = "$newest" ] && continue
+      handle codex-releases < <(find -P "$d" -type f -print0 2>/dev/null)
+    done
+    if [ "$MODE" = run ]; then
+      find "$releases" -mindepth 1 -type d -empty -delete 2>/dev/null
+    fi
+  fi
+
+  # codex-sessions: незаменимое старше 14 дней; в run — копия restic и гейт
+  if [ -d "$sessions" ]; then
+    if [ "$MODE" = run ]; then
+      list=$(mktemp) || return 1
+      find -P "$sessions" -type f -mtime +14 -print 2>/dev/null >"$list"
+      REFIX_PATHS=()
+      gate_process codex-sessions "$list" || true
+      rm -f -- "$list"
+    else
+      handle codex-sessions < <(find -P "$sessions" -type f -mtime +14 -print0 2>/dev/null)
+    fi
+  fi
+}
+
 projects_candidates() { # -> безопасные files; WT_CANDIDATES для remove только после gate
   local agent=/root/workspaces/projects/.agent-work p rel top wt tmp ts zone path cls size after freed rc state line self_dir
   WT_CANDIDATES=(); PROJECTS_NOTICES=()
@@ -825,6 +894,11 @@ if [ "$DR_TEST_ONLY" = 1 ]; then
   if [ -n "$DR_TEST_REPLACEABLE_DIR" ] && [ -d "$DR_TEST_REPLACEABLE_DIR" ]; then
     handle replaceable < <(find -P "$DR_TEST_REPLACEABLE_DIR" -maxdepth 1 -type f -print0 2>/dev/null)
   fi
+  # Codex-классы: только при явно заданном DR_CODEX_HOME (фикстура теста),
+  # иначе прогон тронул бы боевой /root/.codex.
+  if [ -n "$CODEX_HOME_EXPLICIT" ]; then
+    cleanup_codex
+  fi
 elif [ "$MODE" != report ]; then
   if [ "$MODE" = run ]; then
     restic_env
@@ -835,6 +909,7 @@ elif [ "$MODE" != report ]; then
   fi
   if [ "$GATE_RC" -eq 0 ]; then
     cleanup_always
+    cleanup_codex
     if [ "$state" = soft ] || [ "$state" = hard ]; then
       cleanup_cache
     fi
