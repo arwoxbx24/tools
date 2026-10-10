@@ -89,6 +89,7 @@ CODEX_ALLOW=(
 # Класс backups (spec:054 CR FR-027/029, владелец 10.10): N|маска; N новейших остаются локально,
 # остальные — только через гейт restic. Новый вид бэкапа = одна строка.
 BACKUP_RULES=(
+  '0|/root/backups/docker/20*_*'
   '0|/root/backups/hh-scoring-snapshots/*.tar.gz'
   '1|/root/workspaces/projects/rss-tg-ins/data/backups/rss-tg-ins-*.tar.gz'
   '0|/root/workspaces/projects/stroyremont/*backup*.sql'
