@@ -94,7 +94,7 @@ promote_plain(){
 		echo 'ship-promote: SHA PR не тот, что проверен в dev' >&2
 		leave 50 sha
 	fi
-	gh pr merge "$num" -R "$slug" --squash --match-head-commit "$sha" || leave 50 merge
+	gh pr merge "$num" -R "$slug" --merge --match-head-commit "$sha" || leave 50 merge
 	merge_sha=$(gh pr view "$num" -R "$slug" --json mergeCommit --jq .mergeCommit.oid) || leave 50 merge
 	[[ -n $merge_sha && $merge_sha != null ]] || leave 50 merge
 	bd note "$atom" "promote: $merge_sha pr=$num dev=$sha quote=$quote"
