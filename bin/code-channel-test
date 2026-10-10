@@ -6,7 +6,7 @@ tmp=$(mktemp -d "$root/.code-channel-test.XXXXXX")
 nogit=$(mktemp -d /tmp/cc-nogit.XXXXXX)
 trap 'rm -rf -- "$tmp" "$nogit"' EXIT
 bin=$tmp/bin project=$tmp/project tz=$tmp/tz secret=$tmp/secret.env log=$tmp/args.log runs=$tmp/runs.jsonl
-legacy=$tmp/legacy.json disabled=$tmp/disabled.json go=$tmp/go.json ladder=$tmp/ladder.json
+legacy=$tmp/legacy.json disabled=$tmp/disabled.json go=$tmp/go.json ladder=$tmp/ladder.json resume=$tmp/resume.json
 mkdir -p "$bin" "$project" "$tmp/state"
 printf 'VIBECODE_API_KEY=x\nOPENROUTER_API_KEY=x\n' >"$secret"
 git -C "$project" init -q
@@ -25,12 +25,13 @@ printf '%s\n' '{"provider":{"bitrixgpt":{"models":{"bitrix/bitrixgpt-5.6-agent":
 printf '%s\n' '{"ladder":[{"id":"bitrixgpt","enabled":true,"model":"bitrixgpt/bitrix/bitrixgpt-5.6-agent","key":"VIBECODE_API_KEY","secret":"vibecode","base":"https://vibecode.bitrix24.tech/v1"},{"id":"openrouter","enabled":true,"model":"openrouter/deepseek/deepseek-v4-flash","key":"OPENROUTER_API_KEY","secret":"openrouter","base":"https://openrouter.ai/api/v1"},{"id":"codex","enabled":true,"model":"","effort":"high"}]}' >"$legacy"
 printf '%s\n' '{"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash"},{"id":"openrouter","enabled":false,"model":"openrouter/deepseek/deepseek-v4-flash","key":"OPENROUTER_API_KEY","secret":"openrouter","base":"https://openrouter.ai/api/v1"},{"id":"codex","enabled":true,"model":"","effort":"high"}]}' >"$disabled"
 printf '%s\n' '{"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash"}]}' >"$go"
+printf '%s\n' '{"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash","resume_model":"opencode-go/mimo-v2.6-resume"}]}' >"$resume"
 printf '%s\n' '{"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash"},{"id":"codex","enabled":true,"model":"","effort":"high"},{"id":"openrouter","enabled":true,"model":"openrouter/deepseek/deepseek-v4-flash","key":"OPENROUTER_API_KEY","secret":"openrouter","base":"https://openrouter.ai/api/v1"}]}' >"$ladder"
 
 printf '%s\n' '#!/usr/bin/env bash' 'printf "curl %s\\n" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'out=' 'url=${!#}' 'while [[ $# -gt 0 ]]; do' '  [[ $1 == -o ]] && { out=$2; shift 2; continue; }' '  shift' 'done' 'if [[ $url == */key ]]; then' '  if [[ ${CURL_USAGE_DAILY:-0.4} == none ]]; then' '    body="{\"data\":{\"limit_remaining\":${CURL_LIMIT_REMAINING:-1}}}"' '  else' '    body="{\"data\":{\"limit_remaining\":${CURL_LIMIT_REMAINING:-1},\"usage_daily\":${CURL_USAGE_DAILY:-0.4}}}"' '  fi' '  printf "%s\n" "$body" >"$out"' '  printf "%s" "${CURL_KEY_CODE:-${CURL_CODE:-200}}"' 'elif [[ $url == */chat/completions ]]; then' '  printf "%s\n" "insecure api_key=secret token=x authorization=y cookie=z" >"$out"' '  printf "%s" "${CURL_CHAT_CODE:-200}"' 'else' '  printf "%s\n" "{\"data\":[{\"id\":\"bitrix/bitrixgpt-5.6-agent\"},{\"id\":\"deepseek/deepseek-v4-flash\"}]}" >"$out"' '  printf "%s" "${CURL_CODE:-200}"' 'fi' >"$bin/curl"
-printf '%s\n' '#!/usr/bin/env bash' 'printf "opencode active=%s %s\\n" "${CODE_CHANNEL_ACTIVE:-}" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "REPORT\\n"' '[[ ${OPENCODE_TOUCH:-} ]] && printf x >"$CODE_CHANNEL_TEST_PROJECT/$OPENCODE_TOUCH"' 'exit "${OPENCODE_RC:-0}"' >"$bin/opencode"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "opencode active=%s %s\\n" "${CODE_CHANNEL_ACTIVE:-}" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "REPORT\\n"' '[[ ${OPENCODE_TOUCH:-} ]] && printf x >"$CODE_CHANNEL_TEST_PROJECT/$OPENCODE_TOUCH"' 'rc=${OPENCODE_RC:-0}' 'if [[ ${OPENCODE_SEQUENCE:-} ]]; then IFS=, read -ra seq <<<"$OPENCODE_SEQUENCE"; n=$(grep -c "^opencode " "$CODE_CHANNEL_TEST_LOG"); rc=${seq[$((n - 1))]:-$rc}; fi' 'exit "$rc"' >"$bin/opencode"
 printf '%s\n' '#!/usr/bin/env bash' 'printf "codex active=%s %s\\n" "${CODE_CHANNEL_ACTIVE:-}" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "REPORT\\n"' '[[ ${CODEX_SWITCH_BRANCH:-} ]] && git -C "$CODE_CHANNEL_TEST_PROJECT" switch -c "codex/x-branch"' '[[ ${CODEX_TOUCH:-} ]] && printf x >"$CODE_CHANNEL_TEST_PROJECT/$CODEX_TOUCH"' '[[ ${CODEX_ERR:-} ]] && printf "%s\n" "$CODEX_ERR" >&2' 'exit "${CODEX_RC:-0}"' >"$bin/codex"
-printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "${SQLITE_RESULT:-bitrixgpt|bitrix/bitrixgpt-5.6-agent}"' >"$bin/sqlite3"
+printf '%s\n' '#!/usr/bin/env bash' 'if [[ $* == *"select id from session"* ]]; then printf "%s\n" "${SQLITE_SESSION_ID:-}"; else printf "%s\n" "${SQLITE_RESULT:-bitrixgpt|bitrix/bitrixgpt-5.6-agent}"; fi' >"$bin/sqlite3"
 chmod +x "$bin/curl" "$bin/opencode" "$bin/codex" "$bin/sqlite3"
 
 ok=0
@@ -128,5 +129,11 @@ CC_CONFIG=$disabled check 33 '[[ $rc == 0 ]]' \
   env OPENCODE_RC=1 CODEX_RC=0 "$root/bin/code-channel" auto "$nogit" "$tz"
 CC_CONFIG=$disabled check 34 '[[ $rc == 3 && $err == *"выключен в конфиге"* ]]' \
   "$root/bin/code-channel" 3 "$project" "$tz"
+check 35 '[[ $rc == 3 && $err == *"модель не в конфиге: other/model"* && ! -s $log ]]' \
+  "$root/bin/code-channel" 1 "$project" "$tz" --model other/model
+CC_CONFIG=$resume check 36 '[[ $rc == 0 && $(grep -c "^opencode " "$log") == 2 && $err == *"code-channel: resume session=session-123 model=opencode-go/mimo-v2.6-resume"* ]] && grep -Fq -- "--session session-123 -m opencode-go/mimo-v2.6-resume" "$log"' \
+  env OPENCODE_SEQUENCE=124,0 SQLITE_SESSION_ID=session-123 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
+CC_CONFIG=$go check 37 '[[ $rc == 124 && $(grep -c "^opencode " "$log") == 1 ]]' \
+  env OPENCODE_RC=124 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
 
-[[ $ok == 34 ]] && echo 'PASS 34/34'
+[[ $ok == 37 ]] && echo 'PASS 37/37'
