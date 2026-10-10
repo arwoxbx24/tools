@@ -6,11 +6,35 @@ GH=${SAFE_DELETE_GH:-true}
 mkdir -p "$BK"
 led=$BK/ledger.tsv
 self=$(realpath -e "$(command -v -- "$0")") || exit 1
+allow_git_under=
 log_n=
 log(){ { flock -x 9 || return 1; printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date +%Y-%m-%dT%H:%M:%S)" "$@" >>"$led" || return 1; log_n=$(wc -l <"$led"); log_n=${log_n//[[:space:]]/}; } 9>>"$led.lock"; }
 fail(){ echo "safe-delete: $*" >&2; exit 1; }
 refuse(){ echo "safe-delete: $*" >&2; exit 2; }
 repo_of(){ local u=$1; u=${u%.git}; [[ $u =~ ([^/:]+)/([^/]+)$ ]] && echo "${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"; }
+self_contained(){
+  local dir=$1 gd url gp rp found=0 repo_dir
+  [[ ! -e $dir/.git ]] || return 1
+  git -C "$(dirname -- "$dir")" ls-files --error-unmatch -- "$(basename -- "$dir")" >/dev/null 2>&1 && return 1
+  while IFS= read -r gd; do
+    found=1
+    if [[ -d $gd ]]; then
+      if [[ ${gd##*/} == .git ]]; then repo_dir=$(dirname -- "$gd"); else repo_dir=$gd; fi
+      while IFS= read -r url; do
+        [[ $url == /* ]] || return 1
+        rp=$(realpath -m -- "$url") || return 1
+        [[ $rp == "$dir"/* ]] || return 1
+      done < <(git --git-dir="$repo_dir" config --get-regexp '^remote\..*\.url$' 2>/dev/null | awk '{print $NF}')
+    elif [[ -f $gd ]]; then
+      gp=$(sed -n 's/^gitdir: //p' "$gd") || return 1
+      [[ -n $gp ]] || return 1
+      [[ $gp == /* ]] || return 1
+      rp=$(realpath -m -- "$gp") || return 1
+      [[ $rp == "$dir"/* ]] || return 1
+    fi
+  done < <(find "$dir" \( -name .git -o -name '*.git' \) \( -type d -o -type f \) -print 2>/dev/null | sort)
+  [[ $found == 1 ]]
+}
 git_file(){
   local raw=$1 entry mark attr head
   p=$(realpath -e "$raw") || return 1
@@ -37,7 +61,10 @@ check_path(){
   fi
   okr=; IFS=: read -ra rts <<< "$roots"; for r in "${rts[@]}"; do [[ $p == "$r" || $p == "$r"/* ]] && { okr=1; break; }; done
   [[ $okr ]] || refuse "вне разрешённых корней: $p"
-  for seg in secrets hh-scoring .codex .git .beads; do [[ $p == */"$seg" || $p == */"$seg"/* ]] && refuse "запрещённый сегмент: $p"; done
+  for seg in secrets hh-scoring .codex .git .beads; do
+    [[ $seg == .git && -n ${allow_git_under:-} && ( $p == "$allow_git_under" || $p == "$allow_git_under"/* ) ]] && continue
+    [[ $p == */"$seg" || $p == */"$seg"/* ]] && refuse "запрещённый сегмент: $p"
+  done
   [[ $p == */clients/* && $p != */clients/*/.agent-work/* ]] && refuse "запрещённый сегмент: $p"
   [[ /$p/ == */.repowise*/* ]] && refuse "запрещённый сегмент: $p"
   [[ $p == "$BK" || $p == "$BK"/* ]] && refuse "файл под $BK: $p"
@@ -93,6 +120,7 @@ case "$cmd" in
     ;;
   dir)
     [[ $# -eq 1 ]] || refuse 'usage'; check_path "$1"; dir=$p; [[ -d $dir ]] || refuse "не каталог: $dir"
+    if self_contained "$dir"; then allow_git_under=$dir; else allow_git_under=; fi
     mapfile -d '' entries < <(find "$dir" -depth -print0); for entry in "${entries[@]}"; do check_path "$entry"; done
     mapfile -d '' files < <(find "$dir" -type f -print0)
     for f in "${files[@]}"; do check_file "$f"; done
