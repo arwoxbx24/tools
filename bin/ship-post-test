@@ -54,8 +54,8 @@ MOCKGH
 #!/usr/bin/env bash
 printf '%s|%s|%s\n' "$PWD" "${BEADS_ACTOR:-}" "$*" >> "${SHIP_POST_TEST_DIR}/bd.calls"
 case ${1:-} in
-show) [[ ! -f $SHIP_POST_TEST_DIR/bd-down ]] || exit 1
- jq -n --arg status "$(cat "$SHIP_POST_TEST_DIR/status" 2>/dev/null || echo "${BD_STATUS:-in_progress}")" --arg assignee "${BD_ASSIGNEE-Codex}" --arg notes "$(cat "$SHIP_POST_TEST_DIR/bd.notes" 2>/dev/null || true)" '[{status:$status,assignee:$assignee,notes:$notes}]' ;;
+	show) [[ ! -f $SHIP_POST_TEST_DIR/bd-down ]] || exit 1
+	 jq -n --arg status "$(cat "$SHIP_POST_TEST_DIR/status.${2:-}" 2>/dev/null || cat "$SHIP_POST_TEST_DIR/status" 2>/dev/null || echo "${BD_STATUS:-in_progress}")" --arg assignee "${BD_ASSIGNEE-Codex}" --arg notes "$(cat "$SHIP_POST_TEST_DIR/bd.notes" 2>/dev/null || true)" '[{status:$status,assignee:$assignee,notes:$notes}]' ;;
 info) printf '{"database_path":"%s"}\n' "$SHIP_POST_TEST_DIR/repo/.git" ;;
 events) [[ -z ${EVENT_STDERR:-} ]] || printf '%s\n' "$EVENT_STDERR" >&2
  cat "$SHIP_POST_TEST_DIR/events"; [[ ${EVENT_STREAM_FAIL:-0} == 1 ]] && exit 7
@@ -69,6 +69,16 @@ events) [[ -z ${EVENT_STDERR:-} ]] || printf '%s\n' "$EVENT_STDERR" >&2
   echo closed > "$SHIP_POST_TEST_DIR/status"
   printf '%s\n' '{"seq":2,"op":"close","issue":{"status":"closed"}}'
  fi
+	 if [[ -n ${ADR35_CLOSE_ID:-} ]]; then
+	  /bin/sleep 1; : > "$SHIP_POST_TEST_DIR/bd.calls"
+	  echo closed > "$SHIP_POST_TEST_DIR/status.dcfg-adr35.a"
+	  echo closed > "$SHIP_POST_TEST_DIR/status.dcfg-adr35.b"
+	  if [[ ${ADR35_FULL_PENDING:-0} == 1 ]]; then
+	   key=$(printf %s "$SHIP_POST_TEST_DIR/repo" | sha256sum | cut -d ' ' -f1)
+	   touch "$SHIP_POST_STATE_DIR/pending/$key.full" "$SHIP_POST_STATE_DIR/pending/$key"
+	  fi
+	  printf '{"seq":1,"op":"close","issue":{"id":"%s","status":"closed"}}\n' "$ADR35_CLOSE_ID"
+	 fi
  while :; do /bin/sleep 1; done ;;
 create) echo "$2" > "$SHIP_POST_TEST_DIR/issue-title"; echo test-infra ;;
 search) if [[ -f $SHIP_POST_TEST_DIR/issue-title ]]; then jq -n --arg title "$(cat "$SHIP_POST_TEST_DIR/issue-title")" '[{id:"test-infra",title:$title,status:"open"}]'; else echo '[]'; fi ;;
@@ -529,7 +539,7 @@ test_u15(){
  setup_submit u15_conf codex/dcfg-u15conf.1; commit_candidate dcfg-u15conf.1
  out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_RC=50; run_tool "$d" 2>&1); rc=$?
  key=$(printf %s "$d/repo" | sha256sum | cut -d ' ' -f1); h=$(git -C "$wt" rev-parse HEAD); rf="$d/state/receipts/$key/dcfg-u15conf.1/$h"
- [[ $rc != 0 && $(<"$rf.failed") == 50 ]] && grep -Fq '|reopen dcfg-u15conf.1' "$d/bd.calls" && grep -Fq 'update dcfg-u15conf.1 --append-notes ship-post exit 50: конфликт с `origin/<base>`; действие:' "$d/bd.calls" && ! grep -q '|create ' "$d/bd.calls" && pass u15_code50_reopens_atom || fail u15_code50_reopens_atom "rc=$rc: $out"
+ for i in $(seq 1 50); do [[ -f $rf.failed.reported ]] && break; sleep 0.2; done; [[ -f $rf.failed && $(<"$rf.failed") == 50 ]] && grep -Fq '|reopen dcfg-u15conf.1' "$d/bd.calls" && grep -Fq 'update dcfg-u15conf.1 --append-notes ship-post exit 50: конфликт с `origin/<base>`; действие:' "$d/bd.calls" && ! grep -q '|create ' "$d/bd.calls" && pass u15_code50_reopens_atom || fail u15_code50_reopens_atom "rc=$rc: $out"
  setup_submit u15_foreign_undelivered codex/dcfg-other-x; commit_candidate dcfg-u15foreign.1
  out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex; run_tool "$d" 2>&1); rc=$?
  [[ $rc == 0 && ! -s $d/ship.calls ]] && grep -Fq '|reopen dcfg-u15foreign.1' "$d/bd.calls" && grep -Fq 'ship-post exit 10: branch codex/dcfg-other-x != codex/dcfg-u15foreign.1; ветка codex/dcfg-other-x названа по другой задаче, коммит не в origin/main; действие: сдай через ship-post --submit' "$d/bd.calls" && pass u15_foreign_branch_undelivered_reports || fail u15_foreign_branch_undelivered_reports "rc=$rc: $out"
@@ -540,7 +550,7 @@ test_u15(){
 }
 
 test_adr30(){
- local out rc start elapsed i w atom
+ local out rc start elapsed i w atom out_file
  setup_submit adr30 codex/dcfg-adr30.1
  make_worktree "$d" wt2 codex/dcfg-adr30.2 || exit 1
  make_worktree "$d" wt3 codex/dcfg-adr30.3 || exit 1
@@ -551,11 +561,55 @@ test_adr30(){
   i=$((i + 1))
  done
  start=$(date +%s%3N)
- out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_DELAY=2 SHIP_POST_JOBS=8 TEST_TIMEOUT=10; run_tool "$d" 2>&1); rc=$?
+ out_file="$d/adr30-first.out"
+ ( export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_DELAY=2 SHIP_POST_JOBS=8 TEST_TIMEOUT=10; run_tool "$d" ) >"$out_file" 2>&1; rc=$?
+ out=$(<"$out_file")
  elapsed=$(( $(date +%s%3N) - start ))
- [[ $rc == 0 && $out == *'ok=3 failed=0 skip=0'* ]] && pass adr30_parallel_summary || fail adr30_parallel_summary "rc=$rc elapsed=${elapsed}ms: $out"
+ [[ $rc == 0 && $out == *'started=3'* ]] && pass adr30_parallel_summary || fail adr30_parallel_summary "rc=$rc elapsed=${elapsed}ms: $out"
+ [[ $elapsed -lt 1500 ]] && pass adr30_scan_under_1500ms || fail adr30_scan_under_1500ms "elapsed=${elapsed}ms"
+ timeout 5 bash -c 'while [[ $(wc -l < "$1") -lt 3 ]]; do sleep 0.05; done' _ "$d/ship.calls"
  [[ $(wc -l < "$d/ship.calls") == 3 ]] && pass adr30_three_ships || fail adr30_three_ships "$out"
- [[ $elapsed -lt 5000 ]] && pass adr30_scan_under_5s || fail adr30_scan_under_5s "elapsed=${elapsed}ms"
+ out_file="$d/adr30-second.out"
+ ( export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_DELAY=2 SHIP_POST_JOBS=8 TEST_TIMEOUT=10; run_tool "$d" ) >"$out_file" 2>&1; rc=$?
+ out=$(<"$out_file")
+ [[ $rc == 0 && $(wc -l < "$d/ship.calls") == 3 ]] && pass adr30_atom_lock || fail adr30_atom_lock "rc=$rc: $out"
+ setup_submit adr30_retry codex/dcfg-adr30retry.1; commit_candidate dcfg-adr30retry.1; : > "$d/events"
+ cat > "$d/bin/ship" <<'MOCKSHIP'
+#!/usr/bin/env bash
+printf '%s|%s|%s\n' "${BEADS_ACTOR:-}" "$*" "$(git -C "$1" rev-parse HEAD)" >> "$SHIP_POST_TEST_DIR/ship.calls"
+if [[ ! -e $SHIP_POST_TEST_DIR/ship.retry ]]; then touch "$SHIP_POST_TEST_DIR/ship.retry"; exit 70; fi
+printf '%s\n' "$(git -C "$1" rev-parse HEAD)" >> "$SHIP_POST_TEST_DIR/merged"
+MOCKSHIP
+ chmod +x "$d/bin/ship"
+ out_file="$d/adr30-retry.out"
+ ( export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex TEST_TIMEOUT=4; run_tool "$d" --watch ) >"$out_file" 2>&1; rc=$?
+ out=$(<"$out_file")
+ [[ $(wc -l < "$d/ship.calls") == 2 && $(wc -l < "$d/merged") == 1 ]] && pass adr30_transient_retries || fail adr30_transient_retries "rc=$rc: $out"
+}
+
+test_adr35(){
+ local out rc wt_a wt_b
+ setup_submit adr35 codex/dcfg-adr35.a; wt_a=$wt; commit_candidate dcfg-adr35.a
+ make_worktree "$d" wt2 codex/dcfg-adr35.b || exit 1; wt_b="$d/.worktrees/codex/wt2"
+ git -C "$wt_b" commit -q --allow-empty -m candidate -m "$(printf 'ТЗ: %s#U2\nAtom: dcfg-adr35.b\nAgent: codex' "$wt_b/$tz")"
+ : > "$d/events"
+ out=$(export BEADS_ACTOR=Codex BD_ASSIGNEE=Codex ADR35_CLOSE_ID=dcfg-adr35.a TEST_TIMEOUT=5; run_tool "$d" --watch 2>&1); rc=$?
+ [[ $(grep -c '|show dcfg-adr35.a --json' "$d/bd.calls") -ge 1 && $(grep -c '|show dcfg-adr35.b --json' "$d/bd.calls") == 0 ]] && pass adr35_only_closed_atom_scanned || fail adr35_only_closed_atom_scanned "rc=$rc: $out"
+ [[ $(grep -c -- "--atom dcfg-adr35.a " "$d/ship.calls") == 1 && $(grep -c -- '--atom dcfg-adr35.b ' "$d/ship.calls") == 0 ]] && pass adr35_only_closed_atom_shipped || fail adr35_only_closed_atom_shipped "$out"
+
+ setup_submit adr35_full codex/dcfg-adr35.a; wt_a=$wt; commit_candidate dcfg-adr35.a
+ make_worktree "$d" wt2 codex/dcfg-adr35.b || exit 1; wt_b="$d/.worktrees/codex/wt2"
+ git -C "$wt_b" commit -q --allow-empty -m candidate -m "$(printf 'ТЗ: %s#U2\nAtom: dcfg-adr35.b\nAgent: codex' "$wt_b/$tz")"
+ : > "$d/events"
+ out=$(export BEADS_ACTOR=Codex BD_ASSIGNEE=Codex ADR35_CLOSE_ID=dcfg-adr35.a ADR35_FULL_PENDING=1 TEST_TIMEOUT=5; run_tool "$d" --watch 2>&1); rc=$?
+ [[ $(grep -c '|show dcfg-adr35.b --json' "$d/bd.calls") -ge 1 ]] && pass adr35_full_scan_precedes_atom || fail adr35_full_scan_precedes_atom "rc=$rc: $out"
+
+ setup_submit adr35_filter codex/dcfg-adr35.a; wt_a=$wt; commit_candidate dcfg-adr35.a
+ make_worktree "$d" wt2 codex/dcfg-adr35.b || exit 1; wt_b="$d/.worktrees/codex/wt2"
+ git -C "$wt_b" commit -q --allow-empty -m candidate -m "$(printf 'ТЗ: %s#U2\nAtom: dcfg-adr35.b\nAgent: codex' "$wt_b/$tz")"
+ : > "$d/events"
+ out=$(export BEADS_ACTOR=Codex BD_ASSIGNEE=Codex ADR35_CLOSE_ID=dcfg-adr35.b TEST_TIMEOUT=5; run_tool "$d" --watch --atom dcfg-adr35.a 2>&1); rc=$?
+ [[ $(grep -c '|show dcfg-adr35.b --json' "$d/bd.calls") == 0 && $(wc -c < "$d/ship.calls") == 0 ]] && pass adr35_cli_filter_not_broadened || fail adr35_cli_filter_not_broadened "rc=$rc: $out"
 }
 
 if [[ ${SHIP_POST_TEST_GROUP:-all} == review ]]; then
@@ -570,8 +624,10 @@ elif [[ ${SHIP_POST_TEST_GROUP:-all} == recovery ]]; then
 	 test_u15
 	elif [[ ${SHIP_POST_TEST_GROUP:-all} == adr30 ]]; then
 	 test_adr30
+	elif [[ ${SHIP_POST_TEST_GROUP:-all} == adr35 ]]; then
+	 test_adr35
 else
-	 test_dryrun_mocks; test_valid_actors; test_rejections; test_hook_and_retry; test_closed_retry; test_delivery; test_live_sync; test_watch; test_recovery; test_stream_errors; test_closed_skip_reason; test_concurrent_repositories; test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery; test_actor_alias; test_nested_repo; test_final_states; test_submit_conflict_preflight; test_u15; test_adr30
+	 test_dryrun_mocks; test_valid_actors; test_rejections; test_hook_and_retry; test_closed_retry; test_delivery; test_live_sync; test_watch; test_recovery; test_stream_errors; test_closed_skip_reason; test_concurrent_repositories; test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery; test_actor_alias; test_nested_repo; test_final_states; test_submit_conflict_preflight; test_u15; test_adr30; test_adr35
 fi
 echo "checks=$checks failures=$failures"
 [[ $failures == 0 ]]

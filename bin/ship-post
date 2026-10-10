@@ -37,6 +37,7 @@ while [[ $# -gt 0 ]]; do
 		*) usage ;;
 	esac
 done
+watch_filter=$filter_atom
 
 usage_err(){ local msg=$1; echo "ship-post: $msg" >&2; exit 2; }
 die(){ echo "ship-post: $*" >&2; exit 1; }
@@ -420,8 +421,7 @@ deliver_one(){
 
 scan_repo(){
  local repo=$1 lk fd line wt head branch msg atom tz st status owner agent actor dirty base rf code rc remote_proof='' remote_open='' remote_list=''
- local ok=0 failed=0 skip=0 jobs_max p
- local -a pids=()
+ local ok=0 failed=0 skip=0 started=0 jobs_max p
  jobs_max=${SHIP_POST_JOBS:-8}
  [[ $jobs_max =~ ^[1-9][0-9]*$ ]] || jobs_max=8
  [[ -d $repo ]] || return 1
@@ -482,11 +482,10 @@ scan_repo(){
    [[ ${tz%%#*} == "$wt/"* && -f ${tz%%#*} ]] || { [[ $status != closed ]] || { echo "skip $atom tz not a file in worktree"; report_closed_skip "$repo" "$atom" "$head" "$branch" "$status" 'tz not a file in worktree' "$wt" || failed=$((failed+1)); }; skip=$((skip+1)); continue; }
   if [[ $dry_run == 1 ]]; then echo "ready $wt $atom"; continue; fi
   while (( $(jobs -rp | wc -l) >= jobs_max )); do wait -n; done
-  (BEADS_ACTOR=$actor; deliver_one "$wt" "$atom" "$tz" "$head" "$repo" "$branch") & pids+=("$!")
+  ( exec {fd}>&-; exec {afd}>"$lk.$atom"; flock -n "$afd" || exit 0; BEADS_ACTOR=$actor; if ! deliver_one "$wt" "$atom" "$tz" "$head" "$repo" "$branch"; then [[ -d $SHIP_POST_STATE_DIR/pending ]] && touch "$SHIP_POST_STATE_DIR/pending/$(slugify "$repo")"; fi ) & started=$((started+1))
  done < <(git -C "$repo" worktree list --porcelain)
- for p in "${pids[@]}"; do wait "$p" && ok=$((ok+1)) || failed=$((failed+1)); done
  exec {fd}>&-
- echo "ok=$ok failed=$failed skip=$skip"
+ echo "ok=$ok failed=$failed skip=$skip started=$started"
  [[ $failed == 0 ]]
 }
 
@@ -503,15 +502,26 @@ write_cursor(){
 }
 
 queue_all(){
- local repo
+ local repo pending
  for repo in "${_repos[@]}"; do
-  touch "$SHIP_POST_STATE_DIR/pending/$(slugify "$repo")" || return 1
+  pending="$SHIP_POST_STATE_DIR/pending/$(slugify "$repo")"
+  touch "$pending.full" || return 1
+  touch "$pending" || return 1
+ done
+}
+
+queue_atom(){
+ local atom=$1 repo pending
+ for repo in "${_repos[@]}"; do
+  pending="$SHIP_POST_STATE_DIR/pending/$(slugify "$repo")"
+  printf '%s\n' "$atom" >> "$pending.atoms" || return 1
+  touch "$pending" || return 1
  done
 }
 
 do_watch() (
  resolve_repos
- local identity seq=0 ev next pid reader_fd journal_pid watcher_lock tmp repo stored partial=''
+ local identity seq=0 ev next pid reader_fd journal_pid watcher_lock tmp repo stored partial='' id
  local workers=()
  identity=$(ledger_identity) || die 'cannot establish ledger identity'
  mkdir -p "$SHIP_POST_STATE_DIR/pending" || return 1
@@ -535,12 +545,28 @@ do_watch() (
  trap 'exit 143' TERM INT
  for repo in "${_repos[@]}"; do
   (
+   local pending atoms atom failed
    pending="$SHIP_POST_STATE_DIR/pending/$(slugify "$repo")"
    while [[ ! -f $tmp/stop ]]; do
     if [[ -f $pending ]]; then
      rm -f -- "$pending"
-     if ! scan_repo "$repo"; then
-      touch "$pending" || exit 1
+     failed=0
+     if [[ -f $pending.full ]]; then
+      rm -f -- "$pending" "$pending.atoms" "$pending.full"
+      filter_atom=$watch_filter scan_repo "$repo" || failed=1
+     elif [[ -f $pending.atoms ]]; then
+      atoms="$pending.atoms.$$"
+      mv -- "$pending.atoms" "$atoms" || continue
+      while IFS= read -r atom; do
+       [[ -z $watch_filter || $atom == "$watch_filter" ]] || continue
+       filter_atom=$atom scan_repo "$repo" || failed=1
+      done < <(sort -u "$atoms")
+      rm -f -- "$atoms"
+     else
+      scan_repo "$repo" || failed=1
+     fi
+     if [[ ${failed:-0} != 0 ]]; then
+      touch "$pending.full" "$pending" || exit 1
       sleep "$SHIP_POST_RETRY_SECONDS"
      fi
     fi
@@ -569,7 +595,12 @@ do_watch() (
   next=$(jq -er '.seq | select(type=="number" and .>=0 and floor==.)' <<<"$ev") || die 'malformed journal record'
   (( next > seq )) || continue
   if jq -e '(.op=="close" or .op=="update") and .issue.status=="closed"' <<<"$ev" >/dev/null; then
-   queue_all || return 1
+   id=$(jq -r '.issue.id // empty' <<<"$ev")
+   if [[ -n $id && $id =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+    queue_atom "$id" || return 1
+   else
+    queue_all || return 1
+   fi
   fi
   seq=$next; write_cursor || return 1
  done
