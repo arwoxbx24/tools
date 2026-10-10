@@ -270,24 +270,39 @@ remote_result(){
 }
 
 record_failure(){
- local repo=$1 atom=$2 head=$3 rc=$4 key marker t issue
+ local repo=$1 atom=$2 head=$3 rc=$4 cause=${5:-} key marker note act files
  key=$(receipt_file "$repo" "$atom" "$head"); marker="$key.failed"
  mkdir -p "$(dirname "$marker")" || return 1
  # A marker records an observation, not completion of the tracker transaction.
  printf '%s\n' "$rc" > "$marker.tmp" && mv "$marker.tmp" "$marker" || return 1
  printf '%s actor=%s atom=%s sha=%s stage=failed code=%s\n' "$(date -Iseconds)" "$BEADS_ACTOR" "$atom" "$head" "$rc" >&2
  case $rc in 23|70|75) return 0 ;; esac
+ case $rc in
+  10) [[ -n $cause ]] || cause='ветка, рабочая копия или SHA изменены после сдачи; preflight'; act='сдай через ship-post --submit' ;;
+  20) [[ -n $cause ]] || cause='gitleaks нашёл секрет в коммитах'; act='убрать секрет из истории ветки, сдать заново' ;;
+  24) [[ -n $cause ]] || cause='новый SHA не потомок отправленного'; act='сдать новый SHA; старый PR закрыть' ;;
+  30) [[ -n $cause ]] || cause='push или `gh pr create` отклонён (не сеть)'; act='проверить права и имя ветки по логу квитанции, сдать заново' ;;
+  40) [[ -n $cause ]] || cause='CI красный на точном SHA'; act='исправить по логу CI (ссылка в задаче), сдать заново' ;;
+  50) files=$(grep -m5 CONFLICT "$key.log" 2>/dev/null | paste -sd, - | sed 's/,/, /g')
+   [[ -n $cause ]] || { cause='конфликт с `origin/<base>`'; [[ -z $files ]] || cause="$cause: $files"; }
+   act='`git -C <wt> fetch origin && git -C <wt> merge origin/<base>`, разрешить <файлы>, тесты, `bd close`, сдать заново' ;;
+  60) [[ -n $cause ]] || cause='после слияния: CI prod красный или `bd close` не прошёл'; act='исправить по логу, `ship-promote` повторно' ;;
+  80) [[ -n $cause ]] || cause='ТЗ не найдено или файл вне границ ТЗ'; act='исправить трейлер `ТЗ:` или границы, сдать заново' ;;
+  *) [[ -n $cause ]] || cause="код $rc"; act="см. лог квитанции $key.log" ;;
+ esac
+ note="ship-post exit $rc: $cause; действие: $act"
  bd_cmd reopen "$atom" >/dev/null || return 1
- bd_cmd update "$atom" --append-notes "ship-post delivery failed: exit $rc; local commit $head retained; inspect courier receipt before retry." >/dev/null || return 1
- t="[ship-post] delivery failure $(basename "$repo") exit $rc"
- issue=$(bd_cmd search "$t" --status open,in_progress,blocked --json) || return 1
- issue=$(jq -r --arg t "$t" '[.[] | select(.title==$t and .status!="closed")][0].id // empty' <<<"$issue") || return 1
- if [[ -z $issue ]]; then
-  issue=$(bd_cmd create "$t" -t task -l contour:infra --deps "discovered-from:$atom" --description "Courier exit $rc. Local commit $head retained. Reconcile remote state before retry." --acceptance '1) Recorded delivery failure cause repaired and verified. 2) Remote state reconciled before retry. 3) Parent can close locally and resume courier delivery; remote receipt remains a parent requirement.' --silent) || return 1
- fi
- bd_cmd update "$issue" --append-notes "atom $atom sha $head exit $rc" >/dev/null || return 1
- [[ -n $issue ]] && bd_cmd dep add "$atom" "$issue" >/dev/null || return 1
+ bd_cmd update "$atom" --append-notes "$note" >/dev/null || return 1
  touch "$marker.reported"
+}
+
+report_closed_skip(){
+ local repo=$1 atom=$2 head=$3 branch=$4 status=$5 cause=$6 key
+ [[ $dry_run == 0 && $status == closed ]] || return 0
+ case $branch in claude/"$atom"|claude/"$atom"-*|codex/"$atom"|codex/"$atom"-*) ;; *) return 0 ;; esac
+ key=$(receipt_file "$repo" "$atom" "$head")
+ [[ -f $key.failed.reported ]] && return 0
+ record_failure "$repo" "$atom" "$head" 10 "$cause"
 }
 
 ack_delivery(){
@@ -407,10 +422,10 @@ scan_repo(){
   branch=$(git -C "$wt" symbolic-ref --short -q HEAD) || { skip=$((skip+1)); continue; }
   st=$(bd_cmd show "$atom" --json) || { failed=$((failed+1)); continue; }
   status=$(jq -r '.[0].status' <<<"$st")
-  owner=$(jq -r '.[0].assignee // empty' <<<"$st"); actor=$(actor_name "$owner") || { [[ -n $owner || $status != closed ]] || echo "skip $atom no assignee"; skip=$((skip+1)); continue; }
-  owner=codex; [[ $actor == 'Claude Code' ]] && owner=claude
-  [[ $branch == "$owner/$atom" || $branch == "$owner/$atom"-* ]] || { [[ $status != closed ]] || echo "skip $atom branch $branch != $owner/$atom"; skip=$((skip+1)); continue; }
-  [[ -z $agent || $(actor_name "$agent") == "$actor" ]] || { [[ $status != closed ]] || echo "skip $atom agent mismatch"; skip=$((skip+1)); continue; }
+   owner=$(jq -r '.[0].assignee // empty' <<<"$st"); actor=$(actor_name "$owner") || { [[ -n $owner || $status != closed ]] || { echo "skip $atom no assignee"; report_closed_skip "$repo" "$atom" "$head" "$branch" "$status" 'no assignee' || failed=$((failed+1)); }; skip=$((skip+1)); continue; }
+   owner=codex; [[ $actor == 'Claude Code' ]] && owner=claude
+   [[ $branch == "$owner/$atom" || $branch == "$owner/$atom"-* ]] || { [[ $status != closed ]] || { echo "skip $atom branch $branch != $owner/$atom"; report_closed_skip "$repo" "$atom" "$head" "$branch" "$status" "branch $branch != $owner/$atom" || failed=$((failed+1)); }; skip=$((skip+1)); continue; }
+   [[ -z $agent || $(actor_name "$agent") == "$actor" ]] || { [[ $status != closed ]] || { echo "skip $atom agent mismatch"; report_closed_skip "$repo" "$atom" "$head" "$branch" "$status" 'agent mismatch' || failed=$((failed+1)); }; skip=$((skip+1)); continue; }
   rf=$(receipt_file "$repo" "$atom" "$head")
   if [[ $dry_run == 1 && ( -f $rf || -f $rf.failed || -f $(inflight_file "$repo" "$atom") ) ]]; then
    echo "reconcile $wt $atom"; continue
@@ -439,11 +454,11 @@ scan_repo(){
   if [[ -f $rf.failed ]]; then case $(cat "$rf.failed") in 10|50|80) skip=$((skip+1)); continue ;; esac; fi
   [[ $status == closed ]] || { skip=$((skip+1)); continue; }
   dirty=$(git -C "$wt" status --porcelain=v1 --untracked-files=all) || { failed=$((failed+1)); continue; }
-  [[ -z $dirty ]] || { echo "skip $atom dirty worktree"; skip=$((skip+1)); continue; }
+   [[ -z $dirty ]] || { echo "skip $atom dirty worktree"; report_closed_skip "$repo" "$atom" "$head" "$branch" "$status" 'dirty worktree' || failed=$((failed+1)); skip=$((skip+1)); continue; }
   # Normalize legacy absolute and current worktree-relative TZ without escaping the worktree.
   [[ $tz == /* ]] || tz="$wt/$tz"
   tz="$(realpath -m "${tz%%#*}")#${tz#*#}"
-  [[ ${tz%%#*} == "$wt/"* && -f ${tz%%#*} ]] || { [[ $status != closed ]] || echo "skip $atom tz not a file in worktree"; skip=$((skip+1)); continue; }
+   [[ ${tz%%#*} == "$wt/"* && -f ${tz%%#*} ]] || { [[ $status != closed ]] || { echo "skip $atom tz not a file in worktree"; report_closed_skip "$repo" "$atom" "$head" "$branch" "$status" 'tz not a file in worktree' || failed=$((failed+1)); }; skip=$((skip+1)); continue; }
   if [[ $dry_run == 1 ]]; then echo "ready $wt $atom"; continue; fi
   (BEADS_ACTOR=$actor; deliver_one "$wt" "$atom" "$tz" "$head" "$repo" "$branch") && ok=$((ok+1)) || failed=$((failed+1))
  done < <(git -C "$repo" worktree list --porcelain)
