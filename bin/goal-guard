@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# goal-guard — Stop-хук Claude/Codex: не даёт остановиться, пока атомы bd своей сессии in_progress (dcfg-g1ubc).
+exec 2>/dev/null
+set -o pipefail
+command -v jq >/dev/null && command -v bd >/dev/null || exit 0
+json=$(cat) || exit 0
+[ -n "$json" ] || exit 0
+sid=$(jq -er '.session_id | select(type == "string" and length > 0)' <<<"$json") || exit 0
+[[ $sid != *[/$'\n\r']* ]] || exit 0
+sid4=${sid:0:4}
+[ -n "$sid4" ] || exit 0
+bg=$(jq -er 'if ((.background_tasks // []) | type) == "array" then (.background_tasks // [] | length) else error("background_tasks") end' <<<"$json") || exit 0
+[ "$bg" -eq 0 ] || exit 0
+msg=$(jq -er '(.last_assistant_message // "") | if type == "string" then . else error("last_assistant_message") end' <<<"$json") || exit 0
+while IFS= read -r l; do [[ $l =~ ^[[:space:]]*(\*\*)?Контрольная\ точка: ]] && [[ $l != *"<шаг владельца>"* ]] && exit 0; done <<< "$msg"
+tp=$(jq -er '(.transcript_path // "") | if type == "string" then . else error("transcript_path") end' <<<"$json") || exit 0
+if [ -f "$tp" ]; then
+  active=$(tail -n 3000 -- "$tp" | sed -n -e 's/.*Task ID: \([^[:space:]]*\).*/+\1/p' -e 's/.*agentId: \([^[:space:]]*\).*/+\1/p' -e 's#.*<task-id>\([^<]*\)</task-id>.*#-\1#p' | awk '/^\+/{run[substr($0,2)]=1}/^-/{done[substr($0,2)]=1} END{for(id in run)if(!done[id])print id}') || exit 0
+  [ -z "$active" ] || exit 0
+fi
+state=${GOAL_GUARD_STATE:-/tmp}
+[ -d "$state" ] || exit 0
+file="$state/goal-guard-$sid"
+if [ -e "$file" ]; then count=$(cat -- "$file") || exit 0; else count=0; fi
+max=${GOAL_GUARD_MAX:-20}
+[[ $count =~ ^[0-9]+$ && $max =~ ^[0-9]+$ ]] || exit 0
+(( 10#$count >= 10#$max )) && exit 0
+re='^[[:space:]]*((🔴|⚠️|⚠|❌|🟡)[[:space:]]*)?(\*\*)?((Статус|Status|Итог|Result)(\*\*)?:(\*\*)?[[:space:]]*)?(\*\*)?(PARTIAL|BLOCKED|UNVERIFIED|FAILED)(\*\*)?(:|\.|,|—|-|[[:space:]]|$)'
+neg=0 routes=0
+while IFS= read -r l; do
+  [[ $l =~ $re ]] && neg=1
+  rr='^[[:space:]]*([-*•][[:space:]]*)?(\*\*)?(Маршрут|Route)(\*\*)?:.*→[[:space:]]*[^[:space:]]'
+  [[ $l =~ $rr ]] && routes=$((routes+1))
+done <<< "$msg"
+if [ "$neg" -eq 1 ] && [ "$routes" -lt 2 ]; then
+  printf '%s\n' "$((10#$count + 1))" > "$file" || exit 0
+  jq -nc --arg r "goal-guard: негативный статус без маршрутов восстановления — допиши строки «Маршрут: <что сделал> → <итог>» (≥2) или продолжай работу." '{decision:"block",reason:$r}'
+  exit 0
+fi
+ids=$(cd /root/workspaces/projects && bd list --status in_progress --limit 0 --json | jq -r --arg s "-$sid4]" '.[]|select(.title|contains($s))|.id') || exit 0
+[ -n "$ids" ] || exit 0
+printf '%s\n' "$((10#$count + 1))" > "$file" || exit 0
+ids=${ids//$'\n'/ }
+jq -nc --arg r "goal-guard: атомы сессии в работе: $ids. Закрой каждый (bd close с командой и выводом) или остановись строкой «Контрольная точка: <шаг владельца>»." '{decision:"block",reason:$r}' || exit 0
+exit 0

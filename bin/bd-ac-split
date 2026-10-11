@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# bd-ac-split — разбить acceptance_criteria атома bd на детей [AC<N>] (dcfg-e5mji.1 U1).
+# ponytail: потолок — bash+jq+awk (ASA), апгрейд — jq-постпроцессор вместо awk.
+set -o pipefail
+usage() { echo "usage: bd-ac-split <issue-id>" >&2; }
+if [ $# -eq 1 ] && { [ "$1" = "--help" ] || [ "$1" = "-h" ]; }; then
+  echo "bd-ac-split <id> — создаёт детей [AC<N>] по acceptance_criteria атома bd."
+  echo "Пункты: нумерация N) или N. подряд (1,2,3...); существующие [AC<N>] пропускаются."
+  exit 0
+fi
+[ $# -eq 1 ] || { usage; exit 2; }
+command -v bd >/dev/null || { echo "bd-ac-split: bd не найден" >&2; exit 1; }
+command -v jq >/dev/null || { echo "bd-ac-split: jq не найден" >&2; exit 1; }
+id=$1
+cd /root/workspaces/projects || exit 1
+acc=$(bd show "$id" --json | jq -r '.[0].acceptance_criteria // ""') || { echo "bd-ac-split: bd show $id не удался" >&2; exit 1; }
+items=$(awk -v e=1 '
+function flush() { t=buf; gsub(/^[ \t\r\n]+|[ \t\r\n]+$/,"",t); if (t != "") print t; buf="" }
+{
+  buf = (buf == "" ? $0 : buf " " $0)
+  while (match(buf, "(^|[ \t\r])" e "[.)]([ \t\r]|$)")) {
+    if (e == 1) { buf = substr(buf, RSTART+RLENGTH); e = 2; continue }
+    t = substr(buf, 1, RSTART-1); gsub(/^[ \t\r\n]+|[ \t\r\n]+$/,"",t); if (t != "") print t
+    buf = substr(buf, RSTART+RLENGTH)
+    e++
+  }
+}
+END { flush() }' <<<"$acc") || exit 1
+mapfile -t items <<<"$items"
+if [ ${#items[@]} -lt 2 ]; then
+  echo "ok=0 skip=0 (criteria<2)"
+  [ -n "$acc" ] && echo "bd-ac-split: критериев <2, разбив не нужен" >&2
+  exit 0
+fi
+children=$(bd list --parent "$id" --all --limit 0 --json | jq -r '.[].title') || exit 1
+ok=0 skip=0 fails=0
+for i in "${!items[@]}"; do
+  N=$((i+1)); text=${items[i]}; title=${text:0:200}
+  if grep -q "^\\[AC$N\\]" <<<"$children"; then skip=$((skip+1)); continue; fi
+  if bd create "[AC$N] $title" --parent "$id" -t task --silent -d "Критерий $N атома $id" --acceptance "1) $text" >/dev/null; then
+    ok=$((ok+1))
+  else
+    echo "bd-ac-split: отказ bd create для [AC$N] атома $id" >&2
+    fails=$((fails+1))
+  fi
+done
+echo "ok=$ok skip=$skip"
+[ "$fails" -eq 0 ]
