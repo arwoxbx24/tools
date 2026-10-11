@@ -12,11 +12,11 @@
 
 ## Конфиг и провайдеры
 
-`config/code-channel.json` хранит массив с полями `id`, `enabled`, `model`, `effort` (только Codex); `key`, `secret`, `base` — только у платных HTTP-провайдеров. Порядок массива — порядок лестницы.
+`config/code-channel.json` хранит массив с полями `id`, `enabled`, `model`, `resume_model` (продолжение сессии после rc 124), `audit_model` (модель режима `audit`; пусто — `model`), `effort` (только Codex); `key`, `secret`, `base` — только у платных HTTP-провайдеров. Порядок массива — порядок лестницы.
 
 | id | состояние | модель / параметр |
 | --- | --- | --- |
-| `go` | включён | `opencode-go/mimo-v2.6-flash` |
+| `go` | включён | code: `opencode-go/glm-5.3-flash`; audit и продолжение: `opencode-go/longcat-2.5-preview-free` |
 | `codex` | включён | модель профиля; `effort: high` |
 | `openrouter` | выключен | — |
 | `bitrixgpt` | выключен | — |
