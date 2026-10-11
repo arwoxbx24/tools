@@ -6,8 +6,9 @@ t(){ tmux ${TMUX_SEND_SOCKET:+-L "$TMUX_SEND_SOCKET"} "$@"; }
 case ${1:-} in -h|--help) echo "usage: tmux-send <target> '<текст>' [--expect '<regex>']  (env TMUX_SEND_SOCKET, TMUX_SEND_SLEEP; до 3 повторов Enter, rc 0 — ожидание найдено, 1 — нет, 2 — ошибка tmux)"; exit 0;; esac
 target=${1:-}
 text=${2:-}
-expect=Working
-[[ ${3:-} == --expect ]] && expect=${4:-Working}
+busy='Working|esc to interrupt|\([0-9]+s ·'
+expect=$busy
+[[ ${3:-} == --expect ]] && expect=${4:-$busy}
 
 if [[ -z $target ]]; then
 	echo "tmux-send: no target" >&2
@@ -49,19 +50,36 @@ if [[ ! $target =~ ^[%@][0-9]+$ ]]; then
 	fi
 fi
 
+head=${text:0:24}
+# Split pane at the last prompt line (Claude ❯, Codex ›): above = history, from it on = input box.
+regions(){
+	pane=$(t capture-pane -p -t "$target" 2>>"$err") || die
+	hist=$(awk '/^[[:space:]]*(❯|›)( |$)/{n=NR} {l[NR]=$0} END{if(!n)n=NR+1; for(i=1;i<n;i++) print l[i]}' <<<"$pane")
+	input=$(awk '/^[[:space:]]*(❯|›)( |$)/{n=NR} {l[NR]=$0} END{if(n) for(i=n;i<=NR;i++) print l[i]}' <<<"$pane")
+}
+
 t send-keys -t "$target" -l "$text" 2>"$err" || die
+# Enter only after the paste is visible, else a long paste swallows it.
+for _ in 1 2 3 4 5; do
+	regions
+	grep -qF -- "$head" <<<"$input" && break
+	sleep 0.5
+done
 t send-keys -t "$target" Enter 2>>"$err" || die
 
 enters=0
 pane=""
 for i in 1 2 3; do
 	sleep "$sleep_n"
-	pane=$(t capture-pane -p -t "$target" 2>>"$err") || die
-	if grep -qE -- "$expect" <<<"$pane"; then
+	regions
+	if grep -qE -- "$expect" <<<"$hist"; then
 		exit 0
 	fi
-	last=$(grep -v '^[[:space:]]*$' <<<"$pane" | tail -n1)
-	if [[ $enters -lt 2 && $last == *"$text"* ]]; then
+	# Echo check only on agent TUIs (prompt line found); a plain shell echoes input into history.
+	if [[ -n $head && -n $input ]] && grep -qF -- "$head" <<<"$hist" && ! grep -qF -- "$head" <<<"$input"; then
+		exit 0
+	fi
+	if [[ $enters -lt 2 ]] && grep -qF -- "$head" <<<"$input"; then
 		t send-keys -t "$target" Enter 2>>"$err" || die
 		((enters++))
 	fi
