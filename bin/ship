@@ -10,13 +10,14 @@ ship_log="$logdir/ship.log"
 
 name='-'; branch='-'
 
-usage(){ cat >&2 <<'EOF'
+help(){ cat <<'EOF'
 usage: ship <worktree> --atom <id> --tz <path#U> [--reload <pm2-name>] [--handover] [--expected-head <sha>]
 exit codes: 0 ok, 10 preflight/usage, 20 gitleaks, 30 commit/push/pr, 40 ci, 50 merge/rebase,
             60 post, 70 gh/fetch, 75 lock, 80 ТЗ не найдено
 EOF
-leave 10 usage
 }
+
+usage(){ help >&2; leave 10 usage; }
 
 # Разбор ТЗ.
 tz_repo=''; tz_rel=''; cmd=''
@@ -36,6 +37,7 @@ while [[ $# -gt 0 ]]; do
 		--reload) reload=${2:-}; shift 2 ;;
 		--handover) handover=1; shift ;;
 		--expected-head) [[ $# -ge 2 && $2 =~ ^[0-9a-f]{40,64}$ ]] || usage; expected_head=$2; shift 2 ;;
+		--help|-h) help; exit 0 ;; # U23: до логов, git и gh
 		-*) usage ;;
 		*) wt=$1; shift ;;
 	esac
@@ -45,7 +47,7 @@ done
 root=${GA_WT_ROOT:-/root/workspaces/projects/.worktrees}
 [[ -z ${GA_WT_ROOT:-} && $wt == */.worktrees/* ]] && root=${wt%%/.worktrees/*}/.worktrees
 wtr=$(realpath -m "$wt")
-[[ $wtr == "$root"/* ]] || leave 10 preflight
+[[ $wtr == "$root"/* ]] || { echo "ship: worktree $wtr outside $root; use $root/<agent>/<atom> or set GA_WT_ROOT" >&2; leave 10 preflight; }
 agent=${wtr#"$root"/}; agent=${agent%%/*}
 [[ -n $agent && $wtr == "$root/$agent/"* ]] || leave 10 preflight
 

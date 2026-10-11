@@ -55,7 +55,7 @@ INFRA-отказы (30/70/71/75/прочие) паркуются: метка `de
 
 | Component | Code | Meaning in current code | Temporary |
 | --- | ---: | --- | --- |
-| `ship` | 10 | usage, preflight, policy or accepted-head check | no, fix input/state |
+| `ship` | 10 | usage, preflight, policy or accepted-head check; `--help` exits 0; preflight names the expected worktree root | no, fix input/state |
 | `ship` | 20 | gitleaks rejection | no, remove the finding |
 | `ship` | 30 | commit, push, PR creation or absent CI | depends: transport/CI appearance can change; invalid PR state needs repair |
 | `ship` | 40 | CI did not pass | no until CI/input changes |
