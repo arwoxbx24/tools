@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# agent-browser wrapper (dcfg-ayus6): local vendored CLI, Playwright chromium, no lingering daemon
+set -euo pipefail
+
+VENDOR_BIN=/root/workspaces/tools/vendor/agent-browser/node_modules/.bin/agent-browser
+
+if [[ "${1:-}" == "--help" ]]; then
+    cat <<'USAGE'
+agent-browser — wrapped CLI (tools contract)
+
+  bin/agent-browser <команда> …   проход CLI agent-browser 0.39.0
+  bin/agent-browser --help        эта справка
+
+Обвязка: браузер — Playwright Chromium с диска (AGENT_BROWSER_EXECUTABLE_PATH),
+демон гаснет после 10 с простоя (AGENT_BROWSER_IDLE_TIMEOUT_MS).
+USAGE
+    exit 0
+fi
+
+if [[ ! -x "$VENDOR_BIN" ]]; then
+    npm install --prefix /root/workspaces/tools/vendor/agent-browser agent-browser@0.39.0 >&2
+    chmod +x "$VENDOR_BIN"
+fi
+
+if [[ -z "${AGENT_BROWSER_EXECUTABLE_PATH:-}" ]]; then
+    exec_path=$(find /root/.cache/ms-playwright -maxdepth 3 -path '*chromium*/chrome-linux*/chrome' -type f 2>/dev/null | sort -V | tail -1)
+    [[ -n "$exec_path" ]] && export AGENT_BROWSER_EXECUTABLE_PATH="$exec_path"
+fi
+
+export AGENT_BROWSER_IDLE_TIMEOUT_MS="${AGENT_BROWSER_IDLE_TIMEOUT_MS:-10000}"
+
+exec "$VENDOR_BIN" "$@"

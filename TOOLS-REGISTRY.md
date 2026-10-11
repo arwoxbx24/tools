@@ -22,6 +22,7 @@
 | `tools/skill-search/` (`skills@1.5.18`, vercel-labs/skills, по lockfile) | штатный CLI поиска навыков skills.sh (spec:068; без обёрток — владелец 26.09 «только штатное») | `DISABLE_TELEMETRY=1 tools/skill-search/node_modules/.bin/skills find <слово>`; `add/use/update` не вызывать | все | штатно |
 | `pm2` | управление процессами — только `startOrReload <ecosystem> --only <имя>` → `pm2 save` | см. `/root/CLAUDE.md` PM2 | все | штатно |
 | `tools/scripts/pm2/b244-fetch.sh` | загрузка файлов b244/MinIO | `bash …/b244-fetch.sh <b244://…>` | все | штатно |
+| `tools/bin/agent-browser` | CLI браузера vercel-labs/agent-browser@0.39.0 (локально в `tools/vendor/agent-browser`, обвязка bin/agent-browser: Playwright Chromium, демон гаснет после 10 с простоя; `--help` справка) | `tools/bin/agent-browser <command>` | все | штатно |
 | `tmux send-keys` | сообщение другому агенту: `-l "<текст>"` → отдельный `Enter` → `capture-pane` | см. `/root/CLAUDE.md` tmux | Claude ↔ Codex | штатно |
 | `tmux-send` | отправить текст другому агенту на изолированном сервере tmux; сервер выбирается через `TMUX_SEND_SOCKET` (`-L`, по умолчанию — текущий) | `TMUX_SEND_SOCKET=<сокет> bin/tmux-send <target> '<текст>' [--expect '<regex>']` | Claude ↔ Codex | штатно |
 | `repowise` (MCP) | разведка кода первой ступенью | `get_answer/search_codebase/get_context` | Claude | штатно |
