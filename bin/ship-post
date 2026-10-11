@@ -12,19 +12,18 @@ BEADS_ACTOR=${BEADS_ACTOR:-}
 SHIP_POST_RETRY_SECONDS=${SHIP_POST_RETRY_SECONDS:-30}
 [[ $SHIP_POST_RETRY_SECONDS =~ ^[1-9][0-9]*$ ]] || { echo 'ship-post: invalid retry interval' >&2; exit 2; }
 
-dry_run=0; watch=0; submit=0; submit_wt=''; submit_atom=''; submit_tz=''
+dry_run=0; watch=0; submit=0; submit_wt=''; submit_atom=''; submit_tz=''; status_mode=0; status_atom=''
 submit_evidence=''; submit_files=(); filter_atom=''
 
-usage(){ cat >&2 <<'USAGE'
-usage: ship-post [--dry-run]
+help_text='usage: ship-post [--dry-run]
        ship-post --watch [--atom <id>]
-       ship-post --submit <worktree> --atom <id> --tz <path#U2> --evidence <text> --files <file>...
-USAGE
-exit 2
-}
+       ship-post --status <atom>
+       ship-post --submit <worktree> --atom <id> --tz <path#U2> --evidence <text> --files <file>...'
+usage(){ printf '%s\n' "$help_text" >&2; exit 2; }
+[[ ${1:-} == -h || ${1:-} == --help ]] && { printf '%s\n' "$help_text"; exit 0; }
 
 while [[ $# -gt 0 ]]; do
-	case $1 in --atom|--submit|--tz|--evidence) [[ $# -ge 2 && -n $2 && $2 != --* ]] || usage ;; esac
+	case $1 in --atom|--submit|--tz|--evidence|--status) [[ $# -ge 2 && -n $2 && $2 != --* ]] || usage ;; esac
 	case $1 in
 		--dry-run) dry_run=1; shift ;;
 		--watch) watch=1; shift ;;
@@ -32,6 +31,7 @@ while [[ $# -gt 0 ]]; do
 		--submit) submit=1; submit_wt=${2:-}; shift 2 ;;
 		--tz) submit_tz=${2:-}; shift 2 ;;
 		--evidence) submit_evidence=${2:-}; shift 2 ;;
+		--status) status_mode=1; status_atom=${2:-}; shift 2 ;;
 		--files) shift; while [[ $# -gt 0 && $1 != -* ]]; do submit_files+=("$1"); shift; done ;;
 		--) shift; submit_files+=("$@"); break ;;
 		*) usage ;;
@@ -132,7 +132,7 @@ do_submit(){
 	[[ $allowed == 1 ]] || usage_err "repository is not served by courier: $repo"
 	local branch caller
 	branch=$(git -C "$wt_real" symbolic-ref --short -q HEAD 2>/dev/null) || usage_err "cannot get branch"
-	case $BEADS_ACTOR in Codex|codex) caller=codex ;; Claude|'Claude Code'|claude) caller=claude ;; *) usage_err "unknown BEADS_ACTOR: ${BEADS_ACTOR:-empty}" ;; esac
+		case $BEADS_ACTOR in Codex|codex) caller=codex; actor_hint=Codex ;; Claude|'Claude Code'|claude) caller=claude; actor_hint='Claude Code' ;; *) usage_err "unknown BEADS_ACTOR: ${BEADS_ACTOR:-empty}; set BEADS_ACTOR='Claude Code' or BEADS_ACTOR=Codex" ;; esac
 	[[ $branch == "$caller/$atom" || $branch == "$caller/$atom"-* ]] || usage_err "branch $branch must match $caller/$atom or $caller/$atom-<topic>"
 	[[ $wt_real == */.worktrees/"$caller"/* ]] || usage_err "worktree must use .worktrees/<agent>/<task>"
 
@@ -143,9 +143,9 @@ do_submit(){
 	assignee_raw=$(jq -r '.[0].assignee // empty' <<< "$atom_json" 2>/dev/null)
 	assignee=$assignee_raw
 	case $assignee in Codex|codex) assignee=codex ;; Claude|'Claude Code'|claude) assignee=claude ;; esac
-	[[ -n $assignee && $assignee == "$caller" ]] || usage_err "atom $atom assignee must be $caller"
+	[[ -n $assignee && $assignee == "$caller" ]] || usage_err "atom $atom actual assignee=${assignee_raw:-none}, expected=$caller; run: BEADS_ACTOR='$actor_hint' bd update $atom --claim"
 	BEADS_ACTOR=$assignee_raw
-	[[ $status == in_progress || $status == closed ]] || usage_err "atom $atom status=$status"
+	[[ $status == in_progress || $status == closed ]] || usage_err "atom $atom status=$status, need in_progress; run: BEADS_ACTOR='$actor_hint' bd update $atom --claim"
 
 	local tz_path=${tz%%#*} tz_suffix="#${tz#*#}" tz_abs
 	[[ $tz_suffix =~ ^#U[0-9]+$ ]] || usage_err "--tz must end with #U<number>"
@@ -177,17 +177,19 @@ do_submit(){
 	lock_path=$(git -C "$wt_real" rev-parse --git-path ship-post-submit.lock) || die "cannot find worktree lock path"
 	exec {submit_lock_fd}>"$lock_path"; flock -x "$submit_lock_fd"
 
-	local dirty=0 status_entry status_xy status_path status_source seen_dirty=0
+	local dirty=0 status_entry status_xy status_path status_source seen_dirty=0 dirty_total=0
 	while IFS= read -r -d '' status_entry; do
 		status_xy=${status_entry:0:2}; status_path=${status_entry:3}
 		[[ $status_xy == '!!' ]] && continue
 		dirty=1
-		[[ -n ${file_set[$status_path]:-} ]] || { echo "ship-post: dirty file not in --files: $status_path" >&2; seen_dirty=1; }
+		[[ -n ${file_set[$status_path]:-} ]] || { (( dirty_total < 10 )) && echo "ship-post: dirty file not in --files: $status_path" >&2; dirty_total=$((dirty_total+1)); seen_dirty=1; }
 		if [[ $status_xy == *R* || $status_xy == *C* ]]; then
 			IFS= read -r -d '' status_source || { echo "ship-post: malformed rename status" >&2; seen_dirty=1; break; }
 			[[ -n ${file_set[$status_source]:-} ]] || { echo "ship-post: rename source not in --files: $status_source" >&2; seen_dirty=1; }
 		fi
-	done < <(git -C "$wt_real" status --porcelain=v1 -z --untracked-files=all)
+		done < <(git -C "$wt_real" status --porcelain=v1 -z --untracked-files=all)
+	(( dirty_total > 10 )) && echo "ship-post: ... and $((dirty_total-10)) more (total $dirty_total)" >&2
+	[[ $seen_dirty == 0 ]] || echo "ship-post: fix: add to --files or remove with tools/bin/safe-delete <file|dir> <path>" >&2
 	[[ $seen_dirty == 0 ]] || die "dirty or staged files outside --files list"
 
 	local head_msg head_matches=0 head_sha
@@ -212,16 +214,17 @@ do_submit(){
 		for f in "${files[@]}"; do literal_paths+=(":(literal)$f"); done
 		git -C "$wt_real" add -- "${literal_paths[@]}" || { cp -f -- "$index_backup" "$index_path"; rm -f -- "$index_backup"; die "git add failed"; }
 		( cd "$wt_real" && gitleaks git --pre-commit --staged --redact --no-banner ) || { cp -f -- "$index_backup" "$index_path"; rm -f -- "$index_backup"; die "gitleaks failed"; }
-		local first_line
-		first_line=$(sed -n '1p' "$tz_abs" 2>/dev/null || echo "$atom")
-		git -C "$wt_real" commit -q -m "$atom: ${first_line:-$atom}" \
+		local tz_title short_sha
+		tz_title=$(awk '/^---[[:space:]]*$/ { if (in_fm) { in_fm=2; next } else { in_fm=1; next } } in_fm==1 { next } NF { sub(/^[[:space:]]*#+[[:space:]]*/, ""); print; exit }' "$tz_abs" 2>/dev/null)
+		git -C "$wt_real" commit -q -m "$atom: ${tz_title:-$atom}" \
 			-m "$(printf 'ТЗ: %s\nAtom: %s\nAgent: %s' "$tz_stored" "$atom" "$caller")" || {
 			local rc=$?
 			cp -f -- "$index_backup" "$index_path"; rm -f -- "$index_backup"
 			die "commit failed (exit $rc)"
 		}
 		rm -f -- "$index_backup"
-		echo "ship-post: committed $atom"
+		short_sha=$(git -C "$wt_real" rev-parse --short HEAD) || die "cannot read HEAD"
+		echo "ship-post: committed $atom $short_sha on $branch"
 	fi
 
 	local _ base merge_tree merge_rc conflicts
@@ -261,6 +264,53 @@ do_submit(){
 	write_submit_receipt "$repo" "$wt_real" "$atom" "$head_sha" "$evidence" || die "cannot write submission receipt"
 	echo "ship-post: closed $atom"
 	return 0
+}
+
+# ── status mode: read-only, only files under SHIP_POST_STATE_DIR ──────
+
+name_of_newest(){
+	local root=$1 atom=$2 f b
+	find "$root" -type f -path "*/*/$atom/*" -printf '%T@\t%p\n' 2>/dev/null | sort -rn |
+	while IFS=$'\t' read -r t f; do
+		b=${f##*/}; b=${b%.failed.reported}; b=${b%.failed}; b=${b%.log}; b=${b%.ack}; b=${b%.reported}
+		[[ $b =~ ^[0-9a-f]{7,64}$ ]] || continue
+		printf '%s\n' "$b"; return 0
+	done
+}
+
+do_status(){
+	local atom=$1 sha rf line id stage remote
+	[[ $atom =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || usage_err "invalid atom: $atom"
+	sha=$(name_of_newest "$SHIP_POST_STATE_DIR/submissions" "$atom")
+	[[ -n $sha ]] || sha=$(name_of_newest "$SHIP_POST_STATE_DIR/receipts" "$atom")
+	if [[ -z $sha ]]; then echo "$atom none"; return 0; fi
+	for rf in "$SHIP_POST_STATE_DIR"/receipts/*/"$atom"/"$sha"; do
+		if [[ -f $rf && ! $rf =~ \.(failed|log|ack)$ ]]; then
+			stage=$(jq -r '.stage // empty' "$rf" 2>/dev/null)
+			remote=$(jq -r '."remote".url // ."remote".pr // empty' "$rf" 2>/dev/null)
+			printf '%s %s %s%s\n' "$atom" "${sha:0:7}" "$stage" "${remote:+ $remote}"
+			return 0
+		fi
+	done
+	for lf in "$SHIP_POST_STATE_DIR"/incidents/*.atoms; do
+		[[ -f $lf ]] || continue
+		local code=${lf%.atoms}; code=${code##*/}
+		while read -r id line _; do
+			if [[ $line == "$atom" ]]; then
+				printf '%s %s parked %s code %s\n' "$atom" "${sha:0:7}" "$id" "$code"; return 0
+			fi
+		done < "$lf"
+	done
+	for rf in "$SHIP_POST_STATE_DIR"/receipts/*/"$atom"/"$sha".failed; do
+		if [[ -f $rf ]]; then
+			printf '%s %s failed %s\n' "$atom" "${sha:0:7}" "$(head -n1 "$rf")"
+			return 0
+		fi
+	done
+	for rf in "$SHIP_POST_STATE_DIR"/inflight/*/"$atom"; do
+		if [[ -f $rf ]]; then printf '%s %s delivering\n' "$atom" "${sha:0:7}"; return 0; fi
+	done
+	echo "$atom ${sha:0:7} submitted"
 }
 
 # One eligibility/delivery path for startup, events and manual scans.
@@ -651,7 +701,9 @@ do_watch() (
 )
 
 if [[ $submit == 1 ]]; then
- do_submit "$submit_wt" "$submit_atom" "$submit_tz" "$submit_evidence" "${submit_files[@]}"
+	do_submit "$submit_wt" "$submit_atom" "$submit_tz" "$submit_evidence" "${submit_files[@]}"
+elif [[ $status_mode == 1 ]]; then
+	do_status "$status_atom"
 elif [[ $watch == 1 ]]; then
  do_watch
 else

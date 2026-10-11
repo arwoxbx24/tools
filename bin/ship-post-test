@@ -11,7 +11,7 @@ assert_rc(){ [[ $3 == "$2" ]] && pass "$1" || fail "$1" "rc=$3 want=$2: $4"; }
 assert_nonzero(){
  local expected
  case $1 in
- 13) expected='worktree must be linked' ;; 14|15) expected='assignee must be' ;;
+ 13) expected='worktree must be linked' ;; 14|15) expected='actual assignee=' ;;
  16) expected='must match codex/' ;; 17) expected='invalid ТЗ path' ;;
  18) expected='ТЗ must be an existing file' ;; 19|20) expected='dirty or staged files outside' ;;
  21) expected='unknown BEADS_ACTOR' ;; 22) expected='invalid file path' ;;
@@ -695,8 +695,60 @@ test_park_live(){
  [[ -n $inc && $out == *"ship-post: parked: $atom incident $inc"* && $st == "open 0 bug contour:delivery" && $lbl == "closed "*delivery-blocked* ]] && pass park_live || fail park_live "out=$out st=$st lbl=$lbl"
 }
 
+test_status(){
+	local d out rc sha
+	d="$root/status"; make_mocks "$d"; mkdir -p "$d/state"
+	sha=$(printf 'status\n' | sha256sum | cut -d' ' -f1)
+	st_put(){ mkdir -p "$(dirname "$d/state/$1")"; printf '%b' "$2" > "$d/state/$1"; }
+	out=$(run_tool "$d" --status dcfg-s.1 2>&1); rc=$?
+	[[ $rc == 0 && $out == 'dcfg-s.1 none' ]] && pass ST1 || fail ST1 "rc=$rc: $out"
+	st_put "submissions/a/b/dcfg-s.2/$sha" 'x\n'
+	out=$(run_tool "$d" --status dcfg-s.2 2>&1); rc=$?
+	[[ $rc == 0 && $out == "dcfg-s.2 ${sha:0:7} submitted" ]] && pass ST2 || fail ST2 "rc=$rc: $out"
+	st_put "receipts/r/dcfg-s.2/$sha" '{"stage":"delivered"}\n'
+	out=$(run_tool "$d" --status dcfg-s.2 2>&1); rc=$?
+	[[ $rc == 0 && $out == *delivered* ]] && pass ST3 || fail ST3 "rc=$rc: $out"
+	st_put "submissions/a/b/dcfg-s.4/$sha" 'x\n'
+	st_put 'incidents/30' 'dcfg-inc\n'
+	st_put "incidents/30.atoms" "dcfg-inc dcfg-s.4 $sha\n"
+	out=$(run_tool "$d" --status dcfg-s.4 2>&1); rc=$?
+	[[ $rc == 0 && $out == "dcfg-s.4 ${sha:0:7} parked dcfg-inc code 30" ]] && pass ST4 || fail ST4 "rc=$rc: $out"
+	out=$(run_tool "$d" --status 'bad id!' 2>&1); rc=$?
+	[[ $rc == 2 && $out == *'invalid atom'* ]] && pass ST5 || fail ST5 "rc=$rc: $out"
+}
+
+test_hints(){
+	local out rc count i
+	setup_submit hints_actor codex/dcfg-hints.1; printf x > "$wt/file.txt"
+	out=$(export BEADS_ACTOR= BD_ASSIGNEE=Codex; submit dcfg-hints.1 "$tz" file.txt 2>&1); rc=$?
+	[[ $rc == 2 && $out == *"BEADS_ACTOR='Claude Code'"* ]] && pass H1 || fail H1 "rc=$rc: $out"
+	setup_submit hints_assignee codex/dcfg-hints.2; printf x > "$wt/file.txt"
+	out=$(export BEADS_ACTOR=Codex BD_ASSIGNEE='Claude Code'; submit dcfg-hints.2 "$tz" file.txt 2>&1); rc=$?
+	[[ $rc == 2 && $out == *'actual assignee='* && $out == *'bd update dcfg-'* && $out == *'--claim'* ]] && pass H2 || fail H2 "rc=$rc: $out"
+	setup_submit hints_status codex/dcfg-hints.3; printf x > "$wt/file.txt"
+	out=$(export BEADS_ACTOR=Codex BD_ASSIGNEE=Codex BD_STATUS=open; submit dcfg-hints.3 "$tz" file.txt 2>&1); rc=$?
+	[[ $rc == 2 && $out == *'need in_progress'* && $out == *'--claim'* ]] && pass H3 || fail H3 "rc=$rc: $out"
+	setup_submit hints_dirty codex/dcfg-hints.4; printf x > "$wt/file.txt"
+	for i in $(seq 1 12); do printf 't\n' > "$wt/extra$i.txt"; done
+	out=$(export BEADS_ACTOR=Codex BD_ASSIGNEE=Codex; submit dcfg-hints.4 "$tz" file.txt 2>&1); rc=$?
+	count=$(grep -c '^ship-post:' <<<"$out")
+	[[ $rc == 1 && $out == *'total 12'* && $out == *'safe-delete'* && count -le 13 ]] && pass H4 || fail H4 "rc=$rc count=$count: $out"
+	setup_submit hints_title codex/dcfg-hints.5
+	printf '%s\n' '---' 'title: x' '---' '# Real title' > "$wt/$tz"
+	out=$(export BEADS_ACTOR=Codex BD_ASSIGNEE=Codex; submit dcfg-hints.5 "$tz" 2>&1); rc=$?
+	[[ $rc == 0 && $(git -C "$wt" log -1 --format=%s) == 'dcfg-hints.5: Real title' ]] && pass H5 || fail H5 "rc=$rc: $out"
+	[[ $rc == 0 && $out =~ committed\ dcfg-hints.5\ [0-9a-f]{7,}\ on\  ]] && pass H6 || fail H6 "rc=$rc: $out"
+	setup_submit hints_help codex/dcfg-hints.6
+	out=$(run_tool "$d" --help 2>/dev/null); rc=$?
+	[[ $rc == 0 && $out == *'usage:'* ]] && pass H7 || fail H7 "rc=$rc: $out"
+}
+
 if [[ ${SHIP_POST_TEST_GROUP:-all} == review ]]; then
  test_review_recovery
+elif [[ ${SHIP_POST_TEST_GROUP:-all} == status ]]; then
+ test_status
+elif [[ ${SHIP_POST_TEST_GROUP:-all} == hints ]]; then
+ test_hints
 elif [[ ${SHIP_POST_TEST_GROUP:-all} == recovery ]]; then
  test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery
 	elif [[ ${SHIP_POST_TEST_GROUP:-all} == v4 ]]; then
@@ -716,7 +768,7 @@ elif [[ ${SHIP_POST_TEST_GROUP:-all} == recovery ]]; then
 	elif [[ ${SHIP_POST_TEST_GROUP:-all} == adr35 ]]; then
 	 test_adr35
 else
-	 test_dryrun_mocks; test_valid_actors; test_rejections; test_hook_and_retry; test_closed_retry; test_delivery; test_live_sync; test_watch; test_recovery; test_stream_errors; test_closed_skip_reason; test_concurrent_repositories; test_watch_lock_released; test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery; test_actor_alias; test_nested_repo; test_final_states; test_submit_conflict_preflight; test_u15; test_adr30; test_park; test_adr35
+	 test_dryrun_mocks; test_valid_actors; test_rejections; test_hook_and_retry; test_closed_retry; test_delivery; test_live_sync; test_watch; test_recovery; test_stream_errors; test_closed_skip_reason; test_concurrent_repositories; test_watch_lock_released; test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery; test_actor_alias; test_nested_repo; test_final_states; test_submit_conflict_preflight; test_u15; test_adr30; test_park; test_park_live; test_hints; test_status
 fi
 echo "checks=$checks failures=$failures"
 [[ $failures == 0 ]]
