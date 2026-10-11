@@ -4,6 +4,7 @@
 set -o pipefail
 usage() { echo "usage: bd-ac-split <issue-id>" >&2; }
 if [ $# -eq 1 ] && { [ "$1" = "--help" ] || [ "$1" = "-h" ]; }; then
+  echo "usage: bd-ac-split <issue-id>"
   echo "bd-ac-split <id> — создаёт детей [AC<N>] по acceptance_criteria атома bd."
   echo "Пункты: нумерация N) или N. подряд (1,2,3...); существующие [AC<N>] пропускаются."
   exit 0
