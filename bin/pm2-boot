@@ -163,7 +163,7 @@ if [ "$MODE" = only ]; then
     [ -s "$FAILED" ] || printf '{"name":"%s","check":"name","subject":"not found"}\n' "$ONLY" >>"$FAILED"
     write_report declaration 0 false ""; send_once "⚠️ PM2 boot: $(failed_text)"; exit 2
   fi
-  "$PM2_BIN" startOrReload "$ECO" --only "$ONLY"
+  "$PM2_BIN" startOrReload "$ECO" --only "$ONLY" --update-env
   write_report declaration 1 false ""
   exit 0
 fi
