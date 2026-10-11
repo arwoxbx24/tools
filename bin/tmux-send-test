@@ -56,5 +56,81 @@ dotcap=$(tmux -L "$srv" capture-pane -p -t "$wdot")
 cap0=$(tmux -L "$srv" capture-pane -p -t 't:0')
 [[ $rc == 0 && $cap0 == *IDX-7* && $cap != *IDX-7* ]] && { echo 'PASS 7'; ok=$((ok+1)); } || echo "FAIL 7: rc=$rc"
 
-echo "PASS $ok/7"
-[[ $ok == 7 ]]
+export LC_ALL=C.UTF-8
+
+cat > "$tmux_stub/fake-tui" <<'EOF'
+#!/usr/bin/env bash
+mode=$1
+tdir=$2
+hist=()
+buf=""
+settled=1
+redraw(){
+	printf '\033[2J\033[H'
+	printf '%s\n' "${hist[@]}"
+	printf '%s\n' '─────'
+	printf '❯ %s\n' "$buf"
+	printf '%s\n' '─────'
+	printf '%s\n' 'status'
+}
+submit(){
+	hist+=("❯ $buf" '· Puttering… (3s · ↓ 10 tokens)')
+	buf=""
+}
+stty -echo -icanon 2>/dev/null
+[[ $mode != slow ]] || settled=0
+redraw
+on_enter(){
+	if [[ $mode == stuck ]]; then return; fi
+	if [[ $mode == slow && $settled != 1 ]]; then
+		echo x >> "$tdir/dropped"
+	else
+		submit
+		redraw
+	fi
+}
+while IFS= read -rs -n1 c; do
+	if [[ $c == '' || $c == $'\r' || $c == $'\n' ]]; then
+		on_enter
+		continue
+	fi
+	buf+="$c"
+	[[ $mode != slow ]] && redraw
+	while :; do
+		IFS= read -rs -t 0.5 -n1 nc
+		rc=$?
+		if ((rc != 0)); then
+			if [[ $mode == slow ]]; then settled=1; redraw; fi
+			break
+		fi
+		if [[ $nc == '' || $nc == $'\r' || $nc == $'\n' ]]; then
+			on_enter
+			continue
+		fi
+		buf+="$nc"
+		[[ $mode != slow ]] && redraw
+	done
+done
+EOF
+chmod +x "$tmux_stub/fake-tui"
+
+mk_tui(){ tmux -L "$srv" new-window -d -t t: -n "$1" "$tmux_stub/fake-tui" "$2" "$tmux_stub"; }
+
+mk_tui claude-fake8 ok
+sleep 0.3
+"$bin/tmux-send" 't:claude-fake8' 'hello claude spinner msg' >/dev/null 2>"$e"; rc=$?
+[[ $rc == 0 ]] && { echo 'PASS 8'; ok=$((ok+1)); } || echo "FAIL 8: rc=$rc"
+
+mk_tui stuck9 stuck
+sleep 0.3
+"$bin/tmux-send" 't:stuck9' 'stuck-text-B9' --expect 'stuck-text-B9' >/dev/null 2>"$e"; rc=$?
+[[ $rc == 1 ]] && { echo 'PASS 9'; ok=$((ok+1)); } || echo "FAIL 9: rc=$rc"
+
+mk_tui slow10 slow
+sleep 0.3
+"$bin/tmux-send" 't:slow10' 'slow paste message C10' >/dev/null 2>"$e"; rc=$?
+cap10=$(tmux -L "$srv" capture-pane -p -t 't:slow10')
+[[ $rc == 0 && $cap10 == *'❯ slow paste message C10'* && ! -s "$tmux_stub/dropped" ]] && { echo 'PASS 10'; ok=$((ok+1)); } || echo "FAIL 10: rc=$rc dropped=$( [[ -s "$tmux_stub/dropped" ]] && wc -l < "$tmux_stub/dropped" || echo 0)"
+
+echo "PASS $ok/10"
+[[ $ok == 10 ]]
