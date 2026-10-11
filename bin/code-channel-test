@@ -6,7 +6,7 @@ tmp=$(mktemp -d "$root/.code-channel-test.XXXXXX")
 nogit=$(mktemp -d /tmp/cc-nogit.XXXXXX)
 trap 'rm -rf -- "$tmp" "$nogit"' EXIT
 bin=$tmp/bin project=$tmp/project tz=$tmp/tz secret=$tmp/secret.env log=$tmp/args.log runs=$tmp/runs.jsonl tlog=$tmp/timeout.args
-legacy=$tmp/legacy.json disabled=$tmp/disabled.json go=$tmp/go.json ladder=$tmp/ladder.json resume=$tmp/resume.json codexone=$tmp/codexone.json gocodex=$tmp/gocodex.json
+legacy=$tmp/legacy.json disabled=$tmp/disabled.json go=$tmp/go.json ladder=$tmp/ladder.json resume=$tmp/resume.json codexone=$tmp/codexone.json gocodex=$tmp/gocodex.json goaudit=$tmp/goaudit.json
 mkdir -p "$bin" "$project" "$tmp/state"
 printf 'VIBECODE_API_KEY=x\nOPENROUTER_API_KEY=x\n' >"$secret"
 git -C "$project" init -q
@@ -29,6 +29,7 @@ printf '%s\n' '{"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2
 printf '%s\n' '{"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash"},{"id":"codex","enabled":true,"model":"","effort":"high"},{"id":"openrouter","enabled":true,"model":"openrouter/deepseek/deepseek-v4-flash","key":"OPENROUTER_API_KEY","secret":"openrouter","base":"https://openrouter.ai/api/v1"}]}' >"$ladder"
 printf '%s\n' '{"ladder":[{"id":"codex","enabled":true,"model":"","effort":"high"}]}' >"$codexone"
 printf '%s\n' '{"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash"},{"id":"codex","enabled":true,"model":"","effort":"high"}]}' >"$gocodex"
+printf '%s\n' '{"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash","audit_model":"opencode-go/audit-free"}]}' >"$goaudit"
 
 printf '%s\n' '#!/usr/bin/env bash' 'printf "curl %s\\n" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'out=' 'url=${!#}' 'while [[ $# -gt 0 ]]; do' '  [[ $1 == -o ]] && { out=$2; shift 2; continue; }' '  shift' 'done' 'if [[ $url == */key ]]; then' '  if [[ ${CURL_USAGE_DAILY:-0.4} == none ]]; then' '    body="{\"data\":{\"limit_remaining\":${CURL_LIMIT_REMAINING:-1}}}"' '  else' '    body="{\"data\":{\"limit_remaining\":${CURL_LIMIT_REMAINING:-1},\"usage_daily\":${CURL_USAGE_DAILY:-0.4}}}"' '  fi' '  printf "%s\n" "$body" >"$out"' '  printf "%s" "${CURL_KEY_CODE:-${CURL_CODE:-200}}"' 'elif [[ $url == */chat/completions ]]; then' '  printf "%s\n" "insecure api_key=secret token=x authorization=y cookie=z" >"$out"' '  printf "%s" "${CURL_CHAT_CODE:-200}"' 'else' '  printf "%s\n" "{\"data\":[{\"id\":\"bitrix/bitrixgpt-5.6-agent\"},{\"id\":\"deepseek/deepseek-v4-flash\"}]}" >"$out"' '  printf "%s" "${CURL_CODE:-200}"' 'fi' >"$bin/curl"
 printf '%s\n' '#!/usr/bin/env bash' 'printf "opencode active=%s %s\\n" "${CODE_CHANNEL_ACTIVE:-}" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "REPORT\\n"' '[[ ${OPENCODE_TOUCH:-} ]] && printf x >"$CODE_CHANNEL_TEST_PROJECT/$OPENCODE_TOUCH"' 'rc=${OPENCODE_RC:-0}' 'if [[ ${OPENCODE_SEQUENCE:-} ]]; then IFS=, read -ra seq <<<"$OPENCODE_SEQUENCE"; n=$(grep -c "^opencode " "$CODE_CHANNEL_TEST_LOG"); rc=${seq[$((n - 1))]:-$rc}; fi' 'exit "$rc"' >"$bin/opencode"
@@ -104,7 +105,7 @@ check 20 '[[ $rc == 0 ]] && grep -Fq -- /key "$log" && grep -Fq -- "opencode" "$
 check 21 '[[ $rc == 13 && $err == *"нет usage_daily"* ]]' \
   env CURL_USAGE_DAILY=none "$root/bin/code-channel" 3 "$project" "$root/AGENTS.md"
 
-CC_CONFIG='' check 22 '[[ $rc == 0 && $out == $'"'"'go opencode-go/longcat-2.5-preview-free -\ncodex - high'"'"' ]]' \
+CC_CONFIG='' check 22 '[[ $rc == 0 && $out == $'"'"'go opencode-go/glm-5.3-flash - audit=opencode-go/longcat-2.5-preview-free\ncodex - high'"'"' ]]' \
   "$root/bin/code-channel" --plan
 CC_CONFIG=$disabled check 23 '[[ $rc == 16 ]] && ! grep -Fq -- /models "$log" && grep -Fq -- "codex " "$log"' \
   env OPENCODE_RC=1 bash -c 'plan=$("$1" --plan) || exit $?; [[ $plan != *openrouter* ]] || exit 90; "$1" auto "$2" "$3"' _ "$root/bin/code-channel" "$project" "$root/AGENTS.md"
@@ -180,4 +181,19 @@ CC_CONFIG=$go check 47 '[[ $rc == 0 ]] && ! grep -Fq -- "без изменени
 CC_CONFIG=$go check 48 '[[ $rc == 3 && $err == *"already running: 99999"* ]] && ! grep -q "^opencode " "$log"' \
   env PGREP_PID=99999 OPENCODE_RC=0 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
 
-[[ $ok == 48 ]] && echo 'PASS 48/48'
+CC_CONFIG=$goaudit check 49 '[[ $rc == 0 ]] && grep -Fq -- "--agent audit" "$log" && grep -Fq -- "-m opencode-go/audit-free" "$log"' \
+  env SQLITE_RESULT='opencode-go|audit-free' "$root/bin/code-channel" audit "$project" "$tz"
+
+CC_CONFIG=$goaudit check 50 '[[ $rc == 0 ]] && grep -Fq -- "-m opencode-go/mimo-v2.6-flash" "$log" && ! grep -q "audit-free" "$log"' \
+  env SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
+
+CC_CONFIG=$go check 51 '[[ $rc == 124 ]] && grep -q '"'"'"session":"session-123"'"'"' "$runs"' \
+  env OPENCODE_RC=124 SQLITE_SESSION_ID=session-123 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
+
+CC_CONFIG=$goaudit check 52 '[[ $rc == 0 ]]' \
+  env OPENCODE_RC=0 SQLITE_RESULT='opencode-go|audit-free' "$root/bin/code-channel" go "$project" "$tz" --model opencode-go/audit-free
+
+CC_CONFIG=$gocodex check 53 '[[ $rc == 0 ]] && grep -q "^codex " "$log" && [[ $err == *switch\ go→codex\ rc=1* ]]' \
+  env OPENCODE_RC=1 CODEX_TOUCH=codex-touch SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" auto "$project" "$tz"
+
+[[ $ok == 53 ]] && echo 'PASS 53/53'
