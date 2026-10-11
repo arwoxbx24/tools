@@ -4,7 +4,6 @@ set -u -o pipefail
 
 TARGET="$(dirname "$0")/csb-check"
 EVALS=/root/workspaces/projects/.claude/skills/csb/evals/evals.json
-FIXTURES=/root/.claude/projects
 PASS=0
 FAIL=0
 
@@ -14,9 +13,35 @@ assert_line() {
   local message=$1 pattern=$2 output=$3
   if grep -Eq -- "$pattern" <<<"$output"; then ok "$message"; else not_ok "$message"; fi
 }
-fixture() {
-  local files=("$FIXTURES/$1/$2"*.jsonl)
-  printf '%s' "${files[0]}"
+# Synthetic fixtures: the original e2e transcripts may have been cleaned out (unreproducible),
+# so we generate equivalent JSONL with preset features (R4-R8) in tmp files.
+TS1=2026-01-10T09:00:00Z
+TS2=2026-01-10T10:30:00Z
+user_line() { printf '{"type":"user","cwd":"%s","sessionId":"%s"}\n' "$2" "$1"; }
+skl_line()  { printf '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Skill","input":{"skill":"csb:%s"}}]},"sessionId":"%s","timestamp":"%s"}\n' "$1" "$2" "$3"; }
+wf_line()   { printf '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Workflow","input":{"name":"code-atom"}}]},"sessionId":"%s","timestamp":"%s"}\n' "$1" "$2"; }
+ag_line()   { printf '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Agent","input":{"subagent_type":"verifier"}}]},"sessionId":"%s","timestamp":"%s"}\n' "$1" "$2"; }
+bash_line() { printf '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":%s}}]},"sessionId":"%s","timestamp":"%s"}\n' "$(printf '%s' "$1" | jq -Rs .)" "$2" "$3"; }
+txt_line()  { printf '{"type":"assistant","message":{"content":[{"type":"text","text":"%s"}]},"sessionId":"%s","timestamp":"%s"}\n' "$1" "$2" "$3"; }
+wakeup_line() { printf '{"type":"system","subtype":"scheduled_task_fire","sessionId":"%s","timestamp":"%s"}\n' "$1" "$2"; }
+cost_line() { printf '{"type":"cost-state","totalCostUSD":%s,"totalDuration":%s}\n' "$1" "$2"; }
+r4_all() { local s; for s in ce-brainstorm speckit-specify speckit-clarify speckit-plan speckit-tasks speckit-analyze ce-doc-review ponytail-review ce-code-review speckit-converge verification-before-completion ce-compound ce-debug; do skl_line "$s" "$@"; done; wf_line "$@"; ag_line "$@"; }
+syn() { # $1=file, $2=sessionId, $3=e2e-N, rest: tags
+  local file=$1 sid=$2 n=$3; shift 3
+  user_line "$sid" "/root/workspaces/sandbox/claude-e2e-$n" >"$file"
+  [[ $* == *noskills* ]] || r4_all "$sid" "$TS1" >>"$file"
+  local f
+  for f in "$@"; do
+    case $f in
+      noskills) ;;
+      close) txt_line 'Контур закрыт' "$sid" "$TS1" >>"$file" ;;
+      wakeup) wakeup_line "$sid" "$TS2" >>"$file" ;;
+      costpass) cost_line 1.50 240000 >>"$file" ;;
+      costfail) cost_line 9.99 3000000 >>"$file" ;;
+      r5viol) bash_line 'cd /root/workspaces/projects/f && echo hi' "$sid" "$TS1" >>"$file" ;;
+      r6viol) bash_line 'git rebase --force main' "$sid" "$TS1" >>"$file" ;;
+    esac
+  done
 }
 run_check() {
   local output rc
@@ -35,24 +60,29 @@ fi
 JD=$(mktemp -d /tmp/csb-journal.XXXXXX)
 JD2=$(mktemp -d /tmp/csb-journal.XXXXXX)
 trap 'rm -rf -- "$JD" "$JD2"' EXIT
+syn "$JD/f-ta.jsonl" 'a0c13c8c-e9b5-4991-9095-50f9a98f8cf4' 1 noskills r5viol close costpass
+syn "$JD/f-tb.jsonl" 'd7857e8b-723b-42b8-8fd1-4eedddcea376' 2 r5viol r6viol close costfail
+syn "$JD/f-tc.jsonl" 'ab6acba5-9e13-4e5a-b781-7220cc25d963' 4 noskills close costpass
+syn "$JD/f-tg.jsonl" '8fe4e1bd-3958-4e0f-bfa1-5e7a1afd0f36' 3 close wakeup costfail
+syn "$JD/f-cost.jsonl" 'bf283fbf-14f7-41c0-85ca-c370e3d3b834' 5 close costfail
 
-out=$(run_check T-A "$(fixture -root-workspaces-sandbox-claude-e2e-1 a0c13c8c)" --evals "$EVALS" || true)
+out=$(run_check T-A "$JD/f-ta.jsonl" --evals "$EVALS" || true)
 assert_line 'T-A has R4 FAIL' '^R4 \| FAIL' "$out"
 assert_line 'T-A has R5 FAIL' '^R5 \| FAIL' "$out"
 
-out=$(run_check T-B "$(fixture -root-workspaces-sandbox-claude-e2e-2 d7857e8b)" --evals "$EVALS" || true)
+out=$(run_check T-B "$JD/f-tb.jsonl" --evals "$EVALS" || true)
 assert_line 'T-B has R5 FAIL' '^R5 \| FAIL' "$out"
 assert_line 'T-B has R6 FAIL' '^R6 \| FAIL' "$out"
 assert_line 'T-B has R8 FAIL' '^R8 \| FAIL' "$out"
 
-out=$(run_check T-C "$(fixture -root-workspaces-sandbox-claude-e2e-4 ab6acba5)" --evals "$EVALS" || true)
+out=$(run_check T-C "$JD/f-tc.jsonl" --evals "$EVALS" || true)
 assert_line 'T-C has R4 FAIL' '^R4 \| FAIL' "$out"
 
-out=$(run_check T-G "$(fixture -root-workspaces-sandbox-claude-e2e-3 8fe4e1bd)" --evals "$EVALS" || true)
+out=$(run_check T-G "$JD/f-tg.jsonl" --evals "$EVALS" || true)
 assert_line 'T-G has R7 FAIL' '^R7 \| FAIL' "$out"
 assert_line 'T-G has R8 FAIL' '^R8 \| FAIL' "$out"
 
-case6=$(fixture -root-workspaces-sandbox-claude-e2e-5 bf283fbf)
+case6="$JD/f-cost.jsonl"
 out=$(run_check T-A "$case6" --evals "$EVALS")
 rc=$?
 assert_line 'T-A fixture 6 has R8 FAIL' '^R8 \| FAIL' "$out"
@@ -74,6 +104,19 @@ assert_line 'second run reports existing journal' 'journal: exists' "$out"
 
 out=$(CSB_JOURNAL_DIR="$JD2" "$TARGET" T-A "$case6" --evals "$EVALS" --no-journal 2>&1 || true)
 [[ $(ls "$JD2" | wc -l) == 0 ]] && ok '--no-journal leaves directory empty' || not_ok '--no-journal leaves directory empty'
+
+out=$(CSB_JOURNAL_DIR="$JD2" "$TARGET" T-A "$case6" --evals "$EVALS" --no-journal 2>&1); rc=$?
+[[ $rc != 64 ]] && ok '9-eval evals.json does not exit 64' || not_ok '9-eval evals.json does not exit 64'
+unset rc
+
+out=$(CSB_JOURNAL_DIR="$JD2" "$TARGET" c92fe941 "$JD/nocost.jsonl" --evals "$EVALS" --no-journal 2>&1 || true)
+assert_line 'P1 without check is INCOMPLETE' '^P1: INCOMPLETE \(нет проверки\)$' "$out"
+assert_line 'P1 makes verdict INCOMPLETE' '^verdict \| INCOMPLETE' "$out"
+
+printf '{"evals": []}\n' >"$JD/empty-evals.json"
+"$TARGET" T-A "$case6" --evals "$JD/empty-evals.json" >/dev/null 2>&1; rc=$?
+[[ $rc == 64 ]] && ok 'empty evals exits 64' || not_ok 'empty evals exits 64'
+unset rc
 
 printf 'FAIL=%d PASS=%d\n' "$FAIL" "$PASS"
 (( FAIL == 0 ))
