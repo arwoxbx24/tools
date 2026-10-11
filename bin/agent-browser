@@ -7,9 +7,6 @@ case ${1:-} in
 		echo "usage: agent-browser <command> [args...]  (local agent-browser 0.39.0, Playwright Chromium, daemon idle 10 s)"
 		echo "commands: open <url|file://>, snapshot, act, close --all, --version; daemon starts on first command, exits when idle"
 		exit 0;;
-	--version)
-		echo "agent-browser 0.39.0"
-		exit 0;;
 esac
 if [[ ! -x $VENDOR_BIN ]]; then
 	npm install --prefix "$VENDOR_ROOT" agent-browser@0.39.0 || exit 1
