@@ -26,4 +26,9 @@ Acceptance:
 2) smoke open/snapshot/close rc 0, snapshot contains the page text.
 3) `pgrep -fa agent-browser` empty after the run; `npm ls -g agent-browser` empty; `node --version` v20.19.4.
 
+## U2 — v2: `--help` must print `usage:` (CI defect)
+Fact: CI tools-smoke run 38162510110, `tests/test_agent_tools.py:177` `test_executable_tools_show_help_without_external_actions` (script='bin/agent-browser') → `AssertionError: 'usage:' not found`.
+Change only `bin/agent-browser`: first line of the `--help` text becomes `usage: agent-browser <command> [args...]  (local agent-browser 0.39.0, Playwright Chromium, daemon idle 10 s)`; keep rc 0 and no action. Nothing else.
+Acceptance: `python3 tests/test_agent_tools.py` exits 0; `bin/agent-browser --help` stdout contains `usage:`; `bin/agent-browser --version` prints `agent-browser 0.39.0`.
+
 Sources: npm registry `npm view agent-browser@0.39.0` (this session); agent-browser README (github.com/vercel-labs/agent-browser) — idle timeout, `close`, `--executable-path` (quoted in docs/research/2026-10-11-plugin-updates-audit.md, projects repo).
