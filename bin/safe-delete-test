@@ -360,5 +360,14 @@ ln -s "$d/dir-symlink-target" "$d/dir-symlink/l"
 "$bin/safe-delete" --bk "$bk" dir "$d/dir-symlink" >/dev/null; r52=$?
 if [[ $r52 == 0 && ! -d $d/dir-symlink && -f $d/dir-symlink-target ]]; then echo 'PASS T52 dir_symlink_removed'; ok=$((ok+1)); else echo "FAIL T52: rc=$r52"; fi
 
-[[ $ok == 52 ]] || exit 1
-echo "итог: PASS 52, FAIL 0"
+# T53: state parsed after last ") " in /proc/PID/stat (comm may contain spaces)
+eval "$(grep -F 'proc_state(){' "$bin/safe-delete")"
+mkdir -p "$d/stat-td53"
+printf '123 (mongosh mongodb) Z 1 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n' > "$d/stat-td53/zombie"
+printf '123 (bash) S 1 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n' > "$d/stat-td53/alive"
+st53z=$(proc_state "$d/stat-td53/zombie")
+st53a=$(proc_state "$d/stat-td53/alive")
+if [[ $st53z == Z && $st53a == S ]]; then echo 'PASS T53 comm_space_state'; ok=$((ok+1)); else echo "FAIL T53: zombie=$st53z alive=$st53a"; fi
+
+[[ $ok == 53 ]] || exit 1
+echo "итог: PASS 53, FAIL 0"
