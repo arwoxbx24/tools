@@ -19,10 +19,12 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-valid_evals='type == "object" and (.evals | type == "array" and length == 4) and
+# ponytail: evals schema per spec:095 FR-17 — length >= 1, id ^[RP][0-9]+$; upgrade to a schema file if checks grow.
+valid_evals='type == "object" and (.evals | type == "array" and length >= 1) and
   all(.evals[]; (.polygon | type == "string" and startswith("/root/workspaces/sandbox/")) and
     (.budget_usd > 0) and (.budget_min > 0) and
-    (.assertions | length == 5 and ([.[].id] | sort) == ["R4","R5","R6","R7","R8"]))'
+    (.assertions | type == "array" and length >= 1) and
+    all(.assertions[]; .id | type == "string" and test("^[RP][0-9]+$")))'
 jq -e "$valid_evals" "$EVALS" >/dev/null 2>&1 || exit 64
 EVAL=$(jq -ce --arg id "$EVAL_ID" '.evals[] | select(.id == $id)' "$EVALS") || exit 64
 
@@ -122,8 +124,14 @@ else
 fi
 
 printf 'R4 | %s | %s\nR5 | %s | %s\nR6 | %s | %s\nR7 | %s | %s\nR8 | %s | %s\n' "$R4" "$R4E" "$R5" "$R5E" "$R6" "$R6E" "$R7" "$R7E" "$R8" "$R8E"
+UNIMPL=false
+while IFS= read -r aid; do
+  [[ $aid =~ ^R[4-8]$ ]] && continue
+  printf '%s: INCOMPLETE (нет проверки)\n' "$aid"
+  UNIMPL=true
+done < <(jq -r --arg id "$EVAL_ID" '.evals[] | select(.id == $id) | .assertions[].id' "$EVALS")
 if [[ $R4 == FAIL || $R5 == FAIL || $R6 == FAIL || $R7 == FAIL || $R8 == FAIL ]]; then VERDICT=FAIL; RC=1
-elif [[ $R4 == INCOMPLETE || $R5 == INCOMPLETE || $R6 == INCOMPLETE || $R7 == INCOMPLETE || $R8 == INCOMPLETE ]]; then VERDICT=INCOMPLETE; RC=2
+elif $UNIMPL || [[ $R4 == INCOMPLETE || $R5 == INCOMPLETE || $R6 == INCOMPLETE || $R7 == INCOMPLETE || $R8 == INCOMPLETE ]]; then VERDICT=INCOMPLETE; RC=2
 else VERDICT=PASS; RC=0; fi
 
 core=$(git -C "$PROJECTS" log -1 --format=%h -- .claude/skills/csb/SKILL.md)
