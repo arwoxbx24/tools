@@ -203,4 +203,11 @@ CC_CONFIG=$go check 54 '[[ $rc == 0 ]] && grep -Fq -- "stdin=/dev/null" "$log"' 
 [[ $ok == 54 ]] && echo 'PASS 54/54'
 CC_CONFIG=$ocfg check 55 '[[ $rc == 0 ]] && grep -Fxq -- "env OPENCODE_CONFIG=$root/config/opencode-channel.json" "$log"' \
   env OPENCODE_RC=0 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
-[[ $ok == 55 ]] && echo 'PASS 55/55'
+lock=$tmp/state/worktree.$(printf '%s\n' "$project" | sha1sum | cut -c-16).lock
+exec 8>"$lock"
+flock -n 8
+CC_CONFIG=$go check 56 '[[ $rc == 25 ]] && grep -Fq -- "worktree занят другим запуском" "$tmp/err" && [[ ! -s $log ]]' \
+  "$root/bin/code-channel" go "$project" "$tz"
+flock -u 8
+exec 8>&-
+[[ $ok == 56 ]] && echo 'PASS 56/56'
