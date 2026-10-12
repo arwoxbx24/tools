@@ -91,7 +91,7 @@ check 14 '[[ $rc == 0 ]] && [[ $(git -C "$project" rev-parse --abbrev-ref HEAD) 
 gcd=$(git -C "$project" rev-parse --path-format=absolute --git-common-dir)
 check 15 '[[ $rc == 0 ]] && grep -Fq -- "--add-dir '"$gcd"'" "$log" && grep -Fq -- "-c sandbox_workspace_write.network_access=true" "$log"' \
   env CODEX_RC=0 "$root/bin/code-channel" 2 "$project" "$root/AGENTS.md"
-check 16 '[[ $rc == 0 ]] && grep -Fq -- "-c sandbox_workspace_write.network_access=true Не вызывай bd: трекер ведёт оркестратор" "$log" && grep -Fq -- "Не создавай и не переключай ветки; не делай git add и git commit — коммит делает оркестратор" "$log" && grep -Fq -- "Ты уже исполнитель внутри code-channel: правь файлы сам; code-channel, opencode run, codex exec не вызывай" "$log"' \
+check 16 '[[ $rc == 0 ]] && grep -Fq -- "-c sandbox_workspace_write.network_access=true Не вызывай bd: трекер ведёт оркестратор" "$log" && grep -Fq -- "Не создавай и не переключай ветки; не делай git add и git commit — коммит делает оркестратор" "$log" && grep -Fq -- "Ты уже исполнитель внутри code-channel: правь файлы сам; code-channel, opencode run, codex exec не вызывай" "$log" && grep -Fq -- "Parallelize: when the task has 2 or more independent file sets, dispatch them at once to general subagents via the Task tool in one message, one file set per subagent, never the same file to two subagents; then check the combined result yourself" "$log"' \
   env CODEX_RC=0 "$root/bin/code-channel" 2 "$project" "$root/AGENTS.md"
 git -C "$project" clean -fdq
 check 17 '[[ $rc == 24 ]] && grep -Fq -- "form=codex среда: read-only" "$tmp/err"' \
