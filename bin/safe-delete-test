@@ -369,5 +369,22 @@ st53z=$(proc_state "$d/stat-td53/zombie")
 st53a=$(proc_state "$d/stat-td53/alive")
 if [[ $st53z == Z && $st53a == S ]]; then echo 'PASS T53 comm_space_state'; ok=$((ok+1)); else echo "FAIL T53: zombie=$st53z alive=$st53a"; fi
 
-[[ $ok == 53 ]] || exit 1
-echo "итог: PASS 53, FAIL 0"
+# T54: default roots include /root/.claude/skills (one exact match on the roots line)
+if [[ $(grep -c ':/root/.claude/skills}' "$bin/safe-delete") == 1 ]]; then
+  echo 'PASS T54 default_roots_skills'; ok=$((ok+1))
+else echo 'FAIL T54: skills root'; fi
+
+# T55-T56: with SAFE_DELETE_ROOTS unset, real banned paths still refuse and survive
+rm -rf "$d/claude-fake"; mkdir -p "$d/claude-fake"
+sd_env=$("$bin/safe-delete" --bk "$bk" file /root/.claude/settings.json 2>&1); r55=$?
+if [[ $r55 == 2 && $sd_env == *'запрещённый путь'* && -f /root/.claude/settings.json ]]; then
+  echo 'PASS T55 settings_banned'; ok=$((ok+1))
+else echo "FAIL T55: rc=$r55 err=$sd_env"; fi
+
+sd_env2=$("$bin/safe-delete" --bk "$bk" file /etc/claude-code/CLAUDE.md 2>&1); r56=$?
+if [[ $r56 == 2 && -f /etc/claude-code/CLAUDE.md ]]; then
+  echo 'PASS T56 etc_claude_code_banned'; ok=$((ok+1))
+else echo "FAIL T56: rc=$r56"; fi
+
+[[ $ok == 56 ]] || exit 1
+echo "итог: PASS 56, FAIL 0"

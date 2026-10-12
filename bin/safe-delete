@@ -56,7 +56,7 @@ git_file(){
 check_path(){
   p=$(realpath -e "$1") || refuse "нет пути: $1"
   [[ $p == /etc/claude-code/* || $p == "$HOME"/.ssh/* || $p == "$HOME"/.claude/settings*.json ]] && refuse "запрещённый путь: $p"
-  roots=${SAFE_DELETE_ROOTS:-/root/workspaces/projects:/root/workspaces/tools:/root/workspaces/sandbox:/home/gitmirror/state:/root/.claude/projects/-root-workspaces-projects/memory}
+  roots=${SAFE_DELETE_ROOTS:-/root/workspaces/projects:/root/workspaces/tools:/root/workspaces/sandbox:/home/gitmirror/state:/root/.claude/projects/-root-workspaces-projects/memory:/root/.claude/skills}
   if [[ -n ${SAFE_DELETE_ROOTS:-} ]]; then
     IFS=: read -ra rts <<< "$roots"; for r in "${rts[@]}"; do [[ $r == /tmp/* ]] || refuse "корень не под /tmp: $r"; done
   fi
