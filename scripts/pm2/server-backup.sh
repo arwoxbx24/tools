@@ -298,6 +298,7 @@ backup_docker_images() {
     printf '%s %s\n' "$id" "$snapshot" >>"$receipt" || { log "docker-images receipt write failed id=$id"; failed=$((failed + 1)); continue; }
     ok=$((ok + 1))
   done
+  run_step unlock "${NICE_PREFIX[@]}" "$RESTIC" unlock --retry-lock 30m
   run_step docker-images-retention "${NICE_PREFIX[@]}" "$RESTIC" forget --tag docker-images \
     --group-by host,paths --keep-last 1 --retry-lock 30m || failed=$((failed + 1))
   log "docker-images ok=$ok failed=$failed count=$count"
