@@ -6,7 +6,7 @@ tmp=$(mktemp -d "$root/.code-channel-test.XXXXXX")
 nogit=$(mktemp -d /tmp/cc-nogit.XXXXXX)
 trap 'rm -rf -- "$tmp" "$nogit"' EXIT
 bin=$tmp/bin project=$tmp/project tz=$tmp/tz secret=$tmp/secret.env log=$tmp/args.log runs=$tmp/runs.jsonl tlog=$tmp/timeout.args
-legacy=$tmp/legacy.json disabled=$tmp/disabled.json go=$tmp/go.json ladder=$tmp/ladder.json resume=$tmp/resume.json codexone=$tmp/codexone.json gocodex=$tmp/gocodex.json goaudit=$tmp/goaudit.json ocfg=$tmp/ocfg.json
+legacy=$tmp/legacy.json disabled=$tmp/disabled.json go=$tmp/go.json ladder=$tmp/ladder.json resume=$tmp/resume.json codexone=$tmp/codexone.json gocodex=$tmp/gocodex.json goaudit=$tmp/goaudit.json ocfg=$tmp/ocfg.json goidle=$tmp/goidle.json
 mkdir -p "$bin" "$project" "$tmp/state"
 printf 'VIBECODE_API_KEY=x\nOPENROUTER_API_KEY=x\n' >"$secret"
 git -C "$project" init -q
@@ -31,6 +31,7 @@ printf '%s\n' '{"ladder":[{"id":"codex","enabled":true,"model":"","effort":"high
 printf '%s\n' '{"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash"},{"id":"codex","enabled":true,"model":"","effort":"high"}]}' >"$gocodex"
 printf '%s\n' '{"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash","audit_model":"opencode-go/audit-free"}]}' >"$goaudit"
 printf '%s\n' '{"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash"}],"opencode_config":"config/opencode-channel.json"}' >"$ocfg"
+printf '%s\n' '{"resume_idle_limit":3,"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash"}]}' >"$goidle"
 
 printf '%s\n' '#!/usr/bin/env bash' 'printf "curl %s\\n" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'out=' 'url=${!#}' 'while [[ $# -gt 0 ]]; do' '  [[ $1 == -o ]] && { out=$2; shift 2; continue; }' '  shift' 'done' 'if [[ $url == */key ]]; then' '  if [[ ${CURL_USAGE_DAILY:-0.4} == none ]]; then' '    body="{\"data\":{\"limit_remaining\":${CURL_LIMIT_REMAINING:-1}}}"' '  else' '    body="{\"data\":{\"limit_remaining\":${CURL_LIMIT_REMAINING:-1},\"usage_daily\":${CURL_USAGE_DAILY:-0.4}}}"' '  fi' '  printf "%s\n" "$body" >"$out"' '  printf "%s" "${CURL_KEY_CODE:-${CURL_CODE:-200}}"' 'elif [[ $url == */chat/completions ]]; then' '  printf "%s\n" "insecure api_key=secret token=x authorization=y cookie=z" >"$out"' '  printf "%s" "${CURL_CHAT_CODE:-200}"' 'else' '  printf "%s\n" "{\"data\":[{\"id\":\"bitrix/bitrixgpt-5.6-agent\"},{\"id\":\"deepseek/deepseek-v4-flash\"}]}" >"$out"' '  printf "%s" "${CURL_CODE:-200}"' 'fi' >"$bin/curl"
 printf '%s\n' '#!/usr/bin/env bash' 'printf "opencode active=%s %s\\n" "${CODE_CHANNEL_ACTIVE:-}" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "env OPENCODE_CONFIG=%s\\n" "${OPENCODE_CONFIG:-}" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "stdin=%s\\n" "$(readlink /proc/$$/fd/0)" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "REPORT\\n"' '[[ ${OPENCODE_TOUCH:-} ]] && printf x >"$CODE_CHANNEL_TEST_PROJECT/$OPENCODE_TOUCH"' 'rc=${OPENCODE_RC:-0}' 'if [[ ${OPENCODE_SEQUENCE:-} ]]; then IFS=, read -ra seq <<<"$OPENCODE_SEQUENCE"; n=$(grep -c "^opencode " "$CODE_CHANNEL_TEST_LOG"); rc=${seq[$((n - 1))]:-$rc}; fi' 'exit "$rc"' >"$bin/opencode"
@@ -144,10 +145,10 @@ CC_CONFIG=$go check 37 '[[ $rc == 124 && $(grep -c "^opencode " "$log") == 1 ]]'
 printf '%s\n' '#!/usr/bin/env bash' "printf '%s\n' \"\$1\" >>\"$tlog\"" 'shift; exec "$@"' >"$bin/timeout"
 chmod +x "$bin/timeout"
 : >"$tlog"
-CC_CONFIG=$resume check 38 '[[ $rc == 124 && ! -s $tlog ]]' \
+CC_CONFIG=$resume check 38 '[[ $rc == 124 ]] && grep -qx 1800 "$tlog"' \
   env OPENCODE_SEQUENCE=124,0 SQLITE_SESSION_ID=session-123 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
 : >"$tlog"
-CC_CONFIG=$go check 39 '[[ $rc == 0 && ! -s $tlog ]]' \
+CC_CONFIG=$go check 39 '[[ $rc == 0 ]] && grep -qx 1800 "$tlog"' \
   env OPENCODE_RC=0 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
 
 check 40 '[[ $rc == 3 && $err == *"project must be absolute path"* ]]' \
@@ -210,4 +211,11 @@ CC_CONFIG=$go check 56 '[[ $rc == 25 ]] && grep -Fq -- "worktree занят др
   "$root/bin/code-channel" go "$project" "$tz"
 flock -u 8
 exec 8>&-
-[[ $ok == 56 ]] && echo 'PASS 56/56'
+CC_CONFIG=$go check 57 '[[ $rc == 0 ]] && [[ $(grep -c "^opencode " "$log") == 2 ]] && grep -Fq -- "--session session-123" "$log"' \
+  env OPENCODE_SEQUENCE=124,0 OPENCODE_TOUCH=checkpoint-progress.txt SQLITE_SESSION_ID=session-123 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
+
+CC_CONFIG=$goidle check 58 '[[ $rc == 0 && $(grep -c "^opencode " "$log") == 2 ]] && [[ $(grep "^opencode " "$log" | sed -n 2p) == *"--session session-123"* ]]' \
+  env OPENCODE_SEQUENCE=1,0 OPENCODE_TOUCH=resume-any-error.txt SQLITE_SESSION_ID=session-123 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
+
+[[ $ok == 57 ]] && echo 'PASS 57/57'
+[[ $ok == 58 ]] && echo 'PASS 58/58'
