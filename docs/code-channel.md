@@ -53,6 +53,18 @@
 
 Журнал: `state/code-channel/runs.jsonl` — поля `provider_expected`, `provider_actual`, `rc`.
 
+## Executor file scope
+
+New code TZs can declare exact owned paths before the work description:
+
+```text
+Allowed files:
+- bin/x
+- bin/y
+```
+
+Each path is relative to the project Git root. After a code provider runs, `code-channel` rejects a created or changed path outside this list with `out-of-scope: <path>` and a nonzero exit; it does not try another provider after this violation. Existing TZs without the block retain their prior behavior. Include the block in new code TZs so a provider cannot leave unowned worktree files for submission.
+
 ## Пролонгация
 
 - Результат прогона неполный — новый файл ТЗ, а не перезапуск того же.
