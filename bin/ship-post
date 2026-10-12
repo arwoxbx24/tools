@@ -227,28 +227,31 @@ do_submit(){
 		echo "ship-post: committed $atom $short_sha on $branch"
 	fi
 
-	local _ base merge_tree merge_rc conflicts
+	local _ base merge_tree merge_rc conflicts fetch_ok=1
 	read -r _ base _ <<< "$(ga_base "$wt_real" local)"
-	if ! git -C "$wt_real" fetch -q origin "$base"; then
-		echo "ship-post: fetch origin/$base failed" >&2
-		return 70
+	# Unreachable origin after the local commit: close now; the courier's later pass fetches
+	# origin/$base and runs the same mergeability gate. A reachable conflict still exits 50 below.
+	git -C "$wt_real" fetch -q origin "$base" || fetch_ok=0
+	if [[ $fetch_ok == 0 ]]; then
+		echo "ship-post: fetch origin/$base unavailable; conflict gate deferred to the courier" >&2
+	else
+		merge_tree=$(git -C "$wt_real" merge-tree --write-tree --name-only "origin/$base" HEAD)
+		merge_rc=$?
+		if [[ $merge_rc == 1 ]]; then
+			conflicts=$(sed '1d' <<< "$merge_tree")
+			conflicts=${conflicts//$'\n'/ }
+			echo "ship-post: conflict with origin/$base: $conflicts" >&2
+			local fix_tz fix_agent
+			head_msg=$(git -C "$wt_real" log -1 --format=%B 2>/dev/null || true)
+			fix_tz=$(sed -n 's/^ТЗ: *//p' <<< "$head_msg" | head -1)
+			fix_agent=$(sed -n 's/^Agent: *//p' <<< "$head_msg" | head -1)
+			[[ -n $fix_tz ]] || fix_tz=$tz_stored
+			[[ -n $fix_agent ]] || fix_agent=$caller
+			echo "ship-post: fix: git -C $wt_real fetch origin && git -C $wt_real merge origin/$base -m \"$atom: merge origin/$base\" -m \"ТЗ: $fix_tz\" -m \"Atom: $atom\" -m \"Agent: $fix_agent\"; resolve files; git -C $wt_real commit --no-edit; test; submit again" >&2
+			return 50
+		fi
+		[[ $merge_rc == 0 ]] || { echo "ship-post: merge-tree origin/$base failed (rc $merge_rc)" >&2; return 70; }
 	fi
-	merge_tree=$(git -C "$wt_real" merge-tree --write-tree --name-only "origin/$base" HEAD)
-	merge_rc=$?
-	if [[ $merge_rc == 1 ]]; then
-		conflicts=$(sed '1d' <<< "$merge_tree")
-		conflicts=${conflicts//$'\n'/ }
-		echo "ship-post: conflict with origin/$base: $conflicts" >&2
-		local fix_tz fix_agent
-		head_msg=$(git -C "$wt_real" log -1 --format=%B 2>/dev/null || true)
-		fix_tz=$(sed -n 's/^ТЗ: *//p' <<< "$head_msg" | head -1)
-		fix_agent=$(sed -n 's/^Agent: *//p' <<< "$head_msg" | head -1)
-		[[ -n $fix_tz ]] || fix_tz=$tz_stored
-		[[ -n $fix_agent ]] || fix_agent=$caller
-		echo "ship-post: fix: git -C $wt_real fetch origin && git -C $wt_real merge origin/$base -m \"$atom: merge origin/$base\" -m \"ТЗ: $fix_tz\" -m \"Atom: $atom\" -m \"Agent: $fix_agent\"; resolve files; git -C $wt_real commit --no-edit; test; submit again" >&2
-		return 50
-	fi
-	[[ $merge_rc == 0 ]] || { echo "ship-post: merge-tree origin/$base failed (rc $merge_rc)" >&2; return 70; }
 
 	head_sha=$(git -C "$wt_real" rev-parse HEAD)
 	[[ -z $(git -C "$wt_real" status --porcelain=v1 --untracked-files=all) ]] || die "worktree not clean after commit"
@@ -295,8 +298,9 @@ do_status(){
 	for lf in "$SHIP_POST_STATE_DIR"/incidents/*.atoms; do
 		[[ -f $lf ]] || continue
 		local code=${lf%.atoms}; code=${code##*/}
-		while read -r id line _; do
-			if [[ $line == "$atom" ]]; then
+		# ponytail: parked is a per-SHA state; a row for an older SHA must not mask the current one
+		while read -r id line row_sha; do
+			if [[ $line == "$atom" && $row_sha == "$sha" ]]; then
 				printf '%s %s parked %s code %s\n' "$atom" "${sha:0:7}" "$id" "$code"; return 0
 			fi
 		done < "$lf"
