@@ -87,6 +87,23 @@ cd -- "$project" || exit 3
 exec 9>"$S/worktree.$(printf '%s\n' "$PWD" | sha1sum | cut -c-16).lock" || exit 3
 flock -n 9 || { fail "worktree занят другим запуском: $PWD"; exit 25; }
 form_snap() { local s; s=$( { git rev-parse HEAD 2>/dev/null; git status --porcelain --untracked-files=all 2>/dev/null; git diff HEAD 2>/dev/null; git ls-files -z --others --exclude-standard 2>/dev/null | xargs -0 -r cksum 2>/dev/null; } ); [[ -z $s ]] && return 0; printf '%s\n' "$s" | cksum; }
+cc_status() { git status --porcelain --untracked-files=all 2>/dev/null | cut -c4- | sed 's/.* -> //' | sort; }
+cc_scope_check() {
+    local allowed new p bads=()
+    [[ $mode == code && $rc == 0 && $run == 0 ]] || return 0
+    [[ ${cc_pre+x} == x ]] || return 0
+    allowed=$(grep -m1 '^Files:' <<<"$prompt" | tr '\140' '\n' | sed -n '2~2p')
+    [[ -n $allowed ]] || return 0
+    new=$(cc_status)
+    [[ -n $new ]] || return 0
+    new=$(comm -13 <(printf '%s' "$cc_pre") <(printf '%s\n' "$new"))
+    while IFS= read -r p; do
+        [[ -n $p ]] || continue
+        grep -Fqxq -- "$p" <<<"$allowed" || bads+=("$p")
+    done <<<"$new"
+    [[ ${#bads[@]} -eq 0 ]] || { printf 'out-of-scope: %s\n' "${bads[*]}" >&2; return 26; }
+    return 0
+}
 run_form() (
     export CODE_CHANNEL_ACTIVE=1
     id=$1; start=$SECONDS; pre=-; run=-; hdr=; tmpjson=; resphdr=; respbody=; codetmp=
@@ -152,6 +169,7 @@ run_form() (
     prompt=$(printf 'Не создавай и не переключай ветки; не делай git add и git commit — коммит делает оркестратор\n\n%s' "$prompt")
     prompt=$(printf 'Разведка кода — только через индекс: repowise (repowise context|symbol|risk <путь> --path <корень репо>) и codebase-memory; файл кода читай только перед его правкой\n\n%s' "$prompt")
     prompt=$(printf 'Не вызывай bd: трекер ведёт оркестратор\n\n%s' "$prompt")
+    prompt=$(printf 'Scratch and temporary files go to /tmp only, never inside the worktree\n\n%s' "$prompt")
     prompt=$(printf 'Parallelize: when the task has 2 or more independent file sets, dispatch them at once to general subagents via the Task tool in one message, one file set per subagent, never the same file to two subagents; then check the combined result yourself\n\n%s' "$prompt")
     if [[ $id == codex ]]; then
         provider=codex
@@ -273,6 +291,7 @@ run_form() (
         oc_args=(--title "$id_run") oc_prompt=$prompt
         idle=0
         seg_before=$(form_snap)
+        cc_pre=$(cc_status)
         id_sid_sql="select id from session where title='$id_run' order by time_created desc limit 1"
         while :; do
             timeout 1800 opencode run "${oc_args[@]}" -m "$model" "$oc_prompt" < /dev/null; run=$?
@@ -292,6 +311,7 @@ run_form() (
     fi
     reconcile "$run"; rc=$?
     [[ $rc != 0 ]] && exit "$rc"
+    cc_scope_check || exit $?
     exit "$run"
 )
 if [[ $form != auto && $form != audit ]]; then
