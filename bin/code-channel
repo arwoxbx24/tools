@@ -37,6 +37,8 @@ save_fail() {
     chmod 600 "$S/bitrixgpt-last-fail.txt"
 }
 entry_for() { jq -cer --arg id "$1" '.ladder[] | select(.id == $id)' "$config"; }
+resume_idle_limit=$(jq -er '.resume_idle_limit // 1' "$config") || exit 3
+[[ $resume_idle_limit =~ ^[1-9][0-9]*$ ]] || { fail "неверный resume_idle_limit: $resume_idle_limit"; exit 3; }
 [[ $# == 3 || $# == 5 ]] || { fail 'usage: form project tz [--model provider/model]'; exit 3; }
 form=$1; project=$2; tz=$3; override=${5:-}
 [[ $project == /* ]] || { fail 'project must be absolute path'; exit 3; }
@@ -158,14 +160,14 @@ run_form() (
         [[ -z $model ]] || codex_args+=(-m "$model")
         started=$SECONDS
         if [[ $mode == audit ]]; then
-            codex exec -p quota-terra "${codex_args[@]}" -s read-only "$prompt"; run=$?
+            timeout 1800 codex exec -p quota-terra "${codex_args[@]}" -s read-only "$prompt"; run=$?
         else
             gcd=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
             add_dir=()
             [[ -n $gcd ]] && add_dir+=(--add-dir "$gcd")
             codetmp=$(mktemp "${TMPDIR:-/tmp}/code-channel-codex-XXXXXX") || exit 3
             codex_before=$(form_snap)
-            codex exec -p quota-terra "${codex_args[@]}" -s workspace-write "${add_dir[@]}" \
+            timeout 1800 codex exec -p quota-terra "${codex_args[@]}" -s workspace-write "${add_dir[@]}" \
                 -c sandbox_workspace_write.network_access=true "$prompt" 2> >(tee -- "$codetmp" >&2); run=$?
             if [[ $run != 0 ]] && grep -q -- 'Read-only file system' "$codetmp"; then
                 if [[ $(form_snap) != "$codex_before" ]]; then
@@ -262,10 +264,30 @@ run_form() (
         esac
     fi
     run_start_ms=$(date +%s%3N)
+    db=${CODE_CHANNEL_OPENCODE_DB:-/root/.local/share/opencode/opencode.db}
+    oc_args=() oc_prompt=
     if [[ $mode == audit ]]; then
-        opencode run --agent audit --title "$id_run" -m "$model" "$prompt" < /dev/null; run=$?
+        timeout 1800 opencode run --agent audit --title "$id_run" -m "$model" "$prompt" < /dev/null; run=$?
     else
-        opencode run --title "$id_run" -m "$model" "$prompt" < /dev/null; run=$?
+        oc_args=(--title "$id_run") oc_prompt=$prompt
+        idle=0
+        seg_before=$(form_snap)
+        id_sid_sql="select id from session where title='$id_run' order by time_created desc limit 1"
+        while :; do
+            timeout 1800 opencode run "${oc_args[@]}" -m "$model" "$oc_prompt" < /dev/null; run=$?
+            [[ $run == 0 ]] && break
+            sid=$(sqlite3 -readonly "$db" "$id_sid_sql" 2>/dev/null)
+            [[ -n $sid ]] || break
+            seg_after=$(form_snap)
+            if [[ $seg_after == "$seg_before" ]]; then
+                idle=$((idle + 1))
+                if (( idle >= resume_idle_limit )); then break; fi
+            else
+                idle=0
+            fi
+            printf 'code-channel: сбой rc=%s, продолжаю сессию %s (простоев подряд %s/%s)\n' "$run" "$sid" "$idle" "$resume_idle_limit" >&2
+            seg_before=$seg_after oc_args=(--session "$sid") oc_prompt='Продолжи задачу из этой сессии с места остановки и доведи её до конца.'
+        done
     fi
     reconcile "$run"; rc=$?
     [[ $rc != 0 ]] && exit "$rc"

@@ -1,6 +1,7 @@
 {
   "doc": "docs/code-channel.md",
   "opencode_config": "config/opencode-channel.json",
+  "resume_idle_limit": 3,
   "ladder": [
     {"id": "go", "enabled": true, "model": "opencode-go/glm-5.3-flash", "resume_model": "opencode-go/glm-5.3-flash", "audit_model": "opencode-go/longcat-2.5-preview-free"},
     {"id": "codex", "enabled": true, "model": "", "effort": "high"},
