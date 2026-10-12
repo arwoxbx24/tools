@@ -161,8 +161,12 @@ CC_CONFIG=$go check 42 '[[ $rc == 0 ]] && grep -Fq -- "только через �
 CC_CONFIG=$codexone check 43 '[[ $rc == 0 ]] && grep -Fq -- "только через индекс: repowise" "$log"' \
   env CODEX_RC=0 "$root/bin/code-channel" codex "$project" "$tz"
 
-CC_CONFIG=$gocodex check 44 '[[ $rc == 124 ]] && ! grep -q "^codex " "$log" && [[ $err != *switch* ]]' \
-  env OPENCODE_RC=124 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" auto "$project" "$tz"
+CC_CONFIG=$gocodex check 44 '[[ $rc == 0 ]] && grep -q "^codex " "$log" && [[ $err == *"switch go→codex rc=124"* ]] && [[ -f "$project/.auto-124-change" ]]' \
+  env OPENCODE_RC=124 CODEX_TOUCH=.auto-124-change SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" auto "$project" "$tz"
+
+git -C "$project" clean -fdq
+CC_CONFIG=$gocodex check 55 '[[ $rc == 124 ]] && ! grep -q "^codex " "$log" && grep -Fq -- "правки сохранены" "$tmp/err"' \
+  env OPENCODE_RC=124 OPENCODE_TOUCH=.partial-124.txt SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" auto "$project" "$tz"
 
 mkdir -p "$project/.agent-work"
 printf 'old\n' >"$project/.agent-work/old.txt"
@@ -199,4 +203,4 @@ CC_CONFIG=$gocodex check 53 '[[ $rc == 0 ]] && grep -q "^codex " "$log" && [[ $e
 CC_CONFIG=$go check 54 '[[ $rc == 0 ]] && grep -Fq -- "stdin=/dev/null" "$log"' \
   env OPENCODE_RC=0 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
 
-[[ $ok == 54 ]] && echo 'PASS 54/54'
+[[ $ok == 55 ]] && echo 'PASS 55/55'

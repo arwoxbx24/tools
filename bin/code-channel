@@ -281,7 +281,14 @@ for i in "${!ladder[@]}"; do
     fi
     before=$(form_snap)
     run_form "$id"; rc=$?
-    case $rc in 3|5|15|22|24|124) exit "$rc";; esac
+    case $rc in 3|5|15|22|24) exit "$rc";; esac
+    if [[ $rc == 124 ]]; then
+        if [[ $(form_snap) != "$before" ]]; then
+            printf 'code-channel: form=%s timeout 124, правки сохранены, exit=124\n' "$id" >&2
+            exit 124
+        fi
+        printf 'code-channel: form=%s timeout 124 без изменений, следующий провайдер\n' "$id" >&2
+    fi
     if [[ $rc == 0 ]]; then
         after=$(form_snap)
         if [[ $mode == audit ]]; then

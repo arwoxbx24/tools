@@ -1,70 +1,41 @@
-# Канал кода
+# Code Channel
 
-`bin/code-channel` — единственный путь записи кода для Claude и Codex. Голые `opencode run` и `codex exec` запрещены.
+`bin/code-channel` is the supported code-writing route for Claude and Codex. Callers do not invoke bare `opencode run` or `codex exec`.
 
-## Вызов
+## Invocation
 
-- `bin/code-channel auto <проект> <ТЗ-файл>` — автоматическая лестница.
-- `bin/code-channel audit <проект> <ТЗ-файл>` — аудит без изменений.
-- `bin/code-channel <id> <проект> <ТЗ-файл> [--model <m>]` — явный провайдер.
-- Алиасы: `1` = `bitrixgpt`, `2` = `codex`, `3` = `openrouter`.
-- `bin/code-channel --plan` показывает включённую лестницу; `bin/code-channel --help` — справку, включая пути к конфигу и этой странице.
+- `bin/code-channel auto <absolute-worktree> <absolute-task-file>` runs enabled providers in order.
+- `bin/code-channel audit <absolute-worktree> <absolute-task-file>` runs a read-only audit and rejects a changed worktree.
+- `bin/code-channel <id> <absolute-worktree> <absolute-task-file> [--model <model>]` selects one enabled provider.
+- `bin/code-channel --plan` prints the enabled route; `--help` prints syntax and paths.
 
-## Конфиг и провайдеры
+Use the task's isolated worktree and keep its task file inside that worktree. Do not bypass an `external_directory` denial by granting broad access. The executor must not call Code Channel recursively or make Git commits; the coordinator owns task state and delivery.
 
-`config/code-channel.json` хранит массив с полями `id`, `enabled`, `model`, `resume_model` (продолжение сессии после rc 124), `audit_model` (модель режима `audit`; пусто — `model`), `effort` (только Codex); `key`, `secret`, `base` — только у платных HTTP-провайдеров. Порядок массива — порядок лестницы.
+## Provider route and limits
 
-| id | состояние | модель / параметр |
-| --- | --- | --- |
-| `go` | включён | code: `opencode-go/glm-5.3-flash`; audit и продолжение: `opencode-go/longcat-2.5-preview-free` |
-| `codex` | включён | модель профиля; `effort: high` |
-| `openrouter` | выключен | — |
-| `bitrixgpt` | выключен | — |
-| `kimi` | выключен | подписка Kimi For Coding через `opencode auth login` |
+`config/code-channel.json` currently enables `go` (`opencode-go/glm-5.3-flash`) and then `codex` (profile model, high reasoning effort). OpenRouter, Bitrix GPT, and Kimi are disabled. The configured Go `audit_model` is `opencode-go/longcat-2.5-preview-free`. `resume_model` remains in the configuration for compatibility but the current wrapper does not resume a timed-out OpenCode session. Change enabled providers or paid models only with owner authorization. Always inspect the live route with `bin/code-channel --plan`.
 
-## Переключение и лестница
+OpenCode Go is a subscription with included usage, not unlimited capacity: the [official Go documentation](https://opencode.ai/v2/docs/console/go) describes Go and Go Plus usage tiers. Local code cannot remove provider quotas or account limits. A provider denial or quota failure must be reported with its actual exit and journal receipt.
 
-Измените `enabled` у нужной записи в одной строке и проверьте `bin/code-channel --plan`. Модели и включение платных OpenRouter, Kimi или Bitrix GPT — только по слову владельца.
+Each OpenCode attempt has a 590-second safety bound. In `auto`, an OpenCode exit `124` switches to the next enabled provider only when the worktree is unchanged. If the timed-out attempt left edits, Code Channel returns `124` and preserves them for inspection. Other terminal exit codes `3`, `5`, `15`, `22`, and `24` stop the route. Exit `0` with no code changes may try the next provider; the last provider returns its actual exit or `16` for no changes. Audit accepts exit `0` only when the worktree remains unchanged.
 
-Ошибка провайдера или rc 0 без изменений переводит к следующему включённому. Сразу остановиться: 3, 5, 15, 22, 24. Последний провайдер возвращает свой rc либо 16.
+The [official CLI documentation](https://opencode.ai/v2/docs/cli) documents `opencode run` for non-interactive tasks; the consulted CLI page does not specify a batch option for this route. Do not invent one. [OpenCode session warming](https://opencode.ai/v2/docs/warming) is disabled by default and sends periodic model requests to keep short-lived caches warm. It is left disabled here because the route has no measured idle-cache benefit that justifies extra requests.
 
-## Коды выхода
+## Exit codes and receipts
 
-| код | значение |
+| Exit | Meaning |
 | --- | --- |
-| 3 | неверный вызов, выключенный провайдер или конфиг |
-| 5 | см. stderr |
-| 11–12, 14 | HTTP-прекверка; см. stderr |
-| 13 | денежный стоп `OR_DAILY_STOP` |
-| 15 | модель вне белого списка |
-| 16 | нет изменений |
-| 21 | Codex; см. stderr |
-| 22 | audit изменил файлы |
-| 23 | сверка провайдера |
-| 24 | read-only среда Codex и нет правок (правки есть — rc 0) |
-| 30 | рекурсия |
-| 124 | таймаут 590 с |
+| `0` | The selected operation passed its wrapper checks. |
+| `3`, `5`, `15` | Invalid/disabled provider, setup, or model gate; inspect stderr. |
+| `16` | Code route produced no changes. |
+| `21`, `24` | Codex execution or read-only environment failure; inspect stderr. |
+| `22` | Audit changed the worktree. |
+| `23` | Provider reconciliation failed. |
+| `30` | Recursive Code Channel invocation. |
+| `124` | OpenCode reached its 590-second bound; inspect preserved edits. |
 
-Где значение кода не описано выше, используйте только номер и `см. stderr`.
+Other exits retain their numeric code and stderr. The local journal is `state/code-channel/runs.jsonl`; check `provider_expected`, `provider_actual`, `rc`, and the run ID before declaring an outcome. A tool receipt proves execution, not semantic correctness. Use the task's acceptance check on its real input.
 
-## Рекурсия и журнал
+## U1 Timeout continuation acceptance
 
-Внутри исполнителя задан `CODE_CHANNEL_ACTIVE`: любой вызов канала — exit 30. При ошибке не повторяйте канал: прочитайте stderr, исправьте причину, затем один повтор. Исполнитель не делает git add/commit: коммит делает оркестратор (ship-post).
-
-Журнал: `state/code-channel/runs.jsonl` — поля `provider_expected`, `provider_actual`, `rc`.
-
-## Пролонгация
-
-- Результат прогона неполный — новый файл ТЗ, а не перезапуск того же.
-- Имя — `<дата>-<атом>-v2-<суть>.md`, в том же worktree; исходное ТЗ не правится.
-- Первая строка нового ТЗ — «Сделано (не трогать): …»: факты прогона N — строка журнала `code-channel: … run=… t=…` и список изменённых файлов; дальше только остаток работы.
-- Не больше двух прогонов на атом.
-- Второй worktree и второй процесс канала на тот же атом запрещены.
-
-## Чек-лист запуска
-
-- Атом взят: `bd update <атом> --claim`.
-- Путь проекта и путь к ТЗ — абсолютные (иначе rc 3 «project must be absolute path»).
-- На этом worktree нет живого процесса канала.
-- ТЗ: 1–2 файла, ≤100 строк правки, проверка одной командой.
-- Вызов один: Bash, `timeout: 600000`; результат по уведомлению.
+Owner atom: `tools-fjs`. Scope: the existing `bin/code-channel`, `bin/code-channel-test`, and this page. The change retains the 590-second bound and all host/provider gates. The regression suite must show a Go `124` without edits invoking Codex and a Go `124` with partial edits stopping without Codex. `bash bin/code-channel-test` prints `PASS 55/55`; `bin/code-channel --plan` prints Go then Codex. A real isolated code task must produce a scoped diff and a matching journal row. Rollback restores these three owned files in the isolated worktree; never discard another agent's edits.
