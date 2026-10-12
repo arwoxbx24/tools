@@ -150,14 +150,14 @@ run_form() (
         [[ -z $model ]] || codex_args+=(-m "$model")
         started=$SECONDS
         if [[ $mode == audit ]]; then
-            timeout 590 codex exec -p quota-terra "${codex_args[@]}" -s read-only "$prompt"; run=$?
+            codex exec -p quota-terra "${codex_args[@]}" -s read-only "$prompt"; run=$?
         else
             gcd=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
             add_dir=()
             [[ -n $gcd ]] && add_dir+=(--add-dir "$gcd")
             codetmp=$(mktemp "${TMPDIR:-/tmp}/code-channel-codex-XXXXXX") || exit 3
             codex_before=$(form_snap)
-            timeout 590 codex exec -p quota-terra "${codex_args[@]}" -s workspace-write "${add_dir[@]}" \
+            codex exec -p quota-terra "${codex_args[@]}" -s workspace-write "${add_dir[@]}" \
                 -c sandbox_workspace_write.network_access=true "$prompt" 2> >(tee -- "$codetmp" >&2); run=$?
             if [[ $run != 0 ]] && grep -q -- 'Read-only file system' "$codetmp"; then
                 if [[ $(form_snap) != "$codex_before" ]]; then
@@ -255,9 +255,9 @@ run_form() (
     fi
     run_start_ms=$(date +%s%3N)
     if [[ $mode == audit ]]; then
-        timeout 590 opencode run --agent audit --title "$id_run" -m "$model" "$prompt" < /dev/null; run=$?
+        opencode run --agent audit --title "$id_run" -m "$model" "$prompt" < /dev/null; run=$?
     else
-        timeout 590 opencode run --title "$id_run" -m "$model" "$prompt" < /dev/null; run=$?
+        opencode run --title "$id_run" -m "$model" "$prompt" < /dev/null; run=$?
     fi
     reconcile "$run"; rc=$?
     [[ $rc != 0 ]] && exit "$rc"

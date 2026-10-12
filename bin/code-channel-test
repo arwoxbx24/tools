@@ -143,10 +143,10 @@ CC_CONFIG=$go check 37 '[[ $rc == 124 && $(grep -c "^opencode " "$log") == 1 ]]'
 printf '%s\n' '#!/usr/bin/env bash' "printf '%s\n' \"\$1\" >>\"$tlog\"" 'shift; exec "$@"' >"$bin/timeout"
 chmod +x "$bin/timeout"
 : >"$tlog"
-CC_CONFIG=$resume check 38 '[[ $rc == 124 && $(<"$tlog") == 590 ]]' \
+CC_CONFIG=$resume check 38 '[[ $rc == 124 && ! -s $tlog ]]' \
   env OPENCODE_SEQUENCE=124,0 SQLITE_SESSION_ID=session-123 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
 : >"$tlog"
-CC_CONFIG=$go check 39 '[[ $rc == 0 && $(<"$tlog") == 590 ]]' \
+CC_CONFIG=$go check 39 '[[ $rc == 0 && ! -s $tlog ]]' \
   env OPENCODE_RC=0 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
 
 check 40 '[[ $rc == 3 && $err == *"project must be absolute path"* ]]' \
