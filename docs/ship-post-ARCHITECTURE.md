@@ -104,3 +104,34 @@ pm2 restarts `ship-post` when `bin/ship-post` or `bin/git-auto-lib` changes (`wa
 
 - [spec 099 ship dev/prod](/root/workspaces/projects/specs/099-ship-dev-prod/)
 - [LAWS-PROCEDURES.md, «Ветки агентов»](/root/workspaces/projects/docs/LAWS-PROCEDURES.md)
+
+## 11. Beads root, no-CI path and break-glass (dcfg-4j1mb)
+
+- Beads root: every atom-level bd call runs in the Beads root of the atom's own repository (`ga_beads_root`: nearest `.beads` above the main work tree, else `SHIP_POST_BEADS_ROOT`). Incidents stay in `SHIP_POST_BEADS_ROOT`. An atom absent from its root gets one final `unknown-atom` receipt per SHA instead of a retry every pass.
+- No CI: a code change in a repository without a `pull_request` workflow gets the minimal workflow from `bin/git-ci-enable` in the same branch, then follows the normal CI path. `prod:wait-owner no-ci` is gone; old `wait-owner` receipts from that gate are re-run once. Production still moves only through `bin/ship-promote`.
+- Delivery class per repository (owner 13.10: deterministic, fully automatic). Every directory with its own `.git` under `projects` (each client in `clients/` included) is a separate repository with its own class; there is no rule per parent folder. The courier decides in this fixed order:
+  1. `guarded` — name in `ga_skip_reason`: commit and `prod:hold`, never pushed automatically.
+  2. `staged` — origin has `dev`: merge into `dev` after CI; production only by `bin/ship-promote`.
+  3. `plain` with a `pull_request` workflow: merge after that CI is green.
+  4. `plain` without one: an all-`.md` diff merges after the mergeability check; any other diff gets `min-ci` from `bin/git-ci-enable` (conflict markers and gitleaks on the GitHub side) in the same branch, then rule 3.
+- Break-glass: `ship-post --break-glass <worktree> --atom <id>` is the only alternative route. It runs only after a recorded INFRA failure (ship code 30, 70, 71 or 75) of the same HEAD SHA, keeps the owner check and gitleaks, files a `contour:delivery` incident labelled `break-glass` with the error data and a fix spec, pushes the branch with lease and opens a PR. It never merges, closes the atom or syncs live trees; managed deny on raw `git push` and `gh pr` stays in force.
+
+## 12. Inventory of delivery scripts (13.10)
+
+- inventory: `bin/ship-post` — keep. Single entry point for agents (`--submit`, `--status`, `--break-glass`) and the PM2 courier (`--watch`).
+- inventory: `bin/ship` — keep. Delivery core called only by the courier: commit, gitleaks, push, PR, CI, merge.
+- inventory: `bin/ship-promote` — keep, merge candidate. Dev → prod gate by the owner's word; its own PR merge and push code repeats the merge step of `bin/ship`.
+- inventory: `bin/git-auto-lib` — keep. Shared library (`ga_roots`, `ga_base`, `ga_live_sync`, `ga_beads_root`).
+- inventory: `bin/git-sync` — keep. Live-tree sync; called by `ga_live_sync` and by `bin/ship-post` directly — two call paths for one job, merge candidate.
+- inventory: `bin/git-state` — keep. Read-only repository state used by `ga_live_sync` and `bin/ship`.
+- inventory: `bin/git-ci-enable` — keep. Minimal CI workflow; now called by `bin/ship` on the no-CI path.
+- inventory: `bin/ship-doc-check` — keep. CI gate: a chain-script change needs this document.
+- inventory: `bin/contour-push` — remove candidate. Pushes the contour repository outside the courier although `ga_roots` already serves `contour`; no caller in tools, laws or the registry.
+- inventory: `bin/bd-push` — keep, out of the code chain. Beads Dolt export behind secret-gate, not code delivery.
+
+## 13. Prod-skill gaps of the delivery chain (13.10)
+
+- prod-gap: rollback (prod §5) — no command reverts a merged delivery; recovery today is a new atom by hand.
+- prod-gap: owner notification (prod §3, §6) — incidents and break-glass use land only in bd; no push to the owner's channel.
+- prod-gap: independent check (prod §6) — the minimal CI added to a no-CI repository proves syntax only; repositories without real tests merge on gitleaks plus smoke.
+- prod-gap: observability (prod §5) — no delivery SLI (time from submit to merge, failed passes per hour); log noise from unknown atoms hid real failures.

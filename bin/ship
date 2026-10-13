@@ -170,12 +170,26 @@ if [[ -n $num && -n $pbase && $pbase != "$base" ]]; then
 fi
 [[ -n $num ]] || { echo 'ship: номер PR не получен' >&2; leave 30 pr; }
 printf 'pr:%s\n' "$num"
+# dcfg-4j1mb: no CI -> min-ci merged into $base by its own PR; the atom PR keeps its exact head and is re-opened to get a pull_request run.
+ci_bootstrap(){
+	local tmp cb=ship/min-ci rc=0
+	tmp=$(mktemp -d) || return 1
+	g worktree add -q --detach "$tmp/w" "origin/$base" || return 1
+	{ "$bin/git-ci-enable" "$tmp/w" >/dev/null \
+		&& git -C "$tmp/w" add .github/workflows \
+		&& git -C "$tmp/w" commit -q -m "ci: enable min-ci" --trailer "Atom: $atom" --trailer "ТЗ: $tz" --trailer "Agent: $agent" \
+		&& git -C "$tmp/w" push -q origin "+HEAD:refs/heads/$cb" \
+		&& { gh pr create -R "$slug" --head "$cb" --base "$base" --title "ci: enable min-ci" --body "ship: repository had no pull_request CI (atom $atom)" >/dev/null || gh pr view "$cb" -R "$slug" >/dev/null; } \
+		&& { gh pr merge "$cb" -R "$slug" --merge --delete-branch >/dev/null || gh pr merge "$cb" -R "$slug" --squash --delete-branch >/dev/null; }; } || rc=1
+	g worktree remove --force "$tmp/w" >/dev/null 2>&1
+	rm -rf "$tmp"
+	return "$rc"
+}
 if [[ $ci == none && $docs_only == 0 ]]; then
-	echo ci:none
-	echo 'prod:wait-owner no-ci'
-	g update-ref "refs/dev-ready/$branch" "${expected_head:-HEAD}"
-	bd update "$atom" --append-notes "wait-owner no-ci: PR https://github.com/$slug/pull/$num — без автопроверок, на прод только ship-promote по слову владельца" >/dev/null 2>&1 || true
-	leave 0 wait-owner
+	ci_bootstrap || { echo 'ship: min-ci bootstrap failed' >&2; leave 30 ci-enable; }
+	echo 'ci:bootstrap min-ci'
+	gh pr close "$num" -R "$slug" >/dev/null && gh pr reopen "$num" -R "$slug" >/dev/null || leave 70 gh
+	ci=ci
 fi
 if [[ $docs_only == 1 ]]; then
 	echo ci:none

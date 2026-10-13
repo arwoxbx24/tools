@@ -14,7 +14,7 @@ for f in "$dir"/*.yml "$dir"/*.yaml; do
 done
 
 mkdir -p "$dir"
-path="$dir/min-ci-caller.yml"
+path="$dir/min-ci.yml"
 cat > "$path" <<'EOF'
 name: min-ci
 on:
@@ -23,7 +23,21 @@ permissions:
   contents: read
 jobs:
   min-ci:
-    uses: arwoxbx24/agent-contour/.github/workflows/min-ci.yml@main
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: conflict markers
+        run: |
+          if git grep -nE '^(<<<<<<<|>>>>>>>) ' -- . ; then
+            echo "::error::tracked files contain conflict markers"
+            exit 1
+          fi
+      - name: gitleaks
+        run: docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.30.1 git /repo --redact --no-banner --log-opts="origin/${{ github.base_ref }}..HEAD"
 EOF
 echo "ci:added $path"
 exit 0

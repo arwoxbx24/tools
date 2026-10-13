@@ -4,25 +4,27 @@ bin=$(cd -- "$(dirname -- "$0")" && pwd)
 d=$(mktemp -d)
 trap 'rm -rf "$d"' EXIT
 ok=0
-EXPECTED='name: min-ci
-on:
-  pull_request:
-permissions:
-  contents: read
-jobs:
-  min-ci:
-    uses: arwoxbx24/agent-contour/.github/workflows/min-ci.yml@main'
 
 mkrepo(){ local r=$1; mkdir -p "$r"; git -C "$r" init -q; git -C "$r" config user.email t@t; git -C "$r" config user.name t; git -C "$r" commit -q --allow-empty -m init; }
 wfcount(){ find "$1/.github/workflows" -type f \( -name '*.yml' -o -name '*.yaml' \) 2>/dev/null | wc -l; }
 
-# T1: no workflows -> ci:added, file equals reference
+# T1: no workflows -> ci:added, file matches contract
 mkrepo "$d/r1"
 out=$("$bin/git-ci-enable" "$d/r1"); rc=$?
-f="$d/r1/.github/workflows/min-ci-caller.yml"
-if [[ $rc == 0 && $out == "ci:added $f" && -f $f && $(cat "$f") == "$EXPECTED" ]]; then
+f="$d/r1/.github/workflows/min-ci.yml"
+if [[ $rc == 0 && $out == "ci:added $f" && -f $f ]] \
+	&& grep -qx 'name: min-ci' "$f" \
+	&& grep -q 'pull_request:' "$f" \
+	&& grep -q 'ghcr.io/gitleaks/gitleaks:v8.30.1' "$f" \
+	&& grep -q 'conflict markers' "$f" \
+	&& grep -q 'timeout-minutes: 5' "$f"; then
   echo 'PASS 1'; ok=$((ok+1))
 else echo "FAIL 1: rc=$rc out=$out"; fi
+
+# T1b: no cross-repo uses, gitleaks pinned
+if ! grep -q 'uses: arwoxbx24/' "$f" && grep -q 'gitleaks:v8.30.1' "$f"; then
+  echo 'PASS 1b'; ok=$((ok+1))
+else echo 'FAIL 1b: workflow not self-contained'; fi
 
 # T2: repeat -> ci:present, file not duplicated
 out=$("$bin/git-ci-enable" "$d/r1"); rc=$?
@@ -45,4 +47,4 @@ else echo "FAIL 3: rc=$rc out=$out before=$before after=$after"; fi
 "$bin/git-ci-enable" >/dev/null 2>&1; rc=$?
 if [[ $rc == 2 ]]; then echo 'PASS 4'; ok=$((ok+1)); else echo "FAIL 4: rc=$rc"; fi
 
-[[ $ok == 4 ]]
+[[ $ok == 5 ]]

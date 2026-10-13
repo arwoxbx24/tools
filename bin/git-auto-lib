@@ -61,6 +61,13 @@ ga_repo_of(){ # <path> — registry name of containing repo; none -> 2
 	return 2
 }
 
+ga_beads_root(){ # <path> — dir holding .beads for the repo of <path>; none -> SHIP_POST_BEADS_ROOT
+	local gd d
+	gd=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) && d=$(dirname "$gd") || d=$1
+	while [[ -n $d && $d != / ]]; do [[ -d $d/.beads ]] && { echo "$d"; return 0; }; d=$(dirname "$d"); done
+	echo "${SHIP_POST_BEADS_ROOT:-/root/workspaces/projects}"
+}
+
 ga_base(){ # <path> [local] — one line "<mode> <base> <prod>"; origin main/base undetermined -> 2
 	local p=$1 local=${2:-} sym prod b
 	[[ -n $p ]] || return 2

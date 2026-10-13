@@ -3,7 +3,7 @@
   "opencode_config": "config/opencode-channel.json",
   "resume_idle_limit": 3,
   "ladder": [
-    {"id": "go", "enabled": true, "model": "opencode-go/glm-5.3-flash", "resume_model": "opencode-go/glm-5.3-flash", "audit_model": "opencode-go/longcat-2.5-preview-free"},
+    {"id": "go", "enabled": true, "model": "opencode-go/glm-5.3-flash", "resume_model": "opencode-go/glm-5.3-flash", "audit_model": "opencode-go/glm-5.3-flash"},
     {"id": "codex", "enabled": false, "model": "", "effort": "high"},
     {"id": "openrouter", "enabled": false, "model": "openrouter/deepseek/deepseek-v4-flash", "key": "OPENROUTER_API_KEY", "secret": "openrouter", "base": "https://openrouter.ai/api/v1"},
     {"id": "bitrixgpt", "enabled": false, "model": "bitrixgpt/bitrix/bitrixgpt-5.6-agent", "key": "VIBECODE_API_KEY", "secret": "vibecode", "base": "https://vibecode.bitrix24.tech/v1"},

@@ -55,6 +55,7 @@ MOCKGH
 printf '%s|%s|%s\n' "$PWD" "${BEADS_ACTOR:-}" "$*" >> "${SHIP_POST_TEST_DIR}/bd.calls"
 case ${1:-} in
 	show) [[ ! -f $SHIP_POST_TEST_DIR/bd-down ]] || exit 1
+	 if [[ -f ${BEADS_DIR:-}/missing-atoms ]] && grep -Fxq -- "${2:-}" "${BEADS_DIR:-}/missing-atoms"; then printf 'Issue %s not found\n' "${2:-}" >&2; exit 1; fi
 	 jq -n --arg status "$(cat "$SHIP_POST_TEST_DIR/status.${2:-}" 2>/dev/null || cat "$SHIP_POST_TEST_DIR/status" 2>/dev/null || echo "${BD_STATUS:-in_progress}")" --arg assignee "${BD_ASSIGNEE-Codex}" --arg notes "$(cat "$SHIP_POST_TEST_DIR/bd.notes" 2>/dev/null || true)" '[{status:$status,assignee:$assignee,notes:$notes}]' ;;
 info) printf '{"database_path":"%s"}\n' "$SHIP_POST_TEST_DIR/repo/.git" ;;
 events) [[ -z ${EVENT_STDERR:-} ]] || printf '%s\n' "$EVENT_STDERR" >&2
@@ -269,6 +270,16 @@ test_watch(){
 
 commit_candidate(){
  git -C "$wt" commit -q --allow-empty -m candidate -m "$(printf 'ТЗ: %s#U2\nAtom: %s\nAgent: %s' "$wt/$tz" "$1" "${2:-codex}")"
+}
+test_beads_root_fallback(){
+	local n=210 out rc
+	setup_submit fb codex/dcfg-fallback.1; commit_candidate dcfg-fallback.1
+	mkdir -p "$d/repo/.beads" "$d/.beads"; printf 'dcfg-fallback.1\n' > "$d/repo/.beads/missing-atoms"
+	out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex; run_tool "$d" 2>&1); rc=$?
+	assert_rc "$n" 0 "$rc" "$out"; n=$((n + 1))
+	[[ $(grep -c -- '--atom dcfg-fallback.1 ' "$d/ship.calls") == 1 ]] && pass "$n" || fail "$n" "not delivered: $out"; n=$((n + 1))
+	grep -Fqx "$d|Codex|show dcfg-fallback.1 --json" "$d/bd.calls" && pass "$n" || fail "$n" "projects-root show missing"; n=$((n + 1))
+	[[ $out != *unknown-atom* ]] && pass "$n" || fail "$n" "unknown-atom: $out"
 }
 test_recovery(){
  local out rc h key saved
@@ -501,7 +512,9 @@ test_final_states(){
 	out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_OUT='pr:7\nprod:wait-owner no-ci'; run_tool "$d" 2>&1); rc=$?
 	[[ $rc == 0 && $(wc -l < "$d/ship.calls") == 1 ]] && jq -e -r '.stage+" "+.pr == "wait-owner 7"' "$rf" >/dev/null && grep -Fq 'ship-post: wait-owner' "$d/bd.calls" && pass '140 wait-owner' || fail '140 wait-owner' "$out"
 	out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex; run_tool "$d" 2>&1); rc=$?
-	[[ $rc == 0 && $(wc -l < "$d/ship.calls") == 1 ]] && pass '141 wait-owner final' || fail '141 wait-owner final' "$out"
+	[[ $rc == 0 && $(wc -l < "$d/ship.calls") == 2 ]] && pass '141 wait-owner final' || fail '141 wait-owner final' "$out"
+	out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex; run_tool "$d" 2>&1); rc=$?
+	[[ $rc == 0 && $(wc -l < "$d/ship.calls") == 2 ]] && pass '141b no-ci rerun once' || fail '141b no-ci rerun once' "$out"
 
 	setup_submit fs2 codex/dcfg-fs.2
 	git -C "$wt" commit -q --allow-empty -m fs2 -m "$(printf 'ТЗ: %s#U2\nAtom: dcfg-fs.2\nAgent: codex' "$wt/$tz")"
@@ -533,7 +546,7 @@ test_final_states(){
 	out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_OUT='pr:9\nprod:wait-owner no-ci'; run_tool "$d" 2>&1); rc=$?
 	[[ $rc == 0 && $(wc -l < "$d/ship.calls") == 1 ]] && jq -e -r '.stage+" "+.pr == "wait-owner 9"' "$rf" >/dev/null && pass '147 legacy wait-owner retried' || fail '147 legacy wait-owner retried' "$out"
 	out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex; run_tool "$d" 2>&1); rc=$?
-	[[ $rc == 0 && $(wc -l < "$d/ship.calls") == 1 ]] && pass '148 legacy now final' || fail '148 legacy now final' "$out"
+	[[ $rc == 0 && $(wc -l < "$d/ship.calls") == 2 ]] && pass '148 legacy now final' || fail '148 legacy now final' "$out"
 
 	setup_submit fs6 codex/dcfg-fs.6
 	git -C "$wt" commit -q --allow-empty -m fs6a -m "$(printf 'ТЗ: %s#U2\nAtom: dcfg-fs.6\nAgent: codex' "$wt/$tz")"
@@ -763,6 +776,31 @@ test_hints(){
 	[[ $rc == 0 && $out == *'usage:'* ]] && pass H7 || fail H7 "rc=$rc: $out"
 }
 
+test_break_glass(){
+	local out rc h key after
+	setup_submit bg_none codex/dcfg-bg.1; commit_candidate dcfg-bg.1
+	h=$(git -C "$wt" rev-parse HEAD)
+	out=$(export BEADS_ACTOR=Codex BD_ASSIGNEE=Codex; run_tool "$d" --break-glass "$wt" --atom dcfg-bg.1 2>&1); rc=$?
+	[[ $rc == 2 && $out == *"break-glass refused: no recorded INFRA failure for $h"* ]] && pass BG1 || fail BG1 "rc=$rc: $out"
+	setup_submit bg_leak codex/dcfg-bg.2; commit_candidate dcfg-bg.2
+	printf 'aws_key = AKIAIOSFODNN7EXAMPLE\n' > "$wt/secret.txt"; git -C "$wt" add -- secret.txt; git -C "$wt" commit -q -m secret
+	h=$(git -C "$wt" rev-parse HEAD); key=$(printf %s "$d/repo" | sha256sum | cut -d ' ' -f1)
+	mkdir -p "$d/state/receipts/$key/dcfg-bg.2"; printf 30 > "$d/state/receipts/$key/dcfg-bg.2/$h.failed"
+	: > "$d/bd.calls"
+	out=$(export BEADS_ACTOR=Codex BD_ASSIGNEE=Codex GITLEAKS_RC=1; run_tool "$d" --break-glass "$wt" --atom dcfg-bg.2 2>&1); rc=$?
+	[[ $rc == 20 && $out == *'break-glass refused: gitleaks'* ]] && pass BG2 || fail BG2 "rc=$rc: $out"
+	[[ $(grep -c '|create ' "$d/bd.calls") == 0 ]] && pass BG3 || fail BG3 'incident filed during gitleaks refusal'
+	setup_submit bg_ok codex/dcfg-bg.3; commit_candidate dcfg-bg.3
+	h=$(git -C "$wt" rev-parse HEAD); key=$(printf %s "$d/repo" | sha256sum | cut -d ' ' -f1)
+	mkdir -p "$d/state/receipts/$key/dcfg-bg.3"; printf 30 > "$d/state/receipts/$key/dcfg-bg.3/$h.failed"
+	out=$(export BEADS_ACTOR=Codex BD_ASSIGNEE=Codex; run_tool "$d" --break-glass "$wt" --atom dcfg-bg.3 2>&1); rc=$?
+	[[ $rc == 0 && $out == *'incident=test-infra'* && $out == *'direct=pushed'* && $out == *'pr=skipped'* ]] && pass BG4 || fail BG4 "rc=$rc: $out"
+	after=$(git --git-dir="$d/origin.git" rev-parse refs/heads/codex/dcfg-bg.3 2>/dev/null)
+	[[ $after == "$h" ]] && pass BG5 || fail BG5 "remote=$after want=$h"
+	grep -Fq 'break-glass used: incident test-infra' "$d/bd.notes" && pass BG6 || fail BG6 'atom note'
+	[[ $(jq -r .stage "$d/state/receipts/$key/dcfg-bg.3/$h.break-glass" 2>/dev/null) == break-glass ]] && pass BG7 || fail BG7 'audit receipt'
+}
+
 if [[ ${SHIP_POST_TEST_GROUP:-all} == review ]]; then
  test_review_recovery
 elif [[ ${SHIP_POST_TEST_GROUP:-all} == status ]]; then
@@ -788,7 +826,15 @@ elif [[ ${SHIP_POST_TEST_GROUP:-all} == recovery ]]; then
 	elif [[ ${SHIP_POST_TEST_GROUP:-all} == adr35 ]]; then
 	 test_adr35
 else
-	 test_dryrun_mocks; test_valid_actors; test_rejections; test_hook_and_retry; test_closed_retry; test_delivery; test_live_sync; test_watch; test_recovery; test_stream_errors; test_closed_skip_reason; test_concurrent_repositories; test_watch_lock_released; test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery; test_actor_alias; test_nested_repo; test_final_states; test_submit_conflict_preflight; test_u15; test_adr30; test_park; test_park_live; test_hints; test_status
+	 test_dryrun_mocks; test_valid_actors; test_rejections; test_hook_and_retry; test_closed_retry; test_delivery; test_beads_root_fallback; test_live_sync; test_watch; test_recovery; test_stream_errors; test_closed_skip_reason; test_concurrent_repositories; test_watch_lock_released; test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery; test_actor_alias; test_nested_repo; test_final_states; test_submit_conflict_preflight; test_u15; test_adr30; test_park; test_park_live; test_hints; test_status; test_break_glass
 fi
+T=$root
+mkdir -p "$T/br/.beads"; git init -q "$T/br"
+git -C "$T/br" commit -q --allow-empty -m x
+git -C "$T/br" worktree add -q "$T/brw"
+br_out=$(bash -c '. "$1"; ga_beads_root "$2"' _ "$bin/git-auto-lib" "$T/brw")
+[[ $(realpath "$br_out") == $(realpath "$T/br") ]] && pass 'BR1 worktree beads root' || fail 'BR1 worktree beads root' "got=$br_out want=$T/br"
+br_out=$(SHIP_POST_BEADS_ROOT=/x bash -c '. "$1"; ga_beads_root /tmp' _ "$bin/git-auto-lib")
+[[ $br_out == /x ]] && pass 'BR2 fallback env' || fail 'BR2 fallback env' "got=$br_out want=/x"
 echo "checks=$checks failures=$failures"
 [[ $failures == 0 ]]
