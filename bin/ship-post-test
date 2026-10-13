@@ -55,6 +55,7 @@ MOCKGH
 printf '%s|%s|%s\n' "$PWD" "${BEADS_ACTOR:-}" "$*" >> "${SHIP_POST_TEST_DIR}/bd.calls"
 case ${1:-} in
 	show) [[ ! -f $SHIP_POST_TEST_DIR/bd-down ]] || exit 1
+	 if [[ -f ${BEADS_DIR:-}/missing-atoms ]] && grep -Fxq -- "${2:-}" "${BEADS_DIR:-}/missing-atoms"; then printf 'Issue %s not found\n' "${2:-}" >&2; exit 1; fi
 	 jq -n --arg status "$(cat "$SHIP_POST_TEST_DIR/status.${2:-}" 2>/dev/null || cat "$SHIP_POST_TEST_DIR/status" 2>/dev/null || echo "${BD_STATUS:-in_progress}")" --arg assignee "${BD_ASSIGNEE-Codex}" --arg notes "$(cat "$SHIP_POST_TEST_DIR/bd.notes" 2>/dev/null || true)" '[{status:$status,assignee:$assignee,notes:$notes}]' ;;
 info) printf '{"database_path":"%s"}\n' "$SHIP_POST_TEST_DIR/repo/.git" ;;
 events) [[ -z ${EVENT_STDERR:-} ]] || printf '%s\n' "$EVENT_STDERR" >&2
@@ -261,6 +262,16 @@ test_watch(){
 
 commit_candidate(){
  git -C "$wt" commit -q --allow-empty -m candidate -m "$(printf 'ТЗ: %s#U2\nAtom: %s\nAgent: %s' "$wt/$tz" "$1" "${2:-codex}")"
+}
+test_beads_root_fallback(){
+	local n=210 out rc
+	setup_submit fb codex/dcfg-fallback.1; commit_candidate dcfg-fallback.1
+	mkdir -p "$d/repo/.beads" "$d/.beads"; printf 'dcfg-fallback.1\n' > "$d/repo/.beads/missing-atoms"
+	out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex; run_tool "$d" 2>&1); rc=$?
+	assert_rc "$n" 0 "$rc" "$out"; n=$((n + 1))
+	[[ $(grep -c -- '--atom dcfg-fallback.1 ' "$d/ship.calls") == 1 ]] && pass "$n" || fail "$n" "not delivered: $out"; n=$((n + 1))
+	grep -Fqx "$d|Codex|show dcfg-fallback.1 --json" "$d/bd.calls" && pass "$n" || fail "$n" "projects-root show missing"; n=$((n + 1))
+	[[ $out != *unknown-atom* ]] && pass "$n" || fail "$n" "unknown-atom: $out"
 }
 test_recovery(){
  local out rc h key saved
@@ -795,7 +806,7 @@ elif [[ ${SHIP_POST_TEST_GROUP:-all} == recovery ]]; then
 	elif [[ ${SHIP_POST_TEST_GROUP:-all} == adr35 ]]; then
 	 test_adr35
 else
-	 test_dryrun_mocks; test_valid_actors; test_rejections; test_hook_and_retry; test_closed_retry; test_delivery; test_live_sync; test_watch; test_recovery; test_stream_errors; test_closed_skip_reason; test_concurrent_repositories; test_watch_lock_released; test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery; test_actor_alias; test_nested_repo; test_final_states; test_submit_conflict_preflight; test_u15; test_adr30; test_park; test_park_live; test_hints; test_status; test_break_glass
+	 test_dryrun_mocks; test_valid_actors; test_rejections; test_hook_and_retry; test_closed_retry; test_delivery; test_beads_root_fallback; test_live_sync; test_watch; test_recovery; test_stream_errors; test_closed_skip_reason; test_concurrent_repositories; test_watch_lock_released; test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery; test_actor_alias; test_nested_repo; test_final_states; test_submit_conflict_preflight; test_u15; test_adr30; test_park; test_park_live; test_hints; test_status; test_break_glass
 fi
 T=$root
 mkdir -p "$T/br/.beads"; git init -q "$T/br"
