@@ -386,5 +386,36 @@ if [[ $r56 == 2 && -f /etc/claude-code/CLAUDE.md ]]; then
   echo 'PASS T56 etc_claude_code_banned'; ok=$((ok+1))
 else echo "FAIL T56: rc=$r56"; fi
 
-[[ $ok == 56 ]] || exit 1
-echo "итог: PASS 56, FAIL 0"
+# T57-T60: multi-path file and tmp (validate all before first delete, dedupe, all-or-nothing)
+mkdir -p "$d/mp-tmp"
+printf '1\n' > "$d/mp-tmp/f1"; printf '2\n' > "$d/mp-tmp/f2"; printf '3\n' > "$d/mp-tmp/f3"
+out57=$("$bin/safe-delete" --bk "$bk" tmp "$d/mp-tmp/f1" "$d/mp-tmp/f2" "$d/mp-tmp/f3"); r57=$?
+n57=$(grep -c '^удалено: ' <<< "$out57")
+printf 'd1\n' > "$d/mp-tmp/dup1"; printf 'd2\n' > "$d/mp-tmp/dup2"
+out57b=$("$bin/safe-delete" --bk "$bk" tmp "$d/mp-tmp/dup1" "$d/mp-tmp/dup1" "$d/mp-tmp/dup2"); r57b=$?
+n57b=$(grep -c '^удалено: ' <<< "$out57b")
+if [[ $r57 == 0 && $n57 == 3 && ! -e "$d/mp-tmp/f1" && ! -e "$d/mp-tmp/f2" && ! -e "$d/mp-tmp/f3" \
+   && $r57b == 0 && $n57b == 2 && ! -e "$d/mp-tmp/dup1" && ! -e "$d/mp-tmp/dup2" ]]; then
+  echo 'PASS T57'; ok=$((ok+1))
+else echo "FAIL T57: rc=$r57 n=$n57 rcb=$r57b nb=$n57b"; fi
+
+mkdir -p "$d/mp"
+printf 'a\n' > "$d/mp/a"; printf 'b\n' > "$d/mp/b"; printf 'c\n' > "$d/mp/c"
+out58=$("$bin/safe-delete" --bk "$bk" file "$d/mp/a" "$d/mp/b" "$d/mp/c"); r58=$?
+n58=$(grep -c 'восстановить: safe-delete restore ' <<< "$out58")
+l58=$(grep -F "удалено: $d/mp/a |" <<< "$out58" | sed 's/.*restore //')
+if [[ $r58 == 0 && $n58 == 3 && ! -e "$d/mp/a" && ! -e "$d/mp/b" && ! -e "$d/mp/c" && $l58 =~ ^[0-9]+$ ]]; then
+  "$bin/safe-delete" --bk "$bk" restore "$l58"; rr58=$?
+  if [[ $rr58 == 0 && -f "$d/mp/a" && $(cat "$d/mp/a") == a && ! -e "$d/mp/b" && ! -e "$d/mp/c" ]]; then echo 'PASS T58'; ok=$((ok+1)); else echo "FAIL T58: restore=$rr58"; fi
+else echo "FAIL T58: rc=$r58 n=$n58 l=$l58"; fi
+
+mkdir -p "$d/secrets"; printf 'keep\n' > "$d/mp/keep"; printf 'sec\n' > "$d/secrets/mp59"
+"$bin/safe-delete" --bk "$bk" file "$d/mp/keep" "$d/secrets/mp59" >/dev/null 2>&1; r59=$?
+if [[ $r59 == 2 && -f "$d/mp/keep" && -f "$d/secrets/mp59" ]]; then echo 'PASS T59'; ok=$((ok+1)); else echo "FAIL T59: rc=$r59"; fi
+
+printf 'v\n' > "$d/tmp-file/f60"
+"$bin/safe-delete" --bk "$bk" tmp "$d/tmp-file/f60" /etc/hostname >/dev/null 2>&1; r60=$?
+if [[ $r60 == 2 && -f "$d/tmp-file/f60" && -e /etc/hostname ]]; then echo 'PASS T60'; ok=$((ok+1)); else echo "FAIL T60: rc=$r60"; fi
+
+[[ $ok == 60 ]] || exit 1
+echo "итог: PASS 60, FAIL 0"
