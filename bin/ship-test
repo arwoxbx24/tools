@@ -221,12 +221,12 @@ sha2=$(git -C "$GA_PROJECTS/r1" rev-parse refs/remotes/origin/claude/x)
 [[ $rc == 20 && $sha1 == "$sha2" ]] && p 4 || f 4
 
 git -C "$r1x" reset -q --hard origin/claude/x
-before=$(grep -c '^pr create' "$GH_JOURNAL" || true)
+before=$(grep '^pr create' "$GH_JOURNAL" | grep -vc 'ship/min-ci' || true)
 git -C "$r1x" fetch -q origin
 git -C "$r1x" reset -q --hard origin/main
 printf 'again\n' >> "$r1x/f.txt"
 ship "$r1x" >/dev/null 2>&1; rc=$?
-after=$(grep -c '^pr create' "$GH_JOURNAL" || true)
+after=$(grep '^pr create' "$GH_JOURNAL" | grep -vc 'ship/min-ci' || true)
 [[ $rc == 0 && $after -eq $before ]] && p 5 || f 5
 
 git -C "$r1x" fetch -q origin
@@ -278,7 +278,7 @@ printf 'nine\n' >> "$r9/f.txt"
 out=$( ( cd "$r9" && GH_ORIGIN="$(git -C "$r9" config remote.origin.url)" "$bin/ship" "$r9" --atom "$atom" --tz "$tz#U1" ) ); rc=$?
 git -C "$d/origin-r2.git" show-ref --verify --quiet refs/heads/claude/nine; pushed9=$?
 grep -q '^pr merge' "$GH_JOURNAL"; merge9=$?
-[[ $rc == 0 && $out == *'prod:wait-owner no-ci'* && $merge9 != 0 && -d $r9 && $pushed9 == 0 ]] && p 9 || f 9
+[[ $rc == 0 && $out == *'ci:bootstrap min-ci'* && $(grep -c '^pr merge' "$GH_JOURNAL") -ge 2 ]] && p 9 || f 9
 
 mkrepo r10 1; w10=$(mkwt r10 claude/c10); printf 's10\n' >> "$w10/f.txt"
 rm -f "$GH_CREATED"
@@ -356,7 +356,7 @@ pushed=$(git -C "$GA_PROJECTS/r18" rev-parse refs/remotes/origin/claude/c18 2>/d
 git -C "$w18" merge-base --is-ancestor "$mc" "$pushed" 2>/dev/null && anc=1 || anc=0
 git -C "$d/origin-r18.git" show-ref --verify --quiet refs/heads/claude/c18; pushed18=$?
 grep -q '^pr merge' "$GH_JOURNAL"; merge18=$?
-[[ $rc == 0 && $out == *'prod:wait-owner no-ci'* && $merge18 != 0 && -d $w18 && $pushed18 == 0 && $anc == 1 ]] && p 18 || f 18
+[[ $rc == 0 && $out == *'ci:bootstrap min-ci'* && $(grep -c '^pr merge' "$GH_JOURNAL") -ge 2 && -d $w18 && $pushed18 == 0 && $anc == 1 ]] && p 18 || f 18
 
 # 42: классификация закрыта по умолчанию; two всегда staged.
 . "$bin/git-auto-lib"

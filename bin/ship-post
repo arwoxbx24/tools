@@ -13,11 +13,12 @@ SHIP_POST_RETRY_SECONDS=${SHIP_POST_RETRY_SECONDS:-30}
 [[ $SHIP_POST_RETRY_SECONDS =~ ^[1-9][0-9]*$ ]] || { echo 'ship-post: invalid retry interval' >&2; exit 2; }
 
 dry_run=0; watch=0; submit=0; submit_wt=''; submit_atom=''; submit_tz=''; status_mode=0; status_atom=''
-submit_evidence=''; submit_files=(); filter_atom=''
+submit_evidence=''; submit_files=(); filter_atom=''; bg=0; bg_wt=''
 
 help_text='usage: ship-post [--dry-run]
        ship-post --watch [--atom <id>]
        ship-post --status <atom>
+       ship-post --break-glass <worktree> --atom <id>
        ship-post --submit <worktree> --atom <id> --tz <path#U2> --evidence <text> --files <file>...'
 usage(){ printf '%s\n' "$help_text" >&2; exit 2; }
 [[ ${1:-} == -h || ${1:-} == --help ]] && { printf '%s\n' "$help_text"; exit 0; }
@@ -32,6 +33,7 @@ while [[ $# -gt 0 ]]; do
 		--tz) submit_tz=${2:-}; shift 2 ;;
 		--evidence) submit_evidence=${2:-}; shift 2 ;;
 		--status) status_mode=1; status_atom=${2:-}; shift 2 ;;
+		--break-glass) [[ $# -ge 2 && -n $2 && $2 != --* ]] || usage; bg=1; bg_wt=${2:-}; shift 2 ;;
 		--files) shift; while [[ $# -gt 0 && $1 != -* ]]; do submit_files+=("$1"); shift; done ;;
 		--) shift; submit_files+=("$@"); break ;;
 		*) usage ;;
@@ -74,7 +76,8 @@ lock_file(){
 	echo "$SHIP_POST_STATE_DIR/locks/$(slugify "$repo").lock"
 }
 
-bd_cmd(){ (cd "$SHIP_POST_BEADS_ROOT" && env BEADS_ACTOR="$BEADS_ACTOR" bd "$@"); }
+bd_cmd(){ (cd "${atom_root:-$SHIP_POST_BEADS_ROOT}" && env BEADS_ACTOR="$BEADS_ACTOR" BEADS_DIR="${atom_root:-$SHIP_POST_BEADS_ROOT}/.beads" bd "$@"); }
+bd_home(){ (cd "$SHIP_POST_BEADS_ROOT" && env BEADS_ACTOR="$BEADS_ACTOR" BEADS_DIR="$SHIP_POST_BEADS_ROOT/.beads" bd "$@"); }
 
 submit_receipt_file(){
 	local repo=$1 wt=$2 atom=$3 sha=$4
@@ -95,6 +98,98 @@ clear_final_failure(){
 	mv -f -- "$rf.failed" "$rf.failed.resubmitted" && rm -f -- "$rf.failed.reported"
 }
 
+# ── break-glass mode ─────────────────────────────────────────────────
+
+do_break_glass(){
+	local wt=$1 atom=$2 caller actor_hint
+	[[ $watch == 0 && $dry_run == 0 && $submit == 0 && $status_mode == 0 ]] || usage_err "--break-glass cannot be combined with --watch, --dry-run, --submit or --status"
+	[[ $atom =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || usage_err "invalid atom: $atom"
+	[[ $wt == /* && -d $wt ]] || usage_err "worktree must be an absolute directory: $wt"
+	local wt_real
+	wt_real=$(realpath "$wt" 2>/dev/null) || usage_err "cannot resolve worktree: $wt"
+	[[ $wt_real == "$wt" ]] || usage_err "worktree must be absolute: $wt"
+	[[ -f $wt_real/.git && ! -d $wt_real/.git ]] || usage_err "worktree must be linked: $wt_real"
+	local wt_top
+	wt_top=$(git -C "$wt_real" rev-parse --show-toplevel 2>/dev/null) || usage_err "not a git repository: $wt_real"
+	[[ $wt_top == "$wt_real" ]] || usage_err "worktree subdirectory not allowed: $wt"
+	local registered=0 line
+	while IFS= read -r line; do [[ $line == "worktree $wt_real" ]] && registered=1; done < <(git -C "$wt_real" worktree list --porcelain)
+	[[ $registered == 1 ]] || usage_err "not a registered linked worktree: $wt_real"
+	local repo common name
+	common=$(git -C "$wt_real" rev-parse --path-format=absolute --git-common-dir) || die "cannot locate repository"
+	repo=$(dirname "$common")
+	name=$(ga_repo_of "$repo" 2>/dev/null) || name=''
+	resolve_repos
+	local allowed=0 candidate cand
+	for candidate in "${_repos[@]}"; do
+		cand=$(realpath "$candidate" 2>/dev/null) || continue
+		[[ $repo == "$cand" || $repo == "$cand"/* ]] && allowed=1
+	done
+	[[ $allowed == 1 ]] || usage_err "repository is not served by courier: $repo"
+	local branch
+	branch=$(git -C "$wt_real" symbolic-ref --short -q HEAD 2>/dev/null) || usage_err "cannot get branch"
+	case $BEADS_ACTOR in Codex|codex) caller=codex; actor_hint=Codex ;; Claude|'Claude Code'|claude) caller=claude; actor_hint='Claude Code' ;; *) usage_err "unknown BEADS_ACTOR: ${BEADS_ACTOR:-empty}; set BEADS_ACTOR='Claude Code' or BEADS_ACTOR=Codex" ;; esac
+	[[ $branch == "$caller/$atom" || $branch == "$caller/$atom"-* ]] || usage_err "branch $branch must match $caller/$atom or $caller/$atom-<topic>"
+	[[ $wt_real == */.worktrees/"$caller"/* ]] || usage_err "worktree must use .worktrees/<agent>/<task>"
+	local atom_root
+	atom_root=$(ga_beads_root "$wt_real")
+	local atom_json
+	atom_json=$(bd_cmd show "$atom" --json 2>/dev/null) || usage_err "bd show $atom failed"
+	local status assignee assignee_raw
+	status=$(jq -r '.[0].status // empty' <<< "$atom_json" 2>/dev/null)
+	assignee_raw=$(jq -r '.[0].assignee // empty' <<< "$atom_json" 2>/dev/null)
+	assignee=$assignee_raw
+	case $assignee in Codex|codex) assignee=codex ;; Claude|'Claude Code'|claude) assignee=claude ;; esac
+	[[ -n $assignee && $assignee == "$caller" ]] || usage_err "atom $atom actual assignee=${assignee_raw:-none}, expected=$caller; run: BEADS_ACTOR='$actor_hint' bd update $atom --claim"
+	BEADS_ACTOR=$assignee_raw
+	[[ $status == in_progress || $status == closed ]] || usage_err "atom $atom status=$status, need in_progress; run: BEADS_ACTOR='$actor_hint' bd update $atom --claim"
+	local head_sha rf code
+	head_sha=$(git -C "$wt_real" rev-parse HEAD) || die "cannot read HEAD"
+	rf=$(receipt_file "$repo" "$atom" "$head_sha")
+	code=''; [[ -f $rf.failed ]] && code=$(cat "$rf.failed")
+	case $code in
+		30|70|71|75) ;;
+		*) usage_err "break-glass refused: no recorded INFRA failure for $head_sha; run ship-post --status $atom" ;;
+	esac
+	read -r _ base _ <<< "$(ga_base "$wt_real" local)"
+	[[ -n $base ]] || die "cannot determine base branch"
+	git -C "$wt_real" fetch -q origin "$base" 2>/dev/null || true
+	( cd "$wt_real" && gitleaks git --redact --no-banner --log-opts "origin/$base..HEAD" ) || { echo 'ship-post: break-glass refused: gitleaks' >&2; exit 20; }
+	local err_line incident
+	err_line=$(grep -v '^[0-9-]*T[0-9:+-]* actor=' "$rf.log" 2>/dev/null | tail -1)
+	incident=$(bd_home create "[ship-post] break-glass $atom $head_sha" -t bug -p 0 	-l contour:delivery,break-glass --silent \
+		-d "$(printf 'Курьер ship-post отказал на SHA (код %s); доставку выполнил агент через break-glass.\nworktree: %s\nbranch: %s\nreceipt log: %s.log\nlast error: %s\n\n## Steps to Reproduce\nзапустить bin/ship-post: доставка SHA %s завершается кодом %s\n\n## Acceptance Criteria\nкурьер должен доставить этот SHA сам; применение break-glass — дефект доставки' "$code" "$wt_real" "$branch" "$rf" "${err_line:-нет строки ошибки}" "$head_sha" "$code")") || die "bd create failed"
+	[[ -n $incident ]] || die "bd create failed"
+	echo "incident=$incident"
+	local osha=''
+	osha=$(git -C "$wt_real" rev-parse --verify -q refs/remotes/origin/"$branch" 2>/dev/null) || osha=''
+	if [[ -n $osha ]]; then
+		git -C "$wt_real" push -q --force-with-lease="$branch:$osha" origin HEAD:refs/heads/"$branch" || { echo 'ship-post: break-glass: push failed' >&2; exit 30; }
+	else
+		git -C "$wt_real" push -q -u origin HEAD:refs/heads/"$branch" || { echo 'ship-post: break-glass: push failed' >&2; exit 30; }
+	fi
+	echo 'direct=pushed'
+	local origin pr=skipped
+	origin=$(git -C "$wt_real" remote get-url origin 2>/dev/null) || origin=''
+	if [[ -n $origin && $origin == *github.com* ]] && command -v gh >/dev/null 2>&1; then
+		local pr_out
+		if pr_out=$(gh pr create --fill --head "$branch" 2>&1); then
+			pr=$(sed -n 's@.*\(https://[^ ]*/pull/[0-9][0-9]*\).*@\1@p' <<<"$pr_out")
+			[[ -n $pr ]] || pr=skipped
+		else
+			case $pr_out in *'already exists'*)
+				pr=$(gh pr list --head "$branch" --json url -q '.[0].url' 2>/dev/null) || pr=''
+			esac
+			[[ -n $pr ]] || pr=skipped
+		fi
+	fi
+	echo "pr=$pr"
+	mkdir -p "$(dirname "$rf")" || die "cannot write break-glass receipt"
+	jq -n --arg actor "$BEADS_ACTOR" --arg timestamp "$(date -Iseconds)" --arg repo "$repo" --arg atom "$atom" --arg sha "$head_sha" --arg pr "$pr" \
+		'{actor:$actor,timestamp:$timestamp,stage:"break-glass",repo:$repo,atom:$atom,local_sha:$sha,pr:$pr}' > "$rf.break-glass.tmp" && mv "$rf.break-glass.tmp" "$rf.break-glass" || die "cannot write break-glass receipt"
+	bd_cmd update "$atom" --append-notes "break-glass used: incident $incident" >/dev/null || die "cannot append break-glass note"
+}
+
 # ── submit mode ──────────────────────────────────────────────────────
 
 do_submit(){
@@ -110,6 +205,7 @@ do_submit(){
 
 	local wt_real
 	wt_real=$(realpath "$wt" 2>/dev/null) || usage_err "cannot resolve worktree: $wt"
+	atom_root=$(ga_beads_root "$wt_real")
 	[[ $wt_real == "$wt" ]] || usage_err "worktree must be absolute: $wt"
 	[[ -f $wt_real/.git && ! -d $wt_real/.git ]] || usage_err "worktree must be linked: $wt_real"
 	local wt_top
@@ -366,18 +462,18 @@ park_atom(){
  mkdir -p "$dir/parked" || return 1
  [[ -f $dir/$rc ]] && id=$(<"$dir/$rc")
  if [[ -n $id ]]; then
-  st=$(bd_cmd show "$id" --json 2>/dev/null | jq -r '.[0].status // empty' 2>/dev/null)
+  st=$(bd_home show "$id" --json 2>/dev/null | jq -r '.[0].status // empty' 2>/dev/null)
   [[ -n $st && $st != closed ]] || id=''
  fi
  if [[ -z $id ]]; then
-  id=$(bd_cmd create "[ship-post] INFRA exit $rc" -t bug -p 0 -l contour:delivery --silent \
+  id=$(bd_home create "[ship-post] INFRA exit $rc" -t bug -p 0 -l contour:delivery --silent \
    -d "$(printf 'Курьер ship-post: отказ инфраструктуры доставки, код %s. Атомы запаркованы (метка delivery-blocked), курьер доставит их сам после починки.\n\n## Steps to Reproduce\nсм. заметки: атом, SHA, строка ошибки, лог квитанции\n\n## Acceptance Criteria\nпричина кода %s устранена; следующий проход курьера доставил атомы, метка delivery-blocked снята' "$rc" "$rc")") || return 1
   [[ -n $id ]] || return 1
   printf '%s\n' "$id" > "$dir/$rc.tmp" && mv "$dir/$rc.tmp" "$dir/$rc" || return 1
  fi
  if ! grep -qxF "$id $atom $head" "$dir/$rc.atoms" 2>/dev/null; then
   err=$(grep -v '^[0-9-]*T[0-9:+-]* actor=' "$key.log" 2>/dev/null | tail -1)
-  bd_cmd update "$id" --append-notes "$atom $head ${err:-код $rc} $key.log" >/dev/null || return 1
+  bd_home update "$id" --append-notes "$atom $head ${err:-код $rc} $key.log" >/dev/null || return 1
   bd_cmd update "$atom" --add-label delivery-blocked >/dev/null || return 1
   bd_cmd update "$atom" --append-notes "доставка запаркована: инцидент $id, код $rc; агенту ничего не делать" >/dev/null || return 1
   printf '%s\n' "$id $atom $head" >> "$dir/$rc.atoms"
@@ -419,7 +515,7 @@ ack_delivery(){
  if [[ -f $pf ]]; then
   inc=$(<"$pf")
   bd_cmd update "$atom" --remove-label delivery-blocked >/dev/null || return 1
-  bd_cmd update "$inc" --append-notes "delivered $atom $(jq -r .local_sha "$rf")" >/dev/null || return 1
+  bd_home update "$inc" --append-notes "delivered $atom $(jq -r .local_sha "$rf")" >/dev/null || return 1
   rm -f -- "$pf"
  fi
  touch "$rf.ack"
@@ -481,7 +577,7 @@ deliver_one(){
  # Existing ship owns private origin, secret scan, CI and exact-head merge gates.
  printf '%s actor=%s atom=%s sha=%s stage=ship\n' "$(date -Iseconds)" "$BEADS_ACTOR" "$atom" "$head" >> "$rf.log"
  log_start=$(stat -c %s "$rf.log" 2>/dev/null || echo 0)
- (cd "$SHIP_POST_BEADS_ROOT" && env BEADS_ACTOR="$BEADS_ACTOR" "$ship_bin" "$wt" --atom "$atom" --tz "$tz" --handover --expected-head "$head") >> "$rf.log" 2>&1
+ (cd "$SHIP_POST_BEADS_ROOT" && env BEADS_ACTOR="$BEADS_ACTOR" BEADS_DIR="${atom_root:-$SHIP_POST_BEADS_ROOT}/.beads" "$ship_bin" "$wt" --atom "$atom" --tz "$tz" --handover --expected-head "$head") >> "$rf.log" 2>&1
  rc=$?
  if [[ $rc != 0 ]]; then
   ship_rc=$rc
@@ -516,6 +612,7 @@ scan_repo(){
  [[ $jobs_max =~ ^[1-9][0-9]*$ ]] || jobs_max=8
  [[ -d $repo ]] || return 1
  repo=$(realpath "$repo") || return 1
+ atom_root=$(ga_beads_root "$repo")
  [[ $(git -C "$repo" rev-parse --show-toplevel 2>/dev/null) == "$repo" ]] || return 1
  lk=$(lock_file "$repo"); mkdir -p "$(dirname "$lk")" || return 1
  exec {fd}>"$lk"; flock -x "$fd" || return 1
@@ -531,7 +628,13 @@ scan_repo(){
   (( $(git -C "$wt" log -1 --format=%ct) >= SHIP_POST_SINCE )) || { skip=$((skip+1)); continue; }
   head=$(git -C "$wt" rev-parse HEAD) || continue
   branch=$(git -C "$wt" symbolic-ref --short -q HEAD) || { skip=$((skip+1)); continue; }
-  st=$(bd_cmd show "$atom" --json) || { failed=$((failed+1)); continue; }
+  st=$(bd_cmd show "$atom" --json) || {
+   if bd_cmd show "$atom" --json 2>&1 >/dev/null | grep -q 'not found'; then
+    uf=$(receipt_file "$repo" "$atom" "$head")
+    [[ -e $uf ]] || { mkdir -p "$(dirname "$uf")"; jq -n --arg a "$atom" --arg s "$head" '{stage:"unknown-atom",atom:$a,sha:$s}' > "$uf"; }
+    echo "skip $atom unknown-atom"; skip=$((skip+1)); continue
+   fi
+   failed=$((failed+1)); continue; }
   status=$(jq -r '.[0].status' <<<"$st")
    owner=$(jq -r '.[0].assignee // empty' <<<"$st"); actor=$(actor_name "$owner") || { [[ -n $owner || $status != closed ]] || { echo "skip $atom no assignee"; report_closed_skip "$repo" "$atom" "$head" "$branch" "$status" 'no assignee' "$wt" || failed=$((failed+1)); }; skip=$((skip+1)); continue; }
    owner=codex; [[ $actor == 'Claude Code' ]] && owner=claude
@@ -543,7 +646,9 @@ scan_repo(){
   fi
   if [[ -f $rf ]]; then
 	  case $(jq -r '.stage // empty' "$rf" 2>/dev/null) in
-	   wait-owner|prod-hold) continue ;;
+	   wait-owner) [[ -f $rf.log ]] && grep -q 'prod:wait-owner no-ci' "$rf.log" && mv -- "$rf.log" "$rf.log.no-ci" && rm -f -- "$rf" || continue ;; # dcfg-4j1mb: old no-CI stop re-runs once
+	   prod-hold) continue ;;
+	   unknown-atom) rm -f -- "$rf" ;; # atom now visible in its Beads root: deliver it
 	   'wait-owner no-ci') rm -f -- "$rf" ;; # legacy dcfg-ta2r0: ship never ran; run it once
 	   *) (BEADS_ACTOR=$actor; ack_delivery "$rf" "$atom") || failed=$((failed+1)); continue ;;
 	  esac
@@ -581,7 +686,7 @@ scan_repo(){
 
 ledger_identity(){
  local info db
- info=$(bd_cmd info --json) || return 1
+ info=$(bd_home info --json) || return 1
  db=$(jq -er '.database_path' <<<"$info") || return 1
  [[ -d $db ]] || return 1
  printf '%s|%s|%s|%s\n' "$(realpath "$SHIP_POST_BEADS_ROOT")" "$(realpath "$db")" "$(stat -Lc '%d:%i' "$db")" "$(git -C "$SHIP_POST_BEADS_ROOT" branch --show-current 2>/dev/null)"
@@ -702,6 +807,8 @@ do_watch() (
 
 if [[ $submit == 1 ]]; then
 	do_submit "$submit_wt" "$submit_atom" "$submit_tz" "$submit_evidence" "${submit_files[@]}"
+elif [[ $bg == 1 ]]; then
+	do_break_glass "$bg_wt" "$submit_atom"
 elif [[ $status_mode == 1 ]]; then
 	do_status "$status_atom"
 elif [[ $watch == 1 ]]; then

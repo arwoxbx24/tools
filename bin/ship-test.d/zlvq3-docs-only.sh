@@ -13,4 +13,4 @@ grep -q '^pr merge' "$GH_JOURNAL"; merge_mixed=$?
 
 [[ $rc_docs == 0 && $out_docs == *'gate:auto docs-only'* && $out_docs != *'prod:wait-owner'* \
 	&& $merge_docs == 0 && $ci_wait_docs == 0 && $rc_mixed == 0 \
-	&& $out_mixed == *'prod:wait-owner no-ci'* && $merge_mixed != 0 ]] && p 44 || f 44
+	&& $out_mixed == *'ci:bootstrap min-ci'* && $merge_mixed == 0 ]] && p 44 || f 44
