@@ -100,42 +100,33 @@ clear_final_failure(){
 
 # ── break-glass mode ─────────────────────────────────────────────────
 
-do_break_glass(){
-	local wt=$1 atom=$2 caller actor_hint
-	[[ $watch == 0 && $dry_run == 0 && $submit == 0 && $status_mode == 0 ]] || usage_err "--break-glass cannot be combined with --watch, --dry-run, --submit or --status"
-	[[ $atom =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || usage_err "invalid atom: $atom"
-	[[ $wt == /* && -d $wt ]] || usage_err "worktree must be an absolute directory: $wt"
-	local wt_real
+check_agent_worktree(){ # <wt> <atom> — validates the linked worktree and atom owner; sets wt_real repo name branch caller actor_hint atom_root status assignee_raw
+	local wt=$1 atom=$2
+	local line candidate cand wt_top common allowed registered atom_json assignee
 	wt_real=$(realpath "$wt" 2>/dev/null) || usage_err "cannot resolve worktree: $wt"
+	atom_root=$(ga_beads_root "$wt_real")
 	[[ $wt_real == "$wt" ]] || usage_err "worktree must be absolute: $wt"
 	[[ -f $wt_real/.git && ! -d $wt_real/.git ]] || usage_err "worktree must be linked: $wt_real"
-	local wt_top
 	wt_top=$(git -C "$wt_real" rev-parse --show-toplevel 2>/dev/null) || usage_err "not a git repository: $wt_real"
 	[[ $wt_top == "$wt_real" ]] || usage_err "worktree subdirectory not allowed: $wt"
-	local registered=0 line
+	registered=0
 	while IFS= read -r line; do [[ $line == "worktree $wt_real" ]] && registered=1; done < <(git -C "$wt_real" worktree list --porcelain)
 	[[ $registered == 1 ]] || usage_err "not a registered linked worktree: $wt_real"
-	local repo common name
 	common=$(git -C "$wt_real" rev-parse --path-format=absolute --git-common-dir) || die "cannot locate repository"
 	repo=$(dirname "$common")
 	name=$(ga_repo_of "$repo" 2>/dev/null) || name=''
 	resolve_repos
-	local allowed=0 candidate cand
+	allowed=0
 	for candidate in "${_repos[@]}"; do
 		cand=$(realpath "$candidate" 2>/dev/null) || continue
 		[[ $repo == "$cand" || $repo == "$cand"/* ]] && allowed=1
 	done
 	[[ $allowed == 1 ]] || usage_err "repository is not served by courier: $repo"
-	local branch
 	branch=$(git -C "$wt_real" symbolic-ref --short -q HEAD 2>/dev/null) || usage_err "cannot get branch"
 	case $BEADS_ACTOR in Codex|codex) caller=codex; actor_hint=Codex ;; Claude|'Claude Code'|claude) caller=claude; actor_hint='Claude Code' ;; *) usage_err "unknown BEADS_ACTOR: ${BEADS_ACTOR:-empty}; set BEADS_ACTOR='Claude Code' or BEADS_ACTOR=Codex" ;; esac
 	[[ $branch == "$caller/$atom" || $branch == "$caller/$atom"-* ]] || usage_err "branch $branch must match $caller/$atom or $caller/$atom-<topic>"
 	[[ $wt_real == */.worktrees/"$caller"/* ]] || usage_err "worktree must use .worktrees/<agent>/<task>"
-	local atom_root
-	atom_root=$(ga_beads_root "$wt_real")
-	local atom_json
 	atom_json=$(bd_cmd show "$atom" --json 2>/dev/null) || usage_err "bd show $atom failed"
-	local status assignee assignee_raw
 	status=$(jq -r '.[0].status // empty' <<< "$atom_json" 2>/dev/null)
 	assignee_raw=$(jq -r '.[0].assignee // empty' <<< "$atom_json" 2>/dev/null)
 	assignee=$assignee_raw
@@ -143,6 +134,14 @@ do_break_glass(){
 	[[ -n $assignee && $assignee == "$caller" ]] || usage_err "atom $atom actual assignee=${assignee_raw:-none}, expected=$caller; run: BEADS_ACTOR='$actor_hint' bd update $atom --claim"
 	BEADS_ACTOR=$assignee_raw
 	[[ $status == in_progress || $status == closed ]] || usage_err "atom $atom status=$status, need in_progress; run: BEADS_ACTOR='$actor_hint' bd update $atom --claim"
+}
+
+do_break_glass(){
+	local wt=$1 atom=$2 caller actor_hint
+	[[ $watch == 0 && $dry_run == 0 && $submit == 0 && $status_mode == 0 ]] || usage_err "--break-glass cannot be combined with --watch, --dry-run, --submit or --status"
+	[[ $atom =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || usage_err "invalid atom: $atom"
+	[[ $wt == /* && -d $wt ]] || usage_err "worktree must be an absolute directory: $wt"
+	check_agent_worktree "$wt" "$atom"
 	local head_sha rf code
 	head_sha=$(git -C "$wt_real" rev-parse HEAD) || die "cannot read HEAD"
 	rf=$(receipt_file "$repo" "$atom" "$head_sha")
@@ -203,45 +202,7 @@ do_submit(){
 	[[ $wt == /* && -d $wt ]] || usage_err "worktree must be an absolute directory: $wt"
 	[[ ${#files[@]} -gt 0 ]] || usage_err "--files list empty"
 
-	local wt_real
-	wt_real=$(realpath "$wt" 2>/dev/null) || usage_err "cannot resolve worktree: $wt"
-	atom_root=$(ga_beads_root "$wt_real")
-	[[ $wt_real == "$wt" ]] || usage_err "worktree must be absolute: $wt"
-	[[ -f $wt_real/.git && ! -d $wt_real/.git ]] || usage_err "worktree must be linked: $wt_real"
-	local wt_top
-	wt_top=$(git -C "$wt_real" rev-parse --show-toplevel 2>/dev/null) || usage_err "not a git repository: $wt_real"
-	[[ $wt_top == "$wt_real" ]] || usage_err "worktree subdirectory not allowed: $wt"
-	local registered=0 line
-	while IFS= read -r line; do [[ $line == "worktree $wt_real" ]] && registered=1; done < <(git -C "$wt_real" worktree list --porcelain)
-	[[ $registered == 1 ]] || usage_err "not a registered linked worktree: $wt_real"
-
-	local repo common name
-	common=$(git -C "$wt_real" rev-parse --path-format=absolute --git-common-dir) || die "cannot locate repository"
-	repo=$(dirname "$common")
-	name=$(ga_repo_of "$repo" 2>/dev/null) || name=''
-	resolve_repos
-	local allowed=0 candidate cand
-	for candidate in "${_repos[@]}"; do
-		cand=$(realpath "$candidate" 2>/dev/null) || continue
-		[[ $repo == "$cand" || $repo == "$cand"/* ]] && allowed=1
-	done
-	[[ $allowed == 1 ]] || usage_err "repository is not served by courier: $repo"
-	local branch caller
-	branch=$(git -C "$wt_real" symbolic-ref --short -q HEAD 2>/dev/null) || usage_err "cannot get branch"
-		case $BEADS_ACTOR in Codex|codex) caller=codex; actor_hint=Codex ;; Claude|'Claude Code'|claude) caller=claude; actor_hint='Claude Code' ;; *) usage_err "unknown BEADS_ACTOR: ${BEADS_ACTOR:-empty}; set BEADS_ACTOR='Claude Code' or BEADS_ACTOR=Codex" ;; esac
-	[[ $branch == "$caller/$atom" || $branch == "$caller/$atom"-* ]] || usage_err "branch $branch must match $caller/$atom or $caller/$atom-<topic>"
-	[[ $wt_real == */.worktrees/"$caller"/* ]] || usage_err "worktree must use .worktrees/<agent>/<task>"
-
-	local atom_json
-	atom_json=$(bd_cmd show "$atom" --json 2>/dev/null) || usage_err "bd show $atom failed"
-	local status assignee assignee_raw
-	status=$(jq -r '.[0].status // empty' <<< "$atom_json" 2>/dev/null)
-	assignee_raw=$(jq -r '.[0].assignee // empty' <<< "$atom_json" 2>/dev/null)
-	assignee=$assignee_raw
-	case $assignee in Codex|codex) assignee=codex ;; Claude|'Claude Code'|claude) assignee=claude ;; esac
-	[[ -n $assignee && $assignee == "$caller" ]] || usage_err "atom $atom actual assignee=${assignee_raw:-none}, expected=$caller; run: BEADS_ACTOR='$actor_hint' bd update $atom --claim"
-	BEADS_ACTOR=$assignee_raw
-	[[ $status == in_progress || $status == closed ]] || usage_err "atom $atom status=$status, need in_progress; run: BEADS_ACTOR='$actor_hint' bd update $atom --claim"
+	check_agent_worktree "$wt" "$atom"
 
 	local tz_path=${tz%%#*} tz_suffix="#${tz#*#}" tz_abs
 	[[ $tz_suffix =~ ^#U[0-9]+$ ]] || usage_err "--tz must end with #U<number>"
