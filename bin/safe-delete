@@ -108,15 +108,30 @@ case "$cmd" in
     exit 1
     ;;
   file)
-    [[ $# -eq 1 ]] || refuse 'usage'; delete_file "$1" || exit 1; exit 0
+    [[ $# -ge 1 ]] || refuse 'usage'
+    declare -A seen=(); paths=()
+    for raw in "$@"; do
+      check_file "$raw"
+      [[ ${seen[$p]:-} ]] && continue
+      seen[$p]=1; paths+=("$raw")
+    done
+    for fp in "${paths[@]}"; do delete_file "$fp" || exit 1; done
+    exit 0
     ;;
   tmp)
-    [[ $# -eq 1 ]] || refuse 'usage'
-    p=$(realpath -e "$1") || refuse "нет пути: $1"
-    [[ $p == /tmp/* && $p != /tmp ]] || refuse "вне /tmp: $p"
-    rm -r -- "$p" || exit 1
-    log tmp "$p" - - - - deleted || exit 1
-    echo "удалено: $p | основание: tmp, без копии"
+    [[ $# -ge 1 ]] || refuse 'usage'
+    declare -A seen=(); paths=()
+    for raw in "$@"; do
+      p=$(realpath -e "$raw") || refuse "нет пути: $raw"
+      [[ $p == /tmp/* && $p != /tmp ]] || refuse "вне /tmp: $p"
+      [[ ${seen[$p]:-} ]] && continue
+      seen[$p]=1; paths+=("$p")
+    done
+    for tp in "${paths[@]}"; do
+      rm -r -- "$tp" || exit 1
+      log tmp "$tp" - - - - deleted || exit 1
+      echo "удалено: $tp | основание: tmp, без копии"
+    done
     exit 0
     ;;
   dir)
