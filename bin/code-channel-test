@@ -6,7 +6,7 @@ tmp=$(mktemp -d "$root/.code-channel-test.XXXXXX")
 nogit=$(mktemp -d /tmp/cc-nogit.XXXXXX)
 trap 'rm -rf -- "$tmp" "$nogit"' EXIT
 bin=$tmp/bin project=$tmp/project tz=$tmp/tz secret=$tmp/secret.env log=$tmp/args.log runs=$tmp/runs.jsonl tlog=$tmp/timeout.args
-legacy=$tmp/legacy.json disabled=$tmp/disabled.json go=$tmp/go.json ladder=$tmp/ladder.json resume=$tmp/resume.json codexone=$tmp/codexone.json gocodex=$tmp/gocodex.json goaudit=$tmp/goaudit.json ocfg=$tmp/ocfg.json goidle=$tmp/goidle.json
+legacy=$tmp/legacy.json disabled=$tmp/disabled.json go=$tmp/go.json ladder=$tmp/ladder.json resume=$tmp/resume.json codexone=$tmp/codexone.json gocodex=$tmp/gocodex.json goaudit=$tmp/goaudit.json ocfg=$tmp/ocfg.json goidle=$tmp/goidle.json goalt=$tmp/goalt.json
 mkdir -p "$bin" "$project" "$tmp/state"
 printf 'VIBECODE_API_KEY=x\nOPENROUTER_API_KEY=x\n' >"$secret"
 git -C "$project" init -q
@@ -30,6 +30,7 @@ printf '%s\n' '{"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2
 printf '%s\n' '{"ladder":[{"id":"codex","enabled":true,"model":"","effort":"high"}]}' >"$codexone"
 printf '%s\n' '{"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash"},{"id":"codex","enabled":true,"model":"","effort":"high"}]}' >"$gocodex"
 printf '%s\n' '{"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash","audit_model":"opencode-go/audit-free"}]}' >"$goaudit"
+printf '%s\n' '{"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash","alt_models":["opencode-go/deepseek-v4.1-flash"]}]}' >"$goalt"
 printf '%s\n' '{"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash"}],"opencode_config":"config/opencode-channel.json"}' >"$ocfg"
 printf '%s\n' '{"resume_idle_limit":3,"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash"}]}' >"$goidle"
 
@@ -197,6 +198,11 @@ CC_CONFIG=$goaudit check 52 '[[ $rc == 0 ]]' \
 
 CC_CONFIG=$gocodex check 53 '[[ $rc == 0 ]] && grep -q "^codex " "$log" && [[ $err == *switch\ go→codex\ rc=1* ]]' \
   env OPENCODE_RC=1 CODEX_TOUCH=codex-touch SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" auto "$project" "$tz"
+CC_CONFIG=$goalt check 61 '[[ $rc == 0 ]] && grep -Fq -- "-m opencode-go/deepseek-v4.1-flash" "$log"' \
+  env OPENCODE_RC=0 SQLITE_RESULT='opencode-go|deepseek-v4.1-flash' "$root/bin/code-channel" go "$project" "$tz" --model opencode-go/deepseek-v4.1-flash
+
+CC_CONFIG=$goalt check 62 '[[ $rc == 3 && $err == *"модель не в конфиге: opencode-go/other"* && ! -s $log ]]' \
+  "$root/bin/code-channel" go "$project" "$tz" --model opencode-go/other
 
 CC_CONFIG=$go check 54 '[[ $rc == 0 ]] && grep -Fq -- "stdin=/dev/null" "$log"' \
   env OPENCODE_RC=0 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
@@ -228,3 +234,4 @@ CC_CONFIG=$go check 60 '[[ $rc == 0 ]]' \
 
 [[ $ok == 57 ]] && echo 'PASS 57/57'
 [[ $ok == 60 ]] && echo 'PASS 60/60'
+[[ $ok == 62 ]] && echo 'PASS 62/62'
