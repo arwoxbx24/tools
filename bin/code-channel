@@ -106,7 +106,7 @@ cc_scope_check() {
 }
 run_form() (
     export CODE_CHANNEL_ACTIVE=1
-    id=$1; start=$SECONDS; pre=-; run=-; hdr=; tmpjson=; resphdr=; respbody=; codetmp=
+    id=$1; start=$SECONDS; pre=-; run=-; hdr=; tmpjson=; resphdr=; respbody=; codetmp=; oc_out=
     IFS=$'\034' read -r model resume_model audit_model name secret base effort < <(entry_for "$id" | jq -r '[.model,.resume_model // "",.audit_model // "",.key // "",.secret // "",.base // "",.effort // ""] | join("\u001c")') || exit 3
     if [[ -n $override && $override != "$model" && $override != "$resume_model" && $override != "$audit_model" ]]; then
         entry_for "$id" | jq -e --arg m "$override" '((.alt_models? // []) | index($m)) != null' >/dev/null 2>&1 || {
@@ -161,6 +161,7 @@ run_form() (
         [[ -z $resphdr ]] || unlink -- "$resphdr"
         [[ -z $respbody ]] || unlink -- "$respbody"
         [[ -z $codetmp ]] || unlink -- "$codetmp"
+        [[ -z $oc_out ]] || unlink -- "$oc_out"
         printf 'code-channel: mode=%s form=%s provider=%s model=%s precheck=%s run=%s t=%s\n' "$mode" "$id" "$provider" "$model" "$pre" "$run" "$((SECONDS-start))" >&2
         trap - EXIT; exit "$rc"
     }
@@ -292,12 +293,14 @@ run_form() (
     else
         oc_args=(--title "$id_run") oc_prompt=$prompt
         idle=0
+        oc_out=$(mktemp "${TMPDIR:-/tmp}/code-channel-oc-XXXXXX") || exit 3
         seg_before=$(form_snap)
         cc_pre=$(cc_status)
         id_sid_sql="select id from session where title='$id_run' order by time_created desc limit 1"
         while :; do
-            timeout 1800 opencode run "${oc_args[@]}" -m "$model" "$oc_prompt" < /dev/null; run=$?
+            timeout 1800 opencode run "${oc_args[@]}" -m "$model" "$oc_prompt" < /dev/null 2>&1 | tee "$oc_out"; run=${PIPESTATUS[0]}
             [[ $run == 0 ]] && break
+            grep -q 'Upstream request failed:' "$oc_out" && { printf 'code-channel: отказ провайдера, без продолжения сессии\n' >&2; break; }
             sid=$(sqlite3 -readonly "$db" "$id_sid_sql" 2>/dev/null)
             [[ -n $sid ]] || break
             seg_after=$(form_snap)
