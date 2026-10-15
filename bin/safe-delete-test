@@ -417,5 +417,36 @@ printf 'v\n' > "$d/tmp-file/f60"
 "$bin/safe-delete" --bk "$bk" tmp "$d/tmp-file/f60" /etc/hostname >/dev/null 2>&1; r60=$?
 if [[ $r60 == 2 && -f "$d/tmp-file/f60" && -e /etc/hostname ]]; then echo 'PASS T60'; ok=$((ok+1)); else echo "FAIL T60: rc=$r60"; fi
 
-[[ $ok == 60 ]] || exit 1
-echo "итог: PASS 60, FAIL 0"
+# T61: worktree with git-ignored top-level .repowise cache deletes cleanly
+printf '' > "$d/empty-gitconfig"
+git -C "$d/w" worktree add -q -b wt-repowise "$d/wt-repowise" main
+echo "PROBE0 add=$(echo $?); wt=$(ls -a "$d/wt-repowise"); branch=$(git -C "$d/w" worktree list 2>&1)"
+printf '.repowise/\n' > "$d/wt-repowise/.gitignore"
+mkdir -p "$d/wt-repowise/.repowise"
+printf 'cache\n' > "$d/wt-repowise/.repowise/cache.pkl"
+GIT_CONFIG_GLOBAL="$d/empty-gitconfig" "$bin/safe-delete" --bk "$bk" worktree "$d/wt-repowise" >/dev/null; r61=$?
+c61=$(awk -F '\t' -v p="$d/wt-repowise/.repowise/cache.pkl" '$2 == "file" && $3 == p && $8 == "deleted" { c=$6 } END { print c }' "$bk/ledger.tsv")
+if [[ $r61 == 0 && ! -d $d/wt-repowise && -f $c61 ]]; then echo 'PASS T61'; ok=$((ok+1)); else echo "FAIL T61: rc=$r61 copy=$c61"; fi
+echo "PROBE1 $(env GIT_CONFIG_GLOBAL="$d/empty-gitconfig" git -C "$d/wt-repowise" check-ignore -v -- .repowise/cache.pkl 2>&1; echo rc=$?)"
+echo "PROBE2 $(env GIT_CONFIG_GLOBAL="$d/empty-gitconfig" git -C "$d/wt-repowise" check-ignore -q -- "$d/wt-repowise/.repowise/cache.pkl" 2>&1; echo rc=$?)"
+echo "PROBE3 gitignore=$(cat "$d/wt-repowise/.gitignore" 2>&1)"
+echo "PROBE4 files=$(ls -a "$d/wt-repowise" 2>&1)"
+echo "PROBE5 $(cd "$d/wt-repowise" 2>/dev/null && cd .. && env GIT_CONFIG_GLOBAL="/tmp/opencode-empty" git -C "$(basename "$d/wt-repowise")" check-ignore -v -- .repowise/cache.pkl 2>&1; echo rc=$?)"
+
+# T62: non-ignored .repowise inside a worktree still refuses
+git -C "$d/w" worktree add -q -b wt-rw-ni "$d/wt-rw-ni" main
+mkdir -p "$d/wt-rw-ni/.repowise"
+printf 'x\n' > "$d/wt-rw-ni/.repowise/x"
+env GIT_CONFIG_GLOBAL="$d/empty-gitconfig" git -C "$d/wt-rw-ni" check-ignore -q -- .repowise/x; ni_ig=$?
+err=$(GIT_CONFIG_GLOBAL="$d/empty-gitconfig" "$bin/safe-delete" --bk "$bk" worktree "$d/wt-rw-ni" 2>&1); r62=$?
+if [[ $r62 == 2 && $ni_ig == 1 && $err == *'запрещённый сегмент'* && -d $d/wt-rw-ni ]]; then echo 'PASS T62'; ok=$((ok+1)); else echo "FAIL T62: rc=$r62 ni_ig=$ni_ig err=$err"; fi
+
+# T63: .repowise file in main checkout refuses in file mode
+mkdir -p "$d/w/.repowise"
+printf 'f\n' > "$d/w/.repowise/f"
+printf '.repowise/\n' > "$d/w/.gitignore"
+"$bin/safe-delete" --bk "$bk" file "$d/w/.repowise/f" >/dev/null 2>&1; r63=$?
+if [[ $r63 == 2 && -f "$d/w/.repowise/f" ]]; then echo 'PASS T63'; ok=$((ok+1)); else echo "FAIL T63: rc=$r63"; fi
+
+[[ $ok == 63 ]] || exit 1
+echo "итог: PASS 63, FAIL 0"
