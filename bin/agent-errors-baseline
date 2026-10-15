@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+set -u
+
+CORPUS=/root/.claude/projects
+DAYS=7
+
+usage() {
+  cat <<'EOF'
+usage: agent-errors-baseline [--days N] [--corpus DIR]
+
+Weekly error-rate report over agent transcripts (*.jsonl) against 4 owner targets:
+  bash_rate<=3%, denial_rate<=0.4%, path_errors<=5 per 7 days (scaled by --days),
+  injected_chars<=50% of 6165599/7 x days.
+Prints measures, then PASS/FAIL lines, then "targets=4 pass=N fail=M secs=S".
+rc 0 always: reports, does not gate. bash + jq + awk only.
+EOF
+}
+
+args=("$@")
+i=0
+while [[ $i -lt ${#args[@]} ]]; do
+  case ${args[$i]} in
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    --days)
+      if [[ $((i + 1)) -lt ${#args[@]} ]]; then DAYS=${args[$((i + 1))]}; else usage >&2; exit 0; fi
+      i=$((i + 2))
+      ;;
+    --corpus)
+      if [[ $((i + 1)) -lt ${#args[@]} ]]; then CORPUS=${args[$((i + 1))]}; else usage >&2; exit 0; fi
+      i=$((i + 2))
+      ;;
+    *)
+      usage >&2
+      exit 0
+      ;;
+  esac
+done
+
+[[ $DAYS =~ ^[1-9][0-9]*$ ]] || DAYS=7
+start=$SECONDS
+
+JQPROG='
+def blocktext:
+  if type == "string" then .
+  elif type == "array" then (map(if type == "object" then ((.text // "") | tostring) elif type == "string" then . else "" end) | join(" "))
+  else "" end;
+reduce (
+  inputs as $line
+  | (input_filename // "") as $fn
+  | try ($line | fromjson) catch empty
+  | select(type == "object")
+  | [., $fn]
+) as $p
+  ( {bc:0, be:0, dn:0, pe:0, ic:0, sc:0, seen:{ }};
+    $p[0] as $r | $p[1] as $fn
+    | ($r.type // "") as $t
+    | if $t == "attachment" then
+        (($r.attachment.type // "") as $at
+         | if $at == "hook_success" or $at == "hook_additional_context" then
+             (($r.attachment.content // "" | tostring | length) as $len
+              | .ic += $len
+              | if ($fn | contains("/subagents/")) then .sc += $len else . end)
+           else . end)
+      elif ($r.message // null) != null then
+        (($r.message.content // []) as $bs
+         | (if ($bs | type) == "array" then $bs else [] end) as $bs
+         | reduce ($bs[]) as $b
+             (.;
+              if ($b | type) == "object" then
+                (($b.type // "") as $bt
+                 | if $bt == "tool_use" and (($b.id // "") != "") and (($b.name // "") != "") then
+                     (.seen[($fn + "\u0000" + $b.id)] = $b.name
+                      | if $b.name == "Bash" then .bc += 1 else . end)
+                   elif $bt == "tool_result" and (($b.tool_use_id // "") != "") then
+                     (($b.content | blocktext) as $txt
+                      | (($b.is_error == true) | if . then 1 else 0 end) as $err
+                      | ($err == 1 and ($txt | test("^\\s*Permission to use ")) and ($txt | contains("has been denied"))) as $den
+                      | (($txt | contains("No such file or directory")) or ($txt | contains("does not exist"))) as $pem
+                      | (.seen[($fn + "\u0000" + $b.tool_use_id)] // "") as $nm
+                      | if $nm != "" then
+                          (if $err == 1 and $nm == "Bash" then .be += 1 else . end)
+                          | (if $nm == "Bash" and $den then .dn += 1 else . end)
+                          | (if $err == 1 and $pem and ($nm == "Bash" or $nm == "Read") then .pe += 1 else . end)
+                        else . end)
+                   else . end)
+              else . end))
+      else . end)
+  | [.bc, .be, .dn, .pe, .ic, .sc] | @tsv
+'
+
+stats=$(find "$CORPUS" -type f -name '*.jsonl' -mtime "-$DAYS" -size +1k \
+  -exec jq -R -r -n "$JQPROG" {} + 2>/dev/null || true)
+
+awk -v days="$DAYS" -v secs=$((SECONDS - start)) '
+  { bc+=$1; be+=$2; dn+=$3; pe+=$4; ic+=$5; sc+=$6 }
+  END {
+    bc+=0; be+=0; dn+=0; pe+=0; ic+=0; sc+=0
+    br = bc > 0 ? 100.0 * be / bc : 0
+    dr = bc > 0 ? 100.0 * dn / bc : 0
+    pt = 5.0 * days / 7.0
+    # baseline 6165599 chars/7d: own pre-change run, --days 7, 2026-10-15
+    it = 0.5 * 6165599.0 * days / 7.0
+    printf "bash_calls=%d\n", bc
+    printf "bash_errors=%d\n", be
+    printf "bash_rate=%.2f%%\n", br
+    printf "denials=%d\n", dn
+    printf "denial_rate=%.2f%%\n", dr
+    printf "path_errors=%d\n", pe
+    printf "injected_chars=%d\n", ic
+    printf "subagent_injected_chars=%d\n", sc
+    pass = 0; fail = 0
+    if (br <= 3) {
+      printf "PASS bash_rate %.2f%% <= 3\n", br; pass++
+    } else { printf "FAIL bash_rate %.2f%% > 3\n", br; fail++ }
+    if (dr <= 0.4) {
+      printf "PASS denial_rate %.2f%% <= 0.4\n", dr; pass++
+    } else { printf "FAIL denial_rate %.2f%% > 0.4\n", dr; fail++ }
+    if (pe <= pt) {
+      printf "PASS path_errors %d <= %.2f (5/7 x %d)\n", pe, pt, days; pass++
+    } else { printf "FAIL path_errors %d > %.2f (5/7 x %d)\n", pe, pt, days; fail++ }
+    if (ic <= it) {
+      printf "PASS injected_chars %d <= %d (50%% of 6165599/7 x %d)\n", ic, it, days; pass++
+    } else { printf "FAIL injected_chars %d > %d (50%% of 6165599/7 x %d)\n", ic, it, days; fail++ }
+    printf "targets=4 pass=%d fail=%d secs=%d\n", pass, fail, secs
+  }' <<<"$stats"
+exit 0

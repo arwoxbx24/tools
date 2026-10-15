@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# ponytail: bash+jq scripted hook test; upgrade path = bats suite
+set -u
+
+PATH="$(cd -- "$(dirname -- "$0")" && pwd):$PATH"
+rules="/tmp/route-hint-test-$$.json"
+trap 'rm -f "$rules"' EXIT
+ok=0
+
+jq -n '{routes:[
+  {id:"fail1",kind:"failure",error_regex:"No such file",route:"use ls -la first"},
+  {id:"deny1",kind:"deny",error_regex:"permission denied",route:"use sudo"}
+]}' >"$rules"
+
+payload='{"hook_event_name":"PostToolUseFailure","tool_name":"Bash","tool_input":{"command":"ls /nonexistent-claude-1"},"error":"Exit code 2\nls: cannot access '"'"'/nonexistent-claude-1'"'"': No such file or directory"}'
+
+out=$(printf '%s' "$payload" | ROUTES_FILE="$rules" route-hint); rc=$?
+if [[ $rc == 0 ]] &&
+   jq -e '.hookSpecificOutput.hookEventName == "PostToolUseFailure" and
+          (.hookSpecificOutput.additionalContext | contains("route-hint (fail1):") and contains("use ls -la first"))' <<<"$out" >/dev/null &&
+   [[ $(printf '%s' "$out" | jq -r '.hookSpecificOutput | keys | sort | join(",")') == 'additionalContext,hookEventName' ]]; then
+  echo 'PASS 1'; ((ok++))
+else echo "FAIL 1: exit $rc out=<$out>"; fi
+if grep -q 'permission denied' <<<"$out"; then echo 'FAIL 1b: deny leak'; else echo 'PASS 1b'; fi
+
+out=$(printf '{"hook_event_name":"PostToolUseFailure","tool_name":"Bash","tool_input":{},"error":"some other text here"}' | ROUTES_FILE="$rules" route-hint); rc=$?
+if [[ $rc == 0 && -z $out ]]; then echo 'PASS 2'; ((ok++)); else echo "FAIL 2: exit $rc out=<$out>"; fi
+
+out=$(printf '%s' "$payload" | ROUTES_FILE=/nonexistent route-hint); rc=$?
+if [[ $rc == 0 && -z $out ]]; then echo 'PASS 3'; ((ok++)); else echo "FAIL 3: exit $rc out=<$out>"; fi
+
+out=$(printf '{bad json' | ROUTES_FILE="$rules" route-hint); rc=$?
+if [[ $rc == 0 && -z $out ]]; then echo 'PASS malformed'; else echo "FAIL malformed: exit $rc out=<$out>"; fi
+
+out=$(printf '{"tool_name":"Bash","tool_input":{}}' | ROUTES_FILE="$rules" route-hint); rc=$?
+if [[ $rc == 0 && -z $out ]]; then echo 'PASS no error'; else echo "FAIL no error: exit $rc out=<$out>"; fi
+
+jq -n '{routes:[{id:"d1",kind:"deny",error_regex:"No such file",route:"deny route text"}]}' >"$rules"
+out=$(printf '%s' "$payload" | ROUTES_FILE="$rules" route-hint); rc=$?
+if [[ $rc == 0 && -z $out ]]; then echo 'PASS deny-only'; ((ok++)); else echo "FAIL deny-only: exit $rc out=<$out>"; fi
+
+h=$(route-hint --help); rc=$?
+if [[ $rc == 0 && $h == *'usage:'* ]]; then echo 'PASS help'; ((ok++)); else echo "FAIL help: exit $rc out=<$h>"; fi
+
+[[ $ok == 5 ]]

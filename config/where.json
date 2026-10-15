@@ -1,0 +1,70 @@
+{
+  "settings-user": {
+    "paths": ["/root/.claude/settings.json"],
+    "note": "user hooks, env, plugins; /root/.claude/settings.local.json and projects/.claude/settings.json do not exist"
+  },
+  "settings-project": {
+    "paths": ["/root/workspaces/projects/.claude/settings.local.json"],
+    "note": "project settings (settings.local.json)"
+  },
+  "settings-managed": {
+    "paths": ["/etc/claude-code/managed-settings.json"],
+    "note": "read-only, never edit"
+  },
+  "laws": {
+    "paths": ["/etc/claude-code/CLAUDE.md", "/root/CLAUDE.md", "/root/workspaces/projects/CLAUDE.md", "/root/workspaces/projects/docs/LAWS-PROCEDURES.md", "/root/workspaces/projects/.claude/rules"],
+    "note": "law files, procedures and rule dir for Claude agents"
+  },
+  "codex": {
+    "paths": ["/root/.codex/AGENTS.md"],
+    "note": "agent law for Codex"
+  },
+  "contour-config": {
+    "paths": ["/root/workspaces/system/contour-config.git"],
+    "note": "git --git-dir /root/workspaces/system/contour-config.git log -p -- at/that/path from /root; tracks /root/CLAUDE.md, /root/.claude/settings.json, /root/.codex/AGENTS.md"
+  },
+  "tools": {
+    "paths": ["/root/workspaces/tools/bin", "/root/workspaces/tools/TOOLS-REGISTRY.md"],
+    "note": "agent tools and their registry"
+  },
+  "registry": {
+    "paths": ["/root/workspaces/REGISTRY.md"],
+    "note": "install paths and working dirs of services; projects/REGISTRY.md does not exist"
+  },
+  "pm2": {
+    "paths": ["/root/workspaces/tools/ecosystem.config.js"],
+    "note": "pm2 startOrReload ecosystem.config.js --only name, then pm2 save"
+  },
+  "beads": {
+    "paths": ["/root/workspaces/projects/.beads"],
+    "note": "shared issue tracker; call as bd -C /root/workspaces/projects"
+  },
+  "specs": {
+    "paths": ["/root/workspaces/projects/specs"],
+    "note": "specification archive"
+  },
+  "tz": {
+    "paths": ["/root/workspaces/projects/docs/tz", "/root/workspaces/tools/docs/tz"],
+    "note": "task specs (tz) for projects and tools"
+  },
+  "worktrees": {
+    "paths": ["/root/workspaces/projects/.worktrees", "/root/workspaces/tools/.worktrees"],
+    "note": "git worktrees of projects and tools"
+  },
+  "research": {
+    "paths": ["/root/workspaces/projects/docs/JURISDICTION.md", "/root/workspaces/projects/docs/research"],
+    "note": "jurisdiction map and research notes"
+  },
+  "routes": {
+    "paths": ["/root/workspaces/projects/.claude/rules/routes.json", "/root/workspaces/projects/.claude/rules/permission-routes.md"],
+    "note": "routing rules for permissions and tools"
+  },
+  "secrets": {
+    "paths": ["/root/workspaces/secrets"],
+    "note": "names only, never values; known name: inbox/anthropic.env (ANTHROPIC_API_KEY); scan with tools/bin/secret-gate check|scan"
+  },
+  "claude-state": {
+    "paths": ["/root/.claude/projects", "/root/.claude/sessions", "/root/.claude/skills", "/root/.claude/plugins/cache"],
+    "note": "transcripts, sessions, skills, plugin cache"
+  }
+}

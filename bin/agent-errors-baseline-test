@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+set -u
+
+bin=$(cd -- "$(dirname -- "$0")" && pwd)/agent-errors-baseline
+[[ -f $bin && -x $bin ]] || { echo "FAIL: tool missing: $bin" >&2; exit 1; }
+
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/aeb-test-XXXXXX")
+trap 'rm -rf "$tmp"' EXIT
+
+pad=$(printf 'z%.0s' {1..200})
+
+# file a: use+result in DIFFERENT records; 1 ok use, 1 hook attachment (10 chars), bad jsonl line, blank line
+cat >"$tmp/a.jsonl" <<EOF
+{"type":"assistant","pad":"$pad","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"echo hi"}}]}}
+{"type":"user","pad":"$pad","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","is_error":false,"content":"hi"}]}}
+{"type":"attachment","pad":"$pad","attachment":{"type":"hook_additional_context","content":"0123456789"}}
+{"type":"user" oops
+EOF
+while [[ $(wc -c <"$tmp/a.jsonl") -le 1100 ]]; do printf '{"type":"pad","pad":"%s"}\n' "$pad" >>"$tmp/a.jsonl"; done
+printf '\n' >>"$tmp/a.jsonl"
+
+# file b: same-record pairing (toolu_2), later-record pairing (toolu_3), ok Bash result whose
+# text mentions "has been denied" (not a denial), Read error (not a bash error), real denial
+cat >"$tmp/b.jsonl" <<EOF
+{"type":"assistant","pad":"$pad","message":{"content":[{"type":"tool_use","id":"toolu_2","name":"Bash","input":{"command":"ls /x"}},{"type":"tool_result","tool_use_id":"toolu_2","is_error":true,"content":"ls: cannot access '/x': No such file or directory"}]}}
+{"type":"user","pad":"$pad","message":{"content":[{"type":"tool_use","id":"toolu_3","name":"Bash","input":{"command":"rm -rf /"}}]}}
+{"type":"user","pad":"$pad","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_3","is_error":true,"content":"tool_use request has been denied by policy"}]}}
+{"type":"assistant","pad":"$pad","message":{"content":[{"type":"tool_use","id":"toolu_4","name":"Bash","input":{"command":"grep -r policy /log"}},{"type":"tool_result","tool_use_id":"toolu_4","is_error":false,"content":"req has been denied by policy: 1 hits"}]}}
+{"type":"user","pad":"$pad","message":{"content":[{"type":"tool_use","id":"toolu_5","name":"Read","input":{"file_path":"/x"}},{"type":"tool_result","tool_use_id":"toolu_5","is_error":true,"content":"file does not exist"}]}}
+{"type":"user","pad":"$pad","message":{"content":[{"type":"tool_use","id":"toolu_6","name":"Bash","input":{"command":"rm -rf /"}}]}}
+{"type":"user","pad":"$pad","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_6","is_error":true,"content":"Permission to use Bash (command rm -rf /) has been denied"}]}}
+EOF
+while [[ $(wc -c <"$tmp/b.jsonl") -le 1100 ]]; do printf '{"type":"pad","pad":"%s"}\n' "$pad" >>"$tmp/b.jsonl"; done
+
+out=$("$bin" --corpus "$tmp" --days 7) || { echo 'FAIL: tool rc nonzero' >&2; exit 1; }
+chk() { grep -Eq -- "$1" <<<"$out" || { echo "FAIL: expected [$1]" >&2; echo "$out" >&2; exit 1; }; }
+chk '^bash_calls=5$'
+chk '^bash_errors=3$'
+chk '^denials=1$'
+chk '^path_errors=2$'
+chk '^injected_chars=10$'
+chk '^subagent_injected_chars=0$'
+chk '^FAIL bash_rate 60.00% > 3$'
+chk '^FAIL denial_rate 20.00% > 0.4$'
+chk '^PASS path_errors 2 <= 5.00 \(5/7 x 7\)$'
+chk '^PASS injected_chars 10 <= 3082799 \(50% of 6165599/7 x 7\)$'
+chk '^targets=4 pass=2 fail=2 secs=[0-9]+$'
+
+"$bin" --corpus "$tmp" --days 1 >/dev/null || { echo 'FAIL: --days 1 rc nonzero' >&2; exit 1; }
+echo PASS

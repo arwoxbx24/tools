@@ -15,6 +15,10 @@
 |---|---|---|---|---|
 | `bd` | единственный трекер (`ready/show/create/update --claim/close/remember`) | `bd <команда>`; в hh-scoring — `hh-scoring/.tools/bd` | все | штатно |
 | `share` | короткая ссылка владельцу на файл (`b244.ru/<slug>`) | `share <файл>` | Claude, Codex | штатно |
+| `where` (bin/where, dcfg-gl57f.2) | найти реальные пути конфигов/законов/трекера по ключу из `config/where.json` — вместо угадывания путей; `where --check` — проверить существование; `WHERE_FILE` — другой манифест | `where <слово>` (поиск по ключу, без слова — все ключи с заметкой); `where --check` | все | штатно |
+| `route-hint` (bin/route-hint, dcfg-gl57f.2) | PostToolUseFailure hook: после обычного сбоя подсказывает маршрут из `routes.json` (только `kind=="failure"`, no match/сбой → без вывода, rc 0); `ROUTES_FILE` — файл правил | hook `./bin/route-hint` (stdin JSON → `additionalContext`) | Claude | штатно |
+| `goal-guard` (bin/goal-guard, dcfg-gl57f.2) | Stop-hook страж десинк-ловушки: блокирует негативный статус без маршрутов, не даёт закрыть атомы; cap 8 блоков за сессию (`GOAL_GUARD_MAX`), в блоке пишет ближайшую `bd close`-команду | `bin/goal-guard` (stdin/stdout Claude hooks); самотест `bin/goal-guard-test` | Claude | штатно |
+| `agent-errors-baseline` (bin/, dcfg-gl57f.2) | недельный замер ошибок агента против 4 целей владельца (bash_rate, denial_rate, path_errors, injected_chars); pm2-джоб `agent-errors-weekly` (пн 06:00) | `bin/agent-errors-baseline --days N --corpus DIR` (rc 0 всегда); самотест `bin/agent-errors-baseline-test` | оркестратор | штатно |
 | `tools/bin/pm2-boot` | загрузка/перезапуск процессов PM2 fail-closed (spec:025) | `pm2-boot <имя>` | Claude, Codex | штатно |
 | `tools/bin/pm2-boot-test`, `pm2-chaos`, `pm2-loop-guard`, `pm2-loop-guard-test`, `pm2-eco-lint` | тесты/страж PM2 (spec:025) | по имени | Claude, Codex | штатно |
 | `tools/bin/restic` | бэкапы (spec backup-coverage) | `restic …` через скрипты `tools/scripts/` | Codex | штатно |
