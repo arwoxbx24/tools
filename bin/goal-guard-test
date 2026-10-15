@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+set -u
+
+dir=$(cd -- "$(dirname -- "$0")" && pwd)
+d="${TMPDIR:-/tmp}/goal-guard-test-$$"
+mkdir -p "$d"
+trap 'rm -rf "$d"' EXIT
+ok=0
+
+cat > "$d/bd" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' '[{"id":"U3-test1","title":"dcfg первый -abcd] x"},{"id":"U3-test2","title":"второй -abcd] y"}]'
+STUB
+chmod 755 "$d/bd"
+
+bash -n "$dir/goal-guard" && { echo 'PASS C: bash -n'; ok=$((ok+1)); } || echo 'FAIL C: bash -n'
+
+help_out=$("$dir/goal-guard" --help); help_rc=$?
+[[ $help_rc == 0 && $help_out == usage:* ]] && { echo 'PASS H: --help'; ok=$((ok+1)); } || echo "FAIL H: rc=$help_rc"
+
+run() { # sid msg
+  printf '{"session_id":"%s","background_tasks":[],"last_assistant_message":"%s","transcript_path":""}' "$1" "$2" |
+    GOAL_GUARD_STATE="$d" PATH="$d:$PATH" "$dir/goal-guard"
+}
+
+out=$(run abcd 'done'); rc=$?
+r=$(jq -er '.reason' <<<"$out" 2>/dev/null) || r=''
+cnt=$(<"$d/goal-guard-abcd")
+if [[ $rc == 0 && $out == \{\"decision\":\"block\"* && $r == 'goal-guard: атомы сессии в работе: U3-test1 U3-test2.'* && \
+  $r == *'Следующая команда: bd -C /root/workspaces/projects close U3-test1 --reason "<команда> → <вывод>"'* && $cnt == 1 ]]; then
+  echo 'PASS A: atom block + next-command line'; ok=$((ok+1))
+else echo "FAIL A: rc=$rc out=$out cnt=$cnt"; fi
+
+out=$(run abcd 'Статус: BLOCKED'); rc=$?
+r=$(jq -er '.reason' <<<"$out" 2>/dev/null) || r=''
+last=$(tail -n1 <<<"$r")
+if [[ $rc == 0 && $r == 'goal-guard: негативный статус без маршрутов восстановления — допиши строки'* && \
+  $last == 'Маршрут: <что сделал> → <итог>' ]]; then
+  echo 'PASS D: negative status + Маршрут template line'; ok=$((ok+1))
+else echo "FAIL D: rc=$rc out=$out last=$last"; fi
+
+printf '%s\n' 8 > "$d/goal-guard-t3b0"
+out=$(run t3b0 'done'); rc=$?
+cnt=$(<"$d/goal-guard-t3b0")
+if [[ $rc == 0 && -z $out && $cnt == 8 ]]; then
+  echo 'PASS B: counter at max → passthrough rc 0, empty stdout'; ok=$((ok+1))
+else echo "FAIL B: rc=$rc out=$out cnt=$cnt"; fi
+
+[[ $ok == 5 ]] || { echo "FAIL: $ok/5"; exit 1; }
+echo 'PASS all'
