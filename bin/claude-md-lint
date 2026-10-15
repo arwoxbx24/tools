@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# why: read-only audit of project CLAUDE.md files (bloat >200 lines, copied ancestor lines, broken @imports)
+set -u
+
+case ${1:-} in
+  -h|--help) echo 'usage: claude-md-lint [root]   WARN lines + files= summary, rc 0; rc 2 when root is not a directory'; exit 0 ;;
+esac
+
+root=${1:-/root/workspaces/projects}
+if [[ ! -d $root ]]; then
+  echo "claude-md-lint: not a directory: $root" >&2
+  exit 2
+fi
+root=$(cd -- "$root" && pwd)
+trim(){ sed 's/^[[:space:]]*//;s/[[:space:]]*$//'; }
+
+over=0 dupf=0 brk_total=0 fcount=0
+while IFS= read -r f; do
+  [[ -n $f ]] || continue
+  (( fcount++ ))
+  lines=$(wc -l <"$f"); lines=${lines//[[:space:]]/}
+  anc=''
+  fdir=$(dirname -- "$f")
+  d=$fdir
+  while :; do
+    d=$(dirname -- "$d")
+    [[ -r $d/CLAUDE.md ]] && anc+="$d/CLAUDE.md"$'\n'
+    [[ $d == / ]] && break
+  done
+  [[ -r $HOME/.claude/CLAUDE.md ]] && anc+="$HOME/.claude/CLAUDE.md"$'\n'
+  [[ -r /etc/claude-code/CLAUDE.md ]] && anc+='/etc/claude-code/CLAUDE.md'$'\n'
+  dup=0
+  [[ -n $anc ]] && dup=$(trim <"$f" | grep -vE '^$' | awk 'length($0)>=20' | grep -Fx -f \
+    <(printf '%s' "$anc" | while IFS= read -r c; do trim <"$c"; done | grep -vE '^$' | sort -u) | wc -l)
+  dup=${dup//[[:space:]]/}
+  brk=0
+  for p in $(awk '
+      /^[[:space:]]*```/ { fence = !fence; next }
+      fence { next }
+      {
+        gsub(/`[^`]*`/, "", $0)
+        n = split($0, a, /[[:space:]]+/)
+        for (i = 1; i <= n; i++) {
+          t = a[i]
+          if (substr(t, 1, 1) != "@") continue
+          p = substr(t, 2)
+          sub(/[^A-Za-z0-9_\/.~:-]+$/, "", p)
+          if (p ~ /[\/.]/) print p
+        }
+      }' "$f"); do
+    case $p in
+      ~/*) q=$HOME/${p#~/} ;;
+      /*) q=$p ;;
+      *) q=$fdir/$p ;;
+    esac
+    [[ -e $q ]] || (( brk++ ))
+  done
+  if (( lines > 200 || dup > 0 || brk > 0 )); then
+    printf 'WARN %s lines=%s dup=%s broken=%s\n' "$f" "$lines" "$dup" "$brk"
+    (( lines > 200 )) && over=$((over+1))
+    (( dup > 0 )) && dupf=$((dupf+1))
+    brk_total=$((brk_total+brk))
+  fi
+done < <(find "$root" -maxdepth 4 \( -name node_modules -o -name .git -o -name .worktrees -o -name .agent-work \) -prune -o -name CLAUDE.md -print)
+printf 'files=%d over200=%d dup_files=%d broken_imports=%d\n' "$fcount" "$over" "$dupf" "$brk_total"
