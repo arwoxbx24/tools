@@ -1375,8 +1375,6 @@ module.exports = {
       name: 'ship-post',
       time: true,
       merge_logs: true,
-      watch: ['/root/workspaces/tools/bin/ship-post', '/root/workspaces/tools/bin/git-auto-lib'],
-      watch_delay: 2000,
       script: '/root/workspaces/tools/bin/ship-post',
       interpreter: 'bash',
       args: '--watch',

@@ -130,6 +130,7 @@ check_agent_worktree(){ # <wt> <atom> — validates the linked worktree and atom
 	done
 	[[ $allowed == 1 ]] || usage_err "repository is not served by courier: $repo"
 	branch=$(git -C "$wt_real" symbolic-ref --short -q HEAD 2>/dev/null) || usage_err "cannot get branch"
+	if [[ -z ${BEADS_ACTOR:-} ]]; then case $wt_real in */.worktrees/claude/*) BEADS_ACTOR='Claude Code' ;; */.worktrees/codex/*) BEADS_ACTOR=Codex ;; esac; fi
 	case $BEADS_ACTOR in Codex|codex) caller=codex; actor_hint=Codex ;; Claude|'Claude Code'|claude) caller=claude; actor_hint='Claude Code' ;; *) usage_err "unknown BEADS_ACTOR: ${BEADS_ACTOR:-empty}; set BEADS_ACTOR='Claude Code' or BEADS_ACTOR=Codex" ;; esac
 	[[ $branch == "$caller/$atom" || $branch == "$caller/$atom"-* ]] || usage_err "branch $branch must match $caller/$atom or $caller/$atom-<topic>"
 	[[ $wt_real == */.worktrees/"$caller"/* ]] || usage_err "worktree must use .worktrees/<agent>/<task>"
@@ -269,7 +270,7 @@ do_submit(){
 			return 0
 		fi
 	else
-		[[ $status == in_progress ]] || usage_err "atom $atom already closed with dirty worktree"
+		[[ $status == in_progress || ( ${auto_mode:-0} == 1 && $status == closed ) ]] || usage_err "atom $atom already closed with dirty worktree"
 		local index_path index_backup
 		index_path=$(git -C "$wt_real" rev-parse --git-path index) || die "cannot locate index"
 		index_backup="$index_path.ship-post-submit.$$"
@@ -320,15 +321,20 @@ do_submit(){
 	head_sha=$(git -C "$wt_real" rev-parse HEAD)
 	[[ -z $(git -C "$wt_real" status --porcelain=v1 --untracked-files=all) ]] || die "worktree not clean after commit"
 
+	if [[ ${auto_mode:-0} == 1 ]]; then
+		bd_cmd update "$atom" --append-notes "ship-post auto-submit $head_sha" >/dev/null || die "cannot append auto-submit note"
+	else
 	local close_out
 	close_out=$(bd_cmd close "$atom" --reason "submitted $head_sha: $evidence" 2>&1) || {
 		local rc=$?
 		echo "ship-post: commit ok but bd close failed (exit $rc): $close_out" >&2
 		return "$rc"
 	}
+	fi
 
 	clear_final_failure "$repo" "$atom" "$head_sha" || die "cannot clear final failure"
 	write_submit_receipt "$repo" "$wt_real" "$atom" "$head_sha" "$evidence" || die "cannot write submission receipt"
+	if [[ ${auto_mode:-0} == 1 ]]; then echo "auto-submit $atom $head_sha"; return 0; fi
 	echo "ship-post: closed $atom"
 	return 0
 }
@@ -594,6 +600,8 @@ scan_repo(){
   atom=$(sed -n 's/^Atom: *//p' <<<"$msg" | head -1)
   tz=$(sed -n 's/^ТЗ: *//p' <<<"$msg" | head -1)
   agent=$(sed -n 's/^Agent: *//p' <<<"$msg" | head -1)
+  auto_submit_scan "$repo" "$wt"; rc=$?
+  case $rc in 0) skip=$((skip+1)); continue ;; 1) failed=$((failed+1)); continue ;; esac
   [[ $atom =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && -n $tz ]] || { skip=$((skip+1)); continue; }
   [[ -z $filter_atom || $atom == "$filter_atom" ]] || continue
   (( $(git -C "$wt" log -1 --format=%ct) >= SHIP_POST_SINCE )) || { skip=$((skip+1)); continue; }
@@ -656,6 +664,75 @@ scan_repo(){
  [[ $failed == 0 ]]
 }
 
+# dcfg-74h33.2 U1: courier commits and submits a closed atom's dirty worktree.
+# Returns 0 handled/skipped, 1 failed, 2 not applicable (caller keeps today's path).
+auto_submit_scan(){ # <repo> <wt>
+ local repo=$1 wt=$2 wt_real branch agent rem cand='' head msg changed line rest p p_esc want closed_iso closed_ep head_ep auto_hours owner st status desc notes reason tzref tzp tzsuf tzabs tzrel inlist=0 tzc=() inc_paths=()
+ local paths=() missing=()
+ branch=$(git -C "$wt" symbolic-ref --short -q HEAD) || return 2
+ [[ $branch =~ ^(claude|codex)/(.+)$ ]] || return 2
+ agent=${BASH_REMATCH[1]}; rem=${BASH_REMATCH[2]}
+ changed=$(git -C "$wt" status --porcelain=v1 --untracked-files=all) || return 1
+ [[ -n $changed ]] || return 2
+ wt_real=$(realpath "$wt") || return 2
+ while :; do
+  if [[ $rem =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+   resolve_atom_root "$repo" "$rem"
+   if bd_cmd show "$rem" --json >/dev/null 2>&1; then cand=$rem; break; fi
+  fi
+  [[ $rem == *-* ]] || return 2
+  rem=${rem%-*}
+ done
+ [[ -z ${filter_atom:-} || $cand == "$filter_atom" ]] || return 2
+ msg=$(git -C "$wt" log -1 --format=%B) || return 1
+ grep -Fxq "Atom: $cand" <<<"$msg" && return 2
+ head=$(git -C "$wt" rev-parse HEAD) || return 1
+ st=$(bd_cmd show "$cand" --json) || return 2
+ status=$(jq -r '.[0].status // empty' <<<"$st")
+  [[ $status == closed ]] || return 0
+  auto_skip(){ report_closed_skip "$repo" "$cand" "$head" "$branch" closed "$1" "$wt" || return 1; echo "skip $cand $1"; return 0; }
+ case $agent in claude) want='Claude Code' ;; *) want=Codex ;; esac
+ owner=$(jq -r '.[0].assignee // empty' <<<"$st")
+ [[ $(actor_name "$owner" 2>/dev/null) == "$want" ]] || { auto_skip 'auto-submit: assignee mismatch'; return; }
+ reason=$(jq -r '.[0].close_reason // empty' <<<"$st")
+ reason=${reason#"${reason%%[![:space:]]*}"}
+ case ${reason^^} in PARTIAL*|BLOCKED*|FAILED*|UNVERIFIED*|'NOT DONE'*) auto_skip 'auto-submit: negative close reason'; return ;; esac
+ [[ -n $reason ]] || { auto_skip 'auto-submit: no close reason'; return; }
+ while IFS= read -r line; do
+  rest=${line:3}
+  if [[ $rest == *' -> '* ]]; then paths+=("${rest% -> *}" "${rest##* -> }"); else paths+=("$rest"); fi
+ done <<<"$changed"
+ desc=$(jq -r '.[0].description // empty' <<<"$st"); notes=$(jq -r '.[0].notes // empty' <<<"$st")
+ tzref=$(printf '%s\n%s\n' "$desc" "$notes" | sed -n -E 's/^(ТЗ|TZ): *([^[:space:]]+#U[0-9]+)[[:space:]]*$/\2/p' | head -1)
+ if [[ -z $tzref ]]; then
+  for p in "${paths[@]}"; do [[ $p == docs/tz/*.md && $p != docs/tz/*/* ]] && tzc+=("$p"); done
+  (( ${#tzc[@]} == 1 )) && tzref="${tzc[0]}#U1"
+ fi
+ [[ -n $tzref ]] || { auto_skip 'auto-submit: no TZ'; return; }
+ tzp=${tzref%%#*}; tzsuf=${tzref#*#}
+ [[ $tzp == /* ]] || tzp="$wt_real/$tzp"
+ tzabs=$(realpath -m "$tzp") || { auto_skip 'auto-submit: no TZ'; return; }
+ [[ $tzabs == "$wt_real"/* && -f $tzabs ]] || { auto_skip 'auto-submit: no TZ'; return; }
+ tzrel=${tzabs#"$wt_real"/}
+ for p in "${paths[@]}"; do [[ $p == "$tzrel" ]] && inlist=1; done
+ (( inlist == 1 )) || { auto_skip 'auto-submit: no TZ'; return; }
+  for p in "${paths[@]}"; do
+   [[ $p == "$tzrel" ]] && continue
+   p_esc=$(printf '%s' "$p" | sed 's/[][\.*^$()+?{|]/\\&/g')
+   grep -Eq -- "(^|[^A-Za-z0-9_./-])${p_esc}([^A-Za-z0-9_./-]|$)" "$tzabs" || missing+=("$p")
+  done
+  (( ${#missing[@]} == 0 )) || { auto_skip "auto-submit: files not named in TZ: ${missing[*]}"; return; }
+  # dcfg-74h33.2 U3: stale guard — only a fresh close of a commit newer than HEAD triggers auto-submit.
+  auto_hours=${SHIP_POST_AUTO_HOURS:-24}; [[ $auto_hours =~ ^[0-9]+$ ]] || auto_hours=24
+   closed_iso=$(jq -r '.[0].closed_at // empty' <<<"$st")
+   closed_ep=$(date -d "$closed_iso" +%s 2>/dev/null) || return 2
+   head_ep=$(git -C "$wt" log -1 --format=%ct) || return 2
+  [[ $closed_ep -ge $head_ep ]] || { echo "skip $cand dirty worktree: close older than HEAD or ${auto_hours}h"; return 0; }
+  [[ $(( $(date +%s) - closed_ep )) -le $(( auto_hours * 3600 )) ]] || { echo "skip $cand dirty worktree: close older than HEAD or ${auto_hours}h"; return 0; }
+  if [[ ${dry_run:-0} == 1 ]]; then echo "auto-submit-ready $cand $wt"; return 0; fi
+  ( BEADS_ACTOR=$want; auto_mode=1; do_submit "$wt" "$cand" "$tzrel#$tzsuf" "$reason" "${paths[@]}" ) || return 1
+}
+
 ledger_identity(){
  local info db
  info=$(bd_home info --json) || return 1
@@ -689,8 +766,9 @@ queue_atom(){
 do_watch() (
  resolve_repos
  local identity seq=0 ev next pid reader_fd journal_pid watcher_lock tmp repo stored partial='' id
- local workers=()
+ local workers=() code_sums
  identity=$(ledger_identity) || die 'cannot establish ledger identity'
+ code_sums=$(sha256sum "$bin/ship-post" "$bin/git-auto-lib") || die 'cannot hash courier code'
  mkdir -p "$SHIP_POST_STATE_DIR/pending" || return 1
  exec {watcher_lock}>"$SHIP_POST_STATE_DIR/watch.lock"
  flock -n "$watcher_lock" || die 'watcher already active'
@@ -747,6 +825,9 @@ do_watch() (
  journal_pid=$JOURNAL_PID; exec {reader_fd}<&"${JOURNAL[0]}"
  while :; do
   for pid in "${workers[@]}"; do kill -0 "$pid" 2>/dev/null || die 'repository worker exited; restart required'; done
+  if [[ $(sha256sum "$bin/ship-post" "$bin/git-auto-lib" 2>/dev/null) != "$code_sums" ]] && ! pgrep -f -- "$bin/ship .*--handover" >/dev/null; then
+   echo 'ship-post: code changed, idle restart' >&2; exit 0
+  fi
   IFS= read -r -t 1 ev <&"$reader_fd"; next=$?
   if [[ $next != 0 ]]; then
    if (( next > 128 )); then partial+=$ev; continue; fi
