@@ -66,7 +66,7 @@ INFRA-отказы (30/70/71/75/прочие) паркуются: метка `de
 | `ship` | 70 | GitHub or fetch failure | yes, retry after connectivity/auth service recovery |
 | `ship` | 75 | repository lock timeout | yes |
 | `ship` | 80 | TЗ path not accepted | no, fix TЗ path |
-| `ship-post` | 21 | no remote PR result yet; `deliver_one` proceeds to `ship` | intermediate, not a terminal result |
+| `ship-post` | 21 | no remote PR result yet, or only a closed unmerged PR with the same head; `deliver_one` proceeds to `ship` | intermediate, not a terminal result |
 | `ship-post` | 22 | matching remote PR is open; `deliver_one` proceeds to `ship` | intermediate, not a terminal result |
 | `ship-post` | 23 | GitHub query failed or repository is not private | query failure may be temporary; privacy denial is not |
 | `ship-post` | 24 | remote result does not match the submitted SHA/state | no, reconcile before retry |

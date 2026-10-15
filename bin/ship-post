@@ -406,6 +406,7 @@ remote_result(){
  [[ $(jq 'length' <<<"$result") == 0 ]] && return 21
  remote_open=$(jq -c --arg h "$head" '[.[] | select(.headRefOid==$h and .state=="OPEN")][0] // empty' <<<"$result")
  [[ -n $remote_open ]] && return 22
+ jq -e --arg h "$head" 'any(.[]; .headRefOid==$h and .state=="CLOSED")' <<<"$result" >/dev/null && return 21
  return 24
 }
 

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -uo pipefail
+case ${1:-} in --help|-h) echo 'usage: bash bin/ship-post-test [--help|-h] - run ship-post regression checks; SHIP_POST_TEST_GROUP selects a group'; exit 0 ;; esac
 
 bin=$(cd -- "$(dirname -- "$0")" && pwd)
 root=$(mktemp -d)
@@ -44,6 +45,9 @@ MOCKSHIP
 if [[ $1 == repo ]]; then echo '{"isPrivate":true}'; exit; fi
 if [[ -n ${MOCK_PR_HEAD:-} && ! -s $SHIP_POST_TEST_DIR/merged ]]; then
  jq -n --arg h "$MOCK_PR_HEAD" --arg c "${MOCK_CHECK_CONCLUSION:-}" '[{headRefOid:$h,state:"OPEN",statusCheckRollup:[{conclusion:$c}]}]'; exit
+fi
+if [[ -n ${MOCK_PR_CLOSED:-} ]]; then
+ jq -n --arg h "$MOCK_PR_CLOSED" '[{headRefOid:$h,state:"CLOSED",url:"https://github.com/test/private/pull/2",mergeCommit:null,statusCheckRollup:[]}]'; exit
 fi
 if [[ -s $SHIP_POST_TEST_DIR/merged ]]; then
  jq -Rs '[split("\n")[] | select(length>0) | {headRefOid:.,state:"MERGED",url:"https://github.com/test/private/pull/1",mergeCommit:{oid:"merged-test"},statusCheckRollup:[]}]' "$SHIP_POST_TEST_DIR/merged"
@@ -364,6 +368,14 @@ test_stream_errors(){
  [[ $rc == 1 && $out == *'ledger identity changed'* ]] && pass identity_refused || fail identity_refused "$out rc=$rc"
 }
 
+test_remote_result_closed(){
+ local d head impl=${SHIP_POST_TEST_IMPL:-"$bin/ship-post"} rc out
+ d="$root/rr"; make_repo "$d" || exit 1; make_mocks "$d"; head=$(git -C "$d/repo" rev-parse HEAD)
+ out=$(export HOME="$d/home" PATH="$d/bin:/usr/bin:/bin" SHIP_POST_TEST_DIR="$d" MOCK_PR_CLOSED=$head; bash -c 'eval "$(sed -n "/^remote_result(){/,/^}/p" "$1")"; remote_result "$2" "$3" codex/dcfg-rr.1' _ "$impl" "$d/repo" "$head" 2>&1); rc=$?
+ assert_rc RR1 21 "$rc" "$out"
+ out=$(export HOME="$d/home" PATH="$d/bin:/usr/bin:/bin" SHIP_POST_TEST_DIR="$d" MOCK_PR_CLOSED=0000000000000000000000000000000000000000; bash -c 'eval "$(sed -n "/^remote_result(){/,/^}/p" "$1")"; remote_result "$2" "$3" codex/dcfg-rr.1' _ "$impl" "$d/repo" "$head" 2>&1); rc=$?
+ assert_rc RR2 24 "$rc" "$out"
+}
 test_closed_skip_reason(){
  local out rc
  setup_submit closed_branch codex/not-the-atom
@@ -864,7 +876,7 @@ elif [[ ${SHIP_POST_TEST_GROUP:-all} == recovery ]]; then
 	elif [[ ${SHIP_POST_TEST_GROUP:-all} == adr35 ]]; then
 	 test_adr35
 else
-	 test_dryrun_mocks; test_valid_actors; test_rejections; test_hook_and_retry; test_closed_retry; test_delivery; test_beads_root_fallback; test_live_sync; test_watch; test_recovery; test_stream_errors; test_closed_skip_reason; test_concurrent_repositories; test_watch_lock_released; test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery; test_actor_alias; test_nested_repo; test_final_states; test_submit_conflict_preflight; test_u15; test_adr30; test_park; test_park_live; test_hints; test_status; test_break_glass; test_auto_submit
+	 test_dryrun_mocks; test_valid_actors; test_rejections; test_hook_and_retry; test_closed_retry; test_remote_result_closed; test_delivery; test_beads_root_fallback; test_live_sync; test_watch; test_recovery; test_stream_errors; test_closed_skip_reason; test_concurrent_repositories; test_watch_lock_released; test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery; test_actor_alias; test_nested_repo; test_final_states; test_submit_conflict_preflight; test_u15; test_adr30; test_park; test_park_live; test_hints; test_status; test_break_glass; test_auto_submit
 fi
 T=$root
 mkdir -p "$T/br/.beads"; git init -q "$T/br"

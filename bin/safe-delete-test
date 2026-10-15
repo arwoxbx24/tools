@@ -305,6 +305,28 @@ git -C "$d/w" checkout -q main
 kept46=$(git -C "$d/w" branch --list local/z)
 if [[ $rc == 2 && -n $kept46 ]]; then echo 'PASS T46'; ok=$((ok+1)); else echo "FAIL T46: rc=$rc br=$kept46"; fi
 
+# T64-T66: local ref removable when its SHA is archived as an origin archive tag
+git -C "$d/w" checkout -q -b arch/ok main
+git -C "$d/w" commit -q --allow-empty -m t64
+oksha64=$(git -C "$d/w" rev-parse arch/ok)
+git -C "$d/w" push -q origin "refs/heads/arch/ok:refs/tags/archive/arch-ok-20261015"
+git -C "$d/w" checkout -q -b arch/bad main
+git -C "$d/w" commit -q --allow-empty -m t65
+git -C "$d/w" push -q origin "refs/heads/main:refs/tags/archive/arch-bad-20261015"
+git -C "$d/w" checkout -q -b arch/none main
+git -C "$d/w" commit -q --allow-empty -m t66
+git -C "$d/w" checkout -q main
+"$bin/safe-delete" --bk "$bk" branch "$d/w" arch/ok >/dev/null; r64=$?
+gone64=$(git -C "$d/w" branch --list arch/ok)
+l64=$(awk -F '\t' -v p="$d/w:arch/ok" -v s="$oksha64" '$2=="branch" && $3==p && $4==s && $8=="deleted" { n=NR } END { print n }' "$bk/ledger.tsv")
+err64=$("$bin/safe-delete" --bk "$bk" branch "$d/w" arch/bad 2>&1); r65=$?
+kept65=$(git -C "$d/w" branch --list arch/bad)
+"$bin/safe-delete" --bk "$bk" branch "$d/w" arch/none 2>/dev/null; r66=$?
+kept66=$(git -C "$d/w" branch --list arch/none)
+if [[ $r64 == 0 && -z $gone64 && -n $l64 ]]; then echo 'PASS T64 archived_sha'; ok=$((ok+1)); else echo "FAIL T64: rc=$r64 br=$gone64 line=$l64"; fi
+if [[ $r65 == 2 && $err64 == *'нет на origin'* && -n $kept65 ]]; then echo 'PASS T65 wrong_sha'; ok=$((ok+1)); else echo "FAIL T65: rc=$r65 br=$kept65 err=$err64"; fi
+if [[ $r66 == 2 && -n $kept66 ]]; then echo 'PASS T66 no_tag'; ok=$((ok+1)); else echo "FAIL T66: rc=$r66 br=$kept66"; fi
+
 # T47-T51: self-contained stand detection
 rm -rf "$d/stand" "$d/proj" "$d/ext" "$d/outer"
 mkdir -p "$d/stand"
@@ -448,5 +470,5 @@ printf '.repowise/\n' > "$d/w/.gitignore"
 "$bin/safe-delete" --bk "$bk" file "$d/w/.repowise/f" >/dev/null 2>&1; r63=$?
 if [[ $r63 == 2 && -f "$d/w/.repowise/f" ]]; then echo 'PASS T63'; ok=$((ok+1)); else echo "FAIL T63: rc=$r63"; fi
 
-[[ $ok == 63 ]] || exit 1
-echo "итог: PASS 63, FAIL 0"
+[[ $ok == 66 ]] || exit 1
+echo "итог: PASS 66, FAIL 0"
