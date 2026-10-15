@@ -264,10 +264,13 @@ $f"; done
     shah=$(git -C "$repo" ls-remote origin "refs/heads/$br" | awk -v r="refs/heads/$br" '$2==r{print $1}') || exit 1
     if [[ -z $shah ]]; then
       sha=$(git -C "$repo" rev-parse --verify --quiet "refs/heads/$br") || sha=
-      git -C "$repo" merge-base --is-ancestor "$sha" origin/main 2>/dev/null || {
-        [[ -n $sha && $GH == true ]] || refuse "нет на origin: $br"
-        m=$(gh pr list --head "$br" --state merged --repo "$rr" --json headRefOid -q '.[].headRefOid') || fail "gh pr list --state merged"
-        grep -qxF -- "$sha" <<<"$m" || refuse "нет на origin: $br"; }
+      arch=$(git -C "$repo" ls-remote origin "refs/tags/archive/${br//\//-}-*" | awk -v s="$sha" '$1==s{print $1}') || exit 1
+      if [[ -z $arch ]]; then
+        git -C "$repo" merge-base --is-ancestor "$sha" origin/main 2>/dev/null || {
+          [[ -n $sha && $GH == true ]] || refuse "нет на origin: $br"
+          m=$(gh pr list --head "$br" --state merged --repo "$rr" --json headRefOid -q '.[].headRefOid') || fail "gh pr list --state merged"
+          grep -qxF -- "$sha" <<<"$m" || refuse "нет на origin: $br"; }
+      fi
       git -C "$repo" update-ref -d "refs/heads/$br" "$sha" || exit 1
       log branch "$(realpath "$repo"):$br" "$sha" - - - deleted || exit 1
       exit 0
