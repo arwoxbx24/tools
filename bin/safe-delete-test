@@ -305,6 +305,28 @@ git -C "$d/w" checkout -q main
 kept46=$(git -C "$d/w" branch --list local/z)
 if [[ $rc == 2 && -n $kept46 ]]; then echo 'PASS T46'; ok=$((ok+1)); else echo "FAIL T46: rc=$rc br=$kept46"; fi
 
+# T64-T66: local ref removable when its SHA is archived as an origin archive tag
+git -C "$d/w" checkout -q -b arch/ok main
+git -C "$d/w" commit -q --allow-empty -m t64
+oksha64=$(git -C "$d/w" rev-parse arch/ok)
+git -C "$d/w" push -q origin "refs/heads/arch/ok:refs/tags/archive/arch-ok-20261015"
+git -C "$d/w" checkout -q -b arch/bad main
+git -C "$d/w" commit -q --allow-empty -m t65
+git -C "$d/w" push -q origin "refs/heads/main:refs/tags/archive/arch-bad-20261015"
+git -C "$d/w" checkout -q -b arch/none main
+git -C "$d/w" commit -q --allow-empty -m t66
+git -C "$d/w" checkout -q main
+"$bin/safe-delete" --bk "$bk" branch "$d/w" arch/ok >/dev/null; r64=$?
+gone64=$(git -C "$d/w" branch --list arch/ok)
+l64=$(awk -F '\t' -v p="$d/w:arch/ok" -v s="$oksha64" '$2=="branch" && $3==p && $4==s && $8=="deleted" { n=NR } END { print n }' "$bk/ledger.tsv")
+err64=$("$bin/safe-delete" --bk "$bk" branch "$d/w" arch/bad 2>&1); r65=$?
+kept65=$(git -C "$d/w" branch --list arch/bad)
+"$bin/safe-delete" --bk "$bk" branch "$d/w" arch/none 2>/dev/null; r66=$?
+kept66=$(git -C "$d/w" branch --list arch/none)
+if [[ $r64 == 0 && -z $gone64 && -n $l64 ]]; then echo 'PASS T64 archived_sha'; ok=$((ok+1)); else echo "FAIL T64: rc=$r64 br=$gone64 line=$l64"; fi
+if [[ $r65 == 2 && $err64 == *'нет на origin'* && -n $kept65 ]]; then echo 'PASS T65 wrong_sha'; ok=$((ok+1)); else echo "FAIL T65: rc=$r65 br=$kept65 err=$err64"; fi
+if [[ $r66 == 2 && -n $kept66 ]]; then echo 'PASS T66 no_tag'; ok=$((ok+1)); else echo "FAIL T66: rc=$r66 br=$kept66"; fi
+
 # T47-T51: self-contained stand detection
 rm -rf "$d/stand" "$d/proj" "$d/ext" "$d/outer"
 mkdir -p "$d/stand"
@@ -417,5 +439,36 @@ printf 'v\n' > "$d/tmp-file/f60"
 "$bin/safe-delete" --bk "$bk" tmp "$d/tmp-file/f60" /etc/hostname >/dev/null 2>&1; r60=$?
 if [[ $r60 == 2 && -f "$d/tmp-file/f60" && -e /etc/hostname ]]; then echo 'PASS T60'; ok=$((ok+1)); else echo "FAIL T60: rc=$r60"; fi
 
-[[ $ok == 60 ]] || exit 1
-echo "итог: PASS 60, FAIL 0"
+# T61: worktree with git-ignored top-level .repowise cache deletes cleanly
+printf '' > "$d/empty-gitconfig"
+git -C "$d/w" worktree add -q -b wt-repowise "$d/wt-repowise" main
+echo "PROBE0 add=$(echo $?); wt=$(ls -a "$d/wt-repowise"); branch=$(git -C "$d/w" worktree list 2>&1)"
+printf '.repowise/\n' > "$d/wt-repowise/.gitignore"
+mkdir -p "$d/wt-repowise/.repowise"
+printf 'cache\n' > "$d/wt-repowise/.repowise/cache.pkl"
+GIT_CONFIG_GLOBAL="$d/empty-gitconfig" "$bin/safe-delete" --bk "$bk" worktree "$d/wt-repowise" >/dev/null; r61=$?
+c61=$(awk -F '\t' -v p="$d/wt-repowise/.repowise/cache.pkl" '$2 == "file" && $3 == p && $8 == "deleted" { c=$6 } END { print c }' "$bk/ledger.tsv")
+if [[ $r61 == 0 && ! -d $d/wt-repowise && -f $c61 ]]; then echo 'PASS T61'; ok=$((ok+1)); else echo "FAIL T61: rc=$r61 copy=$c61"; fi
+echo "PROBE1 $(env GIT_CONFIG_GLOBAL="$d/empty-gitconfig" git -C "$d/wt-repowise" check-ignore -v -- .repowise/cache.pkl 2>&1; echo rc=$?)"
+echo "PROBE2 $(env GIT_CONFIG_GLOBAL="$d/empty-gitconfig" git -C "$d/wt-repowise" check-ignore -q -- "$d/wt-repowise/.repowise/cache.pkl" 2>&1; echo rc=$?)"
+echo "PROBE3 gitignore=$(cat "$d/wt-repowise/.gitignore" 2>&1)"
+echo "PROBE4 files=$(ls -a "$d/wt-repowise" 2>&1)"
+echo "PROBE5 $(cd "$d/wt-repowise" 2>/dev/null && cd .. && env GIT_CONFIG_GLOBAL="/tmp/opencode-empty" git -C "$(basename "$d/wt-repowise")" check-ignore -v -- .repowise/cache.pkl 2>&1; echo rc=$?)"
+
+# T62: non-ignored .repowise inside a worktree still refuses
+git -C "$d/w" worktree add -q -b wt-rw-ni "$d/wt-rw-ni" main
+mkdir -p "$d/wt-rw-ni/.repowise"
+printf 'x\n' > "$d/wt-rw-ni/.repowise/x"
+env GIT_CONFIG_GLOBAL="$d/empty-gitconfig" git -C "$d/wt-rw-ni" check-ignore -q -- .repowise/x; ni_ig=$?
+err=$(GIT_CONFIG_GLOBAL="$d/empty-gitconfig" "$bin/safe-delete" --bk "$bk" worktree "$d/wt-rw-ni" 2>&1); r62=$?
+if [[ $r62 == 2 && $ni_ig == 1 && $err == *'запрещённый сегмент'* && -d $d/wt-rw-ni ]]; then echo 'PASS T62'; ok=$((ok+1)); else echo "FAIL T62: rc=$r62 ni_ig=$ni_ig err=$err"; fi
+
+# T63: .repowise file in main checkout refuses in file mode
+mkdir -p "$d/w/.repowise"
+printf 'f\n' > "$d/w/.repowise/f"
+printf '.repowise/\n' > "$d/w/.gitignore"
+"$bin/safe-delete" --bk "$bk" file "$d/w/.repowise/f" >/dev/null 2>&1; r63=$?
+if [[ $r63 == 2 && -f "$d/w/.repowise/f" ]]; then echo 'PASS T63'; ok=$((ok+1)); else echo "FAIL T63: rc=$r63"; fi
+
+[[ $ok == 66 ]] || exit 1
+echo "итог: PASS 66, FAIL 0"

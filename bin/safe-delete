@@ -7,6 +7,7 @@ mkdir -p "$BK"
 led=$BK/ledger.tsv
 self=$(realpath -e "$(command -v -- "$0")") || exit 1
 allow_git_under=
+ok_repowise=
 log_n=
 log(){ { flock -x 9 || return 1; printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date +%Y-%m-%dT%H:%M:%S)" "$@" >>"$led" || return 1; log_n=$(wc -l <"$led"); log_n=${log_n//[[:space:]]/}; } 9>>"$led.lock"; }
 fail(){ echo "safe-delete: $*" >&2; exit 1; }
@@ -67,7 +68,12 @@ check_path(){
     [[ $p == */"$seg" || $p == */"$seg"/* ]] && refuse "запрещённый сегмент: $p"
   done
   [[ $p == */clients/* && $p != */clients/*/.agent-work/* ]] && refuse "запрещённый сегмент: $p"
-  [[ /$p/ == */.repowise*/* ]] && refuse "запрещённый сегмент: $p"
+  if [[ /$p/ == */.repowise*/* ]]; then case "
+$ok_repowise
+" in *"
+$p
+"*) ;;
+    *) refuse "запрещённый сегмент: $p";; esac; fi
   [[ $p == "$BK" || $p == "$BK"/* ]] && refuse "файл под $BK: $p"
   [[ $p == "$self" ]] && refuse "запрещённый файл: $p"
   [[ ${p##*/} == .env* || ${p##*/} == *.pem || ${p##*/} == *.key ]] && refuse "запрещённый файл: $p"
@@ -158,6 +164,8 @@ case "$cmd" in
     common=$(realpath -e "$common") || exit 1; repo=$(dirname -- "$common")
     for cwd in /proc/[0-9]*/cwd; do pid=${cwd#/proc/}; pid=${pid%/cwd}; if ! used=$(readlink -- "$cwd"); then [[ ! -d /proc/$pid || $(proc_state "/proc/$pid/stat" 2>/dev/null) == Z ]] && continue; refuse "нечитаемый cwd процесса: $pid"; fi; [[ $used == "$wt" || $used == "$wt"/* ]] && refuse "процесс использует worktree: $pid"; done
     mapfile -d '' files < <({ git -C "$wt" ls-files -z --others; git -C "$wt" ls-files -z --modified; git -C "$wt" diff -z --name-only --cached HEAD; } | while IFS= read -r -d '' rel; do f=$wt/$rel; [[ -f $f && ! -L $f ]] && printf '%s\0' "$f"; done | sort -zu)
+    ok_repowise=; for f in "${files[@]}"; do [[ $f == "$wt"/.repowise/* ]] && git -C "$wt" check-ignore -q -- "${f#"$wt"/}" 2>/dev/null && ok_repowise+="
+$f"; done
     for f in "${files[@]}"; do git_file "$f" || check_file "$f"; done
     sha=$(git -C "$wt" rev-parse HEAD) || exit 1; ref="refs/safe-delete/wt-$(date +%Y%m%d%H%M%S%N)"
     git -C "$repo" update-ref "$ref" "$sha" || exit 1
@@ -256,10 +264,13 @@ case "$cmd" in
     shah=$(git -C "$repo" ls-remote origin "refs/heads/$br" | awk -v r="refs/heads/$br" '$2==r{print $1}') || exit 1
     if [[ -z $shah ]]; then
       sha=$(git -C "$repo" rev-parse --verify --quiet "refs/heads/$br") || sha=
-      git -C "$repo" merge-base --is-ancestor "$sha" origin/main 2>/dev/null || {
-        [[ -n $sha && $GH == true ]] || refuse "нет на origin: $br"
-        m=$(gh pr list --head "$br" --state merged --repo "$rr" --json headRefOid -q '.[].headRefOid') || fail "gh pr list --state merged"
-        grep -qxF -- "$sha" <<<"$m" || refuse "нет на origin: $br"; }
+      arch=$(git -C "$repo" ls-remote origin "refs/tags/archive/${br//\//-}-*" | awk -v s="$sha" '$1==s{print $1}') || exit 1
+      if [[ -z $arch ]]; then
+        git -C "$repo" merge-base --is-ancestor "$sha" origin/main 2>/dev/null || {
+          [[ -n $sha && $GH == true ]] || refuse "нет на origin: $br"
+          m=$(gh pr list --head "$br" --state merged --repo "$rr" --json headRefOid -q '.[].headRefOid') || fail "gh pr list --state merged"
+          grep -qxF -- "$sha" <<<"$m" || refuse "нет на origin: $br"; }
+      fi
       git -C "$repo" update-ref -d "refs/heads/$br" "$sha" || exit 1
       log branch "$(realpath "$repo"):$br" "$sha" - - - deleted || exit 1
       exit 0

@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# why: fixture-driven proof of the claude-md-lint contract (help, report, rc 2, relative root)
+set -u
+PATH="$(cd -- "$(dirname -- "$0")" && pwd):$PATH"
+tmp=$(mktemp -d /tmp/claude-md-lint-test.XXXXXX)
+trap 'rm -rf "$tmp"' EXIT
+ok=0
+L=$(printf 'a%.0s' {1..30})
+
+mkdir -p "$tmp/a/b"
+printf '%s\n' "$L" >"$tmp/a/CLAUDE.md"
+{
+  printf '%s\n' "$L"
+  i=2; while (( i <= 196 )); do printf 'padding\n'; (( i++ )); done
+  printf 'beep `@inline/x.md` beep\n'
+  printf '```\n@fenced/y.md\n```\n'
+  printf '@missing/file.md\n'
+} >"$tmp/a/b/CLAUDE.md"
+mkdir -p "$tmp/a/c"
+printf '@AGENTS.md\n' >"$tmp/a/c/CLAUDE.md"
+printf 'agents\n' >"$tmp/a/c/AGENTS.md"
+
+out=$(claude-md-lint --help); rc=$?
+if [[ $rc == 0 && $out == 'usage:'* ]]; then echo 'PASS 1'; ((ok++)); else echo "FAIL 1: help rc $rc; out: $out" >&2; fi
+
+out=$(HOME=$tmp claude-md-lint "$tmp"); rc=$?
+line=$(printf '%s\n' "$out" | tail -1)
+if [[ $rc == 0 && $line == 'files=3 over200=1 dup_files=1 broken_imports=1' \
+   && $out == "WARN $tmp/a/b/CLAUDE.md lines=201 dup=1 broken=1"* ]]; then
+  echo 'PASS 2'; ((ok++))
+else
+  echo "FAIL 2: report rc $rc; last: $line" >&2
+fi
+
+out=$(HOME=$tmp claude-md-lint "$tmp/a/CLAUDE.md" 2>/tmp/claude-md-lint-test-rc2.err); rc=$?
+if [[ $rc == 2 && -s /tmp/claude-md-lint-test-rc2.err ]]; then
+  echo 'PASS 3'; ((ok++)); rm -f /tmp/claude-md-lint-test-rc2.err
+else
+  echo "FAIL 3: rc $rc" >&2
+fi
+
+out=$(cd "$(dirname -- "$tmp")" && HOME=$tmp timeout 10 claude-md-lint "$(basename -- "$tmp")"); rc=$?
+line=$(printf '%s\n' "$out" | tail -1)
+if [[ $rc == 0 && $line == 'files=3 over200=1 dup_files=1 broken_imports=1' ]]; then
+  echo 'PASS 4'; ((ok++))
+else
+  echo "FAIL 4: relative root rc $rc; out: $out" >&2
+fi
+
+out=$(cd / && HOME=$tmp claude-md-lint "$tmp"); rc=$?
+if [[ $rc == 0 && $out != *"WARN $tmp/a/c/CLAUDE.md"* \
+   && $(printf '%s\n' "$out" | tail -1) == 'files=3 over200=1 dup_files=1 broken_imports=1' ]]; then
+  echo 'PASS 5'; ((ok++))
+else
+  echo "FAIL 5: existing import from other cwd rc $rc; out: $out" >&2
+fi
+
+if [[ $ok == 5 ]]; then echo 'PASS'; exit 0; fi
+printf '%s\n' "$ok of 5 cases passed" >&2
+exit 1

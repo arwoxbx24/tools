@@ -8,7 +8,7 @@
 ship-post --submit <worktree> --atom <id> --tz <path#U> --evidence <text> --files <file>...
 ```
 
-`bin/ship-post:do_submit` принимает только зарегистрированный linked worktree в `.worktrees/<agent>/`, ветку и assignee, согласованные с Claude/Codex, путь ТЗ и файлы внутри worktree. Он отклоняет пустое доказательство, неверный атом, неразрешённый репозиторий, чужие/неперечисленные изменения, неверные trailers и закрытый атом с грязной рабочей копией; строка отказа называет команду исправления, а при успехе печатает `committed <atom> <sha> on <branch>`. При успехе создаёт локальный коммит, закрывает атом и пишет submission receipt; после этого `--submit` делает `fetch origin/<base>` для конфликт-проверки ADR-27 (ошибка fetch → код 70, атом остаётся закрытым со сданным SHA) и push не выполняет.
+`bin/ship-post:do_submit` accepts a registered linked worktree under `.worktrees/<agent>/`, a matching Claude/Codex branch and assignee, and an in-worktree TZ and file list. It rejects missing evidence, an invalid atom, an unserved repository, out-of-scope changes, invalid commit trailers, and a dirty worktree for a closed atom. On success it creates the local commit, checks for a conflict against a reachable `origin/<base>`, closes the atom with the committed SHA, writes the submission receipt, and prints `committed <atom> <sha> on <branch>`. If fetch is unavailable after commit, it warns that the conflict check is deferred, then closes and receipts the same SHA; the courier performs the later remote mergeability gate. Submit does not push.
 
 Архитектура также читается без сети: `ship-post --status <atom>` — read-only сводка из файлов `SHIP_POST_STATE_DIR` (без `bd`, `git`, блокировок и записей), значения `none|submitted|delivering|failed|parked|<stage из receipt>`.
 
@@ -66,7 +66,7 @@ INFRA-отказы (30/70/71/75/прочие) паркуются: метка `de
 | `ship` | 70 | GitHub or fetch failure | yes, retry after connectivity/auth service recovery |
 | `ship` | 75 | repository lock timeout | yes |
 | `ship` | 80 | TЗ path not accepted | no, fix TЗ path |
-| `ship-post` | 21 | no remote PR result yet; `deliver_one` proceeds to `ship` | intermediate, not a terminal result |
+| `ship-post` | 21 | no remote PR result yet, or only a closed unmerged PR with the same head; `deliver_one` proceeds to `ship` | intermediate, not a terminal result |
 | `ship-post` | 22 | matching remote PR is open; `deliver_one` proceeds to `ship` | intermediate, not a terminal result |
 | `ship-post` | 23 | GitHub query failed or repository is not private | query failure may be temporary; privacy denial is not |
 | `ship-post` | 24 | remote result does not match the submitted SHA/state | no, reconcile before retry |
@@ -76,7 +76,7 @@ INFRA-отказы (30/70/71/75/прочие) паркуются: метка `de
 ## 6. Отказы и восстановление
 
 - Conflict (50): `ship` reports a conflicting PR or failed rebase/merge. Rebase or otherwise reconcile the agent branch, then submit/deliver the corrected head.
-- Conflict at submit (50, ADR-27): `bin/ship-post:do_submit` fetches `origin/<base>` and runs `git merge-tree --write-tree --name-only origin/<base> HEAD` after committing the listed files and before `bd close`; rc 1 rejects the submit with code 50, the conflicting files and the fix command, and leaves the courier state empty; a fetch error returns 70. The base comes from `bin/git-auto-lib:ga_base` in `local` mode, so a nested repository (`<repo>/sub`, dcfg-8yqv4.36) resolves its own `origin/<base>` instead of an empty name.
+- Conflict at submit (50, ADR-27 and CR-ADR-27): `bin/ship-post:do_submit` fetches `origin/<base>` and runs `git merge-tree --write-tree --name-only origin/<base> HEAD` after committing the listed files and before `bd close`; rc 1 rejects a reachable conflict with code 50, the conflicting files and the fix command, and leaves courier state empty. A fetch failure defers this check while closing and receipting the committed SHA. The courier checks remote mergeability before merge. `bin/git-auto-lib:ga_base` in `local` mode selects the base, including for a nested repository (`<repo>/sub`, dcfg-8yqv4.36).
 - SHA change: an `inflight` record with another SHA becomes code 24 in `bin/ship-post:deliver_one`, except when the old SHA is an ancestor of the new SHA and its PR is not merged: the courier records `superseded <old> -> <new>` and continues with the new head.
 - No CI: a nonempty all-`.md` diff prints `gate:auto docs-only` and merges after the mergeability check; other changes return `prod:wait-owner no-ci` after branch push and PR creation, and production requires the owner’s word through `ship-promote`.
 - Guarded repository: `bin/git-auto-lib:ga_skip_reason` returns `allowlist` or `hh-scoring`; `ship` returns `prod:hold guarded <reason>` after local commit and dev-ready ref, before any remote action. `ship-post` serves these roots and stores a final `prod-hold` receipt; `git-sync` emits `skip:<reason>`.
