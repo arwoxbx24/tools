@@ -181,16 +181,30 @@ $f"; done
   link)
     [[ $# -ge 1 ]] || refuse 'usage'
     [[ -L $1 ]] || refuse "не симлинк: $1"
-    [[ ! -e $1 ]] || refuse "симлинк живой: $1"
     p="$(realpath -e "$(dirname -- "$1")")/$(basename -- "$1")" || refuse "нет каталога: $1"
-    roots=${SAFE_DELETE_ROOTS:-/root/.claude/agents}
-    if [[ -n ${SAFE_DELETE_ROOTS:-} ]]; then
-      IFS=: read -ra rts <<< "$roots"
-      for r in "${rts[@]}"; do [[ $r == /tmp/* ]] || refuse "корень не под /tmp: $r"; done
+    live_ok=
+    if [[ -e $1 ]]; then
+      lroot=${SAFE_DELETE_LIVE_LINK_ROOT:-/root/workspaces/tools}
+      if [[ -n ${SAFE_DELETE_LIVE_LINK_ROOT:-} ]]; then
+        [[ $lroot == /tmp/* ]] || refuse "корень не под /tmp: $lroot"
+      fi
+      tp=$(realpath -e -- "$1") || refuse "симлинк живой: $1"
+      if [[ $p == "$lroot" || $p == "$lroot"/* ]] && [[ $tp == "$lroot" || $tp == "$lroot"/* ]]; then
+        live_ok=1
+      else
+        refuse "симлинк живой: $1"
+      fi
     fi
-    okr=; IFS=: read -ra rts <<< "$roots"
-    for r in "${rts[@]}"; do [[ $p == "$r" || $p == "$r"/* ]] && { okr=1; break; }; done
-    [[ $okr ]] || refuse "вне разрешённых корней: $p"
+    if [[ -z $live_ok ]]; then
+      roots=${SAFE_DELETE_ROOTS:-/root/.claude/agents}
+      if [[ -n ${SAFE_DELETE_ROOTS:-} ]]; then
+        IFS=: read -ra rts <<< "$roots"
+        for r in "${rts[@]}"; do [[ $r == /tmp/* ]] || refuse "корень не под /tmp: $r"; done
+      fi
+      okr=; IFS=: read -ra rts <<< "$roots"
+      for r in "${rts[@]}"; do [[ $p == "$r" || $p == "$r"/* ]] && { okr=1; break; }; done
+      [[ $okr ]] || refuse "вне разрешённых корней: $p"
+    fi
     t=$(readlink -- "$p") || exit 1
     log link "$p" - - "$t" - backup-ok
     rm -- "$p" || exit 1

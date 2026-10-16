@@ -169,6 +169,18 @@ if [[ $r23a == 2 && $r23b == 2 && -f $d/regular-link && -L $d/live-link ]]; then
   echo 'PASS T23'; ok=$((ok+1))
 else echo "FAIL T23: file=$r23a link=$r23b"; fi
 
+# T23b: live alias inside the live-link root is deleted; outside root refused
+mkdir -p "$d/lr"
+printf 'tgt\n' > "$d/lr/target"
+ln -s "$d/lr/target" "$d/lr/alias"
+SAFE_DELETE_LIVE_LINK_ROOT="$d/lr" "$bin/safe-delete" --bk "$bk" link "$d/lr/alias" >/dev/null; r23b1=$?
+printf 'live2\n' > "$d/live-target2"
+ln -s "$d/live-target2" "$d/lr/out"
+SAFE_DELETE_LIVE_LINK_ROOT="$d/lr" "$bin/safe-delete" --bk "$bk" link "$d/lr/out" >/dev/null 2>&1; r23b2=$?
+if [[ $r23b1 == 0 && ! -L $d/lr/alias && -f $d/lr/target && $r23b2 == 2 && -L $d/lr/out ]]; then
+  echo 'PASS T23b'; ok=$((ok+1))
+else echo "FAIL T23b: del=$r23b1 out=$r23b2"; fi
+
 # T24-T28: tracked clean files use a git ref and restore from its blob
 printf 'clean\n' > "$d/w/clean.txt"
 chmod +x "$d/w/clean.txt"
@@ -498,5 +510,5 @@ mkdir -p "$d/sb/test-z"; printf 'z\n' > "$d/sb/test-z/f"
 out70=$(SAFE_DELETE_SANDBOX=/root/workspaces/sandbox "$bin/safe-delete" --bk "$bk" dir "$d/sb/test-z" 2>&1); r70=$?
 if [[ $r70 == 2 && $out70 == *'корень не под /tmp'* && -f "$d/sb/test-z/f" ]]; then echo 'PASS T70 sandbox_root_not_tmp'; ok=$((ok+1)); else echo "FAIL T70: rc=$r70 out=$out70"; fi
 
-[[ $ok == 70 ]] || exit 1
-echo "итог: PASS 70, FAIL 0"
+[[ $ok == 71 ]] || exit 1
+echo "итог: PASS 71, FAIL 0"
