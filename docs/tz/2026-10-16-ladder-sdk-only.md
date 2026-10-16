@@ -7,3 +7,5 @@ Skills: caveman:surgical-patch (one JSON value)
 1. In `ladder`, set `"enabled": false` for the entry with `"id": "go"`. Nothing else changes.
 
 Files: `config/code-channel.json`
+
+v2: U2 in docs/tz/2026-10-16-ladder-sdk-only-U2.md (CI run 38887863323 FAIL 22).
