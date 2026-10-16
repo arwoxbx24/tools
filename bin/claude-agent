@@ -1,0 +1,242 @@
+#!/usr/bin/env bash
+# claude-agent — the only route to the Claude Agent SDK engine (ask + code modes).
+# TZ: docs/tz/2026-10-16-dcfg-n829x-claude-agent.md
+set -uo pipefail
+
+readonly MODEL="claude-haiku-5-5"
+readonly ENGINE="/root/workspaces/tools/claude-agent-sdk-venv/lib/python3.12/site-packages/claude_agent_sdk/_bundled/claude"
+readonly KEY_FILE="/root/workspaces/secrets/inbox/anthropic.env"
+readonly RUNS_LOG="/root/workspaces/tools/claude-agent-sdk/runs.jsonl"
+readonly DEFAULT_BUDGET="0.50"
+readonly MAX_BUDGET="2.00"
+readonly MAX_FILE_BYTES=204800
+readonly CODE_SCHEMA='{"type":"object","properties":{"files":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}}},"required":["files"]}'
+
+RESULT=""
+BUDGET=""
+EFFORT=""
+SCHEMA=""
+SYSFILE=""
+POS=()
+
+usage() {
+cat <<'EOF'
+usage: claude-agent ask [--budget USD] [--effort low|medium|high] [--schema JSON] [--system-file FILE] PROMPT
+       claude-agent code [--budget USD] [--effort low|medium|high] WORKTREE TZ_FILE
+       claude-agent --help
+Runs the Claude Agent SDK engine with model claude-haiku-5-5 and an API key (never the subscription).
+Budget: default 0.50 USD per run, ceiling 2.00 USD. Every result is appended to tools/claude-agent-sdk/runs.jsonl.
+EOF
+}
+
+die() {  # MESSAGE [RC]
+  printf 'claude-agent: %s\n' "$1" >&2
+  exit "${2:-2}"
+}
+
+validate_budget() {
+  local re='^[0-9]+(\.[0-9]+)?$'
+  if [[ $1 =~ $re ]] && awk -v b="$1" -v max="$MAX_BUDGET" 'BEGIN { exit !(b + 0 > 0 && b + 0 <= max + 0) }'; then
+    return 0
+  fi
+  die "refused: --budget $1 (allowed 0 < USD <= $MAX_BUDGET, e.g. --budget 0.10)"
+}
+
+validate_effort() {
+  case "$1" in
+    low|medium|high) ;;
+    *) die "refused: --effort $1 (allowed low|medium|high, e.g. --effort low)" ;;
+  esac
+}
+
+# Sets BUDGET EFFORT SCHEMA SYSFILE POS from the arguments of MODE.
+parse_args() {
+  local mode=$1
+  shift
+  BUDGET=$DEFAULT_BUDGET
+  EFFORT=""
+  SCHEMA=""
+  SYSFILE=""
+  POS=()
+  while (( $# > 0 )); do
+    case "$1" in
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      --budget|--effort|--schema|--system-file)
+        (( $# >= 2 )) || die "$1 needs a value"
+        if [[ $mode != ask && ( $1 == --schema || $1 == --system-file ) ]]; then
+          die "unknown option for $mode: $1"
+        fi
+        case "$1" in
+          --budget) BUDGET=$2 ;;
+          --effort) EFFORT=$2 ;;
+          --schema) SCHEMA=$2 ;;
+          --system-file) SYSFILE=$2 ;;
+        esac
+        shift 2
+        ;;
+      --)
+        shift
+        POS+=("$@")
+        break
+        ;;
+      --*) die "unknown option: $1" ;;
+      *)
+        POS+=("$1")
+        shift
+        ;;
+    esac
+  done
+}
+
+# run_engine EFFORT BUDGET PROMPT [SCHEMA] [SYSTEM_FILE]
+# Loads the key (only here, after all argument checks), calls the engine,
+# appends the JSON result to runs.jsonl and sets RESULT.
+run_engine() {
+  local effort=$1 budget=$2 prompt=$3 schema=${4:-} sysfile=${5:-}
+  [[ -r $KEY_FILE ]] || die "key file missing: $KEY_FILE" 3
+  set -a
+  . "$KEY_FILE"
+  set +a
+
+  local -a args=(-p --bare --model "$MODEL" --effort "$effort" --max-budget-usd "$budget"
+                 --tools "" --no-session-persistence --output-format json)
+  if [[ -n $schema ]]; then args+=(--json-schema "$schema"); fi
+  if [[ -n $sysfile ]]; then args+=(--append-system-prompt-file "$sysfile"); fi
+
+  RESULT=$("$ENGINE" "${args[@]}" "$prompt" < /dev/null) || true
+  jq -e 'type == "object"' <<<"$RESULT" >/dev/null 2>&1 || die "engine returned no JSON result" 4
+  jq -c . <<<"$RESULT" >> "$RUNS_LOG"
+}
+
+# Prints the run summary to stderr; exits 4 unless subtype is success.
+finish() {
+  local subtype cost
+  subtype=$(jq -r '.subtype // "null"' <<<"$RESULT")
+  cost=$(jq -r '.total_cost_usd // "null"' <<<"$RESULT")
+  printf 'claude-agent: subtype=%s cost_usd=%s\n' "$subtype" "$cost" >&2
+  if [[ $subtype != success ]]; then exit 4; fi
+}
+
+cmd_ask() {
+  parse_args ask "$@"
+  EFFORT=${EFFORT:-low}
+  validate_budget "$BUDGET"
+  validate_effort "$EFFORT"
+  (( ${#POS[@]} == 1 )) || die "ask needs exactly one PROMPT (see --help)"
+  [[ -n ${POS[0]} ]] || die "PROMPT is empty"
+  if [[ -n $SYSFILE && ! -r $SYSFILE ]]; then die "system file not readable: $SYSFILE"; fi
+
+  run_engine "$EFFORT" "$BUDGET" "${POS[0]}" "$SCHEMA" "$SYSFILE"
+  jq -r 'if .structured_output != null then (.structured_output | tojson) else (.result // "") end' <<<"$RESULT"
+  finish
+}
+
+# check_path WORKTREE_REAL PATH — refuses (exit 2) unsafe TZ-listed paths.
+check_path() {
+  local wt=$1 p=$2 part base resolved
+  local -a parts
+  [[ $p != /* ]] || die "refused path: $p"
+  IFS=/ read -r -a parts <<<"$p"
+  for part in "${parts[@]}"; do
+    case "$part" in
+      ..|.git|.beads|.repowise|.ssh|secrets|node_modules) die "refused path: $p" ;;
+    esac
+  done
+  base=${p##*/}
+  case "$base" in
+    .env*|*.pem|*.key|*secret*|auth.json) die "refused path: $p" ;;
+  esac
+  resolved=$(realpath -m -- "$wt/$p")
+  [[ $resolved == "$wt"/* ]] || die "refused path: $p"
+}
+
+cmd_code() {
+  parse_args code "$@"
+  EFFORT=${EFFORT:-medium}
+  validate_budget "$BUDGET"
+  validate_effort "$EFFORT"
+  (( ${#POS[@]} == 2 )) || die "code needs WORKTREE and TZ_FILE (see --help)"
+  local wt=${POS[0]} tz=${POS[1]}
+
+  [[ -d $wt ]] || die "worktree not found: $wt"
+  local wt_real top
+  wt_real=$(realpath -- "$wt")
+  top=$(git -C "$wt" rev-parse --show-toplevel 2>/dev/null) || die "not a git worktree: $wt"
+  [[ $top == "$wt_real" ]] || die "not a worktree root: $wt"
+
+  [[ -r $tz ]] || die "TZ file not readable: $tz"
+  local -a files=()
+  mapfile -t files < <(sed -n -E 's/^FILE: (.+)$/\1/p' "$tz")
+  (( ${#files[@]} >= 1 && ${#files[@]} <= 5 )) || die "TZ must list 1..5 'FILE: <path>' lines (found ${#files[@]})"
+
+  local f
+  for f in "${files[@]}"; do
+    check_path "$wt_real" "$f"
+    if [[ -f $wt_real/$f ]] && (( $(wc -c < "$wt_real/$f") > MAX_FILE_BYTES )); then
+      die "file larger than 200 KB: $f"
+    fi
+  done
+
+  local prompt body
+  prompt="<task>
+$(cat -- "$tz")
+</task>
+"
+  for f in "${files[@]}"; do
+    if [[ -f $wt_real/$f ]]; then body=$(cat -- "$wt_real/$f"); else body="(new file)"; fi
+    prompt+="<file path=\"$f\">
+$body
+</file>
+"
+  done
+  prompt+="Return the FULL new content of each file you change, as JSON {\"files\":[{\"path\":...,\"content\":...}]}. Use only the paths listed above; do not change other files."
+
+  run_engine "$EFFORT" "$BUDGET" "$prompt" "$CODE_SCHEMA"
+  finish
+  jq -e '.structured_output.files | type == "array"' <<<"$RESULT" >/dev/null 2>&1 \
+    || die "engine returned no files array" 4
+
+  # Output guard: every path must be exactly one of the allowed paths; write nothing otherwise.
+  local -a out_paths=()
+  mapfile -t out_paths < <(jq -r '.structured_output.files[].path' <<<"$RESULT")
+  local op allowed
+  for op in "${out_paths[@]}"; do
+    allowed=0
+    for f in "${files[@]}"; do
+      if [[ $op == "$f" ]]; then allowed=1; fi
+    done
+    if (( allowed == 0 )); then
+      printf 'claude-agent: refused model path: %s\n' "$op" >&2
+      exit 5
+    fi
+  done
+
+  # Write each file: temp file inside the target directory, then mv.
+  local n i target tmp
+  n=$(jq '.structured_output.files | length' <<<"$RESULT")
+  for (( i = 0; i < n; i++ )); do
+    target="$wt_real/$(jq -r --argjson i "$i" '.structured_output.files[$i].path' <<<"$RESULT")"
+    mkdir -p -- "$(dirname -- "$target")"
+    tmp=$(mktemp -- "$target.tmp.XXXXXX")
+    jq -j --argjson i "$i" '.structured_output.files[$i].content' <<<"$RESULT" > "$tmp"
+    mv -f -- "$tmp" "$target"
+  done
+
+  git -C "$wt_real" diff --stat
+  git -C "$wt_real" status --short
+}
+
+main() {
+  case "${1:-}" in
+    -h|--help) usage; exit 0 ;;
+    ask) shift; cmd_ask "$@" ;;
+    code) shift; cmd_code "$@" ;;
+    "") usage >&2; exit 2 ;;
+    *) die "unknown mode: $1 (see --help)" ;;
+  esac
+}
+
+main "$@"
