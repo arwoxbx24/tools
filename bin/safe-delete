@@ -57,14 +57,16 @@ git_file(){
   [[ $git_blob == "$head" ]]
 }
 check_path(){
-  p=$(realpath -e "$1") || refuse "нет пути: $1"
+  if [[ ${2:-} == link ]]; then p=$1; else p=$(realpath -e "$1") || refuse "нет пути: $1"; fi
   [[ $p == /etc/claude-code/* || $p == "$HOME"/.ssh/* || $p == "$HOME"/.claude/settings*.json ]] && refuse "запрещённый путь: $p"
-  roots=${SAFE_DELETE_ROOTS:-/root/workspaces/projects:/root/workspaces/tools:/root/workspaces/sandbox:/home/gitmirror/state:/root/.claude/projects/-root-workspaces-projects/memory:/root/.claude/skills}
-  if [[ -n ${SAFE_DELETE_ROOTS:-} ]]; then
-    IFS=: read -ra rts <<< "$roots"; for r in "${rts[@]}"; do [[ $r == /tmp/* ]] || refuse "корень не под /tmp: $r"; done
+  if [[ ${2:-} != link ]]; then
+    roots=${SAFE_DELETE_ROOTS:-/root/workspaces/projects:/root/workspaces/tools:/root/workspaces/sandbox:/home/gitmirror/state:/root/.claude/projects/-root-workspaces-projects/memory:/root/.claude/skills}
+    if [[ -n ${SAFE_DELETE_ROOTS:-} ]]; then
+      IFS=: read -ra rts <<< "$roots"; for r in "${rts[@]}"; do [[ $r == /tmp/* ]] || refuse "корень не под /tmp: $r"; done
+    fi
+    okr=; IFS=: read -ra rts <<< "$roots"; for r in "${rts[@]}"; do [[ $p == "$r" || $p == "$r"/* ]] && { okr=1; break; }; done
+    [[ $okr ]] || refuse "вне разрешённых корней: $p"
   fi
-  okr=; IFS=: read -ra rts <<< "$roots"; for r in "${rts[@]}"; do [[ $p == "$r" || $p == "$r"/* ]] && { okr=1; break; }; done
-  [[ $okr ]] || refuse "вне разрешённых корней: $p"
   for seg in secrets hh-scoring .codex .git .beads; do
     [[ $seg == .git && -n ${allow_git_under:-} && ( $p == "$allow_git_under" || $p == "$allow_git_under"/* ) ]] && continue
     [[ $p == */"$seg" || $p == */"$seg"/* ]] && refuse "запрещённый сегмент: $p"
@@ -182,9 +184,11 @@ $f"; done
     [[ $# -ge 1 ]] || refuse 'usage'
     [[ -L $1 ]] || refuse "не симлинк: $1"
     p="$(realpath -e "$(dirname -- "$1")")/$(basename -- "$1")" || refuse "нет каталога: $1"
+    check_path "$p" link
     live_ok=
     if [[ -e $1 ]]; then
       lroot=${SAFE_DELETE_LIVE_LINK_ROOT:-/root/workspaces/tools}
+      lroot=$(realpath -m -- "$lroot") || exit 1
       if [[ -n ${SAFE_DELETE_LIVE_LINK_ROOT:-} ]]; then
         [[ $lroot == /tmp/* ]] || refuse "корень не под /tmp: $lroot"
       fi
@@ -206,9 +210,10 @@ $f"; done
       [[ $okr ]] || refuse "вне разрешённых корней: $p"
     fi
     t=$(readlink -- "$p") || exit 1
-    log link "$p" - - "$t" - backup-ok
+    log link "$p" - - "$t" - backup-ok || exit 1
     rm -- "$p" || exit 1
-    log link "$p" - - "$t" - deleted
+    log link "$p" - - "$t" - deleted || exit 1
+    echo "удалено: $p -> $t | основание: симлинк, цель не тронута | восстановить: safe-delete restore $log_n"
     exit 0
     ;;
   restore)
@@ -239,6 +244,11 @@ $f"; done
       git -C "$repo" cat-file blob "$blob" >"$obj" || exit 1
       [[ $mode == 100755 ]] && chmod +x "$obj"
       log git "$obj" "$blob" "$repo" "$ref" - restored
+    elif [[ $typ == link ]]; then
+      t=$(cut -f6 <<< "$line")
+      [[ -e $obj || -L $obj ]] && refuse "исходный путь уже существует: $obj"
+      ln -s -- "$t" "$obj" || exit 1
+      log link "$obj" - - "$t" - restored || exit 1
     elif [[ $typ == worktree ]]; then
       sha=$(cut -f4 <<< "$line"); repo=$(cut -f5 <<< "$line"); ref=$(cut -f6 <<< "$line")
       [[ -e $obj || -L $obj ]] && refuse "исходный путь уже существует: $obj"
