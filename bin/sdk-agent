@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# claude-agent — the only route to the Claude Agent SDK engine (ask + code modes).
-# TZ: docs/tz/2026-10-16-dcfg-n829x-claude-agent.md
+# sdk-agent — the only route to the Claude Agent SDK engine (ask + code modes).
+# TZ: docs/tz/2026-10-16-dcfg-sktr5-sdk-agent.md
 set -uo pipefail
 
 readonly MODEL="claude-haiku-5-5"
 readonly ENGINE="/root/workspaces/tools/claude-agent-sdk-venv/lib/python3.12/site-packages/claude_agent_sdk/_bundled/claude"
 readonly KEY_FILE="/root/workspaces/secrets/inbox/anthropic.env"
-readonly RUNS_LOG="/root/workspaces/tools/claude-agent-sdk/runs.jsonl"
+readonly RUNS_LOG="/root/workspaces/tools/sdk-agent/runs.jsonl"
 readonly DEFAULT_BUDGET="0.50"
 readonly MAX_BUDGET="2.00"
 readonly MAX_FILE_BYTES=204800
@@ -21,16 +21,17 @@ POS=()
 
 usage() {
 cat <<'EOF'
-usage: claude-agent ask [--budget USD] [--effort low|medium|high] [--schema JSON] [--system-file FILE] PROMPT
-       claude-agent code [--budget USD] [--effort low|medium|high] WORKTREE TZ_FILE
-       claude-agent --help
+usage: sdk-agent ask [--budget USD] [--effort low|medium|high] [--schema JSON] [--system-file FILE] PROMPT
+       sdk-agent code [--budget USD] [--effort low|medium|high] WORKTREE TZ_FILE
+       sdk-agent --help
 Runs the Claude Agent SDK engine with model claude-haiku-5-5 and an API key (never the subscription).
-Budget: default 0.50 USD per run, ceiling 2.00 USD. Every result is appended to tools/claude-agent-sdk/runs.jsonl.
+sdk-agent is a paid API program, not a Claude Code agent or subagent.
+Budget: default 0.50 USD per run, ceiling 2.00 USD. Every result is appended to tools/sdk-agent/runs.jsonl.
 EOF
 }
 
 die() {  # MESSAGE [RC]
-  printf 'claude-agent: %s\n' "$1" >&2
+  printf 'sdk-agent: %s\n' "$1" >&2
   exit "${2:-2}"
 }
 
@@ -116,7 +117,7 @@ finish() {
   local subtype cost
   subtype=$(jq -r '.subtype // "null"' <<<"$RESULT")
   cost=$(jq -r '.total_cost_usd // "null"' <<<"$RESULT")
-  printf 'claude-agent: subtype=%s cost_usd=%s\n' "$subtype" "$cost" >&2
+  printf 'sdk-agent: subtype=%s cost_usd=%s\n' "$subtype" "$cost" >&2
   if [[ $subtype != success ]]; then exit 4; fi
 }
 
@@ -209,7 +210,7 @@ $body
       if [[ $op == "$f" ]]; then allowed=1; fi
     done
     if (( allowed == 0 )); then
-      printf 'claude-agent: refused model path: %s\n' "$op" >&2
+      printf 'sdk-agent: refused model path: %s\n' "$op" >&2
       exit 5
     fi
   done
@@ -221,6 +222,7 @@ $body
     target="$wt_real/$(jq -r --argjson i "$i" '.structured_output.files[$i].path' <<<"$RESULT")"
     mkdir -p -- "$(dirname -- "$target")"
     tmp=$(mktemp -- "$target.tmp.XXXXXX")
+    if [[ -e $target ]]; then chmod --reference="$target" "$tmp"; else chmod 644 "$tmp"; fi
     jq -j --argjson i "$i" '.structured_output.files[$i].content' <<<"$RESULT" > "$tmp"
     mv -f -- "$tmp" "$target"
   done

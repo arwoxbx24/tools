@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# claude-agent-test — offline assertions for bin/claude-agent (no network, no key).
+# sdk-agent-test — offline assertions for bin/sdk-agent (no network, no key).
 set -uo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
-ag="$here/claude-agent"
-TMP=$(mktemp -d /tmp/claude-agent-test.XXXXXX)
+ag="$here/sdk-agent"
+TMP=$(mktemp -d /tmp/sdk-agent-test.XXXXXX)
 trap 'rm -rf -- "$TMP"' EXIT
 
 pass=0
