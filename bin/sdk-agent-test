@@ -49,6 +49,16 @@ code_files_line_refuses_path() {
   expect_rc_err 2 "refused path" "$ag" code "$TMP/wt" "$tz"
 }
 
+check_listed_refused() {
+  local wt="$TMP/wt-listed" tz="$TMP/tz-listed.md"
+  mkdir -p "$wt"
+  git -C "$wt" init -q
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$wt/t.sh"
+  chmod +x "$wt/t.sh"
+  printf 'Files: `t.sh`\nCheck: t.sh\n' > "$tz"
+  expect_rc_err 7 "refused check" "$ag" code "$wt" "$tz"
+}
+
 daily_cap_refuses() {
   local log="$TMP/runs-cap.jsonl" now
   now=$(date +%s)
@@ -72,6 +82,7 @@ check "model is claude-haiku-5-5" bash -c '[[ $(grep -c claude-haiku-5-5 "$1") -
 check "no other claude model names" bash -c '[[ $(grep -cE "claude-(sonnet|opus|fable)" "$1") -eq 0 ]]' _ "$ag"
 check "daily cap refuses ask (rc 6)" daily_cap_refuses
 check "Files: line ../outside.txt refused" code_files_line_refuses_path
+check "Check: names a listed file -> refused check (rc 7)" check_listed_refused
 check "read with no args -> rc 2" expect_rc_err 2 "read needs" "$ag" read
 
 echo "ok $pass/$total"
