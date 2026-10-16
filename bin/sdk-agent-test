@@ -184,7 +184,9 @@ check "--help exits 0" help_rc0
 check "--help first line starts with usage:" help_first_line_usage
 check "--budget 5 -> rc 2 refused" expect_rc_err 2 refused "$ag" ask --budget 5 hi
 check "--budget abc -> rc 2" expect_rc_err 2 refused "$ag" ask --budget abc hi
-check "--effort max -> rc 2" expect_rc_err 2 "refused" "$ag" ask --effort max hi
+check "--effort extreme -> rc 2 refused" expect_rc_err 2 refused "$ag" ask --effort extreme hi
+check "--effort max passes validation (fails on worktree)" expect_rc_err 2 "worktree not found" "$ag" code --effort max "$TMP/nope" "$TMP/tz.md"
+check "code --json -> rc 2 refused" expect_rc_err 2 "unknown option for code" "$ag" code --json "$TMP/wt" "$TMP/tz.md"
 check "FILE: ../x refused" code_refuses_path "../x"
 check "FILE: .env refused" code_refuses_path ".env"
 check "FILE: /etc/passwd refused" code_refuses_path "/etc/passwd"

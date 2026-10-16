@@ -6,6 +6,7 @@ set -uo pipefail
 readonly MODEL="claude-haiku-5-5"
 readonly ENGINE="/root/workspaces/tools/claude-agent-sdk-venv/lib/python3.12/site-packages/claude_agent_sdk/_bundled/claude"
 readonly KEY_FILE="/root/workspaces/secrets/inbox/anthropic.env"
+readonly ENGINE_HOME="/root/workspaces/tools/sdk-agent/engine-home"
 if [[ ${SDK_AGENT_TEST:-} == 1 ]]; then
   readonly RUNS_LOG="${SDK_AGENT_RUNS_LOG:-/root/workspaces/tools/sdk-agent/runs.jsonl}"
 else
@@ -15,6 +16,9 @@ readonly DEFAULT_BUDGET="0.50"
 readonly MAX_BUDGET="2.00"
 readonly DAILY_CAP="3.00"
 readonly MAX_FILE_BYTES=204800
+readonly TOOLS_CODE="Read,Grep,Glob,Skill"
+readonly TOOLS_READ="Read,Grep,Glob,Skill,WebSearch,WebFetch"
+readonly MCP_CONFIG='{"mcpServers":{"repowise":{"type":"stdio","command":"/root/.local/bin/repowise","args":["mcp","--no-workspace"]}}}'
 readonly CODE_SCHEMA='{"type":"object","properties":{"edits":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"},"old":{"type":"string"},"new":{"type":"string"}},"required":["path","old","new"]}}},"required":["edits"]}'
 
 RESULT=""
@@ -22,18 +26,21 @@ BUDGET=""
 EFFORT=""
 SCHEMA=""
 SYSFILE=""
+JSONOUT=0
 POS=()
 FILES=()
 KEY_VARS=()
 
 usage() {
 cat <<'EOF'
-usage: sdk-agent ask [--budget USD] [--effort low|medium|high] [--schema JSON] [--system-file FILE] PROMPT
-       sdk-agent code [--budget USD] [--effort low|medium|high] WORKTREE TZ_FILE
-       sdk-agent read [--budget USD] [--effort low|medium|high] WORKTREE TZ_FILE
+usage: sdk-agent ask [--budget USD] [--effort low|medium|high|xhigh|max] [--schema JSON] [--system-file FILE] [--json] PROMPT
+       sdk-agent code [--budget USD] [--effort low|medium|high|xhigh|max] WORKTREE TZ_FILE
+       sdk-agent read [--budget USD] [--effort low|medium|high|xhigh|max] [--json] WORKTREE TZ_FILE
        sdk-agent --help
 code: model may read the whole worktree and returns exact edits (path, old, new) to listed files; TZ line "Check: <executable inside worktree> [args]" is run after writing, no shell (rc 7 on failure); the Check executable must not be a listed file.
+--json (ask, read): print the whole engine result JSON instead of the text.
 Runs the Claude Agent SDK engine with model claude-haiku-5-5 and an API key (never the subscription).
+Engine config dir: tools/sdk-agent/engine-home (no login stored there).
 sdk-agent is a paid API program, not a Claude Code agent or subagent.
 Budget: default 0.50 USD per run, ceiling 2.00 USD. Every result is appended to tools/sdk-agent/runs.jsonl.
 Daily cap: 3.00 USD of runs (today, local time) across all modes.
@@ -55,12 +62,12 @@ validate_budget() {
 
 validate_effort() {
   case "$1" in
-    low|medium|high) ;;
-    *) die "refused: --effort $1 (allowed low|medium|high, e.g. --effort low)" ;;
+    low|medium|high|xhigh|max) ;;
+    *) die "refused: --effort $1 (allowed low|medium|high|xhigh|max, e.g. --effort low)" ;;
   esac
 }
 
-# Sets BUDGET EFFORT SCHEMA SYSFILE POS from the arguments of MODE.
+# Sets BUDGET EFFORT SCHEMA SYSFILE JSONOUT POS from the arguments of MODE.
 parse_args() {
   local mode=$1
   shift
@@ -68,12 +75,18 @@ parse_args() {
   EFFORT=""
   SCHEMA=""
   SYSFILE=""
+  JSONOUT=0
   POS=()
   while (( $# > 0 )); do
     case "$1" in
       -h|--help)
         usage
         exit 0
+        ;;
+      --json)
+        if [[ $mode == code ]]; then die "unknown option for $mode: $1"; fi
+        JSONOUT=1
+        shift
         ;;
       --budget|--effort|--schema|--system-file)
         (( $# >= 2 )) || die "$1 needs a value"
@@ -119,16 +132,17 @@ check_daily_cap() {
 
 # run_engine MODE EFFORT BUDGET PROMPT [SCHEMA] [SYSTEM_FILE] [TOOLS] [WORKDIR]
 # TOOLS empty = no tools (--tools ""); otherwise comma-separated tool list with
-# permission restrictions and WORKDIR as the only added directory.
+# permission restrictions, the repowise MCP server only and WORKDIR as the only added directory.
 # Fail-closes the spend ledger, loads the key only for the engine call, checks the daily cap
-# under flock and appends a trimmed result (subtype, cost, ts, mode) to runs.jsonl, setting RESULT.
+# under flock and appends a trimmed result (subtype, cost, ts, mode, models) to runs.jsonl, setting RESULT.
+# Refuses (exit 4) when the engine used any model outside the pin.
 run_engine() {
   local mode=$1 effort=$2 budget=$3 prompt=$4 schema=${5:-} sysfile=${6:-} tools=${7:-} workdir=${8:-.}
   : >> "$RUNS_LOG" || die "runs log not writable: $RUNS_LOG" 6
 
-  local -a args=(-p --bare --model "$MODEL" --effort "$effort" --max-budget-usd "$budget")
+  local -a args=(-p --model "$MODEL" --effort "$effort" --max-budget-usd "$budget" --restricted --strict-mcp-config)
   if [[ -n $tools ]]; then
-    args+=(--tools "$tools" --allowedTools "${tools//,/ }" --permission-mode dontAsk --restricted --add-dir "$workdir")
+    args+=(--tools "$tools" --allowedTools "${tools//,/ } mcp__repowise" --permission-mode dontAsk --add-dir "$workdir" --mcp-config "$MCP_CONFIG")
   else
     args+=(--tools "")
   fi
@@ -145,12 +159,20 @@ run_engine() {
   KEY_VARS=()
   mapfile -t KEY_VARS < <(sed -n -E 's/^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=.*/\2/p' "$KEY_FILE")
 
-  RESULT=$(cd -- "$workdir" && set -a && . "$KEY_FILE" && set +a && "$ENGINE" "${args[@]}" "$prompt" < /dev/null) || true
+  mkdir -p -- "$ENGINE_HOME" || die "cannot create engine config dir: $ENGINE_HOME" 6
+  if [[ -e $ENGINE_HOME/.credentials.json || -L $ENGINE_HOME/.credentials.json ]]; then
+    die "refused: credentials found in $ENGINE_HOME" 6
+  fi
+
+  RESULT=$(cd -- "$workdir" && set -a && . "$KEY_FILE" && set +a && env -u ANTHROPIC_AUTH_TOKEN -u CLAUDE_CODE_OAUTH_TOKEN -u CLAUDE_CODE_USE_BEDROCK -u CLAUDE_CODE_USE_VERTEX -u CLAUDE_CODE_USE_FOUNDRY -u ANTHROPIC_PROFILE CLAUDE_CONFIG_DIR="$ENGINE_HOME" "$ENGINE" "${args[@]}" "$prompt" < /dev/null) || true
 
   jq -e 'type == "object"' <<<"$RESULT" >/dev/null 2>&1 || die "engine returned no JSON result" 4
   jq -c --argjson ts "$(date +%s)" --arg mode "$mode" \
-    '{subtype, total_cost_usd, ts: $ts, mode: $mode}' <<<"$RESULT" >> "$RUNS_LOG" \
+    '{subtype, total_cost_usd, ts: $ts, mode: $mode, models: ((.modelUsage // {}) | keys)}' <<<"$RESULT" >> "$RUNS_LOG" \
     || die "cannot append runs log: $RUNS_LOG" 6
+  if ! jq -e --arg m "$MODEL" '(.modelUsage // {}) | keys | all(. == $m)' <<<"$RESULT" >/dev/null 2>&1; then
+    die "refused: model outside pin: $(jq -r '(.modelUsage // {}) | keys | join(",")' <<<"$RESULT")" 4
+  fi
   flock -u "$lockfd"
 }
 
@@ -173,7 +195,11 @@ cmd_ask() {
   if [[ -n $SYSFILE && ! -r $SYSFILE ]]; then die "system file not readable: $SYSFILE"; fi
 
   run_engine ask "$EFFORT" "$BUDGET" "${POS[0]}" "$SCHEMA" "$SYSFILE"
-  jq -r 'if .structured_output != null then (.structured_output | tojson) else (.result // "") end' <<<"$RESULT"
+  if [[ $JSONOUT == 1 ]]; then
+    printf '%s\n' "$RESULT"
+  else
+    jq -r 'if .structured_output != null then (.structured_output | tojson) else (.result // "") end' <<<"$RESULT"
+  fi
   finish
 }
 
@@ -390,9 +416,9 @@ $body
 </file>
 "
   done
-  prompt+="Return only exact edits as JSON {\"edits\":[{\"path\":...,\"old\":...,\"new\":...}]}. \`old\` is an exact, unique fragment of the current file (include enough surrounding lines to be unique); \`new\` replaces it. To create a new file use old \"\" (only when the file does not exist). Do not touch lines the task does not ask for. Use only the paths listed above. You may read any file of the repository with Read, Grep, Glob."
+  prompt+="Return only exact edits as JSON {\"edits\":[{\"path\":...,\"old\":...,\"new\":...}]}. \`old\` is an exact, unique fragment of the current file (include enough surrounding lines to be unique); \`new\` replaces it. To create a new file use old \"\" (only when the file does not exist). Do not touch lines the task does not ask for. Use only the paths listed above. You may use Read, Grep, Glob, Skill and the repowise MCP tools."
 
-  run_engine code "$EFFORT" "$BUDGET" "$prompt" "$CODE_SCHEMA" "" "Read,Grep,Glob" "$WT_REAL"
+  run_engine code "$EFFORT" "$BUDGET" "$prompt" "$CODE_SCHEMA" "" "$TOOLS_CODE" "$WT_REAL"
   finish
   apply_edits
 
@@ -430,10 +456,14 @@ cmd_read() {
   local prompt
   prompt="$(cat -- "$TZ")
 
-Answer from the repository files; you may only read (Read, Grep, Glob). Reply with the answer text."
+Answer from the repository files; you may use Read, Grep, Glob, Skill, WebSearch, WebFetch and the repowise MCP tools. Reply with the answer text."
 
-  run_engine read "$EFFORT" "$BUDGET" "$prompt" "" "" "Read,Grep,Glob" "$WT_REAL"
-  jq -r '.result // ""' <<<"$RESULT"
+  run_engine read "$EFFORT" "$BUDGET" "$prompt" "" "" "$TOOLS_READ" "$WT_REAL"
+  if [[ $JSONOUT == 1 ]]; then
+    printf '%s\n' "$RESULT"
+  else
+    jq -r '.result // ""' <<<"$RESULT"
+  fi
   finish
 }
 
