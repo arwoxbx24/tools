@@ -585,7 +585,7 @@ deliver_one(){
 }
 
 scan_repo(){
- local repo=$1 lk fd line wt head branch msg atom tz st status owner agent actor dirty base rf code rc remote_proof='' remote_open='' remote_list=''
+ local repo=$1 lk fd line wt head branch msg atom tz st status owner agent actor dirty base rf code rc remote_proof='' remote_open='' remote_list='' gd
  local ok=0 failed=0 skip=0 started=0 jobs_max p
  jobs_max=${SHIP_POST_JOBS:-8}
  [[ $jobs_max =~ ^[1-9][0-9]*$ ]] || jobs_max=8
@@ -597,6 +597,9 @@ scan_repo(){
  while IFS= read -r line; do
   [[ $line == 'worktree '* ]] || continue
   wt=${line#worktree }; [[ $wt != "$repo" && -f $wt/.git ]] || continue
+  gd=$(sed -n 's/^gitdir: //p' "$wt/.git")
+  [[ $gd == /* ]] || gd=$wt/$gd
+  [[ -e $gd ]] || { echo "skip $wt broken worktree link"; skip=$((skip+1)); continue; }
   msg=$(git -C "$wt" log -1 --format=%B) || { failed=$((failed+1)); continue; }
   atom=$(sed -n 's/^Atom: *//p' <<<"$msg" | head -1)
   tz=$(sed -n 's/^ТЗ: *//p' <<<"$msg" | head -1)

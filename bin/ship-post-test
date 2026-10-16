@@ -319,6 +319,22 @@ test_watch(){
 commit_candidate(){
  git -C "$wt" commit -q --allow-empty -m candidate -m "$(printf 'ТЗ: %s#U2\nAtom: %s\nAgent: %s' "$wt/$tz" "$1" "${2:-codex}")"
 }
+test_broken_link(){
+	setup_submit blk codex/dcfg-blk.1; commit_candidate dcfg-blk.1
+	printf 'gitdir: /nonexistent/path\n' > "$wt/.git"
+	out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex; run_tool "$d" 2>&1); rc=$?
+	[[ $out == *"skip $wt broken worktree link"* && $out != *'fatal:'* && $out == *' failed=0'* ]] && pass BL1 || fail BL1 "rc=$rc: $out"
+	make_worktree "$d" wt2 codex/dcfg-blk.2
+	w2="$d/.worktrees/codex/wt2"
+	git -C "$w2" commit -q --allow-empty -m candidate -m "$(printf 'ТЗ: %s#U2\nAtom: dcfg-blk.2\nAgent: codex' "$w2/$tz")"
+	out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex; run_tool "$d" 2>&1); rc=$?
+	[[ $rc == 0 && $(grep -c -- '--atom dcfg-blk.2 ' "$d/ship.calls") == 1 ]] && pass BL2 || fail BL2 "rc=$rc: $out"
+	setup_submit blk3 codex/dcfg-blk.3; commit_candidate dcfg-blk.3
+	gd_abs=$(sed -n 's/^gitdir: //p' "$wt/.git")
+	printf 'gitdir: %s\n' "$(realpath --relative-to="$wt" "$gd_abs")" > "$wt/.git"
+	out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex; run_tool "$d" 2>&1); rc=$?
+	[[ $rc == 0 && $out != *'broken worktree link'* && $(grep -c -- '--atom dcfg-blk.3 ' "$d/ship.calls") == 1 ]] && pass BL3 || fail BL3 "rc=$rc: $out"
+}
 test_beads_root_fallback(){
 	local n=210 out rc
 	setup_submit fb codex/dcfg-fallback.1; commit_candidate dcfg-fallback.1
@@ -865,6 +881,8 @@ elif [[ ${SHIP_POST_TEST_GROUP:-all} == hints ]]; then
  test_hints
 elif [[ ${SHIP_POST_TEST_GROUP:-all} == recovery ]]; then
  test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery
+elif [[ ${SHIP_POST_TEST_GROUP:-all} == broken ]]; then
+ test_broken_link
 	elif [[ ${SHIP_POST_TEST_GROUP:-all} == v4 ]]; then
 	 test_final_states; test_nested_repo
 	elif [[ ${SHIP_POST_TEST_GROUP:-all} == u14 ]]; then
@@ -884,7 +902,7 @@ elif [[ ${SHIP_POST_TEST_GROUP:-all} == recovery ]]; then
 		elif [[ ${SHIP_POST_TEST_GROUP:-all} == auto ]]; then
 		 test_auto_submit
 else
-	 test_dryrun_mocks; test_valid_actors; test_rejections; test_hook_and_retry; test_closed_retry; test_remote_result_closed; test_delivery; test_beads_root_fallback; test_live_sync; test_watch; test_recovery; test_stream_errors; test_closed_skip_reason; test_concurrent_repositories; test_watch_lock_released; test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery; test_actor_alias; test_nested_repo; test_final_states; test_submit_conflict_preflight; test_u15; test_adr30; test_park; test_park_live; test_hints; test_status; test_break_glass; test_auto_submit
+	 test_dryrun_mocks; test_valid_actors; test_rejections; test_hook_and_retry; test_closed_retry; test_remote_result_closed; test_delivery; test_beads_root_fallback; test_broken_link; test_live_sync; test_watch; test_recovery; test_stream_errors; test_closed_skip_reason; test_concurrent_repositories; test_watch_lock_released; test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery; test_actor_alias; test_nested_repo; test_final_states; test_submit_conflict_preflight; test_u15; test_adr30; test_park; test_park_live; test_hints; test_status; test_break_glass; test_auto_submit
 fi
 T=$root
 mkdir -p "$T/br/.beads"; git init -q "$T/br"
