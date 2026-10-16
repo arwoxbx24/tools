@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-# sdk-agent — the only route to the Claude Agent SDK engine (ask + code modes).
+# sdk-agent — the only route to the Claude Agent SDK engine (ask, code + read modes).
 # TZ: docs/tz/2026-10-16-dcfg-sktr5-sdk-agent.md
 set -uo pipefail
 
 readonly MODEL="claude-haiku-5-5"
 readonly ENGINE="/root/workspaces/tools/claude-agent-sdk-venv/lib/python3.12/site-packages/claude_agent_sdk/_bundled/claude"
 readonly KEY_FILE="/root/workspaces/secrets/inbox/anthropic.env"
-readonly RUNS_LOG="/root/workspaces/tools/sdk-agent/runs.jsonl"
+readonly RUNS_LOG="${SDK_AGENT_RUNS_LOG:-/root/workspaces/tools/sdk-agent/runs.jsonl}"
 readonly DEFAULT_BUDGET="0.50"
 readonly MAX_BUDGET="2.00"
+readonly DAILY_CAP="3.00"
 readonly MAX_FILE_BYTES=204800
 readonly CODE_SCHEMA='{"type":"object","properties":{"files":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}}},"required":["files"]}'
 
@@ -23,10 +24,12 @@ usage() {
 cat <<'EOF'
 usage: sdk-agent ask [--budget USD] [--effort low|medium|high] [--schema JSON] [--system-file FILE] PROMPT
        sdk-agent code [--budget USD] [--effort low|medium|high] WORKTREE TZ_FILE
+       sdk-agent read [--budget USD] [--effort low|medium|high] WORKTREE TZ_FILE
        sdk-agent --help
 Runs the Claude Agent SDK engine with model claude-haiku-5-5 and an API key (never the subscription).
 sdk-agent is a paid API program, not a Claude Code agent or subagent.
 Budget: default 0.50 USD per run, ceiling 2.00 USD. Every result is appended to tools/sdk-agent/runs.jsonl.
+Daily cap: 3.00 USD of runs (today, local time) across all modes.
 EOF
 }
 
@@ -92,24 +95,47 @@ parse_args() {
   done
 }
 
-# run_engine EFFORT BUDGET PROMPT [SCHEMA] [SYSTEM_FILE]
-# Loads the key (only here, after all argument checks), calls the engine,
-# appends the JSON result to runs.jsonl and sets RESULT.
+# check_daily_cap BUDGET — refuses (exit 6) if spent today + BUDGET exceeds DAILY_CAP.
+check_daily_cap() {
+  local budget=$1 midnight spent
+  midnight=$(date -d 'today 00:00' +%s)
+  spent=0
+  if [[ -e $RUNS_LOG ]]; then
+    spent=$(jq -s --argjson m "$midnight" \
+      '[.[] | select((.ts | type) == "number" and .ts >= $m) | (.total_cost_usd // 0)] | add // 0' "$RUNS_LOG") \
+      || die "cannot read runs log: $RUNS_LOG" 6
+  fi
+  if awk -v s="$spent" -v b="$budget" -v c="$DAILY_CAP" 'BEGIN { exit !(s + b > c + 0) }'; then
+    die "refused: daily cap $DAILY_CAP USD (spent $spent today)" 6
+  fi
+}
+
+# run_engine EFFORT BUDGET PROMPT [SCHEMA] [SYSTEM_FILE] [TOOLS] [WORKDIR]
+# TOOLS empty = no tools (--tools ""); otherwise comma-separated tool list with
+# permission restrictions and WORKDIR as the only added directory.
+# Checks the daily cap, loads the key (only here, after all argument checks), calls the engine,
+# appends the JSON result to runs.jsonl (with ts) and sets RESULT.
 run_engine() {
-  local effort=$1 budget=$2 prompt=$3 schema=${4:-} sysfile=${5:-}
+  local effort=$1 budget=$2 prompt=$3 schema=${4:-} sysfile=${5:-} tools=${6:-} workdir=${7:-.}
+  check_daily_cap "$budget"
   [[ -r $KEY_FILE ]] || die "key file missing: $KEY_FILE" 3
   set -a
   . "$KEY_FILE"
   set +a
 
-  local -a args=(-p --bare --model "$MODEL" --effort "$effort" --max-budget-usd "$budget"
-                 --tools "" --no-session-persistence --output-format json)
+  local -a args=(-p --bare --model "$MODEL" --effort "$effort" --max-budget-usd "$budget")
+  if [[ -n $tools ]]; then
+    args+=(--tools "$tools" --allowedTools "${tools//,/ }" --permission-mode dontAsk --restricted --add-dir "$workdir")
+  else
+    args+=(--tools "")
+  fi
+  args+=(--no-session-persistence --output-format json)
   if [[ -n $schema ]]; then args+=(--json-schema "$schema"); fi
   if [[ -n $sysfile ]]; then args+=(--append-system-prompt-file "$sysfile"); fi
 
-  RESULT=$("$ENGINE" "${args[@]}" "$prompt" < /dev/null) || true
+  RESULT=$(cd -- "$workdir" && "$ENGINE" "${args[@]}" "$prompt" < /dev/null) || true
   jq -e 'type == "object"' <<<"$RESULT" >/dev/null 2>&1 || die "engine returned no JSON result" 4
-  jq -c . <<<"$RESULT" >> "$RUNS_LOG"
+  jq -c --argjson ts "$(date +%s)" '. + {ts: $ts}' <<<"$RESULT" >> "$RUNS_LOG"
 }
 
 # Prints the run summary to stderr; exits 4 unless subtype is success.
@@ -170,8 +196,8 @@ cmd_code() {
 
   [[ -r $tz ]] || die "TZ file not readable: $tz"
   local -a files=()
-  mapfile -t files < <(sed -n -E 's/^FILE: (.+)$/\1/p' "$tz")
-  (( ${#files[@]} >= 1 && ${#files[@]} <= 5 )) || die "TZ must list 1..5 'FILE: <path>' lines (found ${#files[@]})"
+  mapfile -t files < <({ sed -n -E 's/^FILE: (.+)$/\1/p' "$tz"; grep -m1 '^Files:' "$tz" | tr '\140' '\n' | sed -n '2~2p'; } | awk '!seen[$0]++')
+  (( ${#files[@]} >= 1 && ${#files[@]} <= 5 )) || die "TZ must list 1..5 paths ('FILE: <path>' lines or a 'Files:' line) (found ${#files[@]})"
 
   local f
   for f in "${files[@]}"; do
@@ -231,11 +257,37 @@ $body
   git -C "$wt_real" status --short
 }
 
+cmd_read() {
+  parse_args read "$@"
+  EFFORT=${EFFORT:-medium}
+  validate_budget "$BUDGET"
+  validate_effort "$EFFORT"
+  (( ${#POS[@]} == 2 )) || die "read needs WORKTREE and TZ_FILE (see --help)"
+  local wt=${POS[0]} tz=${POS[1]}
+
+  [[ -d $wt ]] || die "worktree not found: $wt"
+  local wt_real top
+  wt_real=$(realpath -- "$wt")
+  top=$(git -C "$wt" rev-parse --show-toplevel 2>/dev/null) || die "not a git worktree: $wt"
+  [[ $top == "$wt_real" ]] || die "not a worktree root: $wt"
+
+  [[ -r $tz ]] || die "TZ file not readable: $tz"
+  local prompt
+  prompt="$(cat -- "$tz")
+
+Answer from the repository files; you may only read (Read, Grep, Glob). Reply with the answer text."
+
+  run_engine "$EFFORT" "$BUDGET" "$prompt" "" "" "Read,Grep,Glob" "$wt_real"
+  jq -r '.result // ""' <<<"$RESULT"
+  finish
+}
+
 main() {
   case "${1:-}" in
     -h|--help) usage; exit 0 ;;
     ask) shift; cmd_ask "$@" ;;
     code) shift; cmd_code "$@" ;;
+    read) shift; cmd_read "$@" ;;
     "") usage >&2; exit 2 ;;
     *) die "unknown mode: $1 (see --help)" ;;
   esac
