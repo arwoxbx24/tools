@@ -6,7 +6,11 @@ set -uo pipefail
 readonly MODEL="claude-haiku-5-5"
 readonly ENGINE="/root/workspaces/tools/claude-agent-sdk-venv/lib/python3.12/site-packages/claude_agent_sdk/_bundled/claude"
 readonly KEY_FILE="/root/workspaces/secrets/inbox/anthropic.env"
-readonly RUNS_LOG="${SDK_AGENT_RUNS_LOG:-/root/workspaces/tools/sdk-agent/runs.jsonl}"
+if [[ ${SDK_AGENT_TEST:-} == 1 ]]; then
+  readonly RUNS_LOG="${SDK_AGENT_RUNS_LOG:-/root/workspaces/tools/sdk-agent/runs.jsonl}"
+else
+  readonly RUNS_LOG="/root/workspaces/tools/sdk-agent/runs.jsonl"
+fi
 readonly DEFAULT_BUDGET="0.50"
 readonly MAX_BUDGET="2.00"
 readonly DAILY_CAP="3.00"
@@ -19,6 +23,7 @@ EFFORT=""
 SCHEMA=""
 SYSFILE=""
 POS=()
+KEY_VARS=()
 
 usage() {
 cat <<'EOF'
@@ -102,8 +107,8 @@ check_daily_cap() {
   midnight=$(date -d 'today 00:00' +%s)
   spent=0
   if [[ -e $RUNS_LOG ]]; then
-    spent=$(jq -s --argjson m "$midnight" \
-      '[.[] | select((.ts | type) == "number" and .ts >= $m) | (.total_cost_usd // 0)] | add // 0' "$RUNS_LOG") \
+    spent=$(jq -s --argjson m "$midnight" --argjson max "$MAX_BUDGET" \
+      '[.[] | select((.ts | type) == "number" and .ts >= $m) | (.total_cost_usd // $max)] | add // 0' "$RUNS_LOG") \
       || die "cannot read runs log: $RUNS_LOG" 6
   fi
   if awk -v s="$spent" -v b="$budget" -v c="$DAILY_CAP" 'BEGIN { exit !(s + b > c + 0) }'; then
@@ -111,18 +116,14 @@ check_daily_cap() {
   fi
 }
 
-# run_engine EFFORT BUDGET PROMPT [SCHEMA] [SYSTEM_FILE] [TOOLS] [WORKDIR]
+# run_engine MODE EFFORT BUDGET PROMPT [SCHEMA] [SYSTEM_FILE] [TOOLS] [WORKDIR]
 # TOOLS empty = no tools (--tools ""); otherwise comma-separated tool list with
 # permission restrictions and WORKDIR as the only added directory.
-# Checks the daily cap, loads the key (only here, after all argument checks), calls the engine,
-# appends the JSON result to runs.jsonl (with ts) and sets RESULT.
+# Fail-closes the spend ledger, loads the key only for the engine call, checks the daily cap
+# under flock and appends a trimmed result (subtype, cost, ts, mode) to runs.jsonl, setting RESULT.
 run_engine() {
-  local effort=$1 budget=$2 prompt=$3 schema=${4:-} sysfile=${5:-} tools=${6:-} workdir=${7:-.}
-  check_daily_cap "$budget"
-  [[ -r $KEY_FILE ]] || die "key file missing: $KEY_FILE" 3
-  set -a
-  . "$KEY_FILE"
-  set +a
+  local mode=$1 effort=$2 budget=$3 prompt=$4 schema=${5:-} sysfile=${6:-} tools=${7:-} workdir=${8:-.}
+  : >> "$RUNS_LOG" || die "runs log not writable: $RUNS_LOG" 6
 
   local -a args=(-p --bare --model "$MODEL" --effort "$effort" --max-budget-usd "$budget")
   if [[ -n $tools ]]; then
@@ -134,9 +135,22 @@ run_engine() {
   if [[ -n $schema ]]; then args+=(--json-schema "$schema"); fi
   if [[ -n $sysfile ]]; then args+=(--append-system-prompt-file "$sysfile"); fi
 
-  RESULT=$(cd -- "$workdir" && "$ENGINE" "${args[@]}" "$prompt" < /dev/null) || true
+  local lockfd
+  exec {lockfd}>"$RUNS_LOG.lock" || die "cannot open lock: $RUNS_LOG.lock" 6
+  flock "$lockfd" || die "cannot lock: $RUNS_LOG.lock" 6
+  check_daily_cap "$budget"
+
+  [[ -r $KEY_FILE ]] || die "key file missing: $KEY_FILE" 3
+  KEY_VARS=()
+  mapfile -t KEY_VARS < <(sed -n -E 's/^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)[[:space:]]*=.*/\2/p' "$KEY_FILE")
+
+  RESULT=$(cd -- "$workdir" && set -a && . "$KEY_FILE" && set +a && "$ENGINE" "${args[@]}" "$prompt" < /dev/null) || true
+
   jq -e 'type == "object"' <<<"$RESULT" >/dev/null 2>&1 || die "engine returned no JSON result" 4
-  jq -c --argjson ts "$(date +%s)" '. + {ts: $ts}' <<<"$RESULT" >> "$RUNS_LOG"
+  jq -c --argjson ts "$(date +%s)" --arg mode "$mode" \
+    '{subtype, total_cost_usd, ts: $ts, mode: $mode}' <<<"$RESULT" >> "$RUNS_LOG" \
+    || die "cannot append runs log: $RUNS_LOG" 6
+  flock -u "$lockfd"
 }
 
 # Prints the run summary to stderr; exits 4 unless subtype is success.
@@ -157,28 +171,49 @@ cmd_ask() {
   [[ -n ${POS[0]} ]] || die "PROMPT is empty"
   if [[ -n $SYSFILE && ! -r $SYSFILE ]]; then die "system file not readable: $SYSFILE"; fi
 
-  run_engine "$EFFORT" "$BUDGET" "${POS[0]}" "$SCHEMA" "$SYSFILE"
+  run_engine ask "$EFFORT" "$BUDGET" "${POS[0]}" "$SCHEMA" "$SYSFILE"
   jq -r 'if .structured_output != null then (.structured_output | tojson) else (.result // "") end' <<<"$RESULT"
   finish
 }
 
-# check_path WORKTREE_REAL PATH — refuses (exit 2) unsafe TZ-listed paths.
-check_path() {
-  local wt=$1 p=$2 part base resolved
+# deny_relative DISPLAY RELPATH — refuses (exit 2) when RELPATH hits the denylist,
+# matched case-insensitively on each component and on the base name.
+deny_relative() {
+  local display=$1 rel=$2 part base
   local -a parts
-  [[ $p != /* ]] || die "refused path: $p"
-  IFS=/ read -r -a parts <<<"$p"
+  IFS=/ read -r -a parts <<<"$rel"
   for part in "${parts[@]}"; do
-    case "$part" in
-      ..|.git|.beads|.repowise|.ssh|secrets|node_modules) die "refused path: $p" ;;
+    case "${part,,}" in
+      ..|.git|.beads|.repowise|.ssh|secrets|node_modules|.github|.husky) die "refused path: $display" ;;
     esac
   done
-  base=${p##*/}
-  case "$base" in
-    .env*|*.pem|*.key|*secret*|auth.json) die "refused path: $p" ;;
+  base=${rel##*/}
+  case "${base,,}" in
+    .env*|*.pem|*.key|*secret*|auth.json|.envrc|.npmrc|.netrc|id_rsa*|*.p12|.gitmodules) die "refused path: $display" ;;
   esac
+}
+
+# check_path WORKTREE_REAL PATH — refuses (exit 2) unsafe TZ-listed paths.
+check_path() {
+  local wt=$1 p=$2 part resolved rel cur
+  local -a parts
+  [[ $p != /* ]] || die "refused path: $p"
+
+  # Refuse when any existing component is a symlink.
+  cur=$wt
+  IFS=/ read -r -a parts <<<"$p"
+  for part in "${parts[@]}"; do
+    [[ -n $part ]] || continue
+    cur="$cur/$part"
+    [[ -L $cur ]] && die "refused path: $p"
+  done
+
+  deny_relative "$p" "$p"
+
   resolved=$(realpath -m -- "$wt/$p")
   [[ $resolved == "$wt"/* ]] || die "refused path: $p"
+  rel=${resolved#"$wt"/}
+  deny_relative "$p" "$rel"
 }
 
 # open_worktree — from POS[0] (WORKTREE) and POS[1] (TZ_FILE) sets globals
@@ -202,9 +237,9 @@ refuse_check() {
   exit 7
 }
 
-# run_check TEXT — runs TEXT as an argv array (no shell) inside WT_REAL and returns its rc.
-# TEXT must be: <executable regular file inside the worktree> [args], split on spaces.
-run_check() {
+# validate_check TEXT — static validation of a Check line; refuses (exit 7) on
+# metacharacters, absolute path, `..`, or a non-executable outside the worktree.
+validate_check() {
   local text=$1 real
   local -a words
   case $text in
@@ -218,7 +253,19 @@ run_check() {
   esac
   real=$(realpath -e -- "$WT_REAL/${words[0]}" 2>/dev/null) || refuse_check "$text"
   [[ $real == "$WT_REAL"/* && -f $real && -x $real ]] || refuse_check "$text"
-  (cd -- "$WT_REAL" && "./${words[0]}" "${words[@]:1}")
+}
+
+# run_check TEXT — runs the already-validated TEXT as an argv array (no shell) inside
+# WT_REAL, with the API key (and every other key-file variable) stripped via env -u.
+run_check() {
+  local text=$1 v
+  local -a words unset_args
+  IFS=' ' read -r -a words <<<"$text"
+  unset_args=(-u ANTHROPIC_API_KEY)
+  for v in "${KEY_VARS[@]}"; do
+    unset_args+=(-u "$v")
+  done
+  (cd -- "$WT_REAL" && env "${unset_args[@]}" "./${words[0]}" "${words[@]:1}")
 }
 
 cmd_code() {
@@ -241,17 +288,20 @@ cmd_code() {
     fi
   done
 
-  # U1: the Check executable must not be a listed file (the model could rewrite it before Check runs).
-  local check_pre="" check_word_real listed_real
+  # Check line: read once, validate statically before the engine (rc 7, nothing written).
+  local check_text="" check_line="" check_word_real listed_real
   local -a pre_words=()
-  check_pre=$(grep -m1 '^Check: ' "$TZ") || check_pre=""
-  if [[ -n $check_pre ]]; then
-    IFS=' ' read -r -a pre_words <<<"${check_pre#Check: }"
+  check_line=$(grep -m1 '^Check: ' "$TZ") || check_line=""
+  if [[ -n $check_line ]]; then
+    check_text=${check_line#Check: }
+    validate_check "$check_text"
+    # U1: the Check executable must not be a listed file (the model could rewrite it before Check runs).
+    IFS=' ' read -r -a pre_words <<<"$check_text"
     check_word_real=$(realpath -m -- "$WT_REAL/${pre_words[0]:-}")
     for f in "${files[@]}"; do
       listed_real=$(realpath -m -- "$WT_REAL/$f")
       if [[ $check_word_real == "$listed_real" ]]; then
-        refuse_check "${check_pre#Check: }"
+        refuse_check "$check_text"
       fi
     done
   fi
@@ -270,10 +320,12 @@ $body
   done
   prompt+="Return the FULL new content of each file you change, as JSON {\"files\":[{\"path\":...,\"content\":...}]}. Use only the paths listed above; do not change other files. You may read any file of the repository with Read, Grep, Glob."
 
-  run_engine "$EFFORT" "$BUDGET" "$prompt" "$CODE_SCHEMA" "" "Read,Grep,Glob" "$WT_REAL"
+  run_engine code "$EFFORT" "$BUDGET" "$prompt" "$CODE_SCHEMA" "" "Read,Grep,Glob" "$WT_REAL"
   finish
   jq -e '.structured_output.files | type == "array"' <<<"$RESULT" >/dev/null 2>&1 \
     || die "engine returned no files array" 4
+  jq -e 'all(.structured_output.files[]; type == "object" and (.path | type) == "string" and (.content | type) == "string")' <<<"$RESULT" >/dev/null 2>&1 \
+    || die "refused model output: files must be {path, content} strings" 5
 
   # Output guard: every path must be exactly one of the allowed paths; write nothing otherwise.
   local -a out_paths=()
@@ -291,10 +343,13 @@ $body
   done
 
   # Write each file: temp file inside the target directory, then mv.
-  local n i target tmp
+  local n i target tmp resolved op
   n=$(jq '.structured_output.files | length' <<<"$RESULT")
   for (( i = 0; i < n; i++ )); do
-    target="$WT_REAL/$(jq -r --argjson i "$i" '.structured_output.files[$i].path' <<<"$RESULT")"
+    op=$(jq -r --argjson i "$i" '.structured_output.files[$i].path' <<<"$RESULT")
+    target="$WT_REAL/$op"
+    resolved=$(realpath -m -- "$target")
+    [[ $resolved == "$WT_REAL"/* ]] || { printf 'sdk-agent: refused model path: %s\n' "$op" >&2; exit 5; }
     mkdir -p -- "$(dirname -- "$target")"
     tmp=$(mktemp -- "$target.tmp.XXXXXX")
     if [[ -e $target ]]; then chmod --reference="$target" "$tmp"; else chmod 644 "$tmp"; fi
@@ -305,12 +360,11 @@ $body
   git -C "$WT_REAL" diff --stat
   git -C "$WT_REAL" status --short
 
-  # Validation: first TZ line starting with "Check: " runs inside the worktree (no shell).
-  local check_line check_text rc=0
-  check_line=$(grep -m1 '^Check: ' "$TZ") || check_line=""
-  if [[ -n $check_line ]]; then
-    check_text=${check_line#Check: }
-    run_check "$check_text" || rc=$?
+  # Run the Check line (already validated); refuse rc 7 on failure.
+  local rc=0
+  if [[ -n $check_text ]]; then
+    run_check "$check_text"
+    rc=$?
     printf 'sdk-agent: check rc=%s\n' "$rc" >&2
     (( rc == 0 )) || exit 7
   fi
@@ -329,7 +383,7 @@ cmd_read() {
 
 Answer from the repository files; you may only read (Read, Grep, Glob). Reply with the answer text."
 
-  run_engine "$EFFORT" "$BUDGET" "$prompt" "" "" "Read,Grep,Glob" "$WT_REAL"
+  run_engine read "$EFFORT" "$BUDGET" "$prompt" "" "" "Read,Grep,Glob" "$WT_REAL"
   jq -r '.result // ""' <<<"$RESULT"
   finish
 }

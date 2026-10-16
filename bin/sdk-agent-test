@@ -7,6 +7,8 @@ ag="$here/sdk-agent"
 TMP=$(mktemp -d /tmp/sdk-agent-test.XXXXXX)
 trap 'rm -rf -- "$TMP"' EXIT
 
+export SDK_AGENT_TEST=1
+
 pass=0
 total=0
 check() {  # DESCRIPTION CMD...
@@ -66,6 +68,69 @@ daily_cap_refuses() {
   expect_rc_err 6 "daily cap" env SDK_AGENT_RUNS_LOG="$log" "$ag" ask --budget 0.5 hi
 }
 
+symlink_to_env_refused() {
+  local wt="$TMP/wt-sym" tz="$TMP/tz-sym.md"
+  mkdir -p "$wt"
+  git -C "$wt" init -q
+  ln -s .env "$wt/notes.md"
+  printf 'FILE: notes.md\n' > "$tz"
+  expect_rc_err 2 "refused path" "$ag" code "$wt" "$tz"
+}
+
+env_uppercase_refused() {
+  local wt="$TMP/wt-envup" tz="$TMP/tz-envup.md"
+  mkdir -p "$wt"
+  git -C "$wt" init -q
+  printf 'FILE: .ENV\n' > "$tz"
+  expect_rc_err 2 "refused path" "$ag" code "$wt" "$tz"
+}
+
+check_metachar_refused() {
+  local wt="$TMP/wt-meta" tz="$TMP/tz-meta.md"
+  mkdir -p "$wt"
+  git -C "$wt" init -q
+  printf 'FILE: a.md\nCheck: echo hi; echo bye\n' > "$tz"
+  expect_rc_err 7 "refused check" "$ag" code "$wt" "$tz"
+}
+
+unwritable_runs_log_refuses() {
+  local blocker="$TMP/blocker" log="$TMP/blocker/runs.jsonl"
+  : > "$blocker"
+  expect_rc_err 6 "runs log not writable" env SDK_AGENT_RUNS_LOG="$log" "$ag" ask --budget 0.5 hi
+}
+
+runs_log_ignored_without_test_flag() {
+  local log="$TMP/runs-ignored.jsonl" now err rc
+  now=$(date +%s)
+  printf '{"ts":%s,"total_cost_usd":10.0}\n' "$now" > "$log"
+  err=$(env -u SDK_AGENT_TEST SDK_AGENT_RUNS_LOG="$log" "$ag" ask --budget 0.5 hi 2>&1 >/dev/null)
+  rc=$?
+  [[ $rc -ne 6 && $err != *"daily cap"* ]]
+}
+
+cap_boundary_under_not_refused() {
+  local log="$TMP/runs-under.jsonl" now err rc
+  now=$(date +%s)
+  printf '{"ts":%s,"total_cost_usd":2.50}\n' "$now" > "$log"
+  err=$(env SDK_AGENT_RUNS_LOG="$log" "$ag" ask --budget 0.5 hi 2>&1 >/dev/null)
+  rc=$?
+  [[ $rc -ne 6 && $err != *"daily cap"* ]]
+}
+
+cap_boundary_over_refused() {
+  local log="$TMP/runs-over.jsonl" now
+  now=$(date +%s)
+  printf '{"ts":%s,"total_cost_usd":2.51}\n' "$now" > "$log"
+  expect_rc_err 6 "daily cap" env SDK_AGENT_RUNS_LOG="$log" "$ag" ask --budget 0.5 hi
+}
+
+cap_null_cost_counts_as_ceiling() {
+  local log="$TMP/runs-null.jsonl" now
+  now=$(date +%s)
+  printf '{"ts":%s,"total_cost_usd":null}\n{"ts":%s,"total_cost_usd":0.60}\n' "$now" "$now" > "$log"
+  expect_rc_err 6 "daily cap" env SDK_AGENT_RUNS_LOG="$log" "$ag" ask --budget 0.5 hi
+}
+
 mkdir -p "$TMP/wt"
 git -C "$TMP/wt" init -q
 
@@ -84,6 +149,14 @@ check "daily cap refuses ask (rc 6)" daily_cap_refuses
 check "Files: line ../outside.txt refused" code_files_line_refuses_path
 check "Check: names a listed file -> refused check (rc 7)" check_listed_refused
 check "read with no args -> rc 2" expect_rc_err 2 "read needs" "$ag" read
+check "listed symlink notes.md -> .env refused" symlink_to_env_refused
+check "listed .ENV refused (case-insensitive)" env_uppercase_refused
+check "Check with metacharacter refused before engine (rc 7)" check_metachar_refused
+check "unwritable SDK_AGENT_RUNS_LOG -> rc 6" unwritable_runs_log_refuses
+check "SDK_AGENT_RUNS_LOG ignored without SDK_AGENT_TEST" runs_log_ignored_without_test_flag
+check "cap boundary: 2.50 + 0.50 not refused" cap_boundary_under_not_refused
+check "cap boundary: 2.51 + 0.50 -> rc 6" cap_boundary_over_refused
+check "cap: null cost counts as 2.00" cap_null_cost_counts_as_ceiling
 
 echo "ok $pass/$total"
 [[ $pass -eq $total ]]
