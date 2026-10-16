@@ -26,7 +26,7 @@ usage: sdk-agent ask [--budget USD] [--effort low|medium|high] [--schema JSON] [
        sdk-agent code [--budget USD] [--effort low|medium|high] WORKTREE TZ_FILE
        sdk-agent read [--budget USD] [--effort low|medium|high] WORKTREE TZ_FILE
        sdk-agent --help
-code: model may read the whole worktree; TZ line "Check: <executable inside worktree> [args]" is run after writing, no shell (rc 7 on failure).
+code: model may read the whole worktree; TZ line "Check: <executable inside worktree> [args]" is run after writing, no shell (rc 7 on failure); the Check executable must not be a listed file.
 Runs the Claude Agent SDK engine with model claude-haiku-5-5 and an API key (never the subscription).
 sdk-agent is a paid API program, not a Claude Code agent or subagent.
 Budget: default 0.50 USD per run, ceiling 2.00 USD. Every result is appended to tools/sdk-agent/runs.jsonl.
@@ -240,6 +240,21 @@ cmd_code() {
       die "file larger than 200 KB: $f"
     fi
   done
+
+  # U1: the Check executable must not be a listed file (the model could rewrite it before Check runs).
+  local check_pre="" check_word_real listed_real
+  local -a pre_words=()
+  check_pre=$(grep -m1 '^Check: ' "$TZ") || check_pre=""
+  if [[ -n $check_pre ]]; then
+    IFS=' ' read -r -a pre_words <<<"${check_pre#Check: }"
+    check_word_real=$(realpath -m -- "$WT_REAL/${pre_words[0]:-}")
+    for f in "${files[@]}"; do
+      listed_real=$(realpath -m -- "$WT_REAL/$f")
+      if [[ $check_word_real == "$listed_real" ]]; then
+        refuse_check "${check_pre#Check: }"
+      fi
+    done
+  fi
 
   local prompt body
   prompt="<task>
