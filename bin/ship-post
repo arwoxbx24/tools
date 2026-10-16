@@ -731,7 +731,7 @@ auto_submit_scan(){ # <repo> <wt>
   [[ $closed_ep -ge $head_ep ]] || { echo "skip $cand dirty worktree: close older than HEAD or ${auto_hours}h"; return 0; }
   [[ $(( $(date +%s) - closed_ep )) -le $(( auto_hours * 3600 )) ]] || { echo "skip $cand dirty worktree: close older than HEAD or ${auto_hours}h"; return 0; }
   if [[ ${dry_run:-0} == 1 ]]; then echo "auto-submit-ready $cand $wt"; return 0; fi
-  ( BEADS_ACTOR=$want; auto_mode=1; do_submit "$wt" "$cand" "$tzrel#$tzsuf" "$reason" "${paths[@]}" ) || return 1
+  ( BEADS_ACTOR=$want; auto_mode=1; dry_run=0; watch=0; submit=0; status_mode=0; filter_atom=; bg=0; do_submit "$wt" "$cand" "$tzrel#$tzsuf" "$reason" "${paths[@]}" ) || return 1
 }
 
 ledger_identity(){
