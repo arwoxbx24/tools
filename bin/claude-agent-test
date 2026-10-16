@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# claude-agent-test — offline assertions for bin/claude-agent (no network, no key).
+set -uo pipefail
+
+here=$(cd "$(dirname "$0")" && pwd)
+ag="$here/claude-agent"
+TMP=$(mktemp -d /tmp/claude-agent-test.XXXXXX)
+trap 'rm -rf -- "$TMP"' EXIT
+
+pass=0
+total=0
+check() {  # DESCRIPTION CMD...
+  local desc=$1
+  shift
+  total=$((total + 1))
+  if "$@"; then
+    pass=$((pass + 1))
+  else
+    echo "not ok $total: $desc" >&2
+  fi
+}
+
+# expect_rc_err WANT_RC NEEDLE CMD... — rc must match and stderr must contain NEEDLE.
+expect_rc_err() {
+  local want=$1 needle=$2 err rc
+  shift 2
+  err=$("$@" 2>&1 >/dev/null)
+  rc=$?
+  [[ $rc -eq $want && $err == *"$needle"* ]]
+}
+
+help_rc0() { "$ag" --help >/dev/null 2>&1; }
+
+help_first_line_usage() {
+  local out
+  out=$("$ag" --help 2>/dev/null) || return 1
+  [[ ${out%%$'\n'*} == usage:* ]]
+}
+
+code_refuses_path() {  # TZ_LINE_PATH
+  local tz="$TMP/tz-$RANDOM.md"
+  printf 'FILE: %s\n' "$1" > "$tz"
+  expect_rc_err 2 "refused path" "$ag" code "$TMP/wt" "$tz"
+}
+
+mkdir -p "$TMP/wt"
+git -C "$TMP/wt" init -q
+
+check "--help exits 0" help_rc0
+check "--help first line starts with usage:" help_first_line_usage
+check "--budget 5 -> rc 2 refused" expect_rc_err 2 refused "$ag" ask --budget 5 hi
+check "--budget abc -> rc 2" expect_rc_err 2 refused "$ag" ask --budget abc hi
+check "--effort max -> rc 2" expect_rc_err 2 "refused" "$ag" ask --effort max hi
+check "FILE: ../x refused" code_refuses_path "../x"
+check "FILE: .env refused" code_refuses_path ".env"
+check "FILE: /etc/passwd refused" code_refuses_path "/etc/passwd"
+check "FILE: secrets/a refused" code_refuses_path "secrets/a"
+check "model is claude-haiku-5-5" bash -c '[[ $(grep -c claude-haiku-5-5 "$1") -ge 1 ]]' _ "$ag"
+check "no other claude model names" bash -c '[[ $(grep -cE "claude-(sonnet|opus|fable)" "$1") -eq 0 ]]' _ "$ag"
+
+echo "ok $pass/$total"
+[[ $pass -eq $total ]]
