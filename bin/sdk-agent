@@ -15,7 +15,7 @@ readonly DEFAULT_BUDGET="0.50"
 readonly MAX_BUDGET="2.00"
 readonly DAILY_CAP="3.00"
 readonly MAX_FILE_BYTES=204800
-readonly CODE_SCHEMA='{"type":"object","properties":{"files":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}}},"required":["files"]}'
+readonly CODE_SCHEMA='{"type":"object","properties":{"edits":{"type":"array","items":{"type":"object","properties":{"path":{"type":"string"},"old":{"type":"string"},"new":{"type":"string"}},"required":["path","old","new"]}}},"required":["edits"]}'
 
 RESULT=""
 BUDGET=""
@@ -23,6 +23,7 @@ EFFORT=""
 SCHEMA=""
 SYSFILE=""
 POS=()
+FILES=()
 KEY_VARS=()
 
 usage() {
@@ -31,7 +32,7 @@ usage: sdk-agent ask [--budget USD] [--effort low|medium|high] [--schema JSON] [
        sdk-agent code [--budget USD] [--effort low|medium|high] WORKTREE TZ_FILE
        sdk-agent read [--budget USD] [--effort low|medium|high] WORKTREE TZ_FILE
        sdk-agent --help
-code: model may read the whole worktree; TZ line "Check: <executable inside worktree> [args]" is run after writing, no shell (rc 7 on failure); the Check executable must not be a listed file.
+code: model may read the whole worktree and returns exact edits (path, old, new) to listed files; TZ line "Check: <executable inside worktree> [args]" is run after writing, no shell (rc 7 on failure); the Check executable must not be a listed file.
 Runs the Claude Agent SDK engine with model claude-haiku-5-5 and an API key (never the subscription).
 sdk-agent is a paid API program, not a Claude Code agent or subagent.
 Budget: default 0.50 USD per run, ceiling 2.00 USD. Every result is appended to tools/sdk-agent/runs.jsonl.
@@ -231,6 +232,20 @@ open_worktree() {
   [[ -r $TZ ]] || die "TZ file not readable: $TZ"
 }
 
+# load_listed — sets FILES to the TZ-listed paths (1..20), each checked by check_path and the size cap.
+load_listed() {
+  local f
+  mapfile -t FILES < <({ sed -n -E 's/^FILE: (.+)$/\1/p' "$TZ"; grep -m1 '^Files:' "$TZ" | tr '\140' '\n' | sed -n '2~2p'; } | awk '!seen[$0]++')
+  (( ${#FILES[@]} >= 1 && ${#FILES[@]} <= 20 )) || die "TZ must list 1..20 paths ('FILE: <path>' lines or a 'Files:' line) (found ${#FILES[@]})"
+
+  for f in "${FILES[@]}"; do
+    check_path "$WT_REAL" "$f"
+    if [[ -f $WT_REAL/$f ]] && (( $(wc -c < "$WT_REAL/$f") > MAX_FILE_BYTES )); then
+      die "file larger than 200 KB: $f"
+    fi
+  done
+}
+
 # refuse_check TEXT — U3.7: refused Check line, exit 7, nothing run.
 refuse_check() {
   printf 'sdk-agent: refused check: %s\n' "$1" >&2
@@ -268,6 +283,74 @@ run_check() {
   (cd -- "$WT_REAL" && env "${unset_args[@]}" "./${words[0]}" "${words[@]:1}")
 }
 
+# apply_edits — applies RESULT's .structured_output.edits to FILES (the TZ-listed paths).
+# Every edit is validated in memory first (earlier edits of a file are applied before later ones);
+# only when all pass is each changed file written once (temp file + mv). Otherwise exit 5, nothing written.
+apply_edits() {
+  local n i f op listed line p target tmp res state
+  local -a changes=()
+  jq -e '.structured_output.edits | type == "array"' <<<"$RESULT" >/dev/null 2>&1 \
+    || die "engine returned no edits array" 4
+  jq -e 'all(.structured_output.edits[]; type == "object" and (.path | type) == "string" and (.old | type) == "string" and (.new | type) == "string")' <<<"$RESULT" >/dev/null 2>&1 \
+    || die "refused model output: edits must be {path, old, new} strings" 5
+
+  # Path guard per edit: must be a listed path and resolve under WT_REAL.
+  n=$(jq '.structured_output.edits | length' <<<"$RESULT")
+  for (( i = 0; i < n; i++ )); do
+    op=$(jq -r --argjson i "$i" '.structured_output.edits[$i].path' <<<"$RESULT")
+    listed=0
+    for f in "${FILES[@]}"; do
+      if [[ $op == "$f" ]]; then listed=1; fi
+    done
+    if (( listed == 0 )) || [[ $(realpath -m -- "$WT_REAL/$op") != "$WT_REAL"/* ]]; then
+      printf 'sdk-agent: refused model path: %s\n' "$op" >&2
+      exit 5
+    fi
+  done
+
+  # Current state: every listed path -> its content (raw, trailing newline kept) or null when absent.
+  state='{}'
+  for f in "${FILES[@]}"; do
+    if [[ -f $WT_REAL/$f ]]; then
+      state=$(jq -n --argjson s "$state" --arg p "$f" --rawfile c "$WT_REAL/$f" '$s + {($p): $c}') || die "cannot read: $f" 6
+    else
+      state=$(jq -n --argjson s "$state" --arg p "$f" '$s + {($p): null}') || die "cannot read: $f" 6
+    fi
+  done
+
+  # Apply the edits in memory. old "" = create (file must not exist); otherwise old must occur exactly once.
+  res=$(jq -c --argjson s "$state" '
+    def apply_one($st; $e):
+      ($e.path) as $p
+      | ($st[$p]) as $cur
+      | if $e.old == "" then
+          (if $cur != null then error("refused edit: file exists: \($p)") else $st + {($p): $e.new} end)
+        elif $cur == null then error("refused edit: not found: \($p)")
+        else ($cur | indices($e.old) | length) as $n
+          | if $n == 0 then error("refused edit: not found: \($p)")
+            elif $n > 1 then error("refused edit: old not unique: \($p)")
+            else $st + {($p): ($cur | split($e.old) | join($e.new))} end
+        end;
+    try {ok: (reduce .structured_output.edits[] as $e ($s; apply_one(.; $e)))} catch {error: .}' <<<"$RESULT") \
+    || die "cannot apply edits" 5
+  if jq -e 'has("error")' <<<"$res" >/dev/null; then
+    die "$(jq -r '.error' <<<"$res")" 5
+  fi
+
+  mapfile -t changes < <(jq -c --argjson s "$state" '.ok | to_entries[] | select(.value != $s[.key]) | {path: .key, content: .value}' <<<"$res")
+
+  # Write each changed file once: temp file inside the target directory, then mv.
+  for line in "${changes[@]}"; do
+    p=$(jq -r '.path' <<<"$line")
+    target="$WT_REAL/$p"
+    mkdir -p -- "$(dirname -- "$target")"
+    tmp=$(mktemp -- "$target.tmp.XXXXXX")
+    if [[ -e $target ]]; then chmod --reference="$target" "$tmp"; else chmod 644 "$tmp"; fi
+    jq -j '.content' <<<"$line" > "$tmp"
+    mv -f -- "$tmp" "$target"
+  done
+}
+
 cmd_code() {
   parse_args code "$@"
   EFFORT=${EFFORT:-medium}
@@ -275,21 +358,10 @@ cmd_code() {
   validate_effort "$EFFORT"
   (( ${#POS[@]} == 2 )) || die "code needs WORKTREE and TZ_FILE (see --help)"
   open_worktree
-
-  local -a files=()
-  mapfile -t files < <({ sed -n -E 's/^FILE: (.+)$/\1/p' "$TZ"; grep -m1 '^Files:' "$TZ" | tr '\140' '\n' | sed -n '2~2p'; } | awk '!seen[$0]++')
-  (( ${#files[@]} >= 1 && ${#files[@]} <= 20 )) || die "TZ must list 1..20 paths ('FILE: <path>' lines or a 'Files:' line) (found ${#files[@]})"
-
-  local f
-  for f in "${files[@]}"; do
-    check_path "$WT_REAL" "$f"
-    if [[ -f $WT_REAL/$f ]] && (( $(wc -c < "$WT_REAL/$f") > MAX_FILE_BYTES )); then
-      die "file larger than 200 KB: $f"
-    fi
-  done
+  load_listed
 
   # Check line: read once, validate statically before the engine (rc 7, nothing written).
-  local check_text="" check_line="" check_word_real listed_real
+  local check_text="" check_line="" check_word_real listed_real f
   local -a pre_words=()
   check_line=$(grep -m1 '^Check: ' "$TZ") || check_line=""
   if [[ -n $check_line ]]; then
@@ -298,7 +370,7 @@ cmd_code() {
     # U1: the Check executable must not be a listed file (the model could rewrite it before Check runs).
     IFS=' ' read -r -a pre_words <<<"$check_text"
     check_word_real=$(realpath -m -- "$WT_REAL/${pre_words[0]:-}")
-    for f in "${files[@]}"; do
+    for f in "${FILES[@]}"; do
       listed_real=$(realpath -m -- "$WT_REAL/$f")
       if [[ $check_word_real == "$listed_real" ]]; then
         refuse_check "$check_text"
@@ -311,51 +383,18 @@ cmd_code() {
 $(cat -- "$TZ")
 </task>
 "
-  for f in "${files[@]}"; do
+  for f in "${FILES[@]}"; do
     if [[ -f $WT_REAL/$f ]]; then body=$(cat -- "$WT_REAL/$f"); else body="(new file)"; fi
     prompt+="<file path=\"$f\">
 $body
 </file>
 "
   done
-  prompt+="Return the FULL new content of each file you change, as JSON {\"files\":[{\"path\":...,\"content\":...}]}. Use only the paths listed above; do not change other files. You may read any file of the repository with Read, Grep, Glob."
+  prompt+="Return only exact edits as JSON {\"edits\":[{\"path\":...,\"old\":...,\"new\":...}]}. \`old\` is an exact, unique fragment of the current file (include enough surrounding lines to be unique); \`new\` replaces it. To create a new file use old \"\" (only when the file does not exist). Do not touch lines the task does not ask for. Use only the paths listed above. You may read any file of the repository with Read, Grep, Glob."
 
   run_engine code "$EFFORT" "$BUDGET" "$prompt" "$CODE_SCHEMA" "" "Read,Grep,Glob" "$WT_REAL"
   finish
-  jq -e '.structured_output.files | type == "array"' <<<"$RESULT" >/dev/null 2>&1 \
-    || die "engine returned no files array" 4
-  jq -e 'all(.structured_output.files[]; type == "object" and (.path | type) == "string" and (.content | type) == "string")' <<<"$RESULT" >/dev/null 2>&1 \
-    || die "refused model output: files must be {path, content} strings" 5
-
-  # Output guard: every path must be exactly one of the allowed paths; write nothing otherwise.
-  local -a out_paths=()
-  mapfile -t out_paths < <(jq -r '.structured_output.files[].path' <<<"$RESULT")
-  local op allowed
-  for op in "${out_paths[@]}"; do
-    allowed=0
-    for f in "${files[@]}"; do
-      if [[ $op == "$f" ]]; then allowed=1; fi
-    done
-    if (( allowed == 0 )); then
-      printf 'sdk-agent: refused model path: %s\n' "$op" >&2
-      exit 5
-    fi
-  done
-
-  # Write each file: temp file inside the target directory, then mv.
-  local n i target tmp resolved op
-  n=$(jq '.structured_output.files | length' <<<"$RESULT")
-  for (( i = 0; i < n; i++ )); do
-    op=$(jq -r --argjson i "$i" '.structured_output.files[$i].path' <<<"$RESULT")
-    target="$WT_REAL/$op"
-    resolved=$(realpath -m -- "$target")
-    [[ $resolved == "$WT_REAL"/* ]] || { printf 'sdk-agent: refused model path: %s\n' "$op" >&2; exit 5; }
-    mkdir -p -- "$(dirname -- "$target")"
-    tmp=$(mktemp -- "$target.tmp.XXXXXX")
-    if [[ -e $target ]]; then chmod --reference="$target" "$tmp"; else chmod 644 "$tmp"; fi
-    jq -j --argjson i "$i" '.structured_output.files[$i].content' <<<"$RESULT" > "$tmp"
-    mv -f -- "$tmp" "$target"
-  done
+  apply_edits
 
   git -C "$WT_REAL" diff --stat
   git -C "$WT_REAL" status --short
@@ -368,6 +407,16 @@ $body
     printf 'sdk-agent: check rc=%s\n' "$rc" >&2
     (( rc == 0 )) || exit 7
   fi
+}
+
+# cmd_apply_edits WORKTREE TZ_FILE RESULT_JSON — test entry (SDK_AGENT_TEST=1 only): applies a prepared engine result.
+cmd_apply_edits() {
+  (( $# == 3 )) || die "--apply-edits needs WORKTREE TZ_FILE RESULT_JSON"
+  POS=("$1" "$2")
+  open_worktree
+  load_listed
+  RESULT=$(cat -- "$3") || die "cannot read: $3"
+  apply_edits
 }
 
 cmd_read() {
@@ -394,6 +443,11 @@ main() {
     ask) shift; cmd_ask "$@" ;;
     code) shift; cmd_code "$@" ;;
     read) shift; cmd_read "$@" ;;
+    --apply-edits)
+      shift
+      [[ ${SDK_AGENT_TEST:-} == 1 ]] || die "unknown mode: --apply-edits (see --help)"
+      cmd_apply_edits "$@"
+      ;;
     "") usage >&2; exit 2 ;;
     *) die "unknown mode: $1 (see --help)" ;;
   esac

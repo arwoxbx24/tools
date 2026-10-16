@@ -131,6 +131,52 @@ cap_null_cost_counts_as_ceiling() {
   expect_rc_err 6 "daily cap" env SDK_AGENT_RUNS_LOG="$log" "$ag" ask --budget 0.5 hi
 }
 
+# apply_setup DIR CONTENT EDITS_JSON — worktree DIR/wt with a.md=CONTENT (copy in DIR/orig.md),
+# TZ DIR/tz.md listing a.md, engine result DIR/edits.json.
+apply_setup() {
+  local d=$1
+  mkdir -p "$d/wt"
+  git -C "$d/wt" init -q
+  printf '%s' "$2" > "$d/wt/a.md"
+  printf '%s' "$2" > "$d/orig.md"
+  printf 'FILE: a.md\n' > "$d/tz.md"
+  printf '%s' "$3" > "$d/edits.json"
+}
+
+# apply_refused DIR NEEDLE — applies DIR/edits.json; rc must be 5, stderr must contain NEEDLE,
+# and a.md must stay byte-identical to DIR/orig.md.
+apply_refused() {
+  local d=$1 needle=$2 err rc
+  err=$("$ag" --apply-edits "$d/wt" "$d/tz.md" "$d/edits.json" 2>&1 >/dev/null)
+  rc=$?
+  [[ $rc -eq 5 && $err == *"$needle"* ]] && cmp -s "$d/orig.md" "$d/wt/a.md"
+}
+
+apply_edit_once() {
+  local d="$TMP/ae-once"
+  apply_setup "$d" $'line1\nold line\nline3\n' '{"structured_output":{"edits":[{"path":"a.md","old":"old line","new":"NEW"}]}}'
+  "$ag" --apply-edits "$d/wt" "$d/tz.md" "$d/edits.json" >/dev/null 2>&1 || return 1
+  printf 'line1\nNEW\nline3\n' | cmp -s - "$d/wt/a.md"
+}
+
+apply_not_found() {
+  local d="$TMP/ae-missing"
+  apply_setup "$d" $'line1\nline2\n' '{"structured_output":{"edits":[{"path":"a.md","old":"absent","new":"x"}]}}'
+  apply_refused "$d" "refused edit: not found: a.md"
+}
+
+apply_not_unique() {
+  local d="$TMP/ae-twice"
+  apply_setup "$d" $'x\nx\n' '{"structured_output":{"edits":[{"path":"a.md","old":"x","new":"y"}]}}'
+  apply_refused "$d" "refused edit: old not unique: a.md"
+}
+
+apply_second_fails() {
+  local d="$TMP/ae-second"
+  apply_setup "$d" $'one\ntwo\n' '{"structured_output":{"edits":[{"path":"a.md","old":"one","new":"ONE"},{"path":"a.md","old":"nope","new":"z"}]}}'
+  apply_refused "$d" "refused edit: not found: a.md"
+}
+
 mkdir -p "$TMP/wt"
 git -C "$TMP/wt" init -q
 
@@ -157,6 +203,10 @@ check "SDK_AGENT_RUNS_LOG ignored without SDK_AGENT_TEST" runs_log_ignored_witho
 check "cap boundary: 2.50 + 0.50 not refused" cap_boundary_under_not_refused
 check "cap boundary: 2.51 + 0.50 -> rc 6" cap_boundary_over_refused
 check "cap: null cost counts as 2.00" cap_null_cost_counts_as_ceiling
+check "--apply-edits: one exact edit changes only that fragment" apply_edit_once
+check "--apply-edits: old not found -> rc 5, file unchanged" apply_not_found
+check "--apply-edits: old found twice -> rc 5, file unchanged" apply_not_unique
+check "--apply-edits: 2nd edit fails -> rc 5, 1st not written" apply_second_fails
 
 echo "ok $pass/$total"
 [[ $pass -eq $total ]]
