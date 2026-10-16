@@ -173,6 +173,12 @@ test_auto_submit(){
 	before=$(git -C "$wt" rev-parse HEAD)
 	out=$(export BD_ASSIGNEE='Claude Code'; run_tool "$d" 2>&1); rc=$?; after=$(git -C "$wt" rev-parse HEAD)
 	[[ $after == "$before" && $out == *'not named in TZ'* ]] && pass AS6 || fail AS6 "rc=$rc: $out"
+
+	setup_submit auto7 claude/dcfg-auto.7; printf 'file.txt\n' >> "$wt/docs/tz/TZ-TEST.md"; printf x > "$wt/file.txt"; : > "$d/events"
+	printf 'ТЗ: docs/tz/TZ-TEST.md#U1\n' > "$d/bd.description"; echo closed > "$d/status.dcfg-auto.7"; echo 'done' > "$d/bd.reason"
+	before=$(git -C "$wt" rev-parse HEAD)
+	out=$(export BD_ASSIGNEE='Claude Code' TEST_TIMEOUT=15; run_tool "$d" --watch 2>&1); rc=$?; after=$(git -C "$wt" rev-parse HEAD)
+	[[ $after != "$before" && $out == *'auto-submit dcfg-auto.7'* && $out != *'cannot be combined'* ]] && pass AS7 || fail AS7 "rc=$rc: $out"
 }
 test_dryrun_mocks(){
 	local n=1 out rc
@@ -875,6 +881,8 @@ elif [[ ${SHIP_POST_TEST_GROUP:-all} == recovery ]]; then
 	 test_watch_lock_released
 	elif [[ ${SHIP_POST_TEST_GROUP:-all} == adr35 ]]; then
 	 test_adr35
+		elif [[ ${SHIP_POST_TEST_GROUP:-all} == auto ]]; then
+		 test_auto_submit
 else
 	 test_dryrun_mocks; test_valid_actors; test_rejections; test_hook_and_retry; test_closed_retry; test_remote_result_closed; test_delivery; test_beads_root_fallback; test_live_sync; test_watch; test_recovery; test_stream_errors; test_closed_skip_reason; test_concurrent_repositories; test_watch_lock_released; test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery; test_actor_alias; test_nested_repo; test_final_states; test_submit_conflict_preflight; test_u15; test_adr30; test_park; test_park_live; test_hints; test_status; test_break_glass; test_auto_submit
 fi
