@@ -510,5 +510,25 @@ mkdir -p "$d/sb/test-z"; printf 'z\n' > "$d/sb/test-z/f"
 out70=$(SAFE_DELETE_SANDBOX=/root/workspaces/sandbox "$bin/safe-delete" --bk "$bk" dir "$d/sb/test-z" 2>&1); r70=$?
 if [[ $r70 == 2 && $out70 == *'корень не под /tmp'* && -f "$d/sb/test-z/f" ]]; then echo 'PASS T70 sandbox_root_not_tmp'; ok=$((ok+1)); else echo "FAIL T70: rc=$r70 out=$out70"; fi
 
-[[ $ok == 71 ]] || exit 1
-echo "итог: PASS 71, FAIL 0"
+# T71: live links under forbidden segments are refused and survive
+mkdir -p "$d/lr/.git" "$d/lr/secrets"; printf 't\n' > "$d/lr/t"
+ln -s "$d/lr/t" "$d/lr/.git/x"; ln -s "$d/lr/t" "$d/lr/secrets/k"
+SAFE_DELETE_LIVE_LINK_ROOT="$d/lr" "$bin/safe-delete" --bk "$bk" link "$d/lr/.git/x" >/dev/null 2>&1; r71a=$?
+SAFE_DELETE_LIVE_LINK_ROOT="$d/lr" "$bin/safe-delete" --bk "$bk" link "$d/lr/secrets/k" >/dev/null 2>&1; r71b=$?
+if [[ $r71a == 2 && $r71b == 2 && -L $d/lr/.git/x && -L $d/lr/secrets/k ]]; then echo 'PASS T71 link_forbidden_segments'; ok=$((ok+1)); else echo "FAIL T71: $r71a $r71b"; fi
+
+# T72: deleted live link restores with the same target
+ln -s "$d/lr/t" "$d/lr/rl"
+SAFE_DELETE_LIVE_LINK_ROOT="$d/lr" "$bin/safe-delete" --bk "$bk" link "$d/lr/rl" >/dev/null; r72a=$?
+rl72=$(awk -F '\t' -v p="$d/lr/rl" '$2 == "link" && $3 == p && $8 == "deleted" { n=NR } END { print n }' "$bk/ledger.tsv")
+"$bin/safe-delete" --bk "$bk" restore "$rl72" >/dev/null; r72b=$?
+if [[ $r72a == 0 && $r72b == 0 && -L $d/lr/rl && $(readlink "$d/lr/rl") == "$d/lr/t" ]]; then echo 'PASS T72 link_restore'; ok=$((ok+1)); else echo "FAIL T72: del=$r72a restore=$r72b"; fi
+
+# T73: link whose ledger write fails is not deleted (ledger.tsv as a directory: root ignores chmod)
+mkdir -p "$d/rbk/ledger.tsv"
+ln -s "$d/missing-ro" "$d/ro-link"
+"$bin/safe-delete" --bk "$d/rbk" link "$d/ro-link" >/dev/null 2>&1; r73=$?
+if [[ $r73 != 0 && -L $d/ro-link ]]; then echo 'PASS T73 ledger_unwritable'; ok=$((ok+1)); else echo "FAIL T73: rc=$r73"; fi
+
+[[ $ok == 74 ]] || exit 1
+echo "итог: PASS 74, FAIL 0"
