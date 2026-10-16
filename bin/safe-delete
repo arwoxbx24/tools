@@ -7,6 +7,8 @@ mkdir -p "$BK"
 led=$BK/ledger.tsv
 self=$(realpath -e "$(command -v -- "$0")") || exit 1
 allow_git_under=
+sandbox=${SAFE_DELETE_SANDBOX:-/root/workspaces/sandbox}
+force_copy=
 ok_repowise=
 log_n=
 log(){ { flock -x 9 || return 1; printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date +%Y-%m-%dT%H:%M:%S)" "$@" >>"$led" || return 1; log_n=$(wc -l <"$led"); log_n=${log_n//[[:space:]]/}; } 9>>"$led.lock"; }
@@ -81,7 +83,7 @@ $p
 check_file(){ check_path "$1"; [[ -f $p ]] || refuse "не обычный файл: $p"; }
 delete_file(){
   check_file "$1"
-  if git_file "$1"; then
+  if [[ -z $force_copy ]] && git_file "$1"; then
     ref="refs/safe-delete/$(date +%Y%m%d%H%M%S%N)-${git_blob:0:12}"
     git -C "$git_repo" update-ref "$ref" "$git_blob" || return 1
     log git "$p" "$git_blob" "$git_repo" "$ref" "$git_mode" - || return 1
@@ -102,6 +104,7 @@ delete_file(){
 [[ $# -ge 1 ]] || refuse 'usage: safe-delete [--bk <каталог>] <branch|file|dir|worktree|tmp|link|restore|purge|repo-autodelete> …'
 if [[ $1 == --bk ]]; then [[ $# -ge 3 ]] || refuse 'usage'; BK=$2; shift 2; mkdir -p "$BK"; led=$BK/ledger.tsv; fi
 cmd=$1; shift
+if [[ -n ${SAFE_DELETE_SANDBOX:-} ]]; then [[ $SAFE_DELETE_SANDBOX == /tmp/* ]] || refuse "корень не под /tmp: $SAFE_DELETE_SANDBOX"; fi
 
 case "$cmd" in
   repo-autodelete)
@@ -142,7 +145,8 @@ case "$cmd" in
     ;;
   dir)
     [[ $# -eq 1 ]] || refuse 'usage'; check_path "$1"; dir=$p; [[ -d $dir ]] || refuse "не каталог: $dir"
-    if self_contained "$dir"; then allow_git_under=$dir; else allow_git_under=; fi
+    if [[ $dir == "$sandbox"/test-* && ${dir#"$sandbox"/} != */* ]]; then allow_git_under=$dir; force_copy=1
+    elif self_contained "$dir"; then allow_git_under=$dir; else allow_git_under=; fi
     mapfile -d '' entries < <(find "$dir" -depth -print0); for entry in "${entries[@]}"; do [[ -L $entry ]] || check_path "$entry"; done
     mapfile -d '' files < <(find "$dir" -type f -print0)
     for f in "${files[@]}"; do check_file "$f"; done
