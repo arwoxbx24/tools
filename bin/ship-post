@@ -8,6 +8,7 @@ ship_bin="$bin/ship"
 SHIP_POST_STATE_DIR=${SHIP_POST_STATE_DIR:-/root/workspaces/tools/state/ship-post}
 SHIP_POST_BEADS_ROOT=${SHIP_POST_BEADS_ROOT:-/root/workspaces/projects}
 SHIP_POST_SINCE=${SHIP_POST_SINCE:-1791205200}
+SHIP_POST_PARKED_RETRY_SECONDS=${SHIP_POST_PARKED_RETRY_SECONDS:-3600} # dcfg-c75sy.3: parked INFRA atoms re-handover after this backoff
 BEADS_ACTOR=${BEADS_ACTOR:-}
 SHIP_POST_RETRY_SECONDS=${SHIP_POST_RETRY_SECONDS:-30}
 [[ $SHIP_POST_RETRY_SECONDS =~ ^[1-9][0-9]*$ ]] || { echo 'ship-post: invalid retry interval' >&2; exit 2; }
@@ -589,6 +590,7 @@ scan_repo(){
  local ok=0 failed=0 skip=0 started=0 jobs_max p
  jobs_max=${SHIP_POST_JOBS:-8}
  [[ $jobs_max =~ ^[1-9][0-9]*$ ]] || jobs_max=8
+ local pf=''
  [[ -d $repo ]] || return 1
  repo=$(realpath "$repo") || return 1
  [[ $(git -C "$repo" rev-parse --show-toplevel 2>/dev/null) == "$repo" ]] || return 1
@@ -651,7 +653,17 @@ scan_repo(){
     *) (BEADS_ACTOR=$actor; record_failure "$repo" "$atom" "$head" "$code") || failed=$((failed+1)); continue ;;
    esac
   fi
-  if [[ -f $rf.failed ]]; then case $(cat "$rf.failed") in 10|50|80) skip=$((skip+1)); continue ;; esac; fi
+  if [[ -f $rf.failed ]]; then
+   case $(cat "$rf.failed") in
+    10|50|80) skip=$((skip+1)); continue ;;
+    23|70|75) ;;
+    *) pf="$SHIP_POST_STATE_DIR/incidents/parked/$atom" # dcfg-c75sy.3: wait out the backoff before re-handover of a parked INFRA atom
+       if [[ -f $pf ]]; then
+        if (( $(date +%s) - $(stat -c %Y "$pf") < SHIP_POST_PARKED_RETRY_SECONDS )); then skip=$((skip+1)); continue; fi
+        touch "$pf"
+       fi ;;
+   esac
+  fi
   [[ $status == closed ]] || { skip=$((skip+1)); continue; }
   dirty=$(git -C "$wt" status --porcelain=v1 --untracked-files=all) || { failed=$((failed+1)); continue; }
    [[ -z $dirty ]] || { echo "skip $atom dirty worktree"; report_closed_skip "$repo" "$atom" "$head" "$branch" "$status" 'dirty worktree' "$wt" || failed=$((failed+1)); skip=$((skip+1)); continue; }
