@@ -60,7 +60,7 @@ printf '%s|%s|%s\n' "$PWD" "${BEADS_ACTOR:-}" "$*" >> "${SHIP_POST_TEST_DIR}/bd.
 case ${1:-} in
 	show) [[ ! -f $SHIP_POST_TEST_DIR/bd-down ]] || exit 1
 	 if [[ -f ${BEADS_DIR:-}/missing-atoms ]] && grep -Fxq -- "${2:-}" "${BEADS_DIR:-}/missing-atoms"; then printf 'Issue %s not found\n' "${2:-}" >&2; exit 1; fi
-	 jq -n --arg status "$(cat "$SHIP_POST_TEST_DIR/status.${2:-}" 2>/dev/null || cat "$SHIP_POST_TEST_DIR/status" 2>/dev/null || echo "${BD_STATUS:-in_progress}")" --arg assignee "${BD_ASSIGNEE-Codex}" --arg notes "$(cat "$SHIP_POST_TEST_DIR/bd.notes" 2>/dev/null || true)" '[{status:$status,assignee:$assignee,notes:$notes}]' ;;
+	 jq -n --arg status "$(cat "$SHIP_POST_TEST_DIR/status.${2:-}" 2>/dev/null || cat "$SHIP_POST_TEST_DIR/status" 2>/dev/null || echo "${BD_STATUS:-in_progress}")" --arg assignee "${BD_ASSIGNEE-Codex}" --arg notes "$(cat "$SHIP_POST_TEST_DIR/bd.notes" 2>/dev/null || true)" --arg desc "$(cat "$SHIP_POST_TEST_DIR/bd.description" 2>/dev/null || true)" --arg reason "$(cat "$SHIP_POST_TEST_DIR/bd.reason" 2>/dev/null || true)" --arg closed_at "$(cat "$SHIP_POST_TEST_DIR/bd.closed_at" 2>/dev/null || date -Iseconds)" '[{status:$status,assignee:$assignee,notes:$notes,description:$desc,close_reason:$reason,closed_at:$closed_at}]' ;;
 info) printf '{"database_path":"%s"}\n' "$SHIP_POST_TEST_DIR/repo/.git" ;;
 events) [[ -z ${EVENT_STDERR:-} ]] || printf '%s\n' "$EVENT_STDERR" >&2
  cat "$SHIP_POST_TEST_DIR/events"; [[ ${EVENT_STREAM_FAIL:-0} == 1 ]] && exit 7
@@ -136,6 +136,44 @@ test_submit_conflict_preflight(){
 		&& pass U14_fetch_failure_close || fail U14_fetch_failure_close "rc=$rc: $out"
 }
 
+test_auto_submit(){
+	local out rc before after
+	setup_submit auto1 claude/dcfg-auto.1; printf 'file.txt\n' >> "$wt/docs/tz/TZ-TEST.md"; printf x > "$wt/file.txt"
+	printf 'ТЗ: docs/tz/TZ-TEST.md#U1\n' > "$d/bd.description"; echo closed > "$d/status.dcfg-auto.1"; echo 'done' > "$d/bd.reason"
+	before=$(git -C "$wt" rev-parse HEAD)
+	out=$(export BD_ASSIGNEE='Claude Code'; run_tool "$d" 2>&1); rc=$?; after=$(git -C "$wt" rev-parse HEAD)
+	if [[ $rc == 0 && $after != "$before" && $out == *"auto-submit dcfg-auto.1 $after"* ]] && grep -Fxq 'Atom: dcfg-auto.1' <(git -C "$wt" log -1 --format=%B) \
+		&& grep -Fxq 'Agent: claude' <(git -C "$wt" log -1 --format=%B) && grep -Fq 'ship-post auto-submit' "$d/bd.notes" && [[ ! -s $d/bd.closes ]]; then pass AS1; else fail AS1 "rc=$rc: $out"; fi
+
+	setup_submit auto2 claude/dcfg-auto.2; printf 'file.txt\n' >> "$wt/docs/tz/TZ-TEST.md"; printf x > "$wt/file.txt"; printf y > "$wt/extra.txt"
+	printf 'ТЗ: docs/tz/TZ-TEST.md#U1\n' > "$d/bd.description"; echo closed > "$d/status.dcfg-auto.2"; echo 'done' > "$d/bd.reason"
+	before=$(git -C "$wt" rev-parse HEAD)
+	out=$(export BD_ASSIGNEE='Claude Code'; run_tool "$d" 2>&1); rc=$?; after=$(git -C "$wt" rev-parse HEAD)
+	[[ $after == "$before" && $out == *'not named in TZ'* ]] && pass AS2 || fail AS2 "rc=$rc: $out"
+
+	setup_submit auto3 claude/dcfg-auto.3; printf 'file.txt\n' >> "$wt/docs/tz/TZ-TEST.md"; printf x > "$wt/file.txt"
+	printf 'ТЗ: docs/tz/TZ-TEST.md#U1\n' > "$d/bd.description"; echo closed > "$d/status.dcfg-auto.3"; echo 'PARTIAL: x' > "$d/bd.reason"
+	before=$(git -C "$wt" rev-parse HEAD)
+	out=$(export BD_ASSIGNEE='Claude Code'; run_tool "$d" 2>&1); rc=$?; after=$(git -C "$wt" rev-parse HEAD)
+	[[ $after == "$before" && $out == *'negative close reason'* ]] && pass AS3 || fail AS3 "rc=$rc: $out"
+
+	setup_submit auto4 claude/dcfg-auto.4; printf x > "$wt/file.txt"
+	out=$(unset BEADS_ACTOR; export BD_ASSIGNEE='Claude Code'; submit dcfg-auto.4 "$tz" file.txt 2>&1); rc=$?
+	[[ $rc == 0 && $out != *'unknown BEADS_ACTOR'* && $(<"$d/bd.closes") == dcfg-auto.4 ]] && pass AS4 || fail AS4 "rc=$rc: $out"
+
+	setup_submit auto5 claude/dcfg-auto.5; printf 'file.txt\n' >> "$wt/docs/tz/TZ-TEST.md"; printf x > "$wt/file.txt"
+	printf 'ТЗ: docs/tz/TZ-TEST.md#U1\n' > "$d/bd.description"; echo closed > "$d/status.dcfg-auto.5"; echo 'done' > "$d/bd.reason"
+	date -u -d '48 hours ago' -Iseconds > "$d/bd.closed_at"
+	before=$(git -C "$wt" rev-parse HEAD)
+	out=$(export BD_ASSIGNEE='Claude Code'; run_tool "$d" 2>&1); rc=$?; after=$(git -C "$wt" rev-parse HEAD)
+	[[ $after == "$before" && $out == *'dirty worktree'* ]] && pass AS5 || fail AS5 "rc=$rc: $out"
+
+	setup_submit auto6 claude/dcfg-auto.6; printf 'bin/ship-post\n' >> "$wt/docs/tz/TZ-TEST.md"; mkdir -p "$wt/bin"; printf x > "$wt/bin/ship"
+	printf 'ТЗ: docs/tz/TZ-TEST.md#U1\n' > "$d/bd.description"; echo closed > "$d/status.dcfg-auto.6"; echo 'done' > "$d/bd.reason"
+	before=$(git -C "$wt" rev-parse HEAD)
+	out=$(export BD_ASSIGNEE='Claude Code'; run_tool "$d" 2>&1); rc=$?; after=$(git -C "$wt" rev-parse HEAD)
+	[[ $after == "$before" && $out == *'not named in TZ'* ]] && pass AS6 || fail AS6 "rc=$rc: $out"
+}
 test_dryrun_mocks(){
 	local n=1 out rc
 	setup_submit dry codex/dcfg-dry.1
@@ -764,7 +802,7 @@ test_status(){
 
 test_hints(){
 	local out rc count i
-	setup_submit hints_actor codex/dcfg-hints.1; printf x > "$wt/file.txt"
+	setup_submit hints_actor codex/dcfg-hints.1; git -C "$d/repo" worktree move "$wt" "$d/moved-wt" && wt="$d/moved-wt"; printf x > "$wt/file.txt"
 	out=$(export BEADS_ACTOR= BD_ASSIGNEE=Codex; submit dcfg-hints.1 "$tz" file.txt 2>&1); rc=$?
 	[[ $rc == 2 && $out == *"BEADS_ACTOR='Claude Code'"* ]] && pass H1 || fail H1 "rc=$rc: $out"
 	setup_submit hints_assignee codex/dcfg-hints.2; printf x > "$wt/file.txt"
@@ -838,7 +876,7 @@ elif [[ ${SHIP_POST_TEST_GROUP:-all} == recovery ]]; then
 	elif [[ ${SHIP_POST_TEST_GROUP:-all} == adr35 ]]; then
 	 test_adr35
 else
-	 test_dryrun_mocks; test_valid_actors; test_rejections; test_hook_and_retry; test_closed_retry; test_remote_result_closed; test_delivery; test_beads_root_fallback; test_live_sync; test_watch; test_recovery; test_stream_errors; test_closed_skip_reason; test_concurrent_repositories; test_watch_lock_released; test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery; test_actor_alias; test_nested_repo; test_final_states; test_submit_conflict_preflight; test_u15; test_adr30; test_park; test_park_live; test_hints; test_status; test_break_glass
+	 test_dryrun_mocks; test_valid_actors; test_rejections; test_hook_and_retry; test_closed_retry; test_remote_result_closed; test_delivery; test_beads_root_fallback; test_live_sync; test_watch; test_recovery; test_stream_errors; test_closed_skip_reason; test_concurrent_repositories; test_watch_lock_released; test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery; test_actor_alias; test_nested_repo; test_final_states; test_submit_conflict_preflight; test_u15; test_adr30; test_park; test_park_live; test_hints; test_status; test_break_glass; test_auto_submit
 fi
 T=$root
 mkdir -p "$T/br/.beads"; git init -q "$T/br"

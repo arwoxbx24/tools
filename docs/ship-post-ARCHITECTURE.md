@@ -90,9 +90,9 @@ PM2 declares `/root/.pm2/logs/ship-post-out.log` and `/root/.pm2/logs/ship-post-
 
 ## 8. Перенос: environment и пути
 
-`ship-post` reads `SHIP_POST_STATE_DIR`, `SHIP_POST_JOBS`, `SHIP_POST_BEADS_ROOT`, `SHIP_POST_SINCE`, `SHIP_POST_RETRY_SECONDS`, `SHIP_POST_REPOS` and `BEADS_ACTOR`. `git-auto-lib` defaults include `GA_PROJECTS=/root/workspaces/projects`, `GA_TOOLS=/root/workspaces/tools`, `GA_CONTOUR_GITDIR=/root/workspaces/system/contour-config.git` and `GA_CONTOUR_WT=/root`; `git-sync` and `git-state` use `GA_LOG_DIR` when set. `ship` defaults `BEADS_DIR` to `/root/workspaces/projects/.beads` and discovers worktrees under `/root/workspaces/projects/.worktrees` unless `GA_WT_ROOT` is set. PM2 hard-codes `/root/workspaces/tools/bin/ship-post` in `ecosystem.config.js`.
+`ship-post` reads `SHIP_POST_STATE_DIR`, `SHIP_POST_JOBS`, `SHIP_POST_BEADS_ROOT`, `SHIP_POST_SINCE`, `SHIP_POST_RETRY_SECONDS`, `SHIP_POST_AUTO_HOURS`, `SHIP_POST_REPOS` and `BEADS_ACTOR`. `git-auto-lib` defaults include `GA_PROJECTS=/root/workspaces/projects`, `GA_TOOLS=/root/workspaces/tools`, `GA_CONTOUR_GITDIR=/root/workspaces/system/contour-config.git` and `GA_CONTOUR_WT=/root`; `git-sync` and `git-state` use `GA_LOG_DIR` when set. `ship` defaults `BEADS_DIR` to `/root/workspaces/projects/.beads` and discovers worktrees under `/root/workspaces/projects/.worktrees` unless `GA_WT_ROOT` is set. PM2 hard-codes `/root/workspaces/tools/bin/ship-post` in `ecosystem.config.js`.
 
-pm2 restarts `ship-post` when `bin/ship-post` or `bin/git-auto-lib` changes (`watch` in `ecosystem.config.js`); an interrupted delivery is reconciled from GitHub on startup.
+`bin/ship-post:do_watch` exits 0 when `bin/ship-post` or `bin/git-auto-lib` changed and no delivery is in flight (`inflight/`); pm2 `autorestart` starts it again. The pm2 app has no `watch`. An interrupted delivery is reconciled from GitHub on startup.
 
 ## 9. Тесты и CI
 
@@ -135,3 +135,10 @@ pm2 restarts `ship-post` when `bin/ship-post` or `bin/git-auto-lib` changes (`wa
 - prod-gap: owner notification (prod §3, §6) — incidents and break-glass use land only in bd; no push to the owner's channel.
 - prod-gap: independent check (prod §6) — the minimal CI added to a no-CI repository proves syntax only; repositories without real tests merge on gitleaks plus smoke.
 - prod-gap: observability (prod §5) — no delivery SLI (time from submit to merge, failed passes per hour); log noise from unknown atoms hid real failures.
+
+## 14. Auto-submit on close
+
+An agent delivers by `bd close <own atom> --reason <evidence>` only. For a dirty linked worktree on `claude/<atom>[-suffix]` or `codex/<atom>[-suffix]` whose HEAD has no `Atom: <atom>` trailer, `bin/ship-post:auto_submit_scan` (called from `scan_repo`) takes the atom from the branch, requires status `closed`, an assignee matching the branch agent and a close reason not starting with `PARTIAL`, `BLOCKED`, `FAILED`, `UNVERIFIED` or `NOT DONE`.
+The TZ comes from the atom description or notes (`ТЗ:`/`TZ: <path>#U<n>`), else from the single changed `docs/tz/*.md`; every other changed file must be named literally in that TZ, otherwise the skip cause is `auto-submit: files not named in TZ`.
+It then runs `do_submit` in a subshell with `auto_mode=1`: the atom stays closed, `bd update --append-notes "ship-post auto-submit <sha>"` is added, the submission receipt is written and `auto-submit <atom> <sha>` is printed. The next pass delivers the commit as usual.
+Auto-submit runs only when the atom's `closed_at` is newer than the worktree HEAD commit time and at most `SHIP_POST_AUTO_HOURS` (default 24) hours old; otherwise the normal closed-dirty report path applies. With `--dry-run` a passing scan prints `auto-submit-ready <atom> <wt>` and commits nothing.
