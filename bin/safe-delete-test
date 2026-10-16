@@ -470,5 +470,33 @@ printf '.repowise/\n' > "$d/w/.gitignore"
 "$bin/safe-delete" --bk "$bk" file "$d/w/.repowise/f" >/dev/null 2>&1; r63=$?
 if [[ $r63 == 2 && -f "$d/w/.repowise/f" ]]; then echo 'PASS T63'; ok=$((ok+1)); else echo "FAIL T63: rc=$r63"; fi
 
-[[ $ok == 66 ]] || exit 1
-echo "итог: PASS 66, FAIL 0"
+# T67-T70: sandbox test repos are deleted by copy; real bans still refuse
+mkdir -p "$d/sb"
+git init -q "$d/sb/test-x"
+git -C "$d/sb/test-x" config user.email t@t
+git -C "$d/sb/test-x" config user.name t
+printf 'a\n' > "$d/sb/test-x/a.txt"
+git -C "$d/sb/test-x" add a.txt && git -C "$d/sb/test-x" commit -q -m a
+out67=$(SAFE_DELETE_SANDBOX="$d/sb" "$bin/safe-delete" --bk "$bk" dir "$d/sb/test-x" 2>&1); r67=$?
+n67=$(grep -c '^удалено: ' <<< "$out67")
+g67=$(grep -c 'основание: git' <<< "$out67")
+if [[ $r67 == 0 && ! -e "$d/sb/test-x" && $n67 -ge 1 && $g67 == 0 ]]; then echo 'PASS T67 sandbox_test_repo'; ok=$((ok+1)); else echo "FAIL T67: rc=$r67 n=$n67 git=$g67 out=$out67"; fi
+
+git init -q "$d/sb/keep-x"
+git -C "$d/sb/keep-x" config user.email t@t
+git -C "$d/sb/keep-x" config user.name t
+printf 'a\n' > "$d/sb/keep-x/a.txt"
+git -C "$d/sb/keep-x" add a.txt && git -C "$d/sb/keep-x" commit -q -m a
+out68=$(SAFE_DELETE_SANDBOX="$d/sb" "$bin/safe-delete" --bk "$bk" dir "$d/sb/keep-x" 2>&1); r68=$?
+if [[ $r68 == 2 && $out68 == *'запрещённый сегмент'* && -d "$d/sb/keep-x" ]]; then echo 'PASS T68 non_test_repo_refused'; ok=$((ok+1)); else echo "FAIL T68: rc=$r68 out=$out68"; fi
+
+mkdir -p "$d/sb/test-y/.beads"; printf 'f\n' > "$d/sb/test-y/.beads/f"
+out69=$(SAFE_DELETE_SANDBOX="$d/sb" "$bin/safe-delete" --bk "$bk" dir "$d/sb/test-y" 2>&1); r69=$?
+if [[ $r69 == 2 && -d "$d/sb/test-y" && -f "$d/sb/test-y/.beads/f" ]]; then echo 'PASS T69 beads_in_test_refused'; ok=$((ok+1)); else echo "FAIL T69: rc=$r69 out=$out69"; fi
+
+mkdir -p "$d/sb/test-z"; printf 'z\n' > "$d/sb/test-z/f"
+out70=$(SAFE_DELETE_SANDBOX=/root/workspaces/sandbox "$bin/safe-delete" --bk "$bk" dir "$d/sb/test-z" 2>&1); r70=$?
+if [[ $r70 == 2 && $out70 == *'корень не под /tmp'* && -f "$d/sb/test-z/f" ]]; then echo 'PASS T70 sandbox_root_not_tmp'; ok=$((ok+1)); else echo "FAIL T70: rc=$r70 out=$out70"; fi
+
+[[ $ok == 70 ]] || exit 1
+echo "итог: PASS 70, FAIL 0"
