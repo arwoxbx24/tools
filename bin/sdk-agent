@@ -26,6 +26,7 @@ usage: sdk-agent ask [--budget USD] [--effort low|medium|high] [--schema JSON] [
        sdk-agent code [--budget USD] [--effort low|medium|high] WORKTREE TZ_FILE
        sdk-agent read [--budget USD] [--effort low|medium|high] WORKTREE TZ_FILE
        sdk-agent --help
+code: model may read the whole worktree; TZ line "Check: <executable inside worktree> [args]" is run after writing, no shell (rc 7 on failure).
 Runs the Claude Agent SDK engine with model claude-haiku-5-5 and an API key (never the subscription).
 sdk-agent is a paid API program, not a Claude Code agent or subagent.
 Budget: default 0.50 USD per run, ceiling 2.00 USD. Every result is appended to tools/sdk-agent/runs.jsonl.
@@ -180,48 +181,81 @@ check_path() {
   [[ $resolved == "$wt"/* ]] || die "refused path: $p"
 }
 
+# open_worktree — from POS[0] (WORKTREE) and POS[1] (TZ_FILE) sets globals
+# WT_REAL (realpath of the worktree root) and TZ (the TZ file). Refuses (exit 2) otherwise.
+open_worktree() {
+  local wt=${POS[0]}
+  TZ=${POS[1]}
+
+  [[ -d $wt ]] || die "worktree not found: $wt"
+  local top
+  WT_REAL=$(realpath -- "$wt")
+  top=$(git -C "$wt" rev-parse --show-toplevel 2>/dev/null) || die "not a git worktree: $wt"
+  [[ $top == "$WT_REAL" ]] || die "not a worktree root: $wt"
+
+  [[ -r $TZ ]] || die "TZ file not readable: $TZ"
+}
+
+# refuse_check TEXT — U3.7: refused Check line, exit 7, nothing run.
+refuse_check() {
+  printf 'sdk-agent: refused check: %s\n' "$1" >&2
+  exit 7
+}
+
+# run_check TEXT — runs TEXT as an argv array (no shell) inside WT_REAL and returns its rc.
+# TEXT must be: <executable regular file inside the worktree> [args], split on spaces.
+run_check() {
+  local text=$1 real
+  local -a words
+  case $text in
+    *[\;\&\|\$\`\<\>\(\)\\\'\"]* | *$'\n'*) refuse_check "$text" ;;
+  esac
+  IFS=' ' read -r -a words <<<"$text"
+  (( ${#words[@]} >= 1 )) || refuse_check "$text"
+  [[ ${words[0]} != /* ]] || refuse_check "$text"
+  case "/${words[0]}/" in
+    */../*) refuse_check "$text" ;;
+  esac
+  real=$(realpath -e -- "$WT_REAL/${words[0]}" 2>/dev/null) || refuse_check "$text"
+  [[ $real == "$WT_REAL"/* && -f $real && -x $real ]] || refuse_check "$text"
+  (cd -- "$WT_REAL" && "./${words[0]}" "${words[@]:1}")
+}
+
 cmd_code() {
   parse_args code "$@"
   EFFORT=${EFFORT:-medium}
   validate_budget "$BUDGET"
   validate_effort "$EFFORT"
   (( ${#POS[@]} == 2 )) || die "code needs WORKTREE and TZ_FILE (see --help)"
-  local wt=${POS[0]} tz=${POS[1]}
+  open_worktree
 
-  [[ -d $wt ]] || die "worktree not found: $wt"
-  local wt_real top
-  wt_real=$(realpath -- "$wt")
-  top=$(git -C "$wt" rev-parse --show-toplevel 2>/dev/null) || die "not a git worktree: $wt"
-  [[ $top == "$wt_real" ]] || die "not a worktree root: $wt"
-
-  [[ -r $tz ]] || die "TZ file not readable: $tz"
   local -a files=()
-  mapfile -t files < <({ sed -n -E 's/^FILE: (.+)$/\1/p' "$tz"; grep -m1 '^Files:' "$tz" | tr '\140' '\n' | sed -n '2~2p'; } | awk '!seen[$0]++')
-  (( ${#files[@]} >= 1 && ${#files[@]} <= 5 )) || die "TZ must list 1..5 paths ('FILE: <path>' lines or a 'Files:' line) (found ${#files[@]})"
+  mapfile -t files < <({ sed -n -E 's/^FILE: (.+)$/\1/p' "$TZ"; grep -m1 '^Files:' "$TZ" | tr '\140' '\n' | sed -n '2~2p'; } | awk '!seen[$0]++')
+  (( ${#files[@]} >= 1 && ${#files[@]} <= 20 )) || die "TZ must list 1..20 paths ('FILE: <path>' lines or a 'Files:' line) (found ${#files[@]})"
 
   local f
   for f in "${files[@]}"; do
-    check_path "$wt_real" "$f"
-    if [[ -f $wt_real/$f ]] && (( $(wc -c < "$wt_real/$f") > MAX_FILE_BYTES )); then
+    check_path "$WT_REAL" "$f"
+    if [[ -f $WT_REAL/$f ]] && (( $(wc -c < "$WT_REAL/$f") > MAX_FILE_BYTES )); then
       die "file larger than 200 KB: $f"
     fi
   done
 
   local prompt body
   prompt="<task>
-$(cat -- "$tz")
+$(cat -- "$TZ")
 </task>
 "
   for f in "${files[@]}"; do
-    if [[ -f $wt_real/$f ]]; then body=$(cat -- "$wt_real/$f"); else body="(new file)"; fi
+    if [[ -f $WT_REAL/$f ]]; then body=$(cat -- "$WT_REAL/$f"); else body="(new file)"; fi
     prompt+="<file path=\"$f\">
 $body
 </file>
 "
   done
-  prompt+="Return the FULL new content of each file you change, as JSON {\"files\":[{\"path\":...,\"content\":...}]}. Use only the paths listed above; do not change other files."
+  prompt+="Return the FULL new content of each file you change, as JSON {\"files\":[{\"path\":...,\"content\":...}]}. Use only the paths listed above; do not change other files. You may read any file of the repository with Read, Grep, Glob."
 
-  run_engine "$EFFORT" "$BUDGET" "$prompt" "$CODE_SCHEMA"
+  run_engine "$EFFORT" "$BUDGET" "$prompt" "$CODE_SCHEMA" "" "Read,Grep,Glob" "$WT_REAL"
   finish
   jq -e '.structured_output.files | type == "array"' <<<"$RESULT" >/dev/null 2>&1 \
     || die "engine returned no files array" 4
@@ -245,7 +279,7 @@ $body
   local n i target tmp
   n=$(jq '.structured_output.files | length' <<<"$RESULT")
   for (( i = 0; i < n; i++ )); do
-    target="$wt_real/$(jq -r --argjson i "$i" '.structured_output.files[$i].path' <<<"$RESULT")"
+    target="$WT_REAL/$(jq -r --argjson i "$i" '.structured_output.files[$i].path' <<<"$RESULT")"
     mkdir -p -- "$(dirname -- "$target")"
     tmp=$(mktemp -- "$target.tmp.XXXXXX")
     if [[ -e $target ]]; then chmod --reference="$target" "$tmp"; else chmod 644 "$tmp"; fi
@@ -253,8 +287,18 @@ $body
     mv -f -- "$tmp" "$target"
   done
 
-  git -C "$wt_real" diff --stat
-  git -C "$wt_real" status --short
+  git -C "$WT_REAL" diff --stat
+  git -C "$WT_REAL" status --short
+
+  # Validation: first TZ line starting with "Check: " runs inside the worktree (no shell).
+  local check_line check_text rc=0
+  check_line=$(grep -m1 '^Check: ' "$TZ") || check_line=""
+  if [[ -n $check_line ]]; then
+    check_text=${check_line#Check: }
+    run_check "$check_text" || rc=$?
+    printf 'sdk-agent: check rc=%s\n' "$rc" >&2
+    (( rc == 0 )) || exit 7
+  fi
 }
 
 cmd_read() {
@@ -263,21 +307,14 @@ cmd_read() {
   validate_budget "$BUDGET"
   validate_effort "$EFFORT"
   (( ${#POS[@]} == 2 )) || die "read needs WORKTREE and TZ_FILE (see --help)"
-  local wt=${POS[0]} tz=${POS[1]}
+  open_worktree
 
-  [[ -d $wt ]] || die "worktree not found: $wt"
-  local wt_real top
-  wt_real=$(realpath -- "$wt")
-  top=$(git -C "$wt" rev-parse --show-toplevel 2>/dev/null) || die "not a git worktree: $wt"
-  [[ $top == "$wt_real" ]] || die "not a worktree root: $wt"
-
-  [[ -r $tz ]] || die "TZ file not readable: $tz"
   local prompt
-  prompt="$(cat -- "$tz")
+  prompt="$(cat -- "$TZ")
 
 Answer from the repository files; you may only read (Read, Grep, Glob). Reply with the answer text."
 
-  run_engine "$EFFORT" "$BUDGET" "$prompt" "" "" "Read,Grep,Glob" "$wt_real"
+  run_engine "$EFFORT" "$BUDGET" "$prompt" "" "" "Read,Grep,Glob" "$WT_REAL"
   jq -r '.result // ""' <<<"$RESULT"
   finish
 }
