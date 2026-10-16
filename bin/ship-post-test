@@ -687,7 +687,7 @@ MOCKSHIP
 }
 
 test_park(){
- local out rc h i w atom park_out park_rc park_ok=0 pdup_ok=0 pci_ok=0 psubmit_ok=0 unpark_ok=0
+ local out rc h i w atom park_out park_rc park_ok=0 pdup_ok=0 pci_ok=0 psubmit_ok=0 unpark_ok=0 pf sk before
  setup_submit park codex/dcfg-park.1; commit_candidate dcfg-park.1
  out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_RC=71; run_tool "$d" 2>&1); rc=$?
  for i in $(seq 1 50); do grep -q '|create \[ship-post\] INFRA exit 71' "$d/bd.calls" && break; sleep 0.2; done
@@ -720,6 +720,7 @@ test_park(){
  out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_RC=30; run_tool "$d" 2>&1); rc=$?
  for i in $(seq 1 50); do [[ -f $d/state/incidents/parked/dcfg-unpark.1 ]] && break; sleep 0.2; done
  h=$(git -C "$wt" rev-parse HEAD)
+ touch -d '-2 hours' "$d/state/incidents/parked/dcfg-unpark.1"
  out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex; run_tool "$d" 2>&1); rc=$?
  for i in $(seq 1 50); do grep -Fqx "$h" "$d/merged" 2>/dev/null && break; sleep 0.2; done
  [[ $rc == 0 && $(grep -c '|update dcfg-unpark.1 --remove-label delivery-blocked' "$d/bd.calls") == 1 && $(grep -c "|update test-infra --append-notes delivered dcfg-unpark.1 $h" "$d/bd.calls") == 1 && ! -f $d/state/incidents/parked/dcfg-unpark.1 && $(grep -c -F "$h" "$d/merged") == 1 ]] && unpark_ok=1
@@ -728,6 +729,26 @@ test_park(){
  [[ $psubmit_ok == 1 ]] && pass park_submit_author || fail park_submit_author "rc=$rc: $out"
  [[ $unpark_ok == 1 ]] && pass park_unpark || fail park_unpark "rc=$rc: $out"
  [[ $park_ok == 1 ]] && pass park_infra || fail park_infra "rc=$park_rc: $park_out"
+
+ setup_submit pb1 codex/dcfg-pb.1; commit_candidate dcfg-pb.1
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_RC=30; run_tool "$d" 2>&1); rc=$?
+ pf="$d/state/incidents/parked/dcfg-pb.1"
+ for i in $(seq 1 50); do [[ -f $pf ]] && break; sleep 0.2; done
+ for i in $(seq 1 50); do [[ $(wc -l < "$d/ship.calls") == 1 ]] && break; sleep 0.2; done
+ before=$(wc -l < "$d/ship.calls")
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_RC=30; run_tool "$d" 2>&1); rc=$?
+ sk=$(sed -n 's/.* skip=\([0-9]*\).*/\1/p' <<<"$out")
+ [[ $rc == 0 && $(wc -l < "$d/ship.calls") == $before && $sk == 1 ]] && pass PB1_park_backoff_skip || fail PB1_park_backoff_skip "rc=$rc skip=$sk: $out"
+
+ setup_submit pb2 codex/dcfg-pb.2; commit_candidate dcfg-pb.2
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_RC=30; run_tool "$d" 2>&1); rc=$?
+ pf="$d/state/incidents/parked/dcfg-pb.2"
+ for i in $(seq 1 50); do [[ -f $pf ]] && break; sleep 0.2; done
+ for i in $(seq 1 50); do [[ $(wc -l < "$d/ship.calls") == 1 ]] && break; sleep 0.2; done
+ touch -d '-10 seconds' "$pf"; before=$(wc -l < "$d/ship.calls")
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_RC=30 SHIP_POST_PARKED_RETRY_SECONDS=1; run_tool "$d" 2>&1); rc=$?
+ for i in $(seq 1 50); do [[ $(wc -l < "$d/ship.calls") -gt $before ]] && break; sleep 0.2; done
+ [[ $(wc -l < "$d/ship.calls") == $((before + 1)) ]] && (( $(date +%s) - $(stat -c %Y "$pf") < 10 )) && pass PB2_park_backoff_retry || fail PB2_park_backoff_retry "rc=$rc age=$(( $(date +%s) - $(stat -c %Y "$pf") )): $out"
 }
 
 test_adr35(){
