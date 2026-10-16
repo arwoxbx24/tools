@@ -43,6 +43,19 @@ code_refuses_path() {  # TZ_LINE_PATH
   expect_rc_err 2 "refused path" "$ag" code "$TMP/wt" "$tz"
 }
 
+code_files_line_refuses_path() {
+  local tz="$TMP/tz-files.md"
+  printf 'Files: `../outside.txt`\n' > "$tz"
+  expect_rc_err 2 "refused path" "$ag" code "$TMP/wt" "$tz"
+}
+
+daily_cap_refuses() {
+  local log="$TMP/runs-cap.jsonl" now
+  now=$(date +%s)
+  printf '{"ts":%s,"total_cost_usd":1.5}\n{"ts":%s,"total_cost_usd":1.5}\n' "$now" "$now" > "$log"
+  expect_rc_err 6 "daily cap" env SDK_AGENT_RUNS_LOG="$log" "$ag" ask --budget 0.5 hi
+}
+
 mkdir -p "$TMP/wt"
 git -C "$TMP/wt" init -q
 
@@ -57,6 +70,9 @@ check "FILE: /etc/passwd refused" code_refuses_path "/etc/passwd"
 check "FILE: secrets/a refused" code_refuses_path "secrets/a"
 check "model is claude-haiku-5-5" bash -c '[[ $(grep -c claude-haiku-5-5 "$1") -ge 1 ]]' _ "$ag"
 check "no other claude model names" bash -c '[[ $(grep -cE "claude-(sonnet|opus|fable)" "$1") -eq 0 ]]' _ "$ag"
+check "daily cap refuses ask (rc 6)" daily_cap_refuses
+check "Files: line ../outside.txt refused" code_files_line_refuses_path
+check "read with no args -> rc 2" expect_rc_err 2 "read needs" "$ag" read
 
 echo "ok $pass/$total"
 [[ $pass -eq $total ]]

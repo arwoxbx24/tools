@@ -6,6 +6,7 @@ case ${1:-} in -h|--help) printf '%s\n' 'usage: code-channel <form> <project> <t
 fail() { printf 'code-channel: %s\n' "$*" >&2; }
 root=$(cd -- "$(dirname -- "$0")/.." && pwd) || exit 3
 config=${CODE_CHANNEL_CONFIG:-"$root/config/code-channel.json"}
+sdk_agent=${CODE_CHANNEL_SDK_AGENT:-"$root/bin/sdk-agent"}
 jq -e '(.ladder | type == "array") and ([.ladder[].id] | length == (unique | length)) and all(.ladder[]; (.id | type == "string") and (.enabled | type == "boolean") and (.model | type == "string") and ((.resume_model? // "") | type == "string") and ((.key? // "") | type == "string") and ((.secret? // "") | type == "string") and ((.base? // "") | type == "string") and ((.effort? // "") | type == "string") and ((.audit_model? // "") | type == "string") and ((.alt_models? // []) | type == "array" and all(.[]; type == "string")))' "$config" >/dev/null 2>&1 || { fail "конфиг $config не читается"; exit 3; }
 opencfg_rel=$(jq -er '.opencode_config // ""' "$config") || exit 3
 if [[ -n $opencfg_rel ]]; then
@@ -80,9 +81,11 @@ if [[ $form == auto || $form == audit ]]; then
 else
     enabled=$(entry_for "$form" | jq -r '.enabled') || exit 3
     [[ $enabled == true ]] || { fail "провайдер $form выключен в конфиге"; exit 3; }
+    [[ $form != sdk || -z $override ]] || exit 3
 fi
 [[ -r $tz ]] || { fail 'нет файла ТЗ'; exit 3; }
 prompt=$(cat -- "$tz") || exit 3
+tz_abs=$(realpath -- "$tz") || exit 3
 cd -- "$project" || exit 3
 exec 9>"$S/worktree.$(printf '%s\n' "$PWD" | sha1sum | cut -c-16).lock" || exit 3
 flock -n 9 || { fail "worktree занят другим запуском: $PWD"; exit 25; }
@@ -103,6 +106,14 @@ cc_scope_check() {
     done <<<"$new"
     [[ ${#bads[@]} -eq 0 ]] || { printf 'out-of-scope: %s\n' "${bads[*]}" >&2; return 26; }
     return 0
+}
+run_sdk() {
+    local sub=code r
+    [[ $mode == audit ]] && sub=read
+    CODE_CHANNEL_ACTIVE=1 "$sdk_agent" "$sub" "$PWD" "$tz_abs"; r=$?
+    printf 'code-channel: mode=%s form=sdk rc=%s\n' "$mode" "$r" >&2
+    [[ $r == 0 ]] && return 0
+    return 17
 }
 run_form() (
     export CODE_CHANNEL_ACTIVE=1
@@ -320,6 +331,7 @@ run_form() (
     exit "$run"
 )
 if [[ $form != auto && $form != audit ]]; then
+    if [[ $form == sdk ]]; then run_sdk; exit $?; fi
     run_form "$form"
     exit $?
 fi
@@ -336,7 +348,7 @@ for i in "${!ladder[@]}"; do
         fi
     fi
     before=$(form_snap)
-    run_form "$id"; rc=$?
+    if [[ $id == sdk ]]; then run_sdk; rc=$?; else run_form "$id"; rc=$?; fi
     case $rc in 3|5|15|22|24|124) exit "$rc";; esac
     if [[ $rc == 0 ]]; then
         after=$(form_snap)

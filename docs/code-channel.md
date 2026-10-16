@@ -17,7 +17,8 @@
 
 | id | состояние | модель / параметр |
 | --- | --- | --- |
-| `go` | включён | code: `opencode-go/glm-5.3-flash`; audit и продолжение: `opencode-go/longcat-2.5-preview-free` |
+| `sdk` | включён, первый (owner 16.10) | `bin/sdk-agent code` (audit: `sdk-agent read`), claude-haiku-5-5; any failure (budget, daily cap 3 USD, error) → rc 17 → next form |
+| `go` | включён | code, audit и продолжение: `opencode-go/deepseek-v4-pro` (owner 16.10) |
 | `codex` | включён | модель профиля; `effort: high` |
 | `openrouter` | выключен | — |
 | `bitrixgpt` | выключен | — |
@@ -39,6 +40,7 @@
 | 13 | денежный стоп `OR_DAILY_STOP` |
 | 15 | модель вне белого списка |
 | 16 | нет изменений |
+| 17 | форма `sdk` не выполнила задачу (код `sdk-agent` в stderr); лестница идёт дальше |
 | 21 | Codex; см. stderr |
 | 22 | audit изменил файлы |
 | 23 | сверка провайдера |

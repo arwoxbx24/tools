@@ -23,7 +23,7 @@
 | `tools/bin/pm2-boot-test`, `pm2-chaos`, `pm2-loop-guard`, `pm2-loop-guard-test`, `pm2-eco-lint` | тесты/страж PM2 (spec:025) | по имени | Claude, Codex | штатно |
 | `tools/bin/restic` | бэкапы (spec backup-coverage) | `restic …` через скрипты `tools/scripts/` | Codex | штатно |
 | `tools/bin/share-test` | самотест share | `share-test` | Claude | штатно |
-| `tools/bin/sdk-agent` | the only Claude Agent SDK route (owner 16.10, dcfg-ghksc, renamed dcfg-sktr5); a paid API program, not a Claude Code agent or subagent: model claude-haiku-5-5, API key only in its process, budget ≤2.00 USD, log `sdk-agent/runs.jsonl`; run only when the owner mentions the SDK | `sdk-agent ask PROMPT`, `sdk-agent code WORKTREE TZ_FILE`; `--help`; test `bin/sdk-agent-test` | Claude, Codex | штатно |
+| `tools/bin/sdk-agent` | the only Claude Agent SDK route (owner 16.10, dcfg-ghksc, renamed dcfg-sktr5); one of two hands with OpenCode Go, normally reached through `code-channel` ladder form `sdk` (dcfg-khdsp); a paid API program, not a Claude Code agent or subagent: model claude-haiku-5-5, API key only in its process, per-run budget ≤2.00 USD, daily cap 3.00 USD for all agents (rc 6), log `sdk-agent/runs.jsonl` | `sdk-agent ask PROMPT`, `sdk-agent code WORKTREE TZ_FILE`, `sdk-agent read WORKTREE TZ_FILE`; `--help`; test `bin/sdk-agent-test` | Claude, Codex | штатно |
 | `tools/skill-search/` (`skills@1.5.18`, vercel-labs/skills, по lockfile) | штатный CLI поиска навыков skills.sh (spec:068; без обёрток — владелец 26.09 «только штатное») | `DISABLE_TELEMETRY=1 tools/skill-search/node_modules/.bin/skills find <слово>`; `add/use/update` не вызывать | все | штатно |
 | `pm2` | управление процессами — только `startOrReload <ecosystem> --only <имя>` → `pm2 save` | см. `/root/CLAUDE.md` PM2 | все | штатно |
 | `tools/scripts/pm2/b244-fetch.sh` | загрузка файлов b244/MinIO | `bash …/b244-fetch.sh <b244://…>` | все | штатно |
@@ -44,7 +44,7 @@
 | Форма | Почему | Замена |
 |---|---|---|
 | `python -c`, `python3 -c`, `python3 -`, heredoc `<<`, `bash -c`, `sh -c`, `zsh -c`, `node -e`, `perl -e`, `ruby -e`, `eval` | код мимо канала, TDD и ревью; 492 обхода/сутки (замер 18.09) | `opencode run` / `codex exec` |
-| `claude -p`, `claude --print` | вложенная сессия сжигает лимит подписки | `Workflow` / `Agent` |
+| `claude -p`, `claude --print` | вложенная сессия сжигает лимит подписки; exception: the engine call inside `tools/bin/sdk-agent` (`--bare`, API key, never the subscription) | `Workflow` / `Agent`; paid API runs — `sdk-agent` |
 | `aider`, `or-run`, `tools/llm-providers/runner.sh`, `failover.sh` (OpenRouter-эра) | сняты владельцем; файлы оставлены без права исполнения (`chmod a-x`, 18.09) | `opencode run` |
 | чтение/правка `~/.config/opencode/**` агентами | модель выбирает владелец | форма вызова из §1 |
 | `pm2 start <файл>`, `pm2 delete`, `pm2 kill` | закон PM2 | `pm2-boot`, `startOrReload` |
