@@ -511,6 +511,37 @@ after40=$(grep -c '^pr create' "$GH_JOURNAL" || true)
 err40=$(<"$d/s40.err")
 [[ $rc40 == 10 && $err40 == *'основная ветка origin не определена'* && $after40 == $before40 ]] && p 40 || f 40
 
+# 45 (dcfg-4j1mb.6): .ship-hold-paths — PR открыт, merge только через ship-promote; шаблон-исключение вливает; репо-файл с базы нельзя отменить удалением.
+mkrepo r45 1
+w45a=$(mkwt r45 claude/r45a)
+mkdir -p "$w45a/docs/ppo"
+printf 'docs/ppo/*\n!docs/ppo/HANDOFF.md\ndocs/tz/client/*\n' > "$w45a/.ship-hold-paths"
+printf 'a\n' > "$w45a/docs/ppo/a.md"
+: > "$GH_JOURNAL"; rm -f "$GH_CREATED"
+out45a=$(ship "$w45a" 2>&1); rc45a=$?
+grep -q '^pr merge' "$GH_JOURNAL"; merge45a=$?
+rm -f "$GH_CREATED"
+w45b=$(mkwt r45 claude/r45b)
+mkdir -p "$w45b/docs/ppo"
+printf 'docs/ppo/*\n!docs/ppo/HANDOFF.md\ndocs/tz/client/*\n' > "$w45b/.ship-hold-paths"
+printf 'handoff\n' > "$w45b/docs/ppo/HANDOFF.md"
+: > "$GH_JOURNAL"
+out45b=$(ship "$w45b" 2>&1); rc45b=$?
+grep -q '^pr merge' "$GH_JOURNAL"; merge45b=$?
+rm -f "$GH_CREATED"
+( cd "$GA_PROJECTS/r45" && git fetch -q origin && printf 'docs/tz/client/*\n' > .ship-hold-paths \
+	&& git add .ship-hold-paths && git commit -q -m hold-base && git push -q origin main && git fetch -q origin )
+w45c=$(mkwt r45 claude/r45c)
+rm -f "$w45c/.ship-hold-paths"
+mkdir -p "$w45c/docs/tz/client"
+printf 'x\n' > "$w45c/docs/tz/client/x.md"
+: > "$GH_JOURNAL"
+out45c=$(ship "$w45c" 2>&1); rc45c=$?
+grep -q '^pr merge' "$GH_JOURNAL"; merge45c=$?
+[[ $rc45a == 0 && $out45a == *'prod:wait-owner hold-paths docs/ppo/a.md'* && $merge45a != 0 \
+	&& $rc45b == 0 && $merge45b == 0 && $out45b != *'prod:wait-owner'* \
+	&& $rc45c == 0 && $out45c == *'prod:wait-owner hold-paths docs/tz/client/x.md'* && $merge45c != 0 ]] && p 45 || f 45
+
 fi
 for t in "$(dirname "$0")"/ship-test.d/${SHIP_TEST_ONLY:-}*.sh; do
 	[[ -f $t ]] || continue

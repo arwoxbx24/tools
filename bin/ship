@@ -211,6 +211,25 @@ if [[ $docs_only == 0 ]]; then
 	fi
 fi
 
+# dcfg-4j1mb.6: .ship-hold-paths (база ∪ HEAD) — владелец держит пути до корабельного «wait-owner»; исключение снимает hold.
+hold_list=$( { g show "origin/$base:.ship-hold-paths" 2>/dev/null; g show "${expected_head:-HEAD}:.ship-hold-paths" 2>/dev/null; } | grep -vE '^[[:space:]]*(#|$)' )
+if [[ -n $hold_list ]]; then
+	while IFS= read -r f; do
+		held=0
+		while IFS= read -r pat; do
+			if [[ $pat == '!'* ]]; then
+				[[ $f == ${pat#'!'} ]] && held=0
+			else
+				[[ $f == $pat ]] && held=1
+			fi
+		done <<< "$hold_list"
+		if [[ $held == 1 ]]; then
+			echo "prod:wait-owner hold-paths $f"
+			leave 0 wait-owner
+		fi
+	done <<< "$(g diff --name-only "origin/$base...${expected_head:-HEAD}")"
+fi
+
 gh_or70(){ local e; e=$("$@" 2>&1 >/dev/null) && return 0; echo "ship: gh: $e" >&2; grep -qiE 'HTTP 40[13]|HTTP 5[0-9][0-9]|authentication|could not connect|timeout|Something went wrong' <<<"$e" && return 70; return 1; }
 
 merge_after_ci(){
