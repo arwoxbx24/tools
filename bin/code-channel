@@ -43,32 +43,10 @@ resume_idle_limit=$(jq -er '.resume_idle_limit // 1' "$config") || exit 3
 [[ $# == 3 || $# == 5 ]] || { fail 'usage: form project tz [--model provider/model]'; exit 3; }
 form=$1; project=$2; tz=$3; override=${5:-}
 [[ $project == /* ]] || { fail 'project must be absolute path'; exit 3; }
-self=$$
-exclude=("$self")
-p=$self
-while [[ $p -ne 1 ]]; do
-    p=$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')
-    [[ -n $p ]] || break
-    exclude+=("$p")
-done
-queue=("$self")
-while [[ ${#queue[@]} -gt 0 ]]; do
-    c=${queue[0]}
-    queue=("${queue[@]:1}")
-    while read -r d; do
-        [[ -n $d ]] || continue
-        exclude+=("$d")
-        queue+=("$d")
-    done < <(ps -eo pid=,ppid= 2>/dev/null | awk -v p="$c" '$2 == p {print $1}')
-done
-while read -r pid; do
-    [[ -n $pid ]] || continue
-    for e in "${exclude[@]}"; do
-        [[ $pid == "$e" ]] && continue 2
-    done
-    fail "already running: $pid"
-    exit 3
-done < <(pgrep -f -- "code-channel .* $project( |$)" 2>/dev/null)
+canon=$(realpath -m -- "$project" 2>/dev/null) || { fail 'путь проекта не канонизируется'; exit 3; }
+lockfile=$S/lock-$(printf '%s\n' "$canon" | cksum | awk '{print $1}').lock
+exec {lock_fd}>"$lockfile" || { fail "lock: $lockfile"; exit 3; }
+flock -n "$lock_fd" || { fail 'already running (lock занят)'; exit 3; }
 [[ -n $form && $project == /* && ( $# == 3 || $4 == --model ) && ( $# == 3 || -n $override ) ]] || exit 3
 [[ $form == audit ]] && mode=audit || mode=code
 case $form in
