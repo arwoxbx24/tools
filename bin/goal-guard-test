@@ -47,4 +47,21 @@ if [[ $rc == 0 && -z $out && $cnt == 8 ]]; then
 else echo "FAIL B: rc=$rc out=$out cnt=$cnt"; fi
 
 [[ $ok == 5 ]] || { echo "FAIL: $ok/5"; exit 1; }
+
+tx=$d/transcript.jsonl
+printf '%s\n' 'Task ID: abc123' 'agentId: def456' >"$tx"
+out=$(printf '{"session_id":"abcd","background_tasks":[],"last_assistant_message":"done","transcript_path":"%s"}' "$tx" |
+  GOAL_GUARD_STATE="$d" PATH="$d:$PATH" "$dir/goal-guard"); rc=$?
+n=$(grep -c '"decision":"block"' <<<"$out")
+if [[ $rc == 0 && $n == 1 ]]; then
+  echo 'PASS transcript_task_id_text_still_blocks'; ok=$((ok+1))
+else echo "FAIL transcript_task_id_text_still_blocks: rc=$rc out=$out"; fi
+
+out=$(printf '{"session_id":"abcd","last_assistant_message":"done","transcript_path":"%s"}' "$tx" |
+  GOAL_GUARD_STATE="$d" PATH="$d:$PATH" "$dir/goal-guard"); rc=$?
+if [[ $rc == 0 && -z $out ]]; then
+  echo 'PASS background_tasks_absent_no_block'; ok=$((ok+1))
+else echo "FAIL background_tasks_absent_no_block: rc=$rc out=$out"; fi
+
+[[ $ok == 7 ]] || { echo "FAIL: $ok/7"; exit 1; }
 echo 'PASS all'

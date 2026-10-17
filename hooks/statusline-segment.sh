@@ -26,13 +26,14 @@ fields=$(jq -r 'def n: (numbers | tostring) // "";
   (.cost.total_lines_removed | n),
   (.context_window.used_percentage | n),
   (.context_window.context_window_size | n),
+  (if ((.context_window // {}) | has("current_usage")) and .context_window.current_usage == null then "1" else "" end),
   (.rate_limits.five_hour.used_percentage | n),
   (.rate_limits.five_hour.resets_at | n),
   (.rate_limits.seven_day.used_percentage | n),
   (.rate_limits.seven_day.resets_at | n),
   (.session_id // "")
 ] | join("\u001f")' <<<"$input" 2>/dev/null)
-IFS=$'\x1f' read -r dir added removed ctx_pct ctx_win h5_pct h5_reset d7_pct d7_reset sid <<<"$fields"
+IFS=$'\x1f' read -r dir added removed ctx_pct ctx_win cu_null h5_pct h5_reset d7_pct d7_reset sid <<<"$fields"
 
 whole() { printf '%.0f' "$1"; }
 
@@ -67,6 +68,7 @@ seg_lines() {
 
 seg_ctx() {
   [[ -n $ctx_pct ]] || return
+  [[ -z $cu_null ]] || { echo "ctx ↻ compacted"; return; }
   local c limit=$CLAUDE_CODE_AUTO_COMPACT_WINDOW used left
   # shortcut: reads only user settings, not project settings or modelSettings; upgrade if those set a window
   [[ -z $limit ]] && limit=$(jq -r '.autoCompactWindow | numbers' "$HOME/.claude/settings.json" 2>/dev/null)
@@ -133,26 +135,18 @@ seg_sess() {
 }
 
 seg_sdk() {
-  local runs=${SDK_AGENT_RUNS_LOG:-/root/workspaces/tools/sdk-agent/runs.jsonl} bin=${SDK_AGENT_BIN:-/root/workspaces/tools/bin/sdk-agent} midnight cents reserved cap max left
-  # cap and per-run ceiling: the readonly DAILY_CAP and MAX_BUDGET lines of sdk-agent itself (never guessed); no line → no segment
-  cap=$(sed -n 's/^readonly DAILY_CAP="\([0-9.]*\)"$/\1/p' "$bin" 2>/dev/null | head -n1)
-  max=$(sed -n 's/^readonly MAX_BUDGET="\([0-9.]*\)"$/\1/p' "$bin" 2>/dev/null | head -n1)
-  [[ $cap =~ ^[0-9]+(\.[0-9]+)?$ && $max =~ ^[0-9]+(\.[0-9]+)?$ ]] || return
-  cap=$(awk -v v="$cap" 'BEGIN { printf "%d", v * 100 + 0.5 }')
-  (( cap > 0 )) || return
-  [[ -r $runs ]] || return
-  # jq call: SDK spend today, in integer cents; ts is assumed to be epoch seconds; a run without a price counts as the MAX_BUDGET per-run ceiling (as sdk-agent check_daily_cap)
-  midnight=$(date -d 'today 00:00' +%s)
-  cents=$(jq -s --argjson m "$midnight" --argjson max "$max" '[.[] | select((.ts | type) == "number" and .ts >= $m) | (.total_cost_usd // $max)] | add // 0 | . * 100 | round' "$runs" 2>/dev/null)
-  [[ $cents =~ ^[0-9]+$ ]] || return
-  # in-flight reservations count against the cap until their run ends (as sdk-agent check_daily_cap)
-  reserved=0
-  if [[ -e $runs.inflight ]]; then
-    reserved=$(jq -s --argjson m "$midnight" '[.[] | select((.ts | type) == "number" and .ts >= $m) | .budget] | add // 0 | . * 100 | round' "$runs.inflight" 2>/dev/null)
-    [[ $reserved =~ ^[0-9]+$ ]] || return
-  fi
-  left=$(( cap - cents - reserved )); (( left = left < 0 ? 0 : left ))
-  echo "SDK $(bar $(( cents * 100 / cap ))) $(money "$cents")/$(cap_usd "$cap") │ left $(money "$left")"
+  local bin=${SDK_AGENT_BIN:-/root/workspaces/tools/bin/sdk-agent} json scaled cap spent left bound aborted line
+  # sdk-agent owns the ledger and the cap: its cap --json is the only source; non-zero rc or non-JSON → no segment
+  json=$("$bin" cap --json 2>/dev/null) || return
+  # jq call: cap, spent, left and aborted_bound in integer cents; aborted stays a count
+  scaled=$(jq -r '[.cap, .spent, .left, .aborted_bound] | map(. * 100 | round) | join(" ")' <<<"$json" 2>/dev/null) || return
+  read -r cap spent left bound <<<"$scaled"
+  aborted=$(jq -r '.aborted' <<<"$json" 2>/dev/null) || return
+  [[ $cap =~ ^[0-9]+$ ]] && (( cap > 0 )) || return
+  [[ $spent =~ ^[0-9]+$ && $left =~ ^[0-9]+$ && $bound =~ ^[0-9]+$ && $aborted =~ ^[0-9]+$ ]] || return
+  line="SDK $(bar $(( spent * 100 / cap ))) $(money "$spent")/$(cap_usd "$cap") │ left $(money "$left")"
+  (( aborted > 0 )) && line+=" │ aborted $aborted ≤$(money "$bound")"
+  echo "$line"
 }
 
 limit_seg() {  # label, used_percentage, resets_at, reset formatter
