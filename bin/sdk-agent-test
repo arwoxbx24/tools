@@ -64,7 +64,7 @@ check_listed_refused() {
 daily_cap_refuses() {
   local log="$TMP/runs-cap.jsonl" now
   now=$(date +%s)
-  printf '{"ts":%s,"total_cost_usd":1.5}\n{"ts":%s,"total_cost_usd":1.5}\n' "$now" "$now" > "$log"
+  printf '{"ts":%s,"total_cost_usd":2.5}\n{"ts":%s,"total_cost_usd":2.5}\n' "$now" "$now" > "$log"
   expect_rc_err 6 "daily cap" env SDK_AGENT_RUNS_LOG="$log" "$ag" ask --budget 0.5 hi
 }
 
@@ -111,7 +111,7 @@ runs_log_ignored_without_test_flag() {
 cap_boundary_under_not_refused() {
   local log="$TMP/runs-under.jsonl" now err rc
   now=$(date +%s)
-  printf '{"ts":%s,"total_cost_usd":2.50}\n' "$now" > "$log"
+  printf '{"ts":%s,"total_cost_usd":4.50}\n' "$now" > "$log"
   err=$(env SDK_AGENT_RUNS_LOG="$log" "$ag" ask --budget 0.5 hi 2>&1 >/dev/null)
   rc=$?
   [[ $rc -ne 6 && $err != *"daily cap"* ]]
@@ -120,14 +120,14 @@ cap_boundary_under_not_refused() {
 cap_boundary_over_refused() {
   local log="$TMP/runs-over.jsonl" now
   now=$(date +%s)
-  printf '{"ts":%s,"total_cost_usd":2.51}\n' "$now" > "$log"
+  printf '{"ts":%s,"total_cost_usd":4.51}\n' "$now" > "$log"
   expect_rc_err 6 "daily cap" env SDK_AGENT_RUNS_LOG="$log" "$ag" ask --budget 0.5 hi
 }
 
 cap_null_cost_counts_as_ceiling() {
   local log="$TMP/runs-null.jsonl" now
   now=$(date +%s)
-  printf '{"ts":%s,"total_cost_usd":null}\n{"ts":%s,"total_cost_usd":0.60}\n' "$now" "$now" > "$log"
+  printf '{"ts":%s,"total_cost_usd":null}\n{"ts":%s,"total_cost_usd":2.60}\n' "$now" "$now" > "$log"
   expect_rc_err 6 "daily cap" env SDK_AGENT_RUNS_LOG="$log" "$ag" ask --budget 0.5 hi
 }
 
@@ -202,8 +202,8 @@ check "listed .ENV refused (case-insensitive)" env_uppercase_refused
 check "Check with metacharacter refused before engine (rc 7)" check_metachar_refused
 check "unwritable SDK_AGENT_RUNS_LOG -> rc 6" unwritable_runs_log_refuses
 check "SDK_AGENT_RUNS_LOG ignored without SDK_AGENT_TEST" runs_log_ignored_without_test_flag
-check "cap boundary: 2.50 + 0.50 not refused" cap_boundary_under_not_refused
-check "cap boundary: 2.51 + 0.50 -> rc 6" cap_boundary_over_refused
+check "cap boundary: 4.50 + 0.50 not refused" cap_boundary_under_not_refused
+check "cap boundary: 4.51 + 0.50 -> rc 6" cap_boundary_over_refused
 check "cap: null cost counts as 2.00" cap_null_cost_counts_as_ceiling
 check "--apply-edits: one exact edit changes only that fragment" apply_edit_once
 check "--apply-edits: old not found -> rc 5, file unchanged" apply_not_found

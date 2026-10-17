@@ -17,7 +17,7 @@
 
 | id | состояние | модель / параметр |
 | --- | --- | --- |
-| `sdk` | включён, первый (owner 16.10) | `bin/sdk-agent code` (audit: `sdk-agent read`), claude-haiku-5-5; any failure (budget, daily cap 3 USD, error) → rc 17 → next form |
+| `sdk` | включён, первый (owner 16.10) | `bin/sdk-agent code` (audit: `sdk-agent read`), claude-haiku-5-5; any failure (budget, daily cap 5 USD, error) → rc 17 → next form |
 | `go` | включён | code, audit и продолжение: `opencode-go/deepseek-v4-pro` (owner 16.10) |
 | `codex` | включён | модель профиля; `effort: high` |
 | `openrouter` | выключен | — |
