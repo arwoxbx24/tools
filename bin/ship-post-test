@@ -192,6 +192,13 @@ test_dryrun_mocks(){
 	[[ -x $d/bin/ship-post && -x $d/bin/ship ]] && pass "$n" || fail "$n" "local candidate/mock missing"; n=$((n + 1))
 	[[ $out != *'PASS '* ]] && pass "$n" || fail "$n" "misleading PASS count"
 }
+test_skip_log(){
+	local out rc
+	setup_submit skiplog codex/dcfg-skiplog.1
+	git -C "$wt" commit -q --allow-empty -m skiplog -m "$(printf 'ТЗ: %s#U1\nAtom: dcfg-skiplog.1' "$wt/$tz")"
+	out=$(export BEADS_ACTOR=Codex BD_STATUS=in_progress BD_ASSIGNEE=Codex; run_tool "$d" --dry-run 2>&1); rc=$?
+	[[ $rc == 0 && $out == *'skip dcfg-skiplog.1 status in_progress'* ]] && pass SL1 || fail SL1 "rc=$rc: $out"
+}
 test_valid_actors(){
 	local n=7 out rc msg
 	setup_submit codex codex/dcfg-valid.1; printf x > "$wt/file.txt"
@@ -997,7 +1004,7 @@ elif [[ ${SHIP_POST_TEST_GROUP:-all} == broken ]]; then
 		elif [[ ${SHIP_POST_TEST_GROUP:-all} == auto ]]; then
 		 test_auto_submit
 else
-	 test_dryrun_mocks; test_valid_actors; test_rejections; test_hook_and_retry; test_closed_retry; test_remote_result_closed; test_delivery; test_beads_root_fallback; test_broken_link; test_live_sync; test_watch; test_recovery; test_stream_errors; test_closed_skip_reason; test_concurrent_repositories; test_watch_lock_released; test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery; test_actor_alias; test_nested_repo; test_final_states; test_submit_conflict_preflight; test_u15; test_adr30; test_park; test_park_live; test_hints; test_status; test_break_glass; test_auto_submit
+	 test_dryrun_mocks; test_skip_log; test_valid_actors; test_rejections; test_hook_and_retry; test_closed_retry; test_remote_result_closed; test_delivery; test_beads_root_fallback; test_broken_link; test_live_sync; test_watch; test_recovery; test_stream_errors; test_closed_skip_reason; test_concurrent_repositories; test_watch_lock_released; test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery; test_actor_alias; test_nested_repo; test_final_states; test_submit_conflict_preflight; test_u15; test_adr30; test_park; test_park_live; test_hints; test_status; test_break_glass; test_auto_submit
 fi
 if [[ ${SHIP_POST_TEST_GROUP:-all} == all || ${SHIP_POST_TEST_GROUP:-} == v9 ]]; then test_v9; fi
 T=$root
