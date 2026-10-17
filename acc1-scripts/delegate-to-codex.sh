@@ -38,7 +38,7 @@ run_on_claude_internal() {
     log "FALLBACK: Running on Claude Expert (internal sonnet agent)"
 
     # Use claude CLI with internal prompt
-    RESULT=$(CLAUDE_CONFIG_DIR="/root/workspaces/tools/acc1-scripts" claude -p "$TASK" --model sonnet --dangerously-skip-permissions 2>&1) || {
+    RESULT=$(echo "refused: Claude runs only via /root/workspaces/tools/bin/sdk-agent (owner 17.10, dcfg-l5wpm)" >&2; exit 3) || {
         EXIT_CODE=$?
         log "ERROR: Claude internal also failed with exit code $EXIT_CODE"
         update_status "claude_internal" "failed"

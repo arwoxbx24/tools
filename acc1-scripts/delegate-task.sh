@@ -74,7 +74,7 @@ run_on_alex() {
     fi
 
     # Run claude with Alex config (task includes Redis context instructions)
-    RESULT=$(CLAUDE_CONFIG_DIR="$ALEX_CONFIG" GIT_AUTHOR_NAME="${GIT_AUTHOR_NAME:-Claude ALEX}" GIT_AUTHOR_EMAIL="${GIT_AUTHOR_EMAIL:-alex@arwox.ru}" GIT_COMMITTER_NAME="${GIT_COMMITTER_NAME:-Claude ALEX}" GIT_COMMITTER_EMAIL="${GIT_COMMITTER_EMAIL:-alex@arwox.ru}" claude -p "$FULL_TASK" --model "$MODEL" --dangerously-skip-permissions 2>&1)
+    RESULT=$(echo "refused: Claude runs only via /root/workspaces/tools/bin/sdk-agent (owner 17.10, dcfg-l5wpm)" >&2; exit 3)
     EXIT_CODE=$?
 
     if [ $EXIT_CODE -eq 0 ]; then
@@ -119,7 +119,7 @@ run_on_expert() {
     # Set git identity for Expert account
     source "$EXPERT_CONFIG/scripts/git-identity.sh" 2>/dev/null || true
 
-    RESULT=$(CLAUDE_CONFIG_DIR="$EXPERT_CONFIG" GIT_AUTHOR_NAME="${GIT_AUTHOR_NAME:-Claude Expert}" GIT_AUTHOR_EMAIL="${GIT_AUTHOR_EMAIL:-expert@arwox.ru}" GIT_COMMITTER_NAME="${GIT_COMMITTER_NAME:-Claude Expert}" GIT_COMMITTER_EMAIL="${GIT_COMMITTER_EMAIL:-expert@arwox.ru}" claude -p "$FULL_TASK" --model "$MODEL" --dangerously-skip-permissions 2>&1)
+    RESULT=$(echo "refused: Claude runs only via /root/workspaces/tools/bin/sdk-agent (owner 17.10, dcfg-l5wpm)" >&2; exit 3)
     EXIT_CODE=$?
 
     if [ $EXIT_CODE -eq 0 ]; then
