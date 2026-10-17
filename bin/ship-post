@@ -13,19 +13,20 @@ BEADS_ACTOR=${BEADS_ACTOR:-}
 SHIP_POST_RETRY_SECONDS=${SHIP_POST_RETRY_SECONDS:-30}
 [[ $SHIP_POST_RETRY_SECONDS =~ ^[1-9][0-9]*$ ]] || { echo 'ship-post: invalid retry interval' >&2; exit 2; }
 
-dry_run=0; watch=0; submit=0; submit_wt=''; submit_atom=''; submit_tz=''; status_mode=0; status_atom=''
+dry_run=0; watch=0; submit=0; submit_wt=''; submit_atom=''; submit_tz=''; status_mode=0; status_atom=''; wait_mode=0; wait_atom=''; wait_timeout=900
 submit_evidence=''; submit_files=(); filter_atom=''; bg=0; bg_wt=''
 
 help_text='usage: ship-post [--dry-run]
        ship-post --watch [--atom <id>]
        ship-post --status <atom>
+       ship-post --wait <atom> [--timeout <seconds>]
        ship-post --break-glass <worktree> --atom <id>
        ship-post --submit <worktree> --atom <id> --tz <path#U2> --evidence <text> --files <file>...'
 usage(){ printf '%s\n' "$help_text" >&2; exit 2; }
 [[ ${1:-} == -h || ${1:-} == --help ]] && { printf '%s\n' "$help_text"; exit 0; }
 
 while [[ $# -gt 0 ]]; do
-	case $1 in --atom|--submit|--tz|--evidence|--status) [[ $# -ge 2 && -n $2 && $2 != --* ]] || usage ;; esac
+	case $1 in --atom|--submit|--tz|--evidence|--status|--wait|--timeout) [[ $# -ge 2 && -n $2 && $2 != --* ]] || usage ;; esac
 	case $1 in
 		--dry-run) dry_run=1; shift ;;
 		--watch) watch=1; shift ;;
@@ -34,6 +35,8 @@ while [[ $# -gt 0 ]]; do
 		--tz) submit_tz=${2:-}; shift 2 ;;
 		--evidence) submit_evidence=${2:-}; shift 2 ;;
 		--status) status_mode=1; status_atom=${2:-}; shift 2 ;;
+		--wait) wait_mode=1; wait_atom=${2:-}; shift 2 ;;
+		--timeout) wait_timeout=${2:-}; shift 2 ;;
 		--break-glass) [[ $# -ge 2 && -n $2 && $2 != --* ]] || usage; bg=1; bg_wt=${2:-}; shift 2 ;;
 		--files) shift; while [[ $# -gt 0 && $1 != -* ]]; do submit_files+=("$1"); shift; done ;;
 		--) shift; submit_files+=("$@"); break ;;
@@ -386,6 +389,24 @@ do_status(){
 		if [[ -f $rf ]]; then printf '%s %s delivering\n' "$atom" "${sha:0:7}"; return 0; fi
 	done
 	echo "$atom ${sha:0:7} submitted"
+}
+
+# Final delivery state, pushed to the caller by inotify events instead of agent polling.
+do_wait(){
+	local atom=$1 t=$2 end left line
+	[[ $t =~ ^[1-9][0-9]*$ ]] || usage_err "invalid timeout: $t"
+	end=$(( $(date +%s) + t ))
+	while :; do
+		line=$(do_status "$atom") || return 2
+		case $line in
+			*' delivered'*|*' wait-owner'*|*' prod-hold'*) echo "$line"; return 0 ;;
+			*' parked '*|*' failed '*) echo "$line"; return 1 ;;
+		esac
+		left=$(( end - $(date +%s) ))
+		(( left > 0 )) || { echo "$line"; return 3; }
+		# cap 30 s: covers an event fired between do_status and inotifywait start
+		inotifywait -qq -r -t $(( left < 30 ? left : 30 )) -e close_write,moved_to,create,delete "$SHIP_POST_STATE_DIR" >/dev/null 2>&1
+	done
 }
 
 # One eligibility/delivery path for startup, events and manual scans.
@@ -897,6 +918,7 @@ elif [[ $bg == 1 ]]; then
 	do_break_glass "$bg_wt" "$submit_atom"
 elif [[ $status_mode == 1 ]]; then
 	do_status "$status_atom"
+elif [[ $wait_mode == 1 ]]; then do_wait "$wait_atom" "$wait_timeout"; exit $?
 elif [[ $watch == 1 ]]; then
  do_watch
 else

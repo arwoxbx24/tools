@@ -1008,5 +1008,27 @@ br_out=$(bash -c '. "$1"; ga_beads_root "$2"' _ "$bin/git-auto-lib" "$T/brw")
 [[ $(realpath "$br_out") == $(realpath "$T/br") ]] && pass 'BR1 worktree beads root' || fail 'BR1 worktree beads root' "got=$br_out want=$T/br"
 br_out=$(SHIP_POST_BEADS_ROOT=/x bash -c '. "$1"; ga_beads_root /tmp' _ "$bin/git-auto-lib")
 [[ $br_out == /x ]] && pass 'BR2 fallback env' || fail 'BR2 fallback env' "got=$br_out want=/x"
+# ship-post --wait: event-driven final delivery state (dcfg-p6mn5.2)
+wd=$(mktemp -d "$root/wait.XXXXXX")
+mkdir -p "$wd/state/receipts/r/wa" "$wd/state/submissions/r/w/wa"
+printf '{"stage":"delivered"}\n' > "$wd/state/receipts/r/wa/aaaaaa1"; : > "$wd/state/submissions/r/w/wa/aaaaaa1"
+out=$(SHIP_POST_STATE_DIR="$wd/state" timeout --kill-after=2 10 "$bin/ship-post" --wait wa --timeout 2 2>&1); rc=$?
+[[ $rc == 0 && $out == *delivered* ]] && pass W1 || fail W1 "rc=$rc: $out"
+
+wd=$(mktemp -d "$root/wait.XXXXXX")
+mkdir -p "$wd/state/submissions/r/w/wb"; : > "$wd/state/submissions/r/w/wb/aaaaaa2"
+out=$(SHIP_POST_STATE_DIR="$wd/state" timeout --kill-after=2 10 "$bin/ship-post" --wait wb --timeout 1 2>&1); rc=$?
+[[ $rc == 3 ]] && pass W2 || fail W2 "rc=$rc: $out"
+
+wd=$(mktemp -d "$root/wait.XXXXXX")
+mkdir -p "$wd/state/submissions/r/w/wc" "$wd/state/receipts/r/wc"; : > "$wd/state/submissions/r/w/wc/aaaaaa3"
+t0=$(date +%s%3N)
+( SHIP_POST_STATE_DIR="$wd/state" timeout --kill-after=2 15 "$bin/ship-post" --wait wc --timeout 10 >"$wd/wc.out" 2>&1 ) & wcpid=$!
+sleep 1
+printf '{"stage":"delivered"}\n' > "$wd/aaaaaa3.tmp" && mv -- "$wd/aaaaaa3.tmp" "$wd/state/receipts/r/wc/aaaaaa3"
+wait "$wcpid"; rc=$?
+elapsed=$(( $(date +%s%3N) - t0 ))
+[[ $rc == 0 && $elapsed -lt 5000 ]] && pass W3 || fail W3 "rc=$rc elapsed=${elapsed}ms: $(cat "$wd/wc.out")"
+
 echo "checks=$checks failures=$failures"
 [[ $failures == 0 ]]
