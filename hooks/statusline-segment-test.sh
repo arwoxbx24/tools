@@ -86,33 +86,33 @@ line=$(SDK_AGENT_BIN="$tmp/agent-cap6" "$seg" sdk <"$tmp/input.json")
 total=$((total + 1))
 if [[ $line == *'$3.77/$6'* && $line == *'left $0.73'* && $line == *'aborted 3 ≤$1.50'* ]]; then pass=$((pass + 1)); echo 'PASS sdk_matches_cap'; else echo "FAIL sdk_matches_cap: got [$line]" >&2; fi
 
-# ship: only this session's deliveries; fake ship-post state, bd and ship-post live in a temp dir
-sf=$tmp/shipfx
-mkdir -p "$sf/tmp" "$sf/state/submissions/r/w/own-a" "$sf/state/submissions/r/w/own-b" "$sf/state/submissions/r/w/foreign-c"
-touch "$sf/state/submissions/r/w/own-a/sha1" "$sf/state/submissions/r/w/own-b/sha2" "$sf/state/submissions/r/w/foreign-c/sha3"
-cat >"$sf/bd" <<'EOF'
+# ship: merged GitHub PRs of this session; fake gh and bd in a temp dir, each check its own TMPDIR so the 60 s cache does not leak
+fk=$tmp/shipfx
+mkdir -p "$fk"
+cat >"$fk/gh" <<'EOF'
 #!/bin/bash
-case $2 in
-  own-a|own-b) echo '[{"title":"[CLAUDE-x-83bc] t"}]' ;;
-  *) echo '[{"title":"[CLAUDE-x-zzzz] t"}]' ;;
+case $4 in
+  arwoxbx24/agent-contour) printf '%s\n' claude/own-a-x claude/foreign-c-y misc-branch ;;
+  arwoxbx24/tools) echo codex/own-b-z ;;
 esac
 EOF
-cat >"$sf/ship-post" <<'EOF'
+printf '#!/bin/bash\nexit 1\n' >"$fk/gh-fail"
+cat >"$fk/bd" <<'EOF'
 #!/bin/bash
-echo "$2 abc1234 $(cat "$(dirname "$0")/state-$2")"
+case $2 in
+  own-a|own-b) echo '[{"title":"[CLAUDE-config-83bc] a"}]' ;;
+  *) echo '[{"title":"[CLAUDE-config-9999] c"}]' ;;
+esac
 EOF
-chmod +x "$sf/bd" "$sf/ship-post"
-ship_run() {  # session_id, states of own-a, own-b, foreign-c -> ship field
-  printf '%s' "$2" >"$sf/state-own-a"; printf '%s' "$3" >"$sf/state-own-b"; printf '%s' "$4" >"$sf/state-foreign-c"
-  printf '{"session_id":"%s"}' "$1" | TMPDIR=$sf/tmp SHIP_POST_STATE_DIR=$sf/state SHIP_POST_BIN=$sf/ship-post BD_BIN=$sf/bd "$seg" ship
+chmod +x "$fk/gh" "$fk/gh-fail" "$fk/bd"
+ship_run() {  # check name, session_id, gh binary -> ship field
+  mkdir -p "$tmp/$1"
+  printf '{"session_id":"%s"}' "$2" | TMPDIR=$tmp/$1 GH_BIN=$3 BD_BIN=$fk/bd "$seg" ship
 }
-check ship-a "$(ship_run 83bcb363-test submitted delivered delivered)" "ship ⏳ own-a │ ✓ 1"
-check ship-b "$(ship_run 83bcb363-test delivered delivered delivered)" "ship ✓ 2"
-check ship-c "$(ship_run 83bcb363-test parked delivered delivered)" "ship ✗ own-a │ ✓ 1"
-check ship-d "$(ship_run 9999aaaa-test delivered delivered delivered)" "ship ✓ 0"
-check ship-e "$(ship_run 83bcb363-test delivered delivered parked)" "ship ✓ 2"
-mkdir -p "$sf/state2/submissions"
-check ship-empty "$(printf '{"session_id":"83bcb363-test"}' | TMPDIR=$sf/tmp SHIP_POST_STATE_DIR=$sf/state2 SHIP_POST_BIN=$sf/ship-post BD_BIN=$sf/bd "$seg" ship)" "ship ✓ 0"
+check ship-own "$(ship_run ship-own 83bcb363-test "$fk/gh")" "ship ✓ 2"
+check ship-foreign "$(ship_run ship-foreign 9999aaaa-test "$fk/gh")" "ship ✓ 1"
+check ship-none "$(ship_run ship-none 1111bbbb-test "$fk/gh")" "ship ✓ 0"
+check ship-ghfail "$(ship_run ship-ghfail 83bcb363-test "$fk/gh-fail")" "ship ?"
 check sess "$(printf '{"session_id":"f4ea9812-0000-183f5b37174d"}' | "$seg" sess)" "claude 37174d"
 check sess-empty "$(printf '{}' | "$seg" sess)" ""
 
