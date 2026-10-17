@@ -79,13 +79,33 @@ cat >"$adir/d1.jsonl" <<'EOF'
 EOF
 cat >"$adir/f1.jsonl" <<'EOF'
 {"type":"user","message":{"content":"go"}}
-{"type":"assistant","message":{"content":[{"type":"text","text":"all DONE"}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"all ✅ DONE"}]}}
 {"type":"user" oops
 EOF
 cat >"$adir/n.jsonl" <<'EOF'
 {"type":"user","message":{"content":"go"}}
 {"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"x1","is_error":false,"content":"Stop hook feedback: x"}]}}
 {"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"x2","is_error":false,"content":"Stop hook feedback: x"}]}}
+EOF
+cat >"$adir/f1n.jsonl" <<'EOF'
+{"type":"user","message":{"content":"go"}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"NOT DONE: AC2 failed"}]}}
+EOF
+cat >"$adir/f1g.jsonl" <<'EOF'
+{"type":"user","message":{"content":"go"}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"/goal AC1 ... followed by ✅ DONE"}]}}
+EOF
+cat >"$adir/f1p.jsonl" <<'EOF'
+{"type":"user","message":{"content":"go"}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"plain DONE without check mark"}]}}
+EOF
+cat >"$adir/f1i.jsonl" <<'EOF'
+{"type":"user","message":{"content":"go"}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"NEEDS INPUT instead of ✅ DONE"}]}}
+EOF
+cat >"$adir/f1w.jsonl" <<'EOF'
+{"type":"user","message":{"content":"go"}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"GOAL: x | DONE WHEN: y"}]}}
 EOF
 for f in "$adir"/*.jsonl; do padf "$f"; done
 
@@ -96,11 +116,21 @@ chk "^s2${T}3${T}S1${T}Stop hook feedback: b$"
 chk "^s2${T}4${T}S2${T}Stop hook feedback: c$"
 chk "^r1${T}7${T}R1${T}boom$"
 chk "^d1${T}5${T}D1${T}Permission to use Bash has been denied$"
-chk "^f1${T}2${T}F1${T}all DONE$"
+chk "^f1${T}2${T}F1${T}all ✅ DONE$"
 chk '^anomalies=7 S1=3 S2=1 R1=1 D1=1 F1=1 skipped_lines=1$'
 out=$("$bin" --anomalies --session s2 --corpus "$adir") || { echo 'FAIL: --session rc nonzero' >&2; exit 1; }
 chk '^anomalies=3 S1=2 S2=1 R1=0 D1=0 F1=0 skipped_lines=0$'
 out=$("$bin" --anomalies --session n --corpus "$adir") || { echo 'FAIL: --session n rc nonzero' >&2; exit 1; }
+chk '^anomalies=0 S1=0 S2=0 R1=0 D1=0 F1=0 skipped_lines=0$'
+out=$("$bin" --anomalies --session f1n --corpus "$adir") || { echo 'FAIL: --session f1n rc nonzero' >&2; exit 1; }
+chk '^anomalies=0 S1=0 S2=0 R1=0 D1=0 F1=0 skipped_lines=0$'
+out=$("$bin" --anomalies --session f1g --corpus "$adir") || { echo 'FAIL: --session f1g rc nonzero' >&2; exit 1; }
+chk '^anomalies=0 S1=0 S2=0 R1=0 D1=0 F1=0 skipped_lines=0$'
+out=$("$bin" --anomalies --session f1p --corpus "$adir") || { echo 'FAIL: --session f1p rc nonzero' >&2; exit 1; }
+chk '^anomalies=0 S1=0 S2=0 R1=0 D1=0 F1=0 skipped_lines=0$'
+out=$("$bin" --anomalies --session f1i --corpus "$adir") || { echo 'FAIL: --session f1i rc nonzero' >&2; exit 1; }
+chk '^anomalies=0 S1=0 S2=0 R1=0 D1=0 F1=0 skipped_lines=0$'
+out=$("$bin" --anomalies --session f1w --corpus "$adir") || { echo 'FAIL: --session f1w rc nonzero' >&2; exit 1; }
 chk '^anomalies=0 S1=0 S2=0 R1=0 D1=0 F1=0 skipped_lines=0$'
 out=$("$bin" --anomalies --session nope --corpus "$adir") || { echo 'FAIL: --session nope rc nonzero' >&2; exit 1; }
 chk '^no transcript for nope$'
