@@ -34,3 +34,4 @@ etc/tools-env
 *.db
 .beads-credential-key
 .beads/proxieddb/
+sdk-agent/runs.jsonl
