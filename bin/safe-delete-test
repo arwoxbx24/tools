@@ -663,5 +663,12 @@ if [[ $r86a == 0 && ! -e "$d/proj/node_modules" && $out86 == *'основани�
   echo 'PASS T86 cache_no_copy'; ok=$((ok+1))
 else echo "FAIL T86: rc=$r86a/$r86b cnt=$cnt86a/$cnt86b out=$out86"; fi
 
-[[ $ok == 87 ]] || exit 1
+# T87: fresh backup dir gets its ledger created before the first batch log
+mkdir -p "$d/p87/node_modules"; printf 'x\n' > "$d/p87/node_modules/f"
+"$bin/safe-delete" --bk "$d/bk87" cache "$d/p87/node_modules" >/dev/null; r87=$?
+n87=$(grep -c . "$d/bk87/ledger.tsv" 2>/dev/null)
+if [[ $r87 == 0 && ! -e "$d/p87/node_modules" && $n87 == 1 ]]; then echo 'PASS T87 fresh_ledger_batch'; ok=$((ok+1))
+else echo "FAIL T87: rc=$r87 n=$n87"; fi
+
+[[ $ok == 88 ]] || exit 1
 echo "итог: PASS $ok, FAIL 0"

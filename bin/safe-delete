@@ -15,7 +15,7 @@ ok_repowise=
 declare -A nolink=() gblob=() grepo=() gmode=()
 log_n=
 log(){ { flock -x 9 || return 1; printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date +%Y-%m-%dT%H:%M:%S)" "$@" >>"$led" || return 1; log_n=$(wc -l <"$led"); log_n=${log_n//[[:space:]]/}; } 9>>"$led.lock"; }
-log_batch(){ { flock -x 9 || return 1; local n; n=$(wc -l <"$led") || return 1; n=${n//[[:space:]]/}; printf '%s\n' "$@" >>"$led" || return 1; log_n=$((n+1)); } 9>>"$led.lock"; }
+log_batch(){ { flock -x 9 || return 1; local n; : >>"$led" || return 1; n=$(wc -l <"$led") || return 1; n=${n//[[:space:]]/}; printf '%s\n' "$@" >>"$led" || return 1; log_n=$((n+1)); } 9>>"$led.lock"; }
 fail(){ echo "safe-delete: $*" >&2; exit 1; }
 refuse(){ echo "safe-delete: $*" >&2; exit 2; }
 repo_of(){ local u=$1; u=${u%.git}; [[ $u =~ ([^/:]+)/([^/]+)$ ]] && echo "${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"; }
