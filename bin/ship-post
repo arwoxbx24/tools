@@ -419,7 +419,7 @@ remote_result(){
 	remote_list='[]'
  origin=$(git -C "$wt" remote get-url origin) || return 23
  result=$(gh repo view "$origin" --json isPrivate 2>/dev/null) || return 23
- [[ $(jq -r '.isPrivate' <<<"$result") == true ]] || return 23
+ jq -e '.isPrivate | type == "boolean"' <<<"$result" >/dev/null || return 23
  result=$(gh pr list -R "$origin" --head "$branch" --state all --json headRefOid,state,url,mergeCommit,statusCheckRollup 2>/dev/null) || return 23
  jq -e 'type == "array"' <<<"$result" >/dev/null || return 23
 	remote_list=$result
