@@ -547,7 +547,7 @@ test_review_recovery(){
  out=$(export BEADS_ACTOR=Codex BD_STATUS=closed MOCK_SHIP_RC=40 MOCK_PR_HEAD="$h"; run_tool "$d" 2>&1)
  ! grep -q '|reopen ' "$d/bd.calls" && pass pending_ci_retains_readiness || fail pending_ci_retains_readiness "$out"
  : > "$d/ship.calls"
- out=$(export BEADS_ACTOR=Codex BD_STATUS=closed MOCK_PR_HEAD="$h" MOCK_SHIP_SEQ='70 0'; run_tool "$d" 2>&1); rc=$?
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed MOCK_PR_HEAD="$h" MOCK_SHIP_SEQ='70 0'; run_tool "$d" --atom dcfg-ci.1 2>&1); rc=$?
  [[ $rc == 0 && $(wc -l < "$d/merged") == 1 && $(wc -l < "$d/ship.calls") == 2 && ! -e $d/state/incidents/parked/dcfg-ci.1 ]] && pass ci_transport_recovers || fail ci_transport_recovers "$out"
  setup_submit partial_event codex/dcfg-partial.1; : > "$d/events"
  out=$(export BEADS_ACTOR=Codex BD_STATUS=in_progress PARTIAL_EVENT=1 TEST_TIMEOUT=4; run_tool "$d" --watch 2>&1)
