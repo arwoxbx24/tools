@@ -570,5 +570,48 @@ printf 'x\n' > "$d/sb/test-e/.codex/x"
 out77=$(SAFE_DELETE_SANDBOX="$d/sb" "$bin/safe-delete" --bk "$bk" dir "$d/sb/test-e" 2>&1); r77=$?
 if [[ $r77 == 2 && $out77 == *'запрещённый сегмент'* && -f "$d/sb/test-e/.codex/x" ]]; then echo 'PASS T77 sandbox_dirty_codex_refused'; ok=$((ok+1)); else echo "FAIL T77: rc=$r77 out=$out77"; fi
 
-[[ $ok == 78 ]] || exit 1
-echo "итог: PASS 78, FAIL 0"
+# T78: worktree of a bare repo (common git-dir is not <repo>/.git)
+git init -q "$d/bsrc"
+git -C "$d/bsrc" config user.email t@t
+git -C "$d/bsrc" config user.name t
+printf 'b\n' > "$d/bsrc/b.txt"
+git -C "$d/bsrc" add b.txt && git -C "$d/bsrc" commit -q -m b
+git clone -q --bare "$d/bsrc" "$d/bare.git"
+defbr=$(git -C "$d/bsrc" rev-parse --abbrev-ref HEAD)
+git --git-dir="$d/bare.git" worktree add -q -b bx "$d/wt-bare" "$defbr"
+"$bin/safe-delete" --bk "$bk" worktree "$d/wt-bare" >/dev/null 2>&1; r78=$?
+wt78=$(git --git-dir="$d/bare.git" for-each-ref refs/safe-delete | grep -c wt-)
+if [[ $r78 == 0 && ! -d $d/wt-bare && $wt78 -ge 1 ]]; then echo 'PASS T78 bare_gitdir_worktree'; ok=$((ok+1)); else echo "FAIL T78 bare_gitdir_worktree: rc=$r78 ref=$wt78"; fi
+
+# T79: sandbox test repo with empty .beads/.codex dirs and a broken .git is deleted
+mkdir -p "$d/sb/test-f/.beads/hooks" "$d/sb/test-f/.codex/hooks" "$d/sb/test-f/.git"
+printf 'x\n' > "$d/sb/test-f/.git/config"
+printf 'f\n' > "$d/sb/test-f/f"
+SAFE_DELETE_SANDBOX="$d/sb" "$bin/safe-delete" --bk "$bk" dir "$d/sb/test-f" >/dev/null 2>&1; r79=$?
+if [[ $r79 == 0 && ! -e "$d/sb/test-f" ]]; then echo 'PASS T79 sandbox_empty_beads_codex'; ok=$((ok+1)); else echo "FAIL T79: rc=$r79"; fi
+
+# T80: default roots accept a user cache dir (real roots, SAFE_DELETE_ROOTS unset)
+mkdir -p "/root/.cache/sd-test-$$"; printf 'c\n' > "/root/.cache/sd-test-$$/f"
+env -u SAFE_DELETE_ROOTS "$bin/safe-delete" --bk "$bk" dir "/root/.cache/sd-test-$$" >/dev/null 2>&1; r80=$?
+copy80=$(find "$bk/files" -path "*/root/.cache/sd-test-$$/f" -type f 2>/dev/null | head -1)
+if [[ $r80 == 0 && ! -e "/root/.cache/sd-test-$$" && -n $copy80 ]]; then echo 'PASS T80 user_cache_root'; ok=$((ok+1)); else echo "FAIL T80: rc=$r80"; fi
+
+# T81: credential stores refused under real default roots (test fixture when the real file is absent)
+fx81="/root/.cache/sd-test-$$-auth/auth.json"
+mkdir -p "$(dirname -- "$fx81")"; printf 'x\n' > "$fx81"
+gh81=/root/.config/gh/hosts.yml; [[ -e $gh81 ]] || gh81=$fx81
+oc81=/root/.local/share/opencode/auth.json; [[ -e $oc81 ]] || oc81=$fx81
+env -u SAFE_DELETE_ROOTS "$bin/safe-delete" --bk "$bk" file "$gh81" >/dev/null 2>&1; r81a=$?
+env -u SAFE_DELETE_ROOTS "$bin/safe-delete" --bk "$bk" file "$oc81" >/dev/null 2>&1; r81b=$?
+if [[ $r81a == 2 && $r81b == 2 && -f $gh81 && -f $oc81 ]]; then echo 'PASS T81 credential_stores_refused'; ok=$((ok+1)); else echo "FAIL T81: gh=$r81a auth=$r81b"; fi
+rm -rf "$(dirname -- "$fx81")"
+
+# T82: dir takes several paths; ok/failed counted, a refused dir stays and the rest proceed
+mkdir -p "$d/md1" "$d/md2" "$d/md3" "$d/md-bad/secrets"
+printf '1\n' > "$d/md1/f"; printf '2\n' > "$d/md2/f"; printf '3\n' > "$d/md3/f"; printf 'k\n' > "$d/md-bad/secrets/k"
+out82a=$("$bin/safe-delete" --bk "$bk" dir "$d/md1" "$d/md2" 2>/dev/null); r82a=$?
+out82b=$("$bin/safe-delete" --bk "$bk" dir "$d/md3" "$d/md-bad" 2>/dev/null); r82b=$?
+if [[ $r82a == 0 && ! -e $d/md1 && ! -e $d/md2 && $out82a == *'ok=2, failed=0'* && $r82b == 2 && ! -e $d/md3 && -f $d/md-bad/secrets/k && $out82b == *'ok=1, failed=1'* ]]; then echo 'PASS T82 multi_dir'; ok=$((ok+1)); else echo "FAIL T82: rc=$r82a/$r82b"; fi
+
+[[ $ok == 83 ]] || exit 1
+echo "итог: PASS 83, FAIL 0"
