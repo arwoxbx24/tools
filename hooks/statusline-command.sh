@@ -17,9 +17,10 @@ fields=$(jq -r 'def n: (numbers | tostring) // "";
   (.rate_limits.seven_day.resets_at | n),
   ((.prompt_cache.hit_ratio | numbers | . * 100 | tostring) // ""),
   (if .prompt_cache.warm == true then "warm" elif .prompt_cache.warm == false then "cold" else "" end),
-  (.cost.total_cost_usd | n)
+  (.cost.total_cost_usd | n),
+  (.workspace.current_dir // "")
 ] | join("\u001f")' <<<"$input" 2>/dev/null)
-IFS=$'\x1f' read -r model effort dir branch added removed ctx_pct h5_pct h5_reset d7_pct d7_reset cache_pct warm session_cost <<<"$fields"
+IFS=$'\x1f' read -r model effort dir branch added removed ctx_pct h5_pct h5_reset d7_pct d7_reset cache_pct warm session_cost cur_dir <<<"$fields"
 
 color_for() {
   if (( $1 >= 80 )); then printf '\033[31m'
@@ -43,13 +44,13 @@ bar() {
 }
 
 reset_hm() { [[ $1 =~ ^[0-9]+$ ]] && date -d "@$1" +%H:%M 2>/dev/null; }
-reset_dm() { [[ $1 =~ ^[0-9]+$ ]] && date -d "@$1" '+%d.%m %H:%M' 2>/dev/null; }
+reset_dm() { [[ $1 =~ ^[0-9]+$ ]] && date -d "@$1" '+%d.%m в %H:%M' 2>/dev/null; }
 
 join() {
   local out="" seg
   for seg in "$@"; do
     [[ -z $seg ]] && continue
-    if [[ -z $out ]]; then out=$seg; else out+=" · $seg"; fi
+    if [[ -z $out ]]; then out=$seg; else out+="  ·  $seg"; fi
   done
   printf '%s' "$out"
 }
@@ -59,8 +60,10 @@ seg1=()
 [[ -n $model ]] && seg1+=("$model")
 [[ -n $effort ]] && seg1+=("$effort")
 if [[ -n $dir ]]; then
-  shown=$dir
-  if [[ -n $HOME && ( $dir == "$HOME" || $dir == "$HOME"/* ) ]]; then shown="~${dir#"$HOME"}"; fi
+  project=${dir%/}
+  project=${project##*/}
+  shown="📁 $project"
+  if [[ -n $cur_dir && $cur_dir != "$dir" && $cur_dir == "$dir"/* ]]; then shown+=" › ${cur_dir#"$dir"/}"; fi
   seg1+=("$shown")
 fi
 [[ -z $branch && -n $dir ]] && branch=$(git -C "$dir" branch --show-current 2>/dev/null)
@@ -74,28 +77,29 @@ fi
 seg2=()
 if [[ -n $ctx_pct ]]; then
   c=$(whole "$ctx_pct")
-  seg2+=("ctx $(bar "$c") $(paint "$c" "$c%")")
-fi
-if [[ -n $h5_pct ]]; then
-  h=$(whole "$h5_pct")
-  s="5ч $(paint "$h" "$h%")"
-  t=$(reset_hm "$h5_reset"); [[ -n $t ]] && s+=" ↻$t"
-  seg2+=("$s")
-fi
-if [[ -n $d7_pct ]]; then
-  d=$(whole "$d7_pct")
-  s="нед $(paint "$d" "$d%")"
-  t=$(reset_dm "$d7_reset"); [[ -n $t ]] && s+=" ↻$t"
-  seg2+=("$s")
+  seg2+=("контекст $(paint "$c" "$(bar "$c") $c%")")
 fi
 if [[ -n $cache_pct ]]; then
   k=$(whole "$cache_pct")
-  s="кэш $k%"
-  [[ -n $warm ]] && s+=" $warm"
-  seg2+=("$s")
+  seg2+=("кэш $k%")
 fi
 if [[ -n $session_cost ]]; then
   seg2+=("сессия \$$(printf '%.2f' "$session_cost")")
+fi
+
+# line 3: limits, SDK spend appended below
+seg3=()
+if [[ -n $h5_pct ]]; then
+  h=$(whole "$h5_pct")
+  s="лимит 5ч $(paint "$h" "$(bar "$h") $h%")"
+  t=$(reset_hm "$h5_reset"); [[ -n $t ]] && s+=" (сброс в $t)"
+  seg3+=("$s")
+fi
+if [[ -n $d7_pct ]]; then
+  d=$(whole "$d7_pct")
+  s="неделя $(paint "$d" "$(bar "$d") $d%")"
+  t=$(reset_dm "$d7_reset"); [[ -n $t ]] && s+=" (сброс $t)"
+  seg3+=("$s")
 fi
 
 # jq call 2: SDK spend today, in integer cents; ts is assumed to be epoch seconds
@@ -106,9 +110,11 @@ if [[ -r $runs ]]; then
   if [[ $cents =~ ^[0-9]+$ ]]; then
     sdk_pct=$(( cents / 3 ))
     sdk_usd="\$$((cents / 100)).$(printf '%02d' $((cents % 100)))"
-    seg2+=("SDK сегодня $(paint "$sdk_pct" "$sdk_usd")/\$3.00")
+    seg3+=("SDK за день $(paint "$sdk_pct" "$(bar "$sdk_pct") $sdk_usd") из \$3.00")
   fi
 fi
 
-printf '%s\n' "$(join "${seg1[@]}")" "$(join "${seg2[@]}")"
+for seg in "$(join "${seg1[@]}")" "$(join "${seg2[@]}")" "$(join "${seg3[@]}")"; do
+  [[ -n $seg ]] && printf '%s\n' "$seg"
+done
 exit 0
