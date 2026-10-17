@@ -412,13 +412,13 @@ remote_result(){
 }
 
 record_failure(){
- local repo=$1 atom=$2 head=$3 rc=$4 cause=${5:-} key marker note act files
+ local repo=$1 atom=$2 head=$3 rc=$4 cause=${5:-} key marker note act files pf
  key=$(receipt_file "$repo" "$atom" "$head"); marker="$key.failed"
  mkdir -p "$(dirname "$marker")" || return 1
  # A marker records an observation, not completion of the tracker transaction.
  printf '%s\n' "$rc" > "$marker.tmp" && mv "$marker.tmp" "$marker" || return 1
  printf '%s actor=%s atom=%s sha=%s stage=failed code=%s\n' "$(date -Iseconds)" "$BEADS_ACTOR" "$atom" "$head" "$rc" >&2
-	case $rc in 23) return 0 ;; esac
+	case $rc in 23|130) return 0 ;; esac
  case $rc in
   10) [[ -n $cause ]] || cause='ветка, рабочая копия или SHA изменены после сдачи; preflight'; act='сдай через ship-post --submit' ;;
   20) [[ -n $cause ]] || cause='gitleaks нашёл секрет в коммитах'; act='убрать секрет из истории ветки, сдать заново' ;;
@@ -431,6 +431,11 @@ record_failure(){
   80) [[ -n $cause ]] || cause='ТЗ не найдено или файл вне границ ТЗ'; act='исправить трейлер `ТЗ:` или границы, сдать заново' ;;
 	 *) park_atom "$atom" "$head" "$rc" "$key" || return 1; touch "$marker.reported"; return 0 ;;
  esac
+ pf="$SHIP_POST_STATE_DIR/incidents/parked/$atom"
+ if [[ -f $pf ]]; then
+  bd_cmd update "$atom" --remove-label delivery-blocked >/dev/null || return 1
+  rm -f -- "$pf"
+ fi
  note="ship-post exit $rc: $cause; действие: $act"
  bd_cmd reopen "$atom" >/dev/null || return 1
  bd_cmd update "$atom" --append-notes "$note" >/dev/null || return 1
@@ -484,7 +489,7 @@ report_closed_skip(){
 }
 
 ack_delivery(){
- local rf=$1 atom=$2 marker st pf inc
+ local rf=$1 atom=$2 marker st pf inc f
  [[ -f $rf.ack ]] && return 0
  marker="ship-post receipt:$(jq -r .local_sha "$rf"):$atom"
  st=$(bd_cmd show "$atom" --json) || return 1
@@ -497,6 +502,12 @@ ack_delivery(){
   bd_cmd update "$atom" --remove-label delivery-blocked >/dev/null || return 1
   bd_home update "$inc" --append-notes "delivered $atom $(jq -r .local_sha "$rf")" >/dev/null || return 1
   rm -f -- "$pf"
+  if ! grep -qxF -- "$inc" "$SHIP_POST_STATE_DIR"/incidents/parked/* 2>/dev/null; then
+   bd_home close "$inc" --reason "ship-post: all parked atoms delivered" >/dev/null || return 1
+   for f in "$SHIP_POST_STATE_DIR"/incidents/*; do
+    if [[ -f $f && $(cat "$f") == "$inc" ]]; then rm -f -- "$f"; fi
+   done
+  fi
  fi
  touch "$rf.ack"
 }
@@ -531,7 +542,7 @@ write_final_receipt(){
 }
 
 deliver_one(){
- local wt=$1 atom=$2 tz=$3 head=$4 repo=$5 branch=$6 rf inflight rc final_head ship_rc remote_proof='' remote_open='' remote_list='' superseded=0 log_start ship_out stage
+ local wt=$1 atom=$2 tz=$3 head=$4 repo=$5 branch=$6 rf inflight rc final_head ship_rc remote_proof='' remote_open='' remote_list='' superseded=0 log_start ship_out stage base
  rf=$(receipt_file "$repo" "$atom" "$head"); inflight=$(inflight_file "$repo" "$atom")
  [[ -f $rf ]] && { ack_delivery "$rf" "$atom"; return $?; }
  mkdir -p "$(dirname "$rf")" "$(dirname "$inflight")" || return 1
@@ -563,6 +574,9 @@ deliver_one(){
   ship_rc=$rc
   remote_result "$wt" "$head" "$branch"; rc=$?
   if [[ $rc == 0 ]]; then write_delivery_receipt "$repo" "$atom" "$head" "$head"; return $?; fi
+  # dcfg-80rgm F1b: ship failed but the SHA is already on origin/<base> (e.g. GraphQL 'No commits'): delivered, not INFRA.
+  base=$(git -C "$wt" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null); base=${base#origin/}; [[ -n $base ]] || base=main
+  if git -C "$wt" merge-base --is-ancestor "$head" "origin/$base" 2>/dev/null; then remote_proof=${remote_proof:-null}; write_delivery_receipt "$repo" "$atom" "$head" "$head"; return $?; fi
   if [[ $rc == 23 ]]; then ship_rc=23
   elif [[ $ship_rc == 30 ]] && grep -qiE 'could not resolve|could not connect|connection (reset|refused|timed out)|network is unreachable|HTTP 50[234]|TLS connection' "$rf.log"; then ship_rc=70
   elif [[ $rc == 22 && $ship_rc == 40 ]]; then
@@ -586,7 +600,7 @@ deliver_one(){
 }
 
 scan_repo(){
- local repo=$1 lk fd line wt head branch msg atom tz st status owner agent actor dirty base rf code rc remote_proof='' remote_open='' remote_list='' gd
+ local repo=$1 lk fd line wt head branch msg atom tz st status owner agent actor dirty base rf code rc remote_proof='' remote_open='' remote_list='' gd ce
  local ok=0 failed=0 skip=0 started=0 jobs_max p
  jobs_max=${SHIP_POST_JOBS:-8}
  [[ $jobs_max =~ ^[1-9][0-9]*$ ]] || jobs_max=8
@@ -649,13 +663,16 @@ scan_repo(){
   fi
   if [[ -f $rf.failed && ! -f $rf.failed.reported ]]; then
    code=$(cat "$rf.failed")
-	   case $code in 23) ;;
+	   case $code in 23|130) ;;
     *) (BEADS_ACTOR=$actor; record_failure "$repo" "$atom" "$head" "$code") || failed=$((failed+1)); continue ;;
    esac
   fi
   if [[ -f $rf.failed ]]; then
    case $(cat "$rf.failed") in
-    10|50|80) skip=$((skip+1)); continue ;;
+    10|50|80) # dcfg-80rgm F3: the atom was closed again after the marker -> deliver again
+     ce=$(date -d "$(jq -r '.[0].closed_at // empty' <<<"$st")" +%s 2>/dev/null) || ce=0
+     (( ce > $(stat -c %Y "$rf.failed") )) || { skip=$((skip+1)); continue; }
+     mv -f -- "$rf.failed" "$rf.failed.resubmitted"; rm -f -- "$rf.failed.reported" ;;
     23|70|75) ;;
     *) pf="$SHIP_POST_STATE_DIR/incidents/parked/$atom" # dcfg-c75sy.3: wait out the backoff before re-handover of a parked INFRA atom
        if [[ -f $pf ]]; then

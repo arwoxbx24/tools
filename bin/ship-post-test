@@ -894,6 +894,80 @@ test_break_glass(){
 	[[ $(jq -r .stage "$d/state/receipts/$key/dcfg-bg.3/$h.break-glass" 2>/dev/null) == break-glass ]] && pass BG7 || fail BG7 'audit receipt'
 }
 
+v9_ship(){ # v9: stub ship; MOCK_SHIP_OK доставляет только свой atom, остальные отвечают MOCK_SHIP_RC
+	cat > "$d/bin/ship" <<'V9SHIP'
+#!/usr/bin/env bash
+printf '%s|%s|%s\n' "${BEADS_ACTOR:-}" "$*" "$(git -C "$1" rev-parse HEAD)" >> "$SHIP_POST_TEST_DIR/ship.calls"
+[[ -z ${MOCK_SHIP_LOG:-} ]] || { printf '%s\n' "$MOCK_SHIP_LOG"; printf '%s\n' "$MOCK_SHIP_LOG" >&2; }
+if [[ -n ${MOCK_SHIP_OK:-} && " $* " == *" --atom $MOCK_SHIP_OK "* ]]; then
+ printf '%s\n' "$(git -C "$1" rev-parse HEAD)" >> "$SHIP_POST_TEST_DIR/merged.$(git -C "$1" rev-parse --abbrev-ref HEAD | tr / _)"; exit 0
+fi
+exit "${MOCK_SHIP_RC:-0}"
+V9SHIP
+	chmod +x "$d/bin/ship"
+}
+v9_gh(){ # v9: gh mock filters merged PRs by --head branch, as real gh does
+	cat > "$d/bin/gh" <<'V9GH'
+#!/usr/bin/env bash
+if [[ $1 == repo ]]; then echo '{"isPrivate":true}'; exit; fi
+b=''; while (($#)); do [[ $1 == --head ]] && b=$2; shift; done
+f="$SHIP_POST_TEST_DIR/merged.${b//\//_}"
+if [[ -n $b && -s $f ]]; then jq -Rs '[split("\n")[] | select(length>0) | {headRefOid:.,state:"MERGED",url:"https://github.com/test/private/pull/1",mergeCommit:{oid:"merged-test"},statusCheckRollup:[]}]' "$f"; else echo '[]'; fi
+V9GH
+	chmod +x "$d/bin/gh"
+}
+test_v9(){
+	local key rf marker h out rc i b_ok
+	# v9c: exit 130 -> маркер .failed=130, без INFRA и без delivery-blocked.
+	setup_submit v9c codex/dcfg-v9c.1; commit_candidate dcfg-v9c.1
+	h=$(git -C "$wt" rev-parse HEAD); v9_ship
+	out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_RC=130; run_tool "$d" 2>&1); rc=$?
+	key=$(printf %s "$d/repo" | sha256sum | cut -d ' ' -f1); marker="$d/state/receipts/$key/dcfg-v9c.1/$h.failed"
+	for i in $(seq 1 50); do [[ -f $marker ]] && break; sleep 0.2; done
+	[[ $rc == 0 && -f $marker && $(<"$marker") == 130 ]] && ! grep -Fq '|create [ship-post] INFRA' "$d/bd.calls" && ! grep -Fq 'delivery-blocked' "$d/bd.calls" && pass v9c || fail v9c "rc=$rc: $out"
+
+	# v9d: два atom в одном INFRA: первый доставлен -> инцидент открыт; второй доставлен -> bd close инцидента.
+	setup_submit v9d codex/dcfg-v9d.1; commit_candidate dcfg-v9d.1
+	make_worktree "$d" wt2 codex/dcfg-v9d.2 || exit 1
+	git -C "$d/.worktrees/codex/wt2" commit -q --allow-empty -m candidate -m "$(printf 'ТЗ: %s#U2\nAtom: dcfg-v9d.2\nAgent: codex' "$d/.worktrees/codex/wt2/$tz")"
+	echo open > "$d/status.test-infra"; v9_ship; v9_gh
+	out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_RC=30; run_tool "$d" 2>&1)
+	for i in $(seq 1 50); do [[ -f $d/state/incidents/parked/dcfg-v9d.1 && -f $d/state/incidents/parked/dcfg-v9d.2 ]] && break; sleep 0.2; done
+	touch -d '-2 hours' "$d/state/incidents/parked/dcfg-v9d.1" "$d/state/incidents/parked/dcfg-v9d.2"
+	out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_RC=30 MOCK_SHIP_OK=dcfg-v9d.1; run_tool "$d" 2>&1); rc=$?
+	for i in $(seq 1 50); do [[ ! -f $d/state/incidents/parked/dcfg-v9d.1 ]] && break; sleep 0.2; done
+	[[ $rc == 0 && ! -f $d/state/incidents/parked/dcfg-v9d.1 && -f $d/state/incidents/parked/dcfg-v9d.2 ]] && ! grep -Fq '|close test-infra' "$d/bd.calls" && b_ok=1 || b_ok=0
+	touch -d '-2 hours' "$d/state/incidents/parked/dcfg-v9d.2"
+	out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_RC=30 MOCK_SHIP_OK=dcfg-v9d.2; run_tool "$d" 2>&1); rc=$?
+	for i in $(seq 1 50); do grep -Fq '|close test-infra' "$d/bd.calls" && break; sleep 0.2; done
+	[[ $b_ok == 1 ]] && grep -Fq '|close test-infra' "$d/bd.calls" && pass v9d || fail v9d "rc=$rc: $out"
+
+	# v9b: GraphQL 'No commits' при HEAD, уже в origin/main -> квитанция доставки, без INFRA и без delivery-blocked.
+	setup_submit v9b codex/dcfg-v9b.1; commit_candidate dcfg-v9b.1
+	h=$(git -C "$wt" rev-parse HEAD); git -C "$wt" push -q origin HEAD:main; git -C "$wt" fetch -q origin
+	v9_ship
+	out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_RC=30 MOCK_SHIP_LOG='pull request create failed: GraphQL: No commits between main and codex/dcfg-v9b.1'; run_tool "$d" 2>&1); rc=$?
+	key=$(printf %s "$d/repo" | sha256sum | cut -d ' ' -f1); rf="$d/state/receipts/$key/dcfg-v9b.1/$h"
+	for i in $(seq 1 50); do [[ -f $rf ]] && break; sleep 0.2; done
+	[[ $rc == 0 && -f $rf ]] && ! grep -Fq '|create [ship-post] INFRA' "$d/bd.calls" && ! grep -Fq 'delivery-blocked' "$d/bd.calls" && pass v9b || fail v9b "rc=$rc: $out"
+
+	# v9e: .failed=50 на H, atom закрыт позже mtime маркера -> ship для H вызван повторно; контроль: closed_at раньше маркера -> не вызван.
+	setup_submit v9e codex/dcfg-v9e.1; commit_candidate dcfg-v9e.1
+	h=$(git -C "$wt" rev-parse HEAD); key=$(printf %s "$d/repo" | sha256sum | cut -d ' ' -f1)
+	mkdir -p "$d/state/receipts/$key/dcfg-v9e.1"; printf 50 > "$d/state/receipts/$key/dcfg-v9e.1/$h.failed"; touch -d '-1 hour' "$d/state/receipts/$key/dcfg-v9e.1/$h.failed"
+	touch "$d/state/receipts/$key/dcfg-v9e.1/$h.failed.reported"
+	date -u -d '-10 minutes' -Iseconds > "$d/bd.closed_at"
+	out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex; run_tool "$d" 2>&1); rc=$?
+	[[ $rc == 0 && $(grep -c -- '--atom dcfg-v9e.1 ' "$d/ship.calls") == 1 ]] && grep -Fq "$h" "$d/ship.calls" && pass v9e || fail v9e "rc=$rc: $out"
+	setup_submit v9e_control codex/dcfg-v9e.2; commit_candidate dcfg-v9e.2
+	h=$(git -C "$wt" rev-parse HEAD); key=$(printf %s "$d/repo" | sha256sum | cut -d ' ' -f1)
+	mkdir -p "$d/state/receipts/$key/dcfg-v9e.2"; printf 50 > "$d/state/receipts/$key/dcfg-v9e.2/$h.failed"; touch -d '-1 hour' "$d/state/receipts/$key/dcfg-v9e.2/$h.failed"
+	touch "$d/state/receipts/$key/dcfg-v9e.2/$h.failed.reported"
+	date -u -d '-2 hours' -Iseconds > "$d/bd.closed_at"
+	out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex; run_tool "$d" 2>&1); rc=$?
+	[[ $rc == 0 && ! -s $d/ship.calls ]] && pass v9e_control || fail v9e_control "rc=$rc: $out"
+}
+
 if [[ ${SHIP_POST_TEST_GROUP:-all} == review ]]; then
  test_review_recovery
 elif [[ ${SHIP_POST_TEST_GROUP:-all} == status ]]; then
@@ -925,6 +999,7 @@ elif [[ ${SHIP_POST_TEST_GROUP:-all} == broken ]]; then
 else
 	 test_dryrun_mocks; test_valid_actors; test_rejections; test_hook_and_retry; test_closed_retry; test_remote_result_closed; test_delivery; test_beads_root_fallback; test_broken_link; test_live_sync; test_watch; test_recovery; test_stream_errors; test_closed_skip_reason; test_concurrent_repositories; test_watch_lock_released; test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery; test_actor_alias; test_nested_repo; test_final_states; test_submit_conflict_preflight; test_u15; test_adr30; test_park; test_park_live; test_hints; test_status; test_break_glass; test_auto_submit
 fi
+if [[ ${SHIP_POST_TEST_GROUP:-all} == all || ${SHIP_POST_TEST_GROUP:-} == v9 ]]; then test_v9; fi
 T=$root
 mkdir -p "$T/br/.beads"; git init -q "$T/br"
 git -C "$T/br" commit -q --allow-empty -m x
