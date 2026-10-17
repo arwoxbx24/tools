@@ -112,6 +112,13 @@ delete_file(){
 if [[ $1 == --bk ]]; then [[ $# -ge 3 ]] || refuse 'usage'; BK=$2; shift 2; mkdir -p "$BK"; led=$BK/ledger.tsv; fi
 cmd=$1; shift
 if [[ -n ${SAFE_DELETE_SANDBOX:-} ]]; then [[ $SAFE_DELETE_SANDBOX == /tmp/* ]] || refuse "корень не под /tmp: $SAFE_DELETE_SANDBOX"; fi
+if [[ ( $cmd == dir || $cmd == worktree ) && $# -gt 1 ]]; then
+  ok_n=0; failed_n=0
+  for a in "$@"; do if "$self" --bk "$BK" "$cmd" "$a"; then ok_n=$((ok_n+1)); else failed_n=$((failed_n+1)); fi; done
+  echo "итог: ok=$ok_n, failed=$failed_n"
+  if ((failed_n == 0)); then exit 0; fi
+  exit 2
+fi
 
 case "$cmd" in
   repo-autodelete)
@@ -151,15 +158,7 @@ case "$cmd" in
     exit 0
     ;;
   dir)
-    [[ $# -ge 1 ]] || refuse 'usage'
-    if [[ $# -gt 1 ]]; then
-      ok_n=0; failed_n=0
-      for a in "$@"; do if "$self" --bk "$BK" "$cmd" "$a"; then ok_n=$((ok_n+1)); else failed_n=$((failed_n+1)); fi; done
-      echo "итог: ok=$ok_n, failed=$failed_n"
-      if ((failed_n == 0)); then exit 0; fi
-      exit 2
-    fi
-    check_path "$1"; dir=$p; [[ -d $dir ]] || refuse "не каталог: $dir"
+    [[ $# -eq 1 ]] || refuse 'usage'; check_path "$1"; dir=$p; [[ -d $dir ]] || refuse "не каталог: $dir"
     if [[ $dir == "$sandbox"/test-* && ${dir#"$sandbox"/} != */* ]]; then allow_git_under=$dir; force_copy=1
       for s in .beads .codex; do
         if [[ -e $dir/.git && -e $dir/$s && -n $(git -C "$dir" ls-files -- "$s") && -z $(git -C "$dir" status --porcelain --ignored -- "$s") ]]; then allow_tracked_segs+=" $s"; allow_tracked_under=$dir; fi
@@ -182,15 +181,7 @@ case "$cmd" in
     exit 0
     ;;
   worktree)
-    [[ $# -ge 1 ]] || refuse 'usage'
-    if [[ $# -gt 1 ]]; then
-      ok_n=0; failed_n=0
-      for a in "$@"; do if "$self" --bk "$BK" "$cmd" "$a"; then ok_n=$((ok_n+1)); else failed_n=$((failed_n+1)); fi; done
-      echo "итог: ok=$ok_n, failed=$failed_n"
-      if ((failed_n == 0)); then exit 0; fi
-      exit 2
-    fi
-    check_path "$1"; wt=$p; [[ -d $wt ]] || refuse "не каталог: $wt"
+    [[ $# -eq 1 ]] || refuse 'usage'; check_path "$1"; wt=$p; [[ -d $wt ]] || refuse "не каталог: $wt"
     common=$(git -C "$wt" rev-parse --git-common-dir 2>/dev/null) || refuse "не worktree: $wt"; [[ $common != .git ]] || refuse "не linked worktree: $wt"
     common=$(realpath -e "$common") || exit 1
     for cwd in /proc/[0-9]*/cwd; do pid=${cwd#/proc/}; pid=${pid%/cwd}; if ! used=$(readlink -- "$cwd"); then [[ ! -d /proc/$pid || $(proc_state "/proc/$pid/stat" 2>/dev/null) == Z ]] && continue; refuse "нечитаемый cwd процесса: $pid"; fi; [[ $used == "$wt" || $used == "$wt"/* ]] && refuse "процесс использует worktree: $pid"; done
