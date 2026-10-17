@@ -83,7 +83,12 @@ redraw(){
 	printf '%s\n' "$footer"
 }
 submit(){
-	[[ $mode == lost ]] || printf '%s\n' "$buf" >> "$log"
+	case $mode in
+		lost) ;;
+		late) sleep 2; printf '%s\n' "$buf" >> "$log";;
+		wrongid) printf '%s\n' "${buf/\[ts:*\]/[ts:ts-0-0]}" >> "$log";;
+		*) printf '%s\n' "$buf" >> "$log";;
+	esac
 	hist+=("$glyph $buf" '· Puttering… (3s · ↓ 10 tokens)')
 	buf=""
 }
@@ -159,7 +164,21 @@ mcell m-codex-goal goal '›' 0
 mcell m-codex-fresh fresh '›' 0
 mcell m-codex-queue queue '›' 0
 mcell m-lost lost '❯' 1
-total=$((10 + mtot))
+
+t0=$(date +%s%N)
+mk_tui receipt-late late "$tmux_stub/receipt-late.log" '❯'
+sleep 0.3
+out=$(TMUX_SEND_RECEIPT_LOG="$tmux_stub/receipt-late.log" TMUX_SEND_RECEIPT_WAIT=5 "$bin/tmux-send" 't:receipt-late' 'receipt-late ping' 2>"$e"); rc=$?
+el=$(( $(date +%s%N) - t0 ))
+[[ $rc == 0 && $out == *'delivered id='* && $out == *'receipt='* && $el -ge 2000000000 ]] && { echo 'PASS receipt-late'; ok=$((ok+1)); } || echo "FAIL receipt-late: rc=$rc elapsed_ns=$el"
+
+mk_tui receipt-wrong-id wrongid "$tmux_stub/receipt-wrong-id.log" '❯'
+sleep 0.3
+TMUX_SEND_RECEIPT_LOG="$tmux_stub/receipt-wrong-id.log" TMUX_SEND_RECEIPT_WAIT=5 "$bin/tmux-send" 't:receipt-wrong-id' 'receipt-wrong-id ping' >/dev/null 2>"$e"; rc=$?
+[[ $rc == 1 ]] && grep -qF 'no receipt' "$e" && { echo 'PASS receipt-wrong-id'; ok=$((ok+1)); } || echo "FAIL receipt-wrong-id: rc=$rc"
+
+total=$((12 + mtot))
 echo "matrix=$mok/$mtot"
-if [[ $ok == "$total" ]]; then echo "PASS $ok/$total"; else echo "FAIL $ok/$total"; fi
+echo "total=$ok/$total"
+if [[ $ok == "$total" ]]; then echo PASS; else echo FAIL; fi
 [[ $ok == "$total" ]]
