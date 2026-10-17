@@ -99,42 +99,28 @@ if [[ -n $session_cost ]]; then
   seg2+=("session \$$(printf '%.2f' "$session_cost")")
 fi
 
-sp=/root/workspaces/tools/bin/ship-post
+# courier live state: file tests only (runs every second); mirrors ship-post do_status: receipt = delivered, parked file or .failed = stuck, else in flight
+# shortcut: only submissions of the last 15 min count as in flight; slower deliveries are normally parked by the courier
 st=/root/workspaces/tools/state/ship-post
-cache=/tmp/statusline-ship.txt
-ship_refresh() {
-  local d=0 p=0 x=0 atom s last
-  while read -r atom; do
-    s=$("$sp" --status "$atom" 2>/dev/null | awk '{print $3}')
-    case $s in
-      delivered) d=$((d + 1)) ;;
-      parked | failed) x=$((x + 1)) ;;
-      *) p=$((p + 1)) ;;
-    esac
-  done < <(find "$st/submissions" -type f -mmin -1440 -printf '%h\n' 2>/dev/null | sed 's#.*/##' | sort -u)
-  last=$(find "$st/receipts" -type f -regextype posix-extended -regex '.*/[0-9a-f]{40}' -printf '%T@\n' 2>/dev/null | sort -n | tail -n1)
-  last=${last%%.*}
-  printf '%d %d %d %d\n' "$d" "$p" "$x" "${last:-0}"
-}
-
-if [[ -x $sp && -d $st ]]; then
-  # background: ~40 atoms x 35 ms would block the status line
-  if [[ -z $(find "$cache" -mmin -1 2>/dev/null) ]]; then
-    (
-      exec 9>/tmp/statusline-ship.lock
-      flock -n 9 || exit 0
-      ship_refresh >"$cache.tmp" && mv "$cache.tmp" "$cache"
-    ) </dev/null >/dev/null 2>&1 &
+if [[ -d $st ]]; then
+  busy=() recent=0
+  while IFS=/ read -r atom sha; do
+    if compgen -G "$st/receipts/*/$atom/$sha" >/dev/null; then
+      [[ -n $(find "$st"/receipts/*/"$atom"/"$sha" -mmin -10 2>/dev/null) ]] && recent=1
+    elif [[ ! -e $st/incidents/parked/$atom ]] && ! compgen -G "$st/receipts/*/$atom/$sha.failed" >/dev/null; then
+      busy+=("$atom")
+    fi
+  done < <(find "$st/submissions" -type f -mmin -15 -printf '%h/%f\n' 2>/dev/null | awk -F/ '{print $(NF-1) "/" $NF}' | sort -u)
+  stuck=$(find "$st/incidents/parked" -type f 2>/dev/null | wc -l)
+  ship=""
+  if (( ${#busy[@]} > 0 )); then
+    ship=$'\033[33m'"⏳ ${busy[0]}"$'\033[0m'
+    (( ${#busy[@]} > 1 )) && ship+=" +$(( ${#busy[@]} - 1 ))"
+  elif (( recent )); then
+    ship=$'\033[32m✓\033[0m'
   fi
-  if [[ -r $cache ]] && read -r ship_d ship_p ship_x ship_last <"$cache" &&
-    [[ $ship_d =~ ^[0-9]+$ && $ship_p =~ ^[0-9]+$ && $ship_x =~ ^[0-9]+$ && $ship_last =~ ^[0-9]+$ ]]; then
-    ship_col=$'\033[32m'
-    (( ship_p > 0 )) && ship_col=$'\033[33m'
-    (( ship_x > 0 )) && ship_col=$'\033[31m'
-    ship="ship 24h ${ship_col}✓$ship_d ⏳$ship_p ✗$ship_x"$'\033[0m'
-    (( ship_last > 0 )) && ship+=" (last ✓ $(date -d "@$ship_last" +%H:%M))"
-    seg2+=("$ship")
-  fi
+  (( stuck > 0 )) && ship+="${ship:+ }"$'\033[31m'"✗$stuck"$'\033[0m'
+  [[ -n $ship ]] && seg2+=("ship $ship")
 fi
 
 # line 3: limits, SDK spend appended below
