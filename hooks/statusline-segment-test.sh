@@ -40,7 +40,7 @@ field_out() {  # field -> out (stdout), ms (wall time)
 }
 
 declare -A got
-for f in folder lines ctx ship sdk five week; do
+for f in folder lines ctx ship sdk five week sess; do
   field_out "$f"; got[$f]=$out
   total=$((total + 1))
   if (( ms < 300 )); then pass=$((pass + 1)); else echo "FAIL $f: took ${ms} ms" >&2; fi
@@ -90,8 +90,12 @@ ship_run() {  # session_id, states of own-a, own-b, foreign-c -> ship field
 check ship-a "$(ship_run 83bcb363-test submitted delivered delivered)" "ship ⏳ own-a │ ✓ 1"
 check ship-b "$(ship_run 83bcb363-test delivered delivered delivered)" "ship ✓ 2"
 check ship-c "$(ship_run 83bcb363-test parked delivered delivered)" "ship ✗ own-a │ ✓ 1"
-check ship-d "$(ship_run 9999aaaa-test delivered delivered delivered)" ""
+check ship-d "$(ship_run 9999aaaa-test delivered delivered delivered)" "ship ✓ 0"
 check ship-e "$(ship_run 83bcb363-test delivered delivered parked)" "ship ✓ 2"
+mkdir -p "$sf/state2/submissions"
+check ship-empty "$(printf '{"session_id":"83bcb363-test"}' | TMPDIR=$sf/tmp SHIP_POST_STATE_DIR=$sf/state2 SHIP_POST_BIN=$sf/ship-post BD_BIN=$sf/bd "$seg" ship)" "ship ✓ 0"
+check sess "$(printf '{"session_id":"f4ea9812-0000-183f5b37174d"}' | "$seg" sess)" "claude 37174d"
+check sess-empty "$(printf '{}' | "$seg" sess)" ""
 
 "$seg" bogus <"$tmp/input.json" >/dev/null 2>&1; rc=$?
 check unknown-field-rc "$rc" 2
