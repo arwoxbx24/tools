@@ -10,13 +10,14 @@ readonly ENGINE_HOME="/root/workspaces/tools/sdk-agent/engine-home"
 if [[ ${SDK_AGENT_TEST:-} == 1 ]]; then
   readonly RUNS_LOG="${SDK_AGENT_RUNS_LOG:-/root/workspaces/tools/sdk-agent/runs.jsonl}"
   readonly TEST_ENGINE="${SDK_AGENT_ENGINE:-}"
+  readonly DAILY_CAP="${SDK_AGENT_TEST_CAP:-7.00}"
 else
   readonly RUNS_LOG="/root/workspaces/tools/sdk-agent/runs.jsonl"
   readonly TEST_ENGINE=""
+  readonly DAILY_CAP="7.00"
 fi
 readonly DEFAULT_BUDGET="0.50"
 readonly MAX_BUDGET="2.00"
-readonly DAILY_CAP="7.00"
 readonly MAX_FILE_BYTES=204800
 readonly TOOLS_CODE="Read,Grep,Glob,Skill"
 readonly TOOLS_READ="Read,Grep,Glob,Skill,WebSearch,WebFetch"
@@ -38,6 +39,7 @@ cat <<'EOF'
 usage: sdk-agent ask [--budget USD] [--effort low|medium|high|xhigh|max] [--schema JSON] [--system-file FILE] [--json] PROMPT
        sdk-agent code [--budget USD] [--effort low|medium|high|xhigh|max] WORKTREE TZ_FILE
        sdk-agent read [--budget USD] [--effort low|medium|high|xhigh|max] [--json] WORKTREE TZ_FILE
+       sdk-agent cap --json
        sdk-agent --help
 code: model may read the whole worktree and returns exact edits (path, old, new) to listed files; TZ line "Check: <executable inside worktree> [args]" is run after writing, no shell (rc 7 on failure); the Check executable must not be a listed file.
 --json (ask, read): print the whole engine result JSON instead of the text.
@@ -117,26 +119,81 @@ parse_args() {
   done
 }
 
-# check_daily_cap BUDGET — refuses (exit 6) if spent today + BUDGET exceeds DAILY_CAP.
-check_daily_cap() {
-  local budget=$1 midnight spent reserved
+# reservation_dead RUN_ID — rc 0 when nothing of the run lives: its lock is free, or it has no lock and its pid is gone.
+reservation_dead() {
+  local run_id=$1 lock="$RUNS_LOG.inflight.d/$1.lock" pid=${1%%-*}
+  if [[ -e $lock ]]; then
+    flock -n "$lock" true
+  else
+    [[ $pid =~ ^[0-9]+$ && ! -e /proc/$pid ]]
+  fi
+}
+
+# rule: a reservation counts while its run lives (lock held or pid alive); a dead run is folded into the ledger once.
+# fold_dead_reservations — under RUNS_LOG.lock: each dead in-flight run goes to the ledger once as aborted and leaves the in-flight file.
+fold_dead_reservations() {
+  local inflight="$RUNS_LOG.inflight" line run_id ts budget cost source tmp
+  local -a lines=()
+  [[ -s $inflight ]] || return 0
+  mapfile -t lines < "$inflight"
+  for line in "${lines[@]}"; do
+    run_id=$(jq -r '.run_id' <<<"$line")
+    reservation_dead "$run_id" || continue
+    ts=$(jq -c '.ts' <<<"$line")
+    budget=$(jq -c '.budget' <<<"$line")
+    cost=$budget
+    source=upper-bound
+    if [[ -e $RUNS_LOG.inflight.d/$run_id.lock && -e $RUNS_LOG.inflight.d/$run_id.out ]] \
+      && jq -e '.total_cost_usd | type == "number"' "$RUNS_LOG.inflight.d/$run_id.out" >/dev/null 2>&1; then
+      cost=$(jq -c '.total_cost_usd' "$RUNS_LOG.inflight.d/$run_id.out")
+      source=result
+    fi
+    jq -cn --arg id "$run_id" --argjson ts "$ts" --argjson budget "$budget" --argjson cost "$cost" --arg src "$source" \
+      '{subtype: "aborted", mode: "aborted", run_id: $id, ts: $ts, budget: $budget, total_cost_usd: $cost, cost_source: $src, models: [], workdir: "", usage: {}}' >> "$RUNS_LOG" \
+      || die "cannot append runs log: $RUNS_LOG" 6
+    tmp=$(mktemp -- "$inflight.tmp.XXXXXX") || die "cannot write in-flight file: $inflight" 6
+    jq -c --arg id "$run_id" 'select(.run_id != $id)' "$inflight" > "$tmp" \
+      && mv -f -- "$tmp" "$inflight" \
+      || { rm -f -- "$tmp"; die "cannot update in-flight file: $inflight" 6; }
+    rm -f -- "$RUNS_LOG.inflight.d/$run_id.lock" "$RUNS_LOG.inflight.d/$run_id.out"
+  done
+}
+
+# cap_state — read-only (no lock, no writes): today's spent, live and dead in-flight reservations, and left, as JSON.
+cap_state() {
+  local midnight spent=0 rows run_id budget reserved aborted_bound
+  local -a live=() dead=()
   midnight=$(date -d 'today 00:00' +%s)
-  spent=0
   if [[ -e $RUNS_LOG ]]; then
     spent=$(jq -s --argjson m "$midnight" --argjson max "$MAX_BUDGET" \
       '[.[] | select((.ts | type) == "number" and .ts >= $m) | (.total_cost_usd // $max)] | add // 0' "$RUNS_LOG") \
       || die "cannot read runs log: $RUNS_LOG" 6
   fi
-  # shortcut: a crashed run's reservation counts until midnight (fail-safe for money); upgrade: drop reservations whose pid is dead
-  reserved=0
   if [[ -e $RUNS_LOG.inflight ]]; then
-    reserved=$(jq -s --argjson m "$midnight" \
-      '[.[] | select((.ts | type) == "number" and .ts >= $m) | .budget] | add // 0' "$RUNS_LOG.inflight") \
+    rows=$(jq -r --argjson m "$midnight" \
+      'select((.ts | type) == "number" and .ts >= $m) | [.run_id, .budget] | @tsv' "$RUNS_LOG.inflight") \
       || die "cannot read in-flight file: $RUNS_LOG.inflight" 6
+    while IFS=$'\t' read -r run_id budget; do
+      [[ -n $run_id ]] || continue
+      if reservation_dead "$run_id"; then dead+=("$budget"); else live+=("$budget"); fi
+    done <<<"$rows"
   fi
-  spent=$(awk -v a="$spent" -v b="$reserved" 'BEGIN { print a + b }')
-  if awk -v s="$spent" -v b="$budget" -v c="$DAILY_CAP" 'BEGIN { exit !(s + b > c + 0) }'; then
-    die "refused: daily cap $DAILY_CAP USD (spent $spent today)" 6
+  reserved=$(jq -n '$ARGS.positional | map(tonumber) | add // 0' --args "${live[@]}") || die "cannot sum reservations" 6
+  aborted_bound=$(jq -n '$ARGS.positional | map(tonumber) | add // 0' --args "${dead[@]}") || die "cannot sum reservations" 6
+  jq -cn --argjson cap "$DAILY_CAP" --argjson spent "$spent" --argjson reserved "$reserved" \
+    --argjson n "${#dead[@]}" --argjson bound "$aborted_bound" '
+    def r: (. * 100 | round) / 100;
+    {cap: ($cap | r), spent: ($spent | r), reserved: ($reserved | r), aborted: $n,
+     aborted_bound: ($bound | r), left: ([0, $cap - $spent - $reserved - $bound] | max | r)}'
+}
+
+# check_daily_cap BUDGET — refuses (exit 6) if spent + reserved + aborted (cap_state) plus BUDGET exceeds DAILY_CAP.
+check_daily_cap() {
+  local budget=$1 state used
+  state=$(cap_state) || exit 6
+  used=$(jq -r '((.spent + .reserved + .aborted_bound) * 100 | round) / 100' <<<"$state")
+  if awk -v u="$used" -v b="$budget" -v c="$DAILY_CAP" 'BEGIN { exit !(u + b > c + 0) }'; then
+    die "refused: daily cap $DAILY_CAP USD (spent $used today)" 6
   fi
 }
 
@@ -183,17 +240,23 @@ run_engine() {
     die "refused: credentials found in $ENGINE_HOME" 6
   fi
 
-  local lockfd run_id tmp inflight="$RUNS_LOG.inflight"
+  local lockfd runfd run_id tmp outf inflight="$RUNS_LOG.inflight"
   exec {lockfd}>"$RUNS_LOG.lock" || die "cannot open lock: $RUNS_LOG.lock" 6
   flock "$lockfd" || die "cannot lock: $RUNS_LOG.lock" 6
+  fold_dead_reservations
   check_daily_cap "$budget"
   run_id="$$-$(date +%s%N)"
   jq -cn --arg id "$run_id" --argjson ts "$(date +%s)" --arg b "$budget" \
     '{run_id: $id, ts: $ts, budget: ($b | tonumber)}' >> "$inflight" \
     || die "cannot write in-flight file: $inflight" 6
+  mkdir -p -- "$inflight.d" || die "cannot create run dir: $inflight.d" 6
+  exec {runfd}>"$inflight.d/$run_id.lock" || die "cannot open run lock: $inflight.d/$run_id.lock" 6
+  flock "$runfd" || die "cannot lock: $inflight.d/$run_id.lock" 6
+  outf="$inflight.d/$run_id.out"
   flock -u "$lockfd"
 
-  RESULT=$(cd -- "$workdir" && if (( key_load )); then set -a && . "$KEY_FILE" && set +a; fi && env -u ANTHROPIC_AUTH_TOKEN -u CLAUDE_CODE_OAUTH_TOKEN -u CLAUDE_CODE_USE_BEDROCK -u CLAUDE_CODE_USE_VERTEX -u CLAUDE_CODE_USE_FOUNDRY -u ANTHROPIC_PROFILE "${no_key[@]}" CLAUDE_CONFIG_DIR="$ENGINE_HOME" "$engine" "${args[@]}" "Follow the task provided on stdin exactly." <<<"$prompt") || true
+  (cd -- "$workdir" && if (( key_load )); then set -a && . "$KEY_FILE" && set +a; fi && env -u ANTHROPIC_AUTH_TOKEN -u CLAUDE_CODE_OAUTH_TOKEN -u CLAUDE_CODE_USE_BEDROCK -u CLAUDE_CODE_USE_VERTEX -u CLAUDE_CODE_USE_FOUNDRY -u ANTHROPIC_PROFILE "${no_key[@]}" CLAUDE_CONFIG_DIR="$ENGINE_HOME" "$engine" "${args[@]}" "Follow the task provided on stdin exactly." <<<"$prompt") > "$outf" || true
+  RESULT=$(cat -- "$outf")
 
   jq -e 'type == "object"' <<<"$RESULT" >/dev/null 2>&1 || die "engine returned no JSON result" 4
   flock "$lockfd" || die "cannot lock: $RUNS_LOG.lock" 6
@@ -206,6 +269,8 @@ run_engine() {
       && mv -f -- "$tmp" "$inflight" \
       || { rm -f -- "$tmp"; die "cannot update in-flight file: $inflight" 6; }
   fi
+  rm -f -- "$inflight.d/$run_id.lock" "$inflight.d/$run_id.out"
+  exec {runfd}>&-
   flock -u "$lockfd"
   if ! jq -e --arg m "$MODEL" '(.modelUsage // {}) | keys | all(. == $m)' <<<"$RESULT" >/dev/null 2>&1; then
     die "refused: model outside pin: $(jq -r '(.modelUsage // {}) | keys | join(",")' <<<"$RESULT")" 4
@@ -505,12 +570,19 @@ Answer from the repository files; you may use Read, Grep, Glob, Skill, WebSearch
   finish
 }
 
+# cmd_cap --json — prints cap_state; reads only, no engine, no key load.
+cmd_cap() {
+  [[ $# -eq 1 && $1 == --json ]] || die "cap needs --json (see --help)"
+  cap_state
+}
+
 main() {
   case "${1:-}" in
     -h|--help) usage; exit 0 ;;
     ask) shift; cmd_ask "$@" ;;
     code) shift; cmd_code "$@" ;;
     read) shift; cmd_read "$@" ;;
+    cap) shift; cmd_cap "$@" ;;
     --apply-edits)
       shift
       [[ ${SDK_AGENT_TEST:-} == 1 ]] || die "unknown mode: --apply-edits (see --help)"

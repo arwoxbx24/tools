@@ -8,6 +8,8 @@ TMP=$(mktemp -d /tmp/sdk-agent-test.XXXXXX)
 trap 'rm -rf -- "$TMP"' EXIT
 
 export SDK_AGENT_TEST=1
+# the cases below were written for a 5.00 cap; the cap is 7.00 (owner, dcfg-aw1i7.3), so tests override it (honoured only under SDK_AGENT_TEST)
+export SDK_AGENT_TEST_CAP=5.00
 
 # stub engine: stands in for the paid engine; prints a success result that says whether it got the API key
 stub="$TMP/stub-engine"
@@ -251,6 +253,62 @@ STUB
   [[ $rc -eq 0 && $err != *"Argument list too long"* ]] && (( $(wc -c < "$copy") >= 200000 )) && head -c 200000 "$copy" | cmp -s - "$tz"
 }
 
+dead_pid_reservation_not_counted() {
+  local log="$TMP/runs-dead.jsonl" d="$TMP/runs-dead.jsonl.inflight.d" now out
+  now=$(date +%s)
+  mkdir -p "$d"
+  printf '{"run_id":"999999999-1","ts":%s,"budget":0.40}\n{"run_id":"999999998-2","ts":%s,"budget":0.50}\n' "$now" "$now" > "$log.inflight"
+  printf '{"total_cost_usd":0.99}\n' > "$d/999999999-1.out"
+  : > "$d/999999998-2.lock"
+  printf '{"total_cost_usd":0.03}\n' > "$d/999999998-2.out"
+  env SDK_AGENT_RUNS_LOG="$log" "$ag" ask --budget 0.5 hi >/dev/null 2>&1 || return 1
+  inflight_empty "$log" || return 1
+  jq -e -s 'any(.[]; .subtype == "aborted" and .run_id == "999999999-1" and .cost_source == "upper-bound" and .total_cost_usd == 0.4)' "$log" >/dev/null || return 1
+  jq -e -s 'any(.[]; .subtype == "aborted" and .run_id == "999999998-2" and .cost_source == "result" and .total_cost_usd == 0.03)' "$log" >/dev/null || return 1
+  out=$(env SDK_AGENT_RUNS_LOG="$log" "$ag" cap --json) || return 1
+  [[ $(jq -r '.reserved' <<<"$out") == 0 ]] || return 1
+  printf 'PASS dead_pid_reservation_not_counted\n'
+}
+
+orphan_engine_keeps_reservation() {
+  local log="$TMP/runs-orphan.jsonl" d="$TMP/runs-orphan.jsonl.inflight.d" lock holder out i ok=1
+  lock="$d/999999997-3.lock"
+  mkdir -p "$d"
+  printf '{"run_id":"999999997-3","ts":%s,"budget":4.00}\n' "$(date +%s)" > "$log.inflight"
+  : > "$lock"
+  flock "$lock" sleep 30 &
+  holder=$!
+  for i in $(seq 50); do flock -n "$lock" true || break; sleep 0.1; done
+  out=$(env SDK_AGENT_RUNS_LOG="$log" "$ag" cap --json) || ok=0
+  [[ $(jq -r '.reserved' <<<"$out") == 4 ]] || ok=0
+  env SDK_AGENT_RUNS_LOG="$log" "$ag" ask --budget 0.5 hi >/dev/null 2>&1 || ok=0
+  [[ $(wc -l < "$log.inflight") -eq 1 ]] || ok=0
+  jq -e -s 'any(.[]; .subtype == "aborted") | not' "$log" >/dev/null || ok=0
+  pkill -P "$holder" 2>/dev/null
+  kill "$holder" 2>/dev/null
+  wait "$holder" 2>/dev/null
+  (( ok )) && printf 'PASS orphan_engine_keeps_reservation\n'
+}
+
+cap_json_readonly() {
+  local log="$TMP/runs-ro.jsonl" before after out rc
+  printf '{"ts":%s,"total_cost_usd":0.25}\n' "$(date +%s)" > "$log"
+  printf '{"run_id":"x","ts":%s,"budget":0.30}\n' "$(date +%s)" > "$log.inflight"
+  before=$(sha256sum "$log" "$log.inflight")
+  out=$(env SDK_AGENT_RUNS_LOG="$log" "$ag" cap --json)
+  rc=$?
+  after=$(sha256sum "$log" "$log.inflight")
+  [[ $rc -eq 0 && $before == "$after" ]] || return 1
+  jq -e 'has("cap") and has("spent") and has("reserved") and has("aborted") and has("aborted_bound") and has("left")' <<<"$out" >/dev/null || return 1
+  printf 'PASS cap_json_readonly\n'
+}
+
+cap_default_seven() {  # no SDK_AGENT_TEST_CAP: the product cap is 7.00
+  local out
+  out=$(env -u SDK_AGENT_TEST_CAP SDK_AGENT_RUNS_LOG="$TMP/runs-default.jsonl" "$ag" cap --json) || return 1
+  [[ $(jq -r '.cap' <<<"$out") == 7 ]]
+}
+
 mkdir -p "$TMP/wt"
 git -C "$TMP/wt" init -q
 
@@ -290,6 +348,10 @@ check "cap counts in-flight reservation: 4.60 reserved + 0.50 -> rc 6" cap_count
 check "engine override never gets the API key" engine_override_no_key
 check "engine override ignored without SDK_AGENT_TEST (static)" engine_override_test_only
 check "prompt of ~200 KB reaches the engine on stdin intact (no argv limit)" large_prompt_on_stdin
+check "dead reservations folded once (legacy: upper-bound; lock-free .out: result), in-flight empty, reserved 0" dead_pid_reservation_not_counted
+check "orphan engine holds its .lock: reservation stays counted, no ledger line" orphan_engine_keeps_reservation
+check "cap --json is read-only: sha256 unchanged, rc 0, six keys" cap_json_readonly
+check "cap default daily cap is 7.00 (no test override)" cap_default_seven
 
 echo "ok $pass/$total"
 [[ $pass -eq $total ]]
