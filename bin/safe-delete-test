@@ -530,5 +530,25 @@ ln -s "$d/missing-ro" "$d/ro-link"
 "$bin/safe-delete" --bk "$d/rbk" link "$d/ro-link" >/dev/null 2>&1; r73=$?
 if [[ $r73 != 0 && -L $d/ro-link ]]; then echo 'PASS T73 ledger_unwritable'; ok=$((ok+1)); else echo "FAIL T73: rc=$r73"; fi
 
-[[ $ok == 74 ]] || exit 1
-echo "итог: PASS 74, FAIL 0"
+# T74-T75: sandbox test repo with git-tracked clean .beads is deleted; dirty .beads is refused
+git init -q "$d/sb/test-b"
+git -C "$d/sb/test-b" config user.email t@t
+git -C "$d/sb/test-b" config user.name t
+printf 'a\n' > "$d/sb/test-b/a.txt"
+mkdir -p "$d/sb/test-b/.beads"; printf 'c\n' > "$d/sb/test-b/.beads/config.yaml"
+git -C "$d/sb/test-b" add -f a.txt .beads/config.yaml && git -C "$d/sb/test-b" commit -q -m b
+out74=$(SAFE_DELETE_SANDBOX="$d/sb" "$bin/safe-delete" --bk "$bk" dir "$d/sb/test-b" 2>&1); r74=$?
+if [[ $r74 == 0 && ! -e "$d/sb/test-b" ]]; then echo 'PASS T74 sandbox_tracked_beads'; ok=$((ok+1)); else echo "FAIL T74: rc=$r74 out=$out74"; fi
+
+git init -q "$d/sb/test-c"
+git -C "$d/sb/test-c" config user.email t@t
+git -C "$d/sb/test-c" config user.name t
+printf 'a\n' > "$d/sb/test-c/a.txt"
+mkdir -p "$d/sb/test-c/.beads"; printf 'c\n' > "$d/sb/test-c/.beads/config.yaml"
+git -C "$d/sb/test-c" add -f a.txt .beads/config.yaml && git -C "$d/sb/test-c" commit -q -m c
+printf 'x\n' > "$d/sb/test-c/.beads/x"
+out75=$(SAFE_DELETE_SANDBOX="$d/sb" "$bin/safe-delete" --bk "$bk" dir "$d/sb/test-c" 2>&1); r75=$?
+if [[ $r75 == 2 && $out75 == *'запрещённый сегмент'* && -f "$d/sb/test-c/.beads/x" ]]; then echo 'PASS T75 sandbox_dirty_beads_refused'; ok=$((ok+1)); else echo "FAIL T75: rc=$r75 out=$out75"; fi
+
+[[ $ok == 76 ]] || exit 1
+echo "итог: PASS 76, FAIL 0"
