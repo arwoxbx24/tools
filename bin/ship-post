@@ -851,10 +851,8 @@ do_watch() (
     if [[ -f $pending ]]; then
      rm -f -- "$pending"
      failed=0
-     if [[ -f $pending.full ]]; then
-      rm -f -- "$pending" "$pending.atoms" "$pending.full"
-      filter_atom=$watch_filter scan_repo "$repo" || failed=1
-     elif [[ -f $pending.atoms ]]; then
+     atoms=''
+     if [[ -f $pending.atoms ]]; then
       atoms="$pending.atoms.$$"
       mv -- "$pending.atoms" "$atoms" || continue
       while IFS= read -r atom; do
@@ -862,7 +860,11 @@ do_watch() (
        filter_atom=$atom scan_repo "$repo" || failed=1
       done < <(sort -u "$atoms")
       rm -f -- "$atoms"
-     else
+     fi
+     if [[ -f $pending.full ]]; then
+      rm -f -- "$pending.full"
+      filter_atom=$watch_filter scan_repo "$repo" || failed=1
+     elif [[ -z $atoms ]]; then
       scan_repo "$repo" || failed=1
      fi
      if [[ ${failed:-0} != 0 ]]; then

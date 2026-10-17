@@ -978,6 +978,20 @@ test_v9(){
 	[[ $rc == 0 && ! -s $d/ship.calls ]] && pass v9e_control || fail v9e_control "rc=$rc: $out"
 }
 
+test_atoms_first(){
+	local key pending out first_ship second_ship
+	setup_submit atoms codex/dcfg-atoms.1; commit_candidate dcfg-atoms.1
+	make_worktree "$d" wt2 codex/dcfg-atoms.2 || exit 1
+	git -C "$d/.worktrees/codex/wt2" commit -q --allow-empty -m candidate -m "$(printf 'ТЗ: %s#U2\nAtom: dcfg-atoms.2\nAgent: codex' "$d/.worktrees/codex/wt2/$tz")"
+	key=$(printf %s "$d/repo" | sha256sum | cut -d ' ' -f1); pending="$d/state/pending/$key"
+	mkdir -p "$d/state/pending"; touch "$pending.full" "$pending"; printf 'dcfg-atoms.1\n' > "$pending.atoms"
+	: > "$d/events"
+	out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_OUT=ok TEST_TIMEOUT=5; run_tool "$d" --watch 2>&1)
+	first_ship=$(grep -n -- '--atom dcfg-atoms.1 ' "$d/ship.calls" | head -n 1 | cut -d: -f1)
+	second_ship=$(grep -n -- '--atom dcfg-atoms.2 ' "$d/ship.calls" | head -n 1 | cut -d: -f1)
+	[[ -n $first_ship && -n $second_ship && $first_ship -lt $second_ship && ! -e $pending.atoms ]] && pass 'AC6 atoms_first=pass' || fail 'AC6 atoms_first=fail' "ship lines=$first_ship/$second_ship atoms_left=$(test -e "$pending.atoms" && echo yes || echo no): $out"
+}
+
 if [[ ${SHIP_POST_TEST_GROUP:-all} == review ]]; then
  test_review_recovery
 elif [[ ${SHIP_POST_TEST_GROUP:-all} == status ]]; then
@@ -1006,8 +1020,10 @@ elif [[ ${SHIP_POST_TEST_GROUP:-all} == broken ]]; then
 	 test_adr35
 		elif [[ ${SHIP_POST_TEST_GROUP:-all} == auto ]]; then
 		 test_auto_submit
+		elif [[ ${SHIP_POST_TEST_GROUP:-all} == atoms ]]; then
+		 test_atoms_first
 else
-	 test_dryrun_mocks; test_skip_log; test_valid_actors; test_rejections; test_hook_and_retry; test_closed_retry; test_remote_result_closed; test_delivery; test_beads_root_fallback; test_broken_link; test_live_sync; test_watch; test_recovery; test_stream_errors; test_closed_skip_reason; test_concurrent_repositories; test_watch_lock_released; test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery; test_actor_alias; test_nested_repo; test_final_states; test_submit_conflict_preflight; test_u15; test_adr30; test_park; test_park_live; test_hints; test_status; test_break_glass; test_auto_submit
+	 test_dryrun_mocks; test_skip_log; test_valid_actors; test_rejections; test_hook_and_retry; test_closed_retry; test_remote_result_closed; test_delivery; test_beads_root_fallback; test_broken_link; test_live_sync; test_watch; test_recovery; test_stream_errors; test_closed_skip_reason; test_concurrent_repositories; test_watch_lock_released; test_service_recovery; test_recovery_boundaries; test_accepted_ship; test_review_recovery; test_actor_alias; test_nested_repo; test_final_states; test_submit_conflict_preflight; test_u15; test_adr30; test_park; test_park_live; test_hints; test_status; test_break_glass; test_auto_submit; test_atoms_first
 fi
 if [[ ${SHIP_POST_TEST_GROUP:-all} == all || ${SHIP_POST_TEST_GROUP:-} == v9 ]]; then test_v9; fi
 T=$root
