@@ -204,6 +204,13 @@ if [[ $docs_only == 0 ]]; then
 	ga_ci_wait pr "$slug" "$num" "${expected_head:-$(git -C "$wtr" rev-parse HEAD)}"
 	ci_rc=$?
 	if [[ $ci_rc == 30 ]]; then
+		for _ in 1 2 3; do
+			sleep "${GA_CI_POLL:-15}"
+			mg=$(gh pr view "$num" -R "$slug" --json mergeable -q .mergeable 2>/dev/null)
+			[[ $mg == CONFLICTING ]] || continue
+			echo "ship: PR #$num конфликтует с $base — rebase ветки агента" >&2
+			leave 50 conflict
+		done
 		echo 'ship: CI не появился' >&2
 		leave 30 ci-absent
 	elif [[ $ci_rc != 0 ]]; then

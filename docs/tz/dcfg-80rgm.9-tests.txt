@@ -1,0 +1,24 @@
+	# v9b: GraphQL 'No commits' при HEAD, уже в origin/main -> квитанция доставки, без INFRA и без delivery-blocked.
+	setup_submit v9b codex/dcfg-v9b.1; commit_candidate dcfg-v9b.1
+	h=$(git -C "$wt" rev-parse HEAD); git -C "$wt" push -q origin HEAD:main; git -C "$wt" fetch -q origin
+	v9_ship
+	out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_RC=30 MOCK_SHIP_LOG='pull request create failed: GraphQL: No commits between main and codex/dcfg-v9b.1'; run_tool "$d" 2>&1); rc=$?
+	key=$(printf %s "$d/repo" | sha256sum | cut -d ' ' -f1); rf="$d/state/receipts/$key/dcfg-v9b.1/$h"
+	for i in $(seq 1 50); do [[ -f $rf ]] && break; sleep 0.2; done
+	[[ $rc == 0 && -f $rf ]] && ! grep -Fq '|create [ship-post] INFRA' "$d/bd.calls" && ! grep -Fq 'delivery-blocked' "$d/bd.calls" && pass v9b || fail v9b "rc=$rc: $out"
+
+	# v9e: .failed=50 на H, atom закрыт позже mtime маркера -> ship для H вызван повторно; контроль: closed_at раньше маркера -> не вызван.
+	setup_submit v9e codex/dcfg-v9e.1; commit_candidate dcfg-v9e.1
+	h=$(git -C "$wt" rev-parse HEAD); key=$(printf %s "$d/repo" | sha256sum | cut -d ' ' -f1)
+	mkdir -p "$d/state/receipts/$key/dcfg-v9e.1"; printf 50 > "$d/state/receipts/$key/dcfg-v9e.1/$h.failed"; touch -d '-1 hour' "$d/state/receipts/$key/dcfg-v9e.1/$h.failed"
+	touch "$d/state/receipts/$key/dcfg-v9e.1/$h.failed.reported"
+	date -u -d '-10 minutes' -Iseconds > "$d/bd.closed_at"
+	out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex; run_tool "$d" 2>&1); rc=$?
+	[[ $rc == 0 && $(grep -c -- '--atom dcfg-v9e.1 ' "$d/ship.calls") == 1 ]] && grep -Fq "$h" "$d/ship.calls" && pass v9e || fail v9e "rc=$rc: $out"
+	setup_submit v9e_control codex/dcfg-v9e.2; commit_candidate dcfg-v9e.2
+	h=$(git -C "$wt" rev-parse HEAD); key=$(printf %s "$d/repo" | sha256sum | cut -d ' ' -f1)
+	mkdir -p "$d/state/receipts/$key/dcfg-v9e.2"; printf 50 > "$d/state/receipts/$key/dcfg-v9e.2/$h.failed"; touch -d '-1 hour' "$d/state/receipts/$key/dcfg-v9e.2/$h.failed"
+	touch "$d/state/receipts/$key/dcfg-v9e.2/$h.failed.reported"
+	date -u -d '-2 hours' -Iseconds > "$d/bd.closed_at"
+	out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex; run_tool "$d" 2>&1); rc=$?
+	[[ $rc == 0 && ! -s $d/ship.calls ]] && pass v9e_control || fail v9e_control "rc=$rc: $out"
