@@ -9,6 +9,12 @@ trap 'rm -rf -- "$TMP"' EXIT
 
 export SDK_AGENT_TEST=1
 
+# stub engine: stands in for the paid engine; prints a success result that says whether it got the API key
+stub="$TMP/stub-engine"
+printf '%s\n' '#!/usr/bin/env bash' 'sleep "${STUB_SLEEP:-0}"' 'key=unset; [[ -n ${ANTHROPIC_API_KEY:-} ]] && key=set' 'printf '"'"'{"type":"result","subtype":"success","total_cost_usd":0,"modelUsage":{"claude-haiku-5-5":{}},"result":"%s"}\n'"'"' "$key"' > "$stub"
+chmod +x "$stub"
+export SDK_AGENT_ENGINE="$stub"
+
 pass=0
 total=0
 check() {  # DESCRIPTION CMD...
@@ -191,6 +197,46 @@ dry_args_ignored_without_test() {
   [[ $rc -eq 2 ]] && ! grep -qx -- '--exclude-dynamic-system-prompt-sections' <<<"$out"
 }
 
+inflight_empty() {  # LOG -- no reservation left in LOG.inflight
+  [[ ! -s $1.inflight ]]
+}
+
+concurrent_asks_overlap() {
+  local log="$TMP/runs-concurrent.jsonl" t0 t1 p1 p2 rc1 rc2
+  t0=$(date +%s)
+  STUB_SLEEP=3 SDK_AGENT_RUNS_LOG="$log" "$ag" ask --budget 0.5 hi >/dev/null 2>&1 &
+  p1=$!
+  STUB_SLEEP=3 SDK_AGENT_RUNS_LOG="$log" "$ag" ask --budget 0.5 hi >/dev/null 2>&1 &
+  p2=$!
+  wait "$p1"
+  rc1=$?
+  wait "$p2"
+  rc2=$?
+  t1=$(date +%s)
+  [[ $rc1 -eq 0 && $rc2 -eq 0 ]] && (( t1 - t0 < 5 )) && inflight_empty "$log"
+}
+
+cap_counts_inflight() {
+  local log="$TMP/runs-inflight.jsonl" now
+  now=$(date +%s)
+  printf '{"run_id":"x","ts":%s,"budget":4.60}\n' "$now" > "$log.inflight"
+  expect_rc_err 6 "daily cap" env SDK_AGENT_RUNS_LOG="$log" "$ag" ask --budget 0.5 hi \
+    && [[ $(wc -l < "$log.inflight") -eq 1 ]]
+}
+
+engine_override_no_key() {
+  local log="$TMP/runs-override.jsonl" out rc
+  out=$(env ANTHROPIC_API_KEY=leak SDK_AGENT_RUNS_LOG="$log" "$ag" ask --budget 0.5 hi 2>/dev/null)
+  rc=$?
+  [[ $rc -eq 0 && $out == unset ]] && inflight_empty "$log"
+}
+
+engine_override_test_only() {  # static: SDK_AGENT_ENGINE is read only inside the SDK_AGENT_TEST block
+  local block
+  block=$(sed -n '/^if \[\[ \${SDK_AGENT_TEST:-} == 1 \]\]; then$/,/^else$/p' "$ag")
+  [[ $(grep -c 'SDK_AGENT_ENGINE' "$ag") -eq 1 && $block == *SDK_AGENT_ENGINE* ]]
+}
+
 mkdir -p "$TMP/wt"
 git -C "$TMP/wt" init -q
 
@@ -225,6 +271,10 @@ check "--apply-edits: old found twice -> rc 5, file unchanged" apply_not_unique
 check "--apply-edits: 2nd edit fails -> rc 5, 1st not written" apply_second_fails
 check "dry args: engine always gets --exclude-dynamic-system-prompt-sections" dry_args_exclude_dynamic
 check "dry args ignored without SDK_AGENT_TEST" dry_args_ignored_without_test
+check "concurrent: two asks with a 3 s engine finish within 5 s" concurrent_asks_overlap
+check "cap counts in-flight reservation: 4.60 reserved + 0.50 -> rc 6" cap_counts_inflight
+check "engine override never gets the API key" engine_override_no_key
+check "engine override ignored without SDK_AGENT_TEST (static)" engine_override_test_only
 
 echo "ok $pass/$total"
 [[ $pass -eq $total ]]
