@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -u
-case ${1:-} in -h|--help) echo "usage: safe-delete [--bk <каталог>] <branch|file|dir|worktree|tmp|link|restore|purge|repo-autodelete> …  (safely deletes and restores approved files or branches)"; exit 0;; esac
+case ${1:-} in -h|--help) echo "usage: safe-delete [--bk <каталог>] <branch|file|dir|worktree|tmp|cache|link|restore|purge|repo-autodelete> …  (safely deletes and restores approved files or branches)"; exit 0;; esac
 BK=${SAFE_DELETE_BK:-/root/workspaces/projects/.agent-work/backup}
 GH=${SAFE_DELETE_GH:-true}
 mkdir -p "$BK"
@@ -12,8 +12,10 @@ allow_tracked_segs=
 sandbox=${SAFE_DELETE_SANDBOX:-/root/workspaces/sandbox}
 force_copy=
 ok_repowise=
+declare -A nolink=() gblob=() grepo=() gmode=()
 log_n=
 log(){ { flock -x 9 || return 1; printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date +%Y-%m-%dT%H:%M:%S)" "$@" >>"$led" || return 1; log_n=$(wc -l <"$led"); log_n=${log_n//[[:space:]]/}; } 9>>"$led.lock"; }
+log_batch(){ { flock -x 9 || return 1; local n; n=$(wc -l <"$led") || return 1; n=${n//[[:space:]]/}; printf '%s\n' "$@" >>"$led" || return 1; log_n=$((n+1)); } 9>>"$led.lock"; }
 fail(){ echo "safe-delete: $*" >&2; exit 1; }
 refuse(){ echo "safe-delete: $*" >&2; exit 2; }
 repo_of(){ local u=$1; u=${u%.git}; [[ $u =~ ([^/:]+)/([^/]+)$ ]] && echo "${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"; }
@@ -41,25 +43,47 @@ self_contained(){
   done < <(find "$dir" \( -name .git -o -name '*.git' \) \( -type d -o -type f \) -print 2>/dev/null | sort)
   [[ $found == 1 ]]
 }
-git_file(){
-  local raw=$1 entry mark attr head
-  p=$(realpath -e "$raw") || return 1
-  git_repo=$(git -C "$(dirname -- "$p")" rev-parse --show-toplevel 2>/dev/null) || return 1
-  [[ ! -L $raw ]] || return 1
-  git_rel=${p#"$git_repo"/}; [[ $git_rel != "$p" ]] || return 1
-  git -C "$git_repo" ls-files --error-unmatch -- "$git_rel" >/dev/null 2>&1 || return 1
-  entry=$(git -C "$git_repo" ls-files -s -- "$git_rel") || return 1
-  git_mode=${entry%% *}; [[ $git_mode == 100644 || $git_mode == 100755 ]] || return 1
-  mark=$(git -C "$git_repo" ls-files -v -- "$git_rel") || return 1
-  [[ ${mark:0:1} == H ]] || return 1
-  attr=$(git -C "$git_repo" check-attr filter -- "$git_rel") || return 1
-  [[ $attr != *': lfs'* ]] || return 1
-  git_blob=$(git -C "$git_repo" hash-object --no-filters "$p") || return 1
-  head=$(git -C "$git_repo" rev-parse "HEAD:$git_rel" 2>/dev/null) || return 1
-  [[ $git_blob == "$head" ]]
+git_batch(){
+  [[ -z $force_copy ]] || return 0
+  local p d root rel rec rest val hh i
+  local -A rd=() grp=() lm=() lt=() lf=() hd=()
+  local -a rl=() hs=()
+  for p in "$@"; do
+    [[ -z ${nolink[$p]:-} && $p != *$'\n'* ]] || continue
+    d=${p%/*}
+    [[ -v rd[$d] ]] || rd[$d]=$(git -C "$d" rev-parse --show-toplevel 2>/dev/null)
+    root=${rd[$d]}; [[ -n $root ]] || continue
+    rel=${p#"$root"/}; [[ $rel != "$p" ]] || continue
+    grp[$root]+="$rel"$'\n'
+  done
+  for root in "${!grp[@]}"; do
+    mapfile -t rl < <(printf %s "${grp[$root]}")
+    lm=(); lt=(); lf=(); hd=()
+    while IFS= read -r -d '' rec; do
+      rel=${rec#*$'\t'}; rest=${rec:2}
+      lm[$rel]=${rest%% *}; lt[$rel]=${rec:0:1}
+    done < <(git -C "$root" ls-files -s -v -z -- "${rl[@]}")
+    while IFS= read -r -d '' rel && IFS= read -r -d '' _ && IFS= read -r -d '' val; do
+      [[ $val == lfs ]] && lf[$rel]=1
+    done < <(printf '%s\0' "${rl[@]}" | git -C "$root" check-attr -z filter --stdin)
+    mapfile -t hs < <(printf '%s\n' "${rl[@]}" | git -C "$root" hash-object --no-filters --stdin-paths)
+    ((${#hs[@]} == ${#rl[@]})) || return 1
+    while IFS= read -r -d '' rec; do
+      rel=${rec#*$'\t'}; read -r _ _ hh <<< "${rec%%$'\t'*}"; hd[$rel]=$hh
+    done < <(git -C "$root" ls-tree -z HEAD -- "${rl[@]}")
+    for i in "${!rl[@]}"; do
+      rel=${rl[i]}; hh=${hd[$rel]:-}
+      [[ ${lm[$rel]:-} == 100644 || ${lm[$rel]:-} == 100755 ]] && [[ ${lt[$rel]:-} == H && -z ${lf[$rel]:-} && -n $hh && ${hs[i]} == "$hh" ]] || continue
+      gblob[$root/$rel]=${hs[i]}; grepo[$root/$rel]=$root; gmode[$root/$rel]=${lm[$rel]}
+    done
+  done
 }
 check_path(){
   if [[ ${2:-} == link ]]; then p=$1; else p=$(realpath -e "$1") || refuse "нет пути: $1"; fi
+  check_resolved "$p" "${2:-}"
+}
+check_resolved(){
+  p=$1
   [[ $p == /etc/claude-code/* || $p == "$HOME"/.ssh/* || $p == "$HOME"/.claude/settings*.json ]] && refuse "запрещённый путь: $p"
   if [[ ${2:-} != link ]]; then
     roots=${SAFE_DELETE_ROOTS:-/root/workspaces/projects:/root/workspaces/tools:/root/workspaces/sandbox:/home/gitmirror/state:/root/.claude/projects:/root/.local/share:/root/.local/state:/root/.cache:/root/.config:/root/.claude/skills}
@@ -87,28 +111,93 @@ $p
   case ${p##*/} in auth.json|hosts.yml|credentials*|*token*) refuse "запрещённый файл: $p";; esac
   case $p in "$HOME"/.config/gh|"$HOME"/.config/gh/*|"$HOME"/.config/yandex-cloud|"$HOME"/.config/yandex-cloud/*|"$HOME"/.config/gcloud|"$HOME"/.config/gcloud/*) refuse "запрещённый сегмент: $p";; esac
 }
-check_file(){ check_path "$1"; [[ -f $p ]] || refuse "не обычный файл: $p"; }
-delete_file(){
-  check_file "$1"
-  if [[ -z $force_copy ]] && git_file "$1"; then
-    ref="refs/safe-delete/$(date +%Y%m%d%H%M%S%N)-${git_blob:0:12}"
-    git -C "$git_repo" update-ref "$ref" "$git_blob" || return 1
-    log git "$p" "$git_blob" "$git_repo" "$ref" "$git_mode" - || return 1
-    awk -F '\t' -v n="$log_n" -v p="$p" -v b="$git_blob" -v r="$ref" -v m="$git_mode" 'NR==n && $2=="git" && $3==p && $4==b && $6==r && $7==m{ok=1} END{exit !ok}' "$led" || return 1
-    rm -- "$p" || return 1
-    echo "удалено: $p | основание: git $ref | восстановить: safe-delete restore $log_n"
-    return 0
-  fi
-  copy="$BK/files/$(date +%Y%m%d)/${p#/}"
-  [[ -e $copy || -L $copy ]] && copy="$copy.$(date +%H%M%S%N)"
-  mkdir -p "$(dirname -- "$copy")" || return 1
-  cp -p "$p" "$copy" || return 1; touch "$copy"; cmp -s "$p" "$copy" || fail "копия не совпала: $p"
-  b=$(sha256sum "$copy" | cut -d' ' -f1)
-  log file "$p" - - "$copy" "$b" backup-ok || return 1; rm -- "$p" || return 1
-  log file "$p" - - "$copy" "$b" deleted || return 1
-  echo "удалено: $p | основание: копия $copy | восстановить: safe-delete restore $log_n"
+resolve_all(){
+  rs=()
+  (($#)) || return 0
+  local r
+  while IFS= read -r -d '' r; do rs+=("$r"); done < <(realpath -e -z -- "$@")
+  (( ${#rs[@]} == $# )) || refuse "нет пути"
 }
-[[ $# -ge 1 ]] || refuse 'usage: safe-delete [--bk <каталог>] <branch|file|dir|worktree|tmp|link|restore|purge|repo-autodelete> …'
+batch_delete(){
+  local p c d k i=0 gi=0 ci=0 gstart=0 dstart=0 a b same ref repo rec stamp lts cdir
+  local -a pins=() cps=() fresh=() devs=() ss=() ds=() bs=() hs=() hd=() bl=()
+  local -A upd=() gref=() copy=() out=()
+  (($#)) || return 0
+  stamp=$(date +%Y%m%d%H%M%S%N); lts=$(date +%Y-%m-%dT%H:%M:%S)
+  for p in "$@"; do
+    if [[ -z $force_copy && -n ${gblob[$p]:-} ]]; then
+      ref="refs/safe-delete/$stamp-$i-${gblob[$p]:0:12}"; repo=${grepo[$p]}
+      upd[$repo]+="create $ref ${gblob[$p]}"$'\n'; gref[$p]=$ref; pins+=("$p")
+    else cps+=("$p"); fi
+    i=$((i+1))
+  done
+  for repo in "${!upd[@]}"; do printf %s "${upd[$repo]}" | git -C "$repo" update-ref --stdin || return 1; done
+  if ((${#pins[@]})); then
+    for p in "${pins[@]}"; do printf -v rec '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' "$lts" git "$p" "${gblob[$p]}" "${grepo[$p]}" "${gref[$p]}" "${gmode[$p]}" -; bl+=("$rec"); done
+    log_batch "${bl[@]}" || return 1; gstart=$log_n; bl=()
+  fi
+  if ((${#cps[@]})); then
+    cdir="$BK/files/$(date +%Y%m%d)"; mkdir -p "$cdir" || return 1
+    for p in "${cps[@]}"; do
+      c="$cdir/${p#/}"
+      if [[ -e $c || -L $c ]]; then c="$c.$(date +%H%M%S%N)"; mkdir -p "$(dirname -- "$c")" && cp -p -- "$p" "$c" || return 1
+      else fresh+=("$p"); fi
+      copy[$p]=$c; ss+=("$p"); ds+=("$c")
+    done
+    if ((${#fresh[@]})); then
+      mapfile -t devs < <(stat -c %d -- "$cdir" "${fresh[@]}")
+      same=1; for d in "${devs[@]}"; do [[ $d == "${devs[0]}" ]] || same=; done
+      if [[ $same ]] && cp -p -l --parents -t "$cdir" -- "${fresh[@]}"; then :; else cp -p --parents -t "$cdir" -- "${fresh[@]}" || return 1; fi
+    fi
+    touch -- "${ds[@]}" || return 1
+    mapfile -d '' hs < <(sha256sum -z -- "${ss[@]}")
+    mapfile -d '' hd < <(sha256sum -z -- "${ds[@]}")
+    for k in "${!ss[@]}"; do
+      a=${hs[k]:-}; b=${hd[k]:-}
+      [[ -n $b && ${a:0:64} == "${b:0:64}" ]] || fail "копия не совпала: ${ss[k]}"
+      bs+=("${b:0:64}")
+    done
+    for k in "${!ss[@]}"; do printf -v rec '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' "$lts" file "${ss[k]}" - - "${ds[k]}" "${bs[k]}" backup-ok; bl+=("$rec"); done
+    log_batch "${bl[@]}" || return 1; bl=()
+  fi
+  printf '%s\0' "$@" | xargs -0 -r rm -f -- || return 1
+  if ((${#ss[@]})); then
+    for k in "${!ss[@]}"; do printf -v rec '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' "$lts" file "${ss[k]}" - - "${ds[k]}" "${bs[k]}" deleted; bl+=("$rec"); done
+    log_batch "${bl[@]}" || return 1; dstart=$log_n
+  fi
+  for p in "${pins[@]}"; do out[$p]="удалено: $p | основание: git ${gref[$p]} | восстановить: safe-delete restore $((gstart+gi))"; gi=$((gi+1)); done
+  for p in "${cps[@]}"; do out[$p]="удалено: $p | основание: копия ${copy[$p]} | восстановить: safe-delete restore $((dstart+ci))"; ci=$((ci+1)); done
+  for p in "$@"; do echo "${out[$p]}"; done
+}
+is_cache(){
+  local p=$1 s; local -a segs
+  [[ $p == "$HOME"/.cache/* ]] && return 0
+  [[ $p == */wp-content/cache || $p == */wp-content/cache/* ]] && return 0
+  IFS=/ read -ra segs <<< "$p"
+  for s in "${segs[@]}"; do
+    case $s in .cache|__pycache__|.pytest_cache|.mypy_cache|.ruff_cache|node_modules|.npm|.parcel-cache|.turbo) return 0;; esac
+  done
+  return 1
+}
+tracked_in(){
+  local p=$1 d root rel
+  d=$p; [[ -d $p ]] || d=${p%/*}
+  root=$(git -C "$d" rev-parse --show-toplevel 2>/dev/null) || root=
+  [[ -n $root ]] || return 1
+  rel=${p#"$root"}; rel=${rel#/}; rel=${rel:-.}
+  [[ -n $(git -C "$root" ls-files -z -- "$rel") ]]
+}
+cache_del(){
+  local p lts rec
+  local -a bl=()
+  (($#)) || return 0
+  rm -r -- "$@" || return 1
+  lts=$(date +%Y-%m-%dT%H:%M:%S)
+  for p in "$@"; do printf -v rec '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' "$lts" cache "$p" - - - - deleted; bl+=("$rec"); done
+  log_batch "${bl[@]}" || return 1
+  for p in "$@"; do echo "удалено: $p | основание: кэш, без копии"; done
+}
+[[ $# -ge 1 ]] || refuse 'usage: safe-delete [--bk <каталог>] <branch|file|dir|worktree|tmp|cache|link|restore|purge|repo-autodelete> …'
 if [[ $1 == --bk ]]; then [[ $# -ge 3 ]] || refuse 'usage'; BK=$2; shift 2; mkdir -p "$BK"; led=$BK/ledger.tsv; fi
 cmd=$1; shift
 if [[ -n ${SAFE_DELETE_SANDBOX:-} ]]; then [[ $SAFE_DELETE_SANDBOX == /tmp/* ]] || refuse "корень не под /tmp: $SAFE_DELETE_SANDBOX"; fi
@@ -132,13 +221,31 @@ case "$cmd" in
     ;;
   file)
     [[ $# -ge 1 ]] || refuse 'usage'
-    declare -A seen=(); paths=()
+    resolve_all "$@"
+    declare -A seen=(); paths=(); i=0
     for raw in "$@"; do
-      check_file "$raw"
+      p=${rs[i]}; i=$((i+1))
+      check_resolved "$p"
+      [[ -f $p ]] || refuse "не обычный файл: $p"
       [[ ${seen[$p]:-} ]] && continue
-      seen[$p]=1; paths+=("$raw")
+      seen[$p]=1; paths+=("$p"); [[ -L $raw ]] && nolink[$p]=1
     done
-    for fp in "${paths[@]}"; do delete_file "$fp" || exit 1; done
+    git_batch "${paths[@]}" || exit 1
+    batch_delete "${paths[@]}" || exit 1
+    exit 0
+    ;;
+  cache)
+    [[ $# -ge 1 ]] || refuse 'usage'
+    mapfile -d '' rs < <(realpath -e -z -- "$@")
+    (( ${#rs[@]} == $# )) || { for a in "$@"; do [[ -e $a ]] || refuse "нет пути: $a"; done; refuse "нет пути"; }
+    declare -A seen=(); cps=()
+    for p in "${rs[@]}"; do
+      [[ ${seen[$p]:-} ]] && continue
+      seen[$p]=1; check_resolved "$p"; is_cache "$p" || refuse "не кэш: $p"
+      tracked_in "$p" && refuse "кэш под git: $p"
+      cps+=("$p")
+    done
+    cache_del "${cps[@]}" || exit 1
     exit 0
     ;;
   tmp)
@@ -150,25 +257,27 @@ case "$cmd" in
       [[ ${seen[$p]:-} ]] && continue
       seen[$p]=1; paths+=("$p")
     done
-    for tp in "${paths[@]}"; do
-      rm -r -- "$tp" || exit 1
-      log tmp "$tp" - - - - deleted || exit 1
-      echo "удалено: $tp | основание: tmp, без копии"
-    done
+    rm -r -- "${paths[@]}" || exit 1
+    lts=$(date +%Y-%m-%dT%H:%M:%S); bl=()
+    for tp in "${paths[@]}"; do printf -v rec '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' "$lts" tmp "$tp" - - - - deleted; bl+=("$rec"); done
+    log_batch "${bl[@]}" || exit 1
+    for tp in "${paths[@]}"; do echo "удалено: $tp | основание: tmp, без копии"; done
     exit 0
     ;;
   dir)
     [[ $# -eq 1 ]] || refuse 'usage'; check_path "$1"; dir=$p; [[ -d $dir ]] || refuse "не каталог: $dir"
+    if is_cache "$dir" && ! tracked_in "$dir"; then cache_del "$dir" || exit 1; exit 0; fi
     if [[ $dir == "$sandbox"/test-* && ${dir#"$sandbox"/} != */* ]]; then allow_git_under=$dir; force_copy=1
       for s in .beads .codex; do
         if [[ -e $dir/.git && -e $dir/$s && -n $(git -C "$dir" ls-files -- "$s") && -z $(git -C "$dir" status --porcelain --ignored -- "$s") ]]; then allow_tracked_segs+=" $s"; allow_tracked_under=$dir; fi
         if [[ -d $dir/$s && -z $(find "$dir/$s" ! -type d -print -quit) ]]; then allow_tracked_segs+=" $s"; allow_tracked_under=$dir; fi
       done
     elif self_contained "$dir"; then allow_git_under=$dir; else allow_git_under=; fi
-    mapfile -d '' entries < <(find "$dir" -depth -print0); for entry in "${entries[@]}"; do [[ -L $entry ]] || check_path "$entry"; done
-    mapfile -d '' files < <(find "$dir" -type f -print0)
-    for f in "${files[@]}"; do check_file "$f"; done
-    for f in "${files[@]}"; do delete_file "$f" || exit 1; done
+    mapfile -d '' entries < <(find "$dir" -depth -print0); nl=(); for entry in "${entries[@]}"; do [[ -L $entry ]] || nl+=("$entry"); done
+    resolve_all "${nl[@]}"; files=()
+    for f in "${rs[@]}"; do check_resolved "$f"; [[ -f $f ]] && files+=("$f"); done
+    git_batch "${files[@]}" || exit 1
+    batch_delete "${files[@]}" || exit 1
     mapfile -d '' links < <(find "$dir" -type l -print0)
     for link in "${links[@]}"; do
       [[ $link == "$dir" || $link == "$dir"/* ]] || refuse "ссылка вне dir: $link"
@@ -188,10 +297,12 @@ case "$cmd" in
     mapfile -d '' files < <({ git -C "$wt" ls-files -z --others; git -C "$wt" ls-files -z --modified; git -C "$wt" diff -z --name-only --cached HEAD; } | while IFS= read -r -d '' rel; do f=$wt/$rel; [[ -f $f && ! -L $f ]] && printf '%s\0' "$f"; done | sort -zu)
     ok_repowise=; for f in "${files[@]}"; do [[ $f == "$wt"/.repowise/* ]] && git -C "$wt" check-ignore -q -- "${f#"$wt"/}" 2>/dev/null && ok_repowise+="
 $f"; done
-    for f in "${files[@]}"; do git_file "$f" || check_file "$f"; done
+    resolve_all "${files[@]}"; files=("${rs[@]}")
+    git_batch "${files[@]}" || exit 1
+    copies=(); for f in "${files[@]}"; do [[ -n ${gblob[$f]:-} ]] && continue; check_resolved "$f"; [[ -f $f ]] || refuse "не обычный файл: $f"; copies+=("$f"); done
     sha=$(git -C "$wt" rev-parse HEAD) || exit 1; ref="refs/safe-delete/wt-$(date +%Y%m%d%H%M%S%N)"
     git --git-dir="$common" update-ref "$ref" "$sha" || exit 1
-    for f in "${files[@]}"; do git_file "$f" || delete_file "$f" || exit 1; done
+    batch_delete "${copies[@]}" || exit 1
     git --git-dir="$common" worktree remove --force "$wt" || exit 1
     log worktree "$wt" "$sha" "$common" "$ref" - deleted || exit 1
     exit 0
