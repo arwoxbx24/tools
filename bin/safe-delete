@@ -62,7 +62,7 @@ check_path(){
   if [[ ${2:-} == link ]]; then p=$1; else p=$(realpath -e "$1") || refuse "нет пути: $1"; fi
   [[ $p == /etc/claude-code/* || $p == "$HOME"/.ssh/* || $p == "$HOME"/.claude/settings*.json ]] && refuse "запрещённый путь: $p"
   if [[ ${2:-} != link ]]; then
-    roots=${SAFE_DELETE_ROOTS:-/root/workspaces/projects:/root/workspaces/tools:/root/workspaces/sandbox:/home/gitmirror/state:/root/.claude/projects/-root-workspaces-projects/memory:/root/.claude/skills}
+    roots=${SAFE_DELETE_ROOTS:-/root/workspaces/projects:/root/workspaces/tools:/root/workspaces/sandbox:/home/gitmirror/state:/root/.claude/projects/-root-workspaces-projects/memory:/root/.local/share:/root/.local/state:/root/.cache:/root/.config:/root/.claude/skills}
     if [[ -n ${SAFE_DELETE_ROOTS:-} ]]; then
       IFS=: read -ra rts <<< "$roots"; for r in "${rts[@]}"; do [[ $r == /tmp/* ]] || refuse "корень не под /tmp: $r"; done
     fi
@@ -84,6 +84,8 @@ $p
   [[ $p == "$BK" || $p == "$BK"/* ]] && refuse "файл под $BK: $p"
   [[ $p == "$self" ]] && refuse "запрещённый файл: $p"
   [[ ${p##*/} == .env* || ${p##*/} == *.pem || ${p##*/} == *.key ]] && refuse "запрещённый файл: $p"
+  case ${p##*/} in auth.json|hosts.yml|credentials*|*token*) refuse "запрещённый файл: $p";; esac
+  case $p in "$HOME"/.config/gh|"$HOME"/.config/gh/*|"$HOME"/.config/yandex-cloud|"$HOME"/.config/yandex-cloud/*|"$HOME"/.config/gcloud|"$HOME"/.config/gcloud/*) refuse "запрещённый сегмент: $p";; esac
 }
 check_file(){ check_path "$1"; [[ -f $p ]] || refuse "не обычный файл: $p"; }
 delete_file(){
@@ -149,10 +151,19 @@ case "$cmd" in
     exit 0
     ;;
   dir)
-    [[ $# -eq 1 ]] || refuse 'usage'; check_path "$1"; dir=$p; [[ -d $dir ]] || refuse "не каталог: $dir"
+    [[ $# -ge 1 ]] || refuse 'usage'
+    if [[ $# -gt 1 ]]; then
+      ok_n=0; failed_n=0
+      for a in "$@"; do if "$self" --bk "$BK" "$cmd" "$a"; then ok_n=$((ok_n+1)); else failed_n=$((failed_n+1)); fi; done
+      echo "итог: ok=$ok_n, failed=$failed_n"
+      if ((failed_n == 0)); then exit 0; fi
+      exit 2
+    fi
+    check_path "$1"; dir=$p; [[ -d $dir ]] || refuse "не каталог: $dir"
     if [[ $dir == "$sandbox"/test-* && ${dir#"$sandbox"/} != */* ]]; then allow_git_under=$dir; force_copy=1
       for s in .beads .codex; do
         if [[ -e $dir/.git && -e $dir/$s && -n $(git -C "$dir" ls-files -- "$s") && -z $(git -C "$dir" status --porcelain --ignored -- "$s") ]]; then allow_tracked_segs+=" $s"; allow_tracked_under=$dir; fi
+        if [[ -d $dir/$s && -z $(find "$dir/$s" ! -type d -print -quit) ]]; then allow_tracked_segs+=" $s"; allow_tracked_under=$dir; fi
       done
     elif self_contained "$dir"; then allow_git_under=$dir; else allow_git_under=; fi
     mapfile -d '' entries < <(find "$dir" -depth -print0); for entry in "${entries[@]}"; do [[ -L $entry ]] || check_path "$entry"; done
@@ -171,19 +182,27 @@ case "$cmd" in
     exit 0
     ;;
   worktree)
-    [[ $# -eq 1 ]] || refuse 'usage'; check_path "$1"; wt=$p; [[ -d $wt ]] || refuse "не каталог: $wt"
+    [[ $# -ge 1 ]] || refuse 'usage'
+    if [[ $# -gt 1 ]]; then
+      ok_n=0; failed_n=0
+      for a in "$@"; do if "$self" --bk "$BK" "$cmd" "$a"; then ok_n=$((ok_n+1)); else failed_n=$((failed_n+1)); fi; done
+      echo "итог: ok=$ok_n, failed=$failed_n"
+      if ((failed_n == 0)); then exit 0; fi
+      exit 2
+    fi
+    check_path "$1"; wt=$p; [[ -d $wt ]] || refuse "не каталог: $wt"
     common=$(git -C "$wt" rev-parse --git-common-dir 2>/dev/null) || refuse "не worktree: $wt"; [[ $common != .git ]] || refuse "не linked worktree: $wt"
-    common=$(realpath -e "$common") || exit 1; repo=$(dirname -- "$common")
+    common=$(realpath -e "$common") || exit 1
     for cwd in /proc/[0-9]*/cwd; do pid=${cwd#/proc/}; pid=${pid%/cwd}; if ! used=$(readlink -- "$cwd"); then [[ ! -d /proc/$pid || $(proc_state "/proc/$pid/stat" 2>/dev/null) == Z ]] && continue; refuse "нечитаемый cwd процесса: $pid"; fi; [[ $used == "$wt" || $used == "$wt"/* ]] && refuse "процесс использует worktree: $pid"; done
     mapfile -d '' files < <({ git -C "$wt" ls-files -z --others; git -C "$wt" ls-files -z --modified; git -C "$wt" diff -z --name-only --cached HEAD; } | while IFS= read -r -d '' rel; do f=$wt/$rel; [[ -f $f && ! -L $f ]] && printf '%s\0' "$f"; done | sort -zu)
     ok_repowise=; for f in "${files[@]}"; do [[ $f == "$wt"/.repowise/* ]] && git -C "$wt" check-ignore -q -- "${f#"$wt"/}" 2>/dev/null && ok_repowise+="
 $f"; done
     for f in "${files[@]}"; do git_file "$f" || check_file "$f"; done
     sha=$(git -C "$wt" rev-parse HEAD) || exit 1; ref="refs/safe-delete/wt-$(date +%Y%m%d%H%M%S%N)"
-    git -C "$repo" update-ref "$ref" "$sha" || exit 1
+    git --git-dir="$common" update-ref "$ref" "$sha" || exit 1
     for f in "${files[@]}"; do git_file "$f" || delete_file "$f" || exit 1; done
-    git -C "$repo" worktree remove --force "$wt" || exit 1
-    log worktree "$wt" "$sha" "$repo" "$ref" - deleted || exit 1
+    git --git-dir="$common" worktree remove --force "$wt" || exit 1
+    log worktree "$wt" "$sha" "$common" "$ref" - deleted || exit 1
     exit 0
     ;;
   link)
