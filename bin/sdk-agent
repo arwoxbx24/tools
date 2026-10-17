@@ -16,7 +16,7 @@ else
 fi
 readonly DEFAULT_BUDGET="0.50"
 readonly MAX_BUDGET="2.00"
-readonly DAILY_CAP="5.00"
+readonly DAILY_CAP="6.00"
 readonly MAX_FILE_BYTES=204800
 readonly TOOLS_CODE="Read,Grep,Glob,Skill"
 readonly TOOLS_READ="Read,Grep,Glob,Skill,WebSearch,WebFetch"
@@ -45,7 +45,7 @@ Runs the Claude Agent SDK engine with model claude-haiku-5-5 and an API key (nev
 Engine config dir: tools/sdk-agent/engine-home (no login stored there).
 sdk-agent is a paid API program, not a Claude Code agent or subagent.
 Budget: default 0.50 USD per run, ceiling 2.00 USD. Every result is appended to tools/sdk-agent/runs.jsonl.
-Daily cap: 5.00 USD of runs (today, local time) across all modes.
+Daily cap: 6.00 USD of runs (today, local time) across all modes.
 EOF
 }
 
