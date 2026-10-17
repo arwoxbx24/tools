@@ -107,13 +107,17 @@ unwritable_runs_log_refuses() {
   expect_rc_err 6 "runs log not writable" env SDK_AGENT_RUNS_LOG="$log" "$ag" ask --budget 0.5 hi
 }
 
-runs_log_ignored_without_test_flag() {
-  local log="$TMP/runs-ignored.jsonl" now err rc
+runs_log_ignored_without_test_flag() {  # read-only cap --json: no engine, no key
+  local log="$TMP/runs-ignored.jsonl" now out rc spent
   now=$(date +%s)
-  printf '{"ts":%s,"total_cost_usd":10.0}\n' "$now" > "$log"
-  err=$(env -u SDK_AGENT_TEST SDK_AGENT_RUNS_LOG="$log" "$ag" ask --budget 0.5 hi 2>&1 >/dev/null)
+  printf '{"ts":%s,"total_cost_usd":3.33}\n' "$now" > "$log"
+  out=$(env -u SDK_AGENT_TEST -u SDK_AGENT_TEST_CAP SDK_AGENT_RUNS_LOG="$log" "$ag" cap --json)
   rc=$?
-  [[ $rc -ne 6 && $err != *"daily cap"* ]]
+  [[ $rc -eq 0 ]] || return 1
+  spent=$(jq -r '.spent' <<<"$out")
+  [[ $spent != 3.33 ]] || return 1
+  out=$(env SDK_AGENT_TEST=1 SDK_AGENT_RUNS_LOG="$log" "$ag" cap --json) || return 1
+  [[ $(jq -r '.spent' <<<"$out") == 3.33 ]]
 }
 
 cap_boundary_under_not_refused() {
