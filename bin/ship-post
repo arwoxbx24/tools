@@ -202,6 +202,14 @@ do_break_glass(){
 
 # ── submit mode ──────────────────────────────────────────────────────
 
+deliver_submitted(){ # <repo> <atom> — owner 17.10: --submit delivers only its own atom once
+	local scan_rc
+	exec {submit_lock_fd}>&-
+	filter_atom=$2 scan_repo "$1"; scan_rc=$?
+	wait
+	[[ $scan_rc == 0 ]] || { echo "ship-post: delivery of $2 failed" >&2; return 1; }
+}
+
 do_submit(){
 	local wt=$1 atom=$2 tz=$3 evidence=$4; shift 4
 	local files=("$@")
@@ -270,12 +278,7 @@ do_submit(){
 			clear_final_failure "$repo" "$atom" "$head_sha" || die "cannot clear final failure"
 			write_submit_receipt "$repo" "$wt_real" "$atom" "$head_sha" "$evidence" || die "cannot write submission receipt"
 			echo "ship-post: already closed $atom"
-			if [[ ${auto_mode:-0} != 1 ]]; then
-				exec {submit_lock_fd}>&-
-				filter_atom=$atom scan_repo "$repo"; scan_rc=$?
-				wait
-				[[ $scan_rc == 0 ]] || { echo "ship-post: delivery of $atom failed" >&2; return 1; }
-			fi
+			[[ ${auto_mode:-0} == 1 ]] || deliver_submitted "$repo" "$atom" || return 1
 			return 0
 		fi
 	else
@@ -343,12 +346,7 @@ do_submit(){
 
 	clear_final_failure "$repo" "$atom" "$head_sha" || die "cannot clear final failure"
 	write_submit_receipt "$repo" "$wt_real" "$atom" "$head_sha" "$evidence" || die "cannot write submission receipt"
-	if [[ ${auto_mode:-0} != 1 ]]; then
-		exec {submit_lock_fd}>&-
-		filter_atom=$atom scan_repo "$repo"; scan_rc=$?
-		wait
-		[[ $scan_rc == 0 ]] || { echo "ship-post: delivery of $atom failed" >&2; return 1; }
-	fi
+	[[ ${auto_mode:-0} == 1 ]] || deliver_submitted "$repo" "$atom" || return 1
 	if [[ ${auto_mode:-0} == 1 ]]; then echo "auto-submit $atom $head_sha"; return 0; fi
 	echo "ship-post: closed $atom"
 	return 0
