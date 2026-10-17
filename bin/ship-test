@@ -40,6 +40,7 @@ case $1:$2 in
 			: > "$GH_CREATED"; echo 'https://github.com/x/y/pull/7'
 		fi ;;
 	pr:checks)
+		[[ " $* " != *' bucket,link '* ]] || { echo 'https://github.com/x/rep/actions/runs/5/job/117434901882'; exit 0; }
 		if [[ " $* " == *' --watch '* ]]; then
 			b=$(cat "$GH_TEST_DIR/bucket" 2>/dev/null || echo pass)
 			[[ -n "$b" ]] || exit 1
@@ -99,6 +100,7 @@ case $1:$2 in
 			cat "$GH_TEST_DIR/merge-sha"
 		fi ;;
 	api:repos/*)
+		[[ $2 != */annotations ]] || { cat "$GH_TEST_DIR/annot" 2>/dev/null; exit 0; }
 		cat "$GH_TEST_DIR/allow-merge" 2>/dev/null || echo true ;;
 esac
 exit 0
@@ -541,6 +543,14 @@ grep -q '^pr merge' "$GH_JOURNAL"; merge45c=$?
 [[ $rc45a == 0 && $out45a == *'prod:wait-owner hold-paths docs/ppo/a.md'* && $merge45a != 0 \
 	&& $rc45b == 0 && $merge45b == 0 && $out45b != *'prod:wait-owner'* \
 	&& $rc45c == 0 && $out45c == *'prod:wait-owner hold-paths docs/tz/client/x.md'* && $merge45c != 0 ]] && p 45 || f 45
+
+# 46 (dcfg-tf331.5): GitHub не запустил job (биллинг) -> ship exit 72.
+mkrepo r46 1; w46=$(mkwt r46 claude/c46); printf 's46\n' >> "$w46/f.txt"
+echo fail > "$d/bucket"
+echo 'The job was not started because recent account payments have failed.' > "$d/annot"
+ship "$w46" >/dev/null 2>&1; rc=$?
+rm -f "$d/bucket" "$d/annot"
+[[ $rc == 72 ]] && p 46 || f 46
 
 fi
 for t in "$(dirname "$0")"/ship-test.d/${SHIP_TEST_ONLY:-}*.sh; do
