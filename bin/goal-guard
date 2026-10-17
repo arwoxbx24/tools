@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # goal-guard — Stop-хук Claude/Codex: не даёт остановиться, пока атомы bd своей сессии in_progress (dcfg-g1ubc).
 if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
-  echo "usage: goal-guard  (Stop-хук Claude Code: JSON на stdin; задерживает остановку при атоме in_progress сессии или негативном статусе без ≥2 строк «Маршрут:»)"
+  echo "usage: goal-guard  (Stop-хук Claude Code: JSON на stdin; задерживает остановку при атоме in_progress сессии или негативном статусе без ≥2 строк «Маршрут:»; пропускает остановку при stop_hook_active=true)"
   exit 0
 fi
 exec 2>/dev/null
@@ -9,6 +9,7 @@ set -o pipefail
 command -v jq >/dev/null && command -v bd >/dev/null || exit 0
 json=$(cat) || exit 0
 [ -n "$json" ] || exit 0
+jq -e '.stop_hook_active == true' >/dev/null <<<"$json" && exit 0
 sid=$(jq -er '.session_id | select(type == "string" and length > 0)' <<<"$json") || exit 0
 [[ $sid != *[/$'\n\r']* ]] || exit 0
 sid4=${sid:0:4}
