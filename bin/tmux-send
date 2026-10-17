@@ -3,7 +3,7 @@ set -u
 
 t(){ tmux ${TMUX_SEND_SOCKET:+-L "$TMUX_SEND_SOCKET"} "$@"; }
 
-case ${1:-} in -h|--help) echo "usage: tmux-send <target> '<текст>' [--expect '<regex>']  (env TMUX_SEND_SOCKET, TMUX_SEND_SLEEP; Enter — когда текст виден в поле ввода, до 3 повторов; окно агента (Claude ❯, Codex ›): доставлено = текст в истории над полем ввода или признак работы Working / esc to interrupt / (Ns ·; rc 0 — доставлено или --expect найдено, 1 — нет, 2 — ошибка tmux)"; exit 0;; esac
+case ${1:-} in -h|--help) echo "usage: tmux-send <target> '<текст>' [--expect '<regex>']  (env TMUX_SEND_SOCKET, TMUX_SEND_SLEEP, TMUX_SEND_RECEIPT_LOG, TMUX_SEND_RECEIPT_WAIT; текст уходит с [ts:<id>], доставлено = receipt: id в логе сессии Claude/Codex; без агента — экран: текст в истории над полем ввода или Working / esc to interrupt / (Ns ·, --expect; Enter — когда текст виден в поле ввода, до 3 повторов; rc 0 — доставлено, 1 — нет, 2 — ошибка tmux)"; exit 0;; esac
 target=${1:-}
 text=${2:-}
 busy='Working|esc to interrupt|\([0-9]+s ·'
@@ -16,6 +16,7 @@ if [[ -z $target ]]; then
 fi
 
 sleep_n=${TMUX_SEND_SLEEP:-2}
+wait_n=${TMUX_SEND_RECEIPT_WAIT:-30}
 err=$(mktemp)
 die(){ echo "tmux-send: $(<"$err")" >&2; exit 2; }
 trap 'rm -f "$err"' EXIT
@@ -50,7 +51,36 @@ if [[ ! $target =~ ^[%@][0-9]+$ ]]; then
 	fi
 fi
 
+id="ts-$(date +%s)-$$"
+text="$text [ts:$id]"
 head=${text:0:24}
+# Receipt log of the agent in $target → rlog. rc 0 found, 1 agent without log, 2 no agent.
+receipt_log(){
+	rlog=${TMUX_SEND_RECEIPT_LOG:-}
+	[[ -z $rlog ]] || return 0
+	local all pid f layer agent=0
+	all=$(t display -p -t "$target" '#{pane_pid}' 2>>"$err") || die
+	for _ in 1 2; do
+		layer=$(for pid in $all; do ps -o pid= --ppid "$pid" 2>/dev/null; done)
+		all+=$'\n'$layer
+	done
+	for pid in $all; do
+		case $(ps -o comm= -p "$pid" 2>/dev/null) in claude|codex) agent=1;; esac
+		if [[ -f $HOME/.claude/sessions/$pid.json ]]; then
+			agent=1
+			rlog=$(find "$HOME/.claude/projects" -maxdepth 2 -name "$(jq -r .sessionId "$HOME/.claude/sessions/$pid.json").jsonl" 2>/dev/null | head -n1)
+			[[ -n $rlog ]] && return 0
+		fi
+		while IFS= read -r f; do
+			case $f in */.codex/sessions/*rollout-*.jsonl) rlog=$f; return 0;; esac
+		done < <(readlink /proc/"$pid"/fd/* 2>/dev/null)
+	done
+	rlog=
+	((agent)) && return 1
+	return 2
+}
+receipt_log; rr=$?
+if ((rr == 1)); then echo "tmux-send: no receipt log for $target" >&2; exit 1; fi
 # Split pane at the last prompt line (Claude ❯, Codex ›): above = history, from it on = input box.
 regions(){
 	pane=$(t capture-pane -p -t "$target" 2>>"$err") || die
@@ -65,22 +95,45 @@ for _ in 1 2 3 4 5; do
 	grep -qF -- "$head" <<<"$input" && break
 	sleep 0.5
 done
-t send-keys -t "$target" Enter 2>>"$err" || die
+# Busy Codex queues on Tab, not Enter.
+key=Enter
+grep -qF 'tab to queue message' <<<"$pane" && key=Tab
+t send-keys -t "$target" "$key" 2>>"$err" || die
 
 enters=0
+if [[ -n $rlog ]]; then
+	for ((s = 1; s <= wait_n; s++)); do
+		sleep 1
+		line=$(grep -nF -- "[ts:$id]" "$rlog" 2>/dev/null | head -n1 | cut -d: -f1)
+		if [[ -n $line ]]; then
+			echo "delivered id=$id receipt=$rlog:$line"
+			exit 0
+		fi
+		regions
+		if [[ $enters -lt 3 ]] && grep -qF -- "$head" <<<"$input"; then
+			t send-keys -t "$target" "$key" 2>>"$err" || die
+			((enters++))
+		fi
+	done
+	echo "tmux-send: no receipt id=$id in $rlog after ${wait_n}s" >&2
+	exit 1
+fi
+
 pane=""
 for i in 1 2 3; do
 	sleep "$sleep_n"
 	regions
 	if grep -qE -- "$expect" <<<"$hist"; then
+		echo "delivered id=$id receipt=none"
 		exit 0
 	fi
 	# Echo check only on agent TUIs (prompt line found); a plain shell echoes input into history.
 	if [[ -n $head && -n $input ]] && grep -qF -- "$head" <<<"$hist" && ! grep -qF -- "$head" <<<"$input"; then
+		echo "delivered id=$id receipt=none"
 		exit 0
 	fi
 	if [[ $enters -lt 2 ]] && grep -qF -- "$head" <<<"$input"; then
-		t send-keys -t "$target" Enter 2>>"$err" || die
+		t send-keys -t "$target" "$key" 2>>"$err" || die
 		((enters++))
 	fi
 done
