@@ -13,7 +13,7 @@ name='-'; branch='-'
 help(){ cat <<'EOF'
 usage: ship <worktree> --atom <id> --tz <path#U> [--reload <pm2-name>] [--handover] [--expected-head <sha>]
 exit codes: 0 ok, 10 preflight/usage, 20 gitleaks, 30 commit/push/pr, 40 ci, 50 merge/rebase,
-            60 post, 70 gh/fetch/ci-billing, 75 lock, 80 ТЗ не найдено
+            60 post, 70 gh/fetch, 72 ci-not-started, 75 lock, 80 ТЗ не найдено
 EOF
 }
 
@@ -214,7 +214,7 @@ if [[ $docs_only == 0 ]]; then
 		echo 'ship: CI не появился' >&2
 		leave 30 ci-absent
 	elif [[ $ci_rc == 70 ]]; then
-		leave 70 ci-billing
+		leave 72 ci-billing
 	elif [[ $ci_rc != 0 ]]; then
 		leave 40 ci
 	fi
@@ -284,7 +284,7 @@ for ((round=1; round<=5; round++)); do
 			ga_ci_wait pr "$slug" "$num" "${expected_head:-$(git -C "$wtr" rev-parse HEAD)}" "$since"
 			ci_rc=$?
 			[[ $ci_rc == 30 ]] && leave 30 ci-absent
-			[[ $ci_rc == 70 ]] && leave 70 ci-billing
+			[[ $ci_rc == 70 ]] && leave 72 ci-billing
 			[[ $ci_rc == 0 ]] || leave 40 ci
 			;;
 		70) leave 70 fetch ;;

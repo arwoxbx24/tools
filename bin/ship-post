@@ -10,6 +10,7 @@ SHIP_POST_BEADS_ROOT=${SHIP_POST_BEADS_ROOT:-/root/workspaces/projects}
 SHIP_POST_SINCE=${SHIP_POST_SINCE:-1791205200}
 BEADS_ACTOR=${BEADS_ACTOR:-}
 SHIP_POST_RETRY_SECONDS=${SHIP_POST_RETRY_SECONDS:-30}
+SHIP_POST_RETRY_PAUSE=${SHIP_POST_RETRY_PAUSE:-30}
 [[ $SHIP_POST_RETRY_SECONDS =~ ^[1-9][0-9]*$ ]] || { echo 'ship-post: invalid retry interval' >&2; exit 2; }
 
 dry_run=0; watch=0; submit=0; submit_wt=''; submit_atom=''; submit_tz=''; status_mode=0; status_atom=''; wait_mode=0; wait_atom=''; wait_timeout=900
@@ -450,6 +451,7 @@ remote_result(){
 
 record_failure(){
  local repo=$1 atom=$2 head=$3 rc=$4 cause=${5:-} key marker note act files pf
+ case $rc in 23|70|75) (( ${attempt:-3} < 3 )) && { retry=1; return 1; } ;; esac
  key=$(receipt_file "$repo" "$atom" "$head"); marker="$key.failed"
  mkdir -p "$(dirname "$marker")" || return 1
  # A marker records an observation, not completion of the tracker transaction.
@@ -480,7 +482,7 @@ record_failure(){
 }
 
 park_atom(){
- local atom=$1 head=$2 rc=$3 key=$4 dir="$SHIP_POST_STATE_DIR/incidents" id='' st err
+ local atom=$1 head=$2 rc=$3 key=$4 dir="$SHIP_POST_STATE_DIR/incidents" id='' st err note=''
  mkdir -p "$dir/parked" || return 1
  [[ -f $dir/$rc ]] && id=$(<"$dir/$rc")
  if [[ -n $id ]]; then
@@ -488,8 +490,9 @@ park_atom(){
   [[ -n $st && $st != closed ]] || id=''
  fi
  if [[ -z $id ]]; then
+  [[ $rc == 72 ]] && note=' GitHub не запускает CI репозитория; доставка — явным ship-post --atom <id>, когда CI репо снова запускается.'
   id=$(bd_home create "[ship-post] INFRA exit $rc" -t bug -p 0 -l contour:delivery --silent \
-   -d "$(printf 'Курьер ship-post: отказ инфраструктуры доставки, код %s. Атомы запаркованы (метка delivery-blocked), курьер доставит их сам после починки.\n\n## Steps to Reproduce\nсм. заметки: атом, SHA, строка ошибки, лог квитанции\n\n## Acceptance Criteria\nпричина кода %s устранена; следующий проход курьера доставил атомы, метка delivery-blocked снята' "$rc" "$rc")") || return 1
+   -d "$(printf 'Курьер ship-post: отказ инфраструктуры доставки, код %s.%s Атомы запаркованы (метка delivery-blocked), курьер доставит их сам после починки.\n\n## Steps to Reproduce\nсм. заметки: атом, SHA, строка ошибки, лог квитанции\n\n## Acceptance Criteria\nпричина кода %s устранена; следующий проход курьера доставил атомы, метка delivery-blocked снята' "$rc" "$note" "$rc")") || return 1
   [[ -n $id ]] || return 1
   printf '%s\n' "$id" > "$dir/$rc.tmp" && mv "$dir/$rc.tmp" "$dir/$rc" || return 1
  fi
@@ -579,6 +582,17 @@ write_final_receipt(){
 }
 
 deliver_one(){
+ # why: ADR-41 — transient codes 23, 70, 75 get up to 3 attempts in one explicit call
+ local attempt=1 retry=0
+ while :; do
+  retry=0
+  deliver_attempt "$@" && return 0
+  (( retry == 1 )) || return 1
+  sleep "$SHIP_POST_RETRY_PAUSE"; attempt=$((attempt+1))
+ done
+}
+
+deliver_attempt(){
  local wt=$1 atom=$2 tz=$3 head=$4 repo=$5 branch=$6 rf inflight rc final_head ship_rc remote_proof='' remote_open='' remote_list='' superseded=0 log_start ship_out stage base
  rf=$(receipt_file "$repo" "$atom" "$head"); inflight=$(inflight_file "$repo" "$atom")
  [[ -f $rf ]] && { ack_delivery "$rf" "$atom"; return $?; }

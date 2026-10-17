@@ -35,6 +35,7 @@ make_mocks(){
 #!/usr/bin/env bash
 printf '%s|%s|%s\n' "${BEADS_ACTOR:-}" "$*" "$(git -C "$1" rev-parse HEAD)" >> "$SHIP_POST_TEST_DIR/ship.calls"
 [[ ${MOCK_SHIP_DELAY:-0} == 0 ]] || sleep "$MOCK_SHIP_DELAY"
+if [[ -n ${MOCK_SHIP_SEQ:-} ]]; then codes=($MOCK_SHIP_SEQ); n=$(wc -l < "$SHIP_POST_TEST_DIR/ship.calls"); (( n <= ${#codes[@]} )) || n=${#codes[@]}; MOCK_SHIP_RC=${codes[n-1]}; fi
 [[ ${MOCK_SHIP_RC:-0} == 0 ]] || exit "$MOCK_SHIP_RC"
 	[[ -z ${MOCK_SHIP_OUT:-} ]] || { printf '%b\n' "$MOCK_SHIP_OUT"; exit 0; }
 printf '%s\n' "$(git -C "$1" rev-parse HEAD)" >> "$SHIP_POST_TEST_DIR/merged"
@@ -103,7 +104,7 @@ EOF
 run_tool(){
 	local d=$1; shift
 	env HOME="$d/home" PATH="$d/bin:/usr/bin:/bin" SHIP_POST_TEST_DIR="$d" \
-		SHIP_POST_REPOS="${TEST_REPOS:-$d/repo}" SHIP_POST_STATE_DIR="$d/state" SHIP_POST_BEADS_ROOT="$d" SHIP_POST_RETRY_SECONDS=1 \
+		SHIP_POST_REPOS="${TEST_REPOS:-$d/repo}" SHIP_POST_STATE_DIR="$d/state" SHIP_POST_BEADS_ROOT="$d" SHIP_POST_RETRY_SECONDS=1 SHIP_POST_RETRY_PAUSE=0 \
 		timeout --kill-after=2 "${TEST_TIMEOUT:-15}" "$d/bin/ship-post" "$@"
 }
 setup_submit(){
@@ -545,8 +546,9 @@ test_review_recovery(){
  setup_submit ci_transport codex/dcfg-ci.1; commit_candidate dcfg-ci.1; h=$(git -C "$wt" rev-parse HEAD)
  out=$(export BEADS_ACTOR=Codex BD_STATUS=closed MOCK_SHIP_RC=40 MOCK_PR_HEAD="$h"; run_tool "$d" 2>&1)
  ! grep -q '|reopen ' "$d/bd.calls" && pass pending_ci_retains_readiness || fail pending_ci_retains_readiness "$out"
- out=$(export BEADS_ACTOR=Codex BD_STATUS=closed MOCK_PR_HEAD="$h"; run_tool "$d" 2>&1); rc=$?
- [[ $rc == 0 && $(wc -l < "$d/merged") == 1 ]] && pass ci_transport_recovers || fail ci_transport_recovers "$out"
+ : > "$d/ship.calls"
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed MOCK_PR_HEAD="$h" MOCK_SHIP_SEQ='70 0'; run_tool "$d" 2>&1); rc=$?
+ [[ $rc == 0 && $(wc -l < "$d/merged") == 1 && $(wc -l < "$d/ship.calls") == 2 && ! -e $d/state/incidents/parked/dcfg-ci.1 ]] && pass ci_transport_recovers || fail ci_transport_recovers "$out"
  setup_submit partial_event codex/dcfg-partial.1; : > "$d/events"
  out=$(export BEADS_ACTOR=Codex BD_STATUS=in_progress PARTIAL_EVENT=1 TEST_TIMEOUT=4; run_tool "$d" --watch 2>&1)
  [[ $(jq -r .seq "$d/state/cursor.json") == 1 && $out != *'malformed journal'* ]] && pass partial_event_retained || fail partial_event_retained "$out"
@@ -621,9 +623,9 @@ test_final_states(){
 	out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_RC=70; run_tool "$d" 2>&1)
 	for i in $(seq 1 50); do [[ -f $d/state/incidents/parked/dcfg-fs.4 ]] && break; sleep 0.2; done
 	out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_RC=70; run_tool "$d" 2>&1); rc=$?
-	[[ $rc == 0 && $(wc -l < "$d/ship.calls") == 1 && $out == *'skip dcfg-fs.4 parked unchanged key'* ]]; ok=$?
+	[[ $rc == 0 && $(wc -l < "$d/ship.calls") == 3 && $out == *'skip dcfg-fs.4 parked unchanged key'* ]]; ok=$?
 	out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_RC=70; run_tool "$d" --atom dcfg-fs.4 2>&1); rc=$?
-	[[ $ok == 0 && $rc == 0 && $(wc -l < "$d/ship.calls") == 2 ]] && pass parked_code70_not_reshipped || fail parked_code70_not_reshipped "$out"
+	[[ $ok == 0 && $rc == 0 && $(wc -l < "$d/ship.calls") == 6 ]] && pass parked_code70_not_reshipped || fail parked_code70_not_reshipped "$out"
 
 	setup_submit fs5 codex/dcfg-fs.5
 	git -C "$wt" commit -q --allow-empty -m fs5 -m "$(printf 'ТЗ: %s#U2\nAtom: dcfg-fs.5\nAgent: codex' "$wt/$tz")"
@@ -663,6 +665,14 @@ test_final_states(){
 	git -C "$wt" commit -q --allow-empty -m fs7b -m "$(printf 'ТЗ: %s#U2\nAtom: dcfg-fs.7\nAgent: codex' "$wt/$tz")"
 	out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex; run_tool "$d" 2>&1); rc=$?
 	[[ ! -s $d/ship.calls && $out == *'code=24'* ]] && pass '149b non-ancestor' || fail '149b non-ancestor' "$out"
+
+	setup_submit fs10 codex/dcfg-fs.10
+	git -C "$wt" commit -q --allow-empty -m fs10 -m "$(printf 'ТЗ: %s#U2\nAtom: dcfg-fs.10\nAgent: codex' "$wt/$tz")"
+	out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_RC=72; run_tool "$d" 2>&1); rc=$?
+	for i in $(seq 1 50); do [[ -f $d/state/incidents/parked/dcfg-fs.10 ]] && break; sleep 0.2; done
+	n1=$(wc -l < "$d/ship.calls")
+	out2=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_RC=72; run_tool "$d" 2>&1); rc2=$?
+	[[ $rc == 0 && $n1 == 1 && -f $d/state/incidents/parked/dcfg-fs.10 && $rc2 == 0 && $(wc -l < "$d/ship.calls") == 1 ]] && grep -Fq 'GitHub не запускает CI' "$d/bd.calls" && pass ci_not_started_parked || fail ci_not_started_parked "$out $out2"
 }
 
 test_u15(){
@@ -718,17 +728,11 @@ test_adr30(){
  out=$(<"$out_file")
  [[ $rc == 0 && $(wc -l < "$d/ship.calls") == 3 ]] && pass adr30_atom_lock || fail adr30_atom_lock "rc=$rc: $out"
  setup_submit adr30_retry codex/dcfg-adr30retry.1; commit_candidate dcfg-adr30retry.1; : > "$d/events"
- cat > "$d/bin/ship" <<'MOCKSHIP'
-#!/usr/bin/env bash
-printf '%s|%s|%s\n' "${BEADS_ACTOR:-}" "$*" "$(git -C "$1" rev-parse HEAD)" >> "$SHIP_POST_TEST_DIR/ship.calls"
-if [[ ! -e $SHIP_POST_TEST_DIR/ship.retry ]]; then touch "$SHIP_POST_TEST_DIR/ship.retry"; exit 70; fi
-printf '%s\n' "$(git -C "$1" rev-parse HEAD)" >> "$SHIP_POST_TEST_DIR/merged"
-MOCKSHIP
- chmod +x "$d/bin/ship"
- out_file="$d/adr30-retry.out"
- ( export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex TEST_TIMEOUT=4; run_tool "$d" --watch ) >"$out_file" 2>&1; rc=$?
- out=$(<"$out_file")
- [[ $(wc -l < "$d/ship.calls") == 2 && $(wc -l < "$d/merged") == 1 ]] && pass adr30_transient_retries || fail adr30_transient_retries "rc=$rc: $out"
+ out=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_RC=70; run_tool "$d" 2>&1); rc=$?
+ for i in $(seq 1 50); do [[ -f $d/state/incidents/parked/dcfg-adr30retry.1 ]] && break; sleep 0.2; done
+ n1=$(wc -l < "$d/ship.calls")
+ out2=$(export BEADS_ACTOR=Codex BD_STATUS=closed BD_ASSIGNEE=Codex MOCK_SHIP_RC=70; run_tool "$d" 2>&1); rc2=$?
+ [[ $rc == 0 && $n1 == 3 && -f $d/state/incidents/parked/dcfg-adr30retry.1 && $rc2 == 0 && $(wc -l < "$d/ship.calls") == 3 && $out2 == *'parked unchanged key'* ]] && pass adr30_transient_retries || fail adr30_transient_retries "rc=$rc: $out2"
 }
 
 test_park(){
@@ -831,7 +835,7 @@ test_park_live(){
  setup_submit park_live "claude/$atom-live"; commit_candidate "$atom" claude
  rm -f -- "$d/bin/bd"; ln -s "$real_bd" "$d/bin/bd"
  out=$(env HOME="$HOME" PATH="$d/bin:/usr/bin:/bin" SHIP_POST_TEST_DIR="$d" SHIP_POST_REPOS="$d/repo" SHIP_POST_STATE_DIR="$d/state" \
-  SHIP_POST_BEADS_ROOT="$live_root" SHIP_POST_RETRY_SECONDS=1 BEADS_ACTOR='Claude Code' MOCK_SHIP_RC=71 \
+  SHIP_POST_BEADS_ROOT="$live_root" SHIP_POST_RETRY_SECONDS=1 SHIP_POST_RETRY_PAUSE=0 BEADS_ACTOR='Claude Code' MOCK_SHIP_RC=71 \
   timeout --kill-after=2 60 "$d/bin/ship-post" 2>&1)
  for i in $(seq 1 50); do [[ -f $d/state/incidents/parked/$atom ]] && break; sleep 0.2; done
  inc=$(cat "$d/state/incidents/71" 2>/dev/null)
