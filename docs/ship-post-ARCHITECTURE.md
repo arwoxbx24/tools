@@ -65,7 +65,7 @@ INFRA-отказы (30/70/71/75/прочие) паркуются: метка `de
 | `ship` | 40 | CI did not pass | no until CI/input changes |
 | `ship` | 50 | rebase, PR conflict or merge failure | no, reconcile branch/PR |
 | `ship` | 60 | post-merge close/live/reload step | depends on the failed post-step |
-| `ship` | 70 | GitHub or fetch failure | yes, retry after connectivity/auth service recovery |
+| `ship` | 70 | GitHub or fetch failure; CI job refused by GitHub billing/quota (annotation "recent account payments have failed" / "spending limit needs to be increased", `bin/git-auto-lib:ga_billing_refused`, parked as `ci-billing`) | yes, retry after connectivity/auth service recovery or billing/quota restored |
 | `ship` | 75 | repository lock timeout | yes |
 | `ship` | 80 | TЗ path not accepted | no, fix TЗ path |
 | `ship-post` | 21 | no remote PR result yet, or only a closed unmerged PR with the same head; `deliver_one` proceeds to `ship` | intermediate, not a terminal result |
