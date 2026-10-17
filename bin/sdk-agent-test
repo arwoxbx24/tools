@@ -237,6 +237,20 @@ engine_override_test_only() {  # static: SDK_AGENT_ENGINE is read only inside th
   [[ $(grep -c 'SDK_AGENT_ENGINE' "$ag") -eq 1 && $block == *SDK_AGENT_ENGINE* ]]
 }
 
+large_prompt_on_stdin() {  # ~200 KB prompt reaches the engine on stdin intact; no argv limit error
+  local stub_stdin="$TMP/stub-stdin" tz="$TMP/tz-big.md" copy="$TMP/stdin-big" log="$TMP/runs-big.jsonl" err rc
+  cat > "$stub_stdin" <<'STUB'
+#!/usr/bin/env bash
+cat > "$STUB_STDIN_COPY"
+printf '{"type":"result","subtype":"success","total_cost_usd":0,"modelUsage":{"claude-haiku-5-5":{}},"result":"ok"}\n'
+STUB
+  chmod +x "$stub_stdin"
+  head -c 200000 /dev/zero | tr '\0' 'a' > "$tz"
+  err=$(env SDK_AGENT_ENGINE="$stub_stdin" STUB_STDIN_COPY="$copy" SDK_AGENT_RUNS_LOG="$log" "$ag" read "$TMP/wt" "$tz" 2>&1 >/dev/null)
+  rc=$?
+  [[ $rc -eq 0 && $err != *"Argument list too long"* ]] && (( $(wc -c < "$copy") >= 200000 )) && head -c 200000 "$copy" | cmp -s - "$tz"
+}
+
 mkdir -p "$TMP/wt"
 git -C "$TMP/wt" init -q
 
@@ -275,6 +289,7 @@ check "concurrent: two asks with a 3 s engine finish within 5 s" concurrent_asks
 check "cap counts in-flight reservation: 4.60 reserved + 0.50 -> rc 6" cap_counts_inflight
 check "engine override never gets the API key" engine_override_no_key
 check "engine override ignored without SDK_AGENT_TEST (static)" engine_override_test_only
+check "prompt of ~200 KB reaches the engine on stdin intact (no argv limit)" large_prompt_on_stdin
 
 echo "ok $pass/$total"
 [[ $pass -eq $total ]]

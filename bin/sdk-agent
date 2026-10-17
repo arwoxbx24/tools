@@ -193,7 +193,7 @@ run_engine() {
     || die "cannot write in-flight file: $inflight" 6
   flock -u "$lockfd"
 
-  RESULT=$(cd -- "$workdir" && if (( key_load )); then set -a && . "$KEY_FILE" && set +a; fi && env -u ANTHROPIC_AUTH_TOKEN -u CLAUDE_CODE_OAUTH_TOKEN -u CLAUDE_CODE_USE_BEDROCK -u CLAUDE_CODE_USE_VERTEX -u CLAUDE_CODE_USE_FOUNDRY -u ANTHROPIC_PROFILE "${no_key[@]}" CLAUDE_CONFIG_DIR="$ENGINE_HOME" "$engine" "${args[@]}" "$prompt" < /dev/null) || true
+  RESULT=$(cd -- "$workdir" && if (( key_load )); then set -a && . "$KEY_FILE" && set +a; fi && env -u ANTHROPIC_AUTH_TOKEN -u CLAUDE_CODE_OAUTH_TOKEN -u CLAUDE_CODE_USE_BEDROCK -u CLAUDE_CODE_USE_VERTEX -u CLAUDE_CODE_USE_FOUNDRY -u ANTHROPIC_PROFILE "${no_key[@]}" CLAUDE_CONFIG_DIR="$ENGINE_HOME" "$engine" "${args[@]}" "Follow the task provided on stdin exactly." <<<"$prompt") || true
 
   jq -e 'type == "object"' <<<"$RESULT" >/dev/null 2>&1 || die "engine returned no JSON result" 4
   flock "$lockfd" || die "cannot lock: $RUNS_LOG.lock" 6
