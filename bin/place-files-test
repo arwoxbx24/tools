@@ -58,4 +58,19 @@ if [[ $rc == 1 ]] && summary 'ok=2 failed=1' "$out" && [[ -f $repo/docs/meetings
 "$tool" "$repo/.git/x" "$src" >"$tmp/out" 2>"$tmp/err"; rc=$?
 if [[ $rc == 2 ]]; then pass 8; else fail 8 "rc=$rc"; fi
 
-if [[ $ok == 8 ]]; then echo 'PASS 8/8'; else echo "FAIL $ok/8"; fi
+printf 'tracked\n' > "$repo/tracked.html"
+git -C "$repo" add tracked.html
+git -C "$repo" -c user.name=test -c user.email=test@example.com commit -q -m init
+wt="$root/wt"
+git -C "$repo" worktree add -q --detach "$wt"
+
+out=$("$tool" "$wt/docs/meetings/untracked" "$src" 2>"$tmp/err"); rc=$?
+if [[ $rc == 0 ]] && summary 'ok=1 failed=0' "$out" && cmp -s "$src" "$wt/docs/meetings/untracked/otchet.html"; then pass 9; else fail 9 "rc=$rc"; fi
+
+out=$("$tool" "$wt/hooks" "$repo/tracked.html" 2>"$tmp/err"); rc=$?
+if [[ $rc == 0 ]] && summary 'ok=1 failed=0' "$out" && cmp -s "$repo/tracked.html" "$wt/hooks/tracked.html"; then pass 10; else fail 10 "rc=$rc"; fi
+
+out=$("$tool" "$wt/hooks" "$repo/.env" 2>"$tmp/err"); rc=$?
+if [[ $rc == 1 ]] && grep -q 'forbidden filename' "$tmp/err"; then pass 11; else fail 11 "rc=$rc"; fi
+
+if [[ $ok == 11 ]]; then echo 'PASS 11/11'; else echo "FAIL $ok/11"; fi

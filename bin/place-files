@@ -27,7 +27,7 @@ while [[ ! -e $ancestor ]]; do
   ancestor=$parent
 done
 [[ -d $ancestor ]] || { echo "place-files: no destination ancestor" >&2; exit 2; }
-destination_repo=$(git -C "$ancestor" rev-parse --show-toplevel 2>/dev/null) || {
+destination_repo=$(git -C "$ancestor" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || {
   echo "place-files: destination is not in a git repository" >&2
   exit 2
 }
@@ -44,7 +44,7 @@ for source in "${@:2}"; do
   elif [[ $source_path == */.git/* || $source_path == */secrets/* ]]; then
     fail "$source" 'forbidden path'
   else
-    source_repo=$(git -C "$(dirname -- "$source_path")" rev-parse --show-toplevel 2>/dev/null || true)
+    source_repo=$(git -C "$(dirname -- "$source_path")" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)
     [[ -z $source_repo ]] || source_repo=$(realpath -m "$source_repo")
     if [[ -z $source_repo || $source_repo != "$destination_repo" ]]; then
       fail "$source" 'not in destination repository'
