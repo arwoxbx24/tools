@@ -590,11 +590,11 @@ printf 'f\n' > "$d/sb/test-f/f"
 SAFE_DELETE_SANDBOX="$d/sb" "$bin/safe-delete" --bk "$bk" dir "$d/sb/test-f" >/dev/null 2>&1; r79=$?
 if [[ $r79 == 0 && ! -e "$d/sb/test-f" ]]; then echo 'PASS T79 sandbox_empty_beads_codex'; ok=$((ok+1)); else echo "FAIL T79: rc=$r79"; fi
 
-# T80: default roots accept a user cache dir (real roots, SAFE_DELETE_ROOTS unset)
+# T80: user cache dir under default roots is deleted as cache, without copy (real roots, SAFE_DELETE_ROOTS unset)
 mkdir -p "/root/.cache/sd-test-$$"; printf 'c\n' > "/root/.cache/sd-test-$$/f"
-env -u SAFE_DELETE_ROOTS "$bin/safe-delete" --bk "$bk" dir "/root/.cache/sd-test-$$" >/dev/null 2>&1; r80=$?
+out80=$(env -u SAFE_DELETE_ROOTS "$bin/safe-delete" --bk "$bk" dir "/root/.cache/sd-test-$$" 2>/dev/null); r80=$?
 copy80=$(find "$bk/files" -path "*/root/.cache/sd-test-$$/f" -type f 2>/dev/null | head -1)
-if [[ $r80 == 0 && ! -e "/root/.cache/sd-test-$$" && -n $copy80 ]]; then echo 'PASS T80 user_cache_root'; ok=$((ok+1)); else echo "FAIL T80: rc=$r80"; fi
+if [[ $r80 == 0 && ! -e "/root/.cache/sd-test-$$" && $out80 == *'основание: кэш, без копии'* && -z $copy80 ]]; then echo 'PASS T80 user_cache_root'; ok=$((ok+1)); else echo "FAIL T80: rc=$r80"; fi
 
 # T81: credential stores refused under real default roots (test fixture when the real file is absent)
 fx81="/root/.cache/sd-test-$$-auth/auth.json"
@@ -621,5 +621,47 @@ if [[ $r83a == 0 && ! -e "/root/.claude/projects/sd-test-$$/x.jsonl" && $r83b ==
   echo 'PASS T83 claude_projects_root'; ok=$((ok+1))
 else echo "FAIL T83: file=$r83a dir=$r83b"; fi
 
-[[ $ok == 84 ]] || exit 1
-echo "итог: PASS 83, FAIL 0"
+# T84: one call deletes 1000 files; restore ids from lines 1, 500, 1000 bring back their content
+mkdir -p "$d/bench"
+seq 1 1000 | split -d -l 1 -a 4 - "$d/bench/f"
+t84s=$(date +%s%N)
+out84=$("$bin/safe-delete" --bk "$bk" file "$d"/bench/f* 2>/dev/null); r84=$?
+t84e=$(date +%s%N)
+ms84=$(( (t84e - t84s) / 1000000 ))
+n84=$(grep -c '^удалено: ' <<< "$out84")
+left84=$(find "$d/bench" -type f | wc -l)
+rr84=0; good84=0
+while IFS= read -r line; do
+  p84=$(sed 's/^удалено: //; s/ |.*//' <<< "$line")
+  id84=$(awk '{print $NF}' <<< "$line")
+  exp84=$(( 10#${p84##*/f} + 1 ))
+  "$bin/safe-delete" --bk "$bk" restore "$id84" >/dev/null 2>&1 || rr84=1
+  [[ -f $p84 && $(cat "$p84") == "$exp84" ]] && good84=$((good84+1))
+done < <(sed -n '1p;500p;1000p' <<< "$out84")
+if [[ $r84 == 0 && $n84 == 1000 && $left84 == 0 && $ms84 -le 5000 && $rr84 == 0 && $good84 == 3 ]]; then
+  echo 'PASS T84 batch_1000'; ok=$((ok+1))
+else echo "FAIL T84: rc=$r84 n=$n84 left=$left84 ms=$ms84 rr=$rr84 good=$good84"; fi
+
+# T85: one banned file in a 1000-file batch refuses the whole batch
+mkdir -p "$d/ban"
+seq 1 999 | split -l 1 -a 4 - "$d/ban/f"
+printf 'env\n' > "$d/ban/.env"
+"$bin/safe-delete" --bk "$bk" file "$d"/ban/f* "$d/ban/.env" >/dev/null 2>&1; r85=$?
+left85=$(find "$d/ban" -type f | wc -l)
+if [[ $r85 == 2 && $left85 == 1000 ]]; then echo 'PASS T85 batch_banned_all_or_nothing'; ok=$((ok+1))
+else echo "FAIL T85: rc=$r85 left=$left85"; fi
+
+# T86: cache mode deletes a node_modules dir without a copy; non-cache path refused
+mkdir -p "$d/proj/node_modules"
+seq 1 1000 | split -l 1 -a 4 - "$d/proj/node_modules/f"
+cnt86a=$(find "$bk/files" -type f 2>/dev/null | wc -l)
+out86=$("$bin/safe-delete" --bk "$bk" cache "$d/proj/node_modules" 2>&1); r86a=$?
+cnt86b=$(find "$bk/files" -type f 2>/dev/null | wc -l)
+mkdir -p "$d/plain"; printf 'p\n' > "$d/plain/f"
+"$bin/safe-delete" --bk "$bk" cache "$d/plain" >/dev/null 2>&1; r86b=$?
+if [[ $r86a == 0 && ! -e "$d/proj/node_modules" && $out86 == *'основание: кэш, без копии'* && $cnt86a == "$cnt86b" && $r86b == 2 && -f "$d/plain/f" ]]; then
+  echo 'PASS T86 cache_no_copy'; ok=$((ok+1))
+else echo "FAIL T86: rc=$r86a/$r86b cnt=$cnt86a/$cnt86b out=$out86"; fi
+
+[[ $ok == 87 ]] || exit 1
+echo "итог: PASS $ok, FAIL 0"
