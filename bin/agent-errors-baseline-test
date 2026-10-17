@@ -5,7 +5,8 @@ bin=$(cd -- "$(dirname -- "$0")" && pwd)/agent-errors-baseline
 [[ -f $bin && -x $bin ]] || { echo "FAIL: tool missing: $bin" >&2; exit 1; }
 
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/aeb-test-XXXXXX")
-trap 'rm -rf "$tmp"' EXIT
+adir=$(mktemp -d "${TMPDIR:-/tmp}/aeb-anom-XXXXXX")
+trap 'rm -rf "$tmp" "$adir"' EXIT
 
 pad=$(printf 'z%.0s' {1..200})
 
@@ -47,4 +48,63 @@ chk '^PASS injected_chars 10 <= 3082799 \(50% of 6165599/7 x 7\)$'
 chk '^targets=4 pass=2 fail=2 secs=[0-9]+$'
 
 "$bin" --corpus "$tmp" --days 1 >/dev/null || { echo 'FAIL: --days 1 rc nonzero' >&2; exit 1; }
+# anomaly fixtures: one positive case per class, plus noise; each file padded past the 1k size filter
+padf() { while [[ $(wc -c <"$1") -le 1100 ]]; do printf '{"type":"pad","pad":"%s"}\n' "$pad" >>"$1"; done; }
+cat >"$adir/s1.jsonl" <<'EOF'
+{"type":"user","message":{"content":"go"}}
+{"type":"user","isMeta":true,"message":{"content":"Stop hook feedback: first"}}
+{"type":"user","isMeta":true,"message":{"content":"Stop hook feedback: second"}}
+EOF
+cat >"$adir/s2.jsonl" <<'EOF'
+{"type":"user","message":{"content":"go"}}
+{"type":"user","isMeta":true,"message":{"content":"Stop hook feedback: a"}}
+{"type":"user","isMeta":true,"message":{"content":"Stop hook feedback: b"}}
+{"type":"user","isMeta":true,"message":{"content":"Stop hook feedback: c"}}
+EOF
+cat >"$adir/r1.jsonl" <<'EOF'
+{"type":"user","message":{"content":"go"}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"r1","name":"Bash","input":{"command":"make build"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"r1","is_error":true,"content":"boom"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"r2","name":"Bash","input":{"command":"make build"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"r2","is_error":true,"content":"boom"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"r3","name":"Bash","input":{"command":"make build"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"r3","is_error":true,"content":"boom"}]}}
+EOF
+cat >"$adir/d1.jsonl" <<'EOF'
+{"type":"user","message":{"content":"go"}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"d1","name":"Bash","input":{"command":"rm a"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"d1","is_error":true,"content":"Permission to use Bash has been denied"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","id":"d2","name":"Bash","input":{"command":"rm b"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"d2","is_error":true,"content":"Permission to use Bash has been denied"}]}}
+EOF
+cat >"$adir/f1.jsonl" <<'EOF'
+{"type":"user","message":{"content":"go"}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"all DONE"}]}}
+{"type":"user" oops
+EOF
+cat >"$adir/n.jsonl" <<'EOF'
+{"type":"user","message":{"content":"go"}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"x1","is_error":false,"content":"Stop hook feedback: x"}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"x2","is_error":false,"content":"Stop hook feedback: x"}]}}
+EOF
+for f in "$adir"/*.jsonl; do padf "$f"; done
+
+T=$'\t'
+out=$("$bin" --anomalies --corpus "$adir" --days 7) || { echo 'FAIL: --anomalies rc nonzero' >&2; exit 1; }
+chk "^s1${T}3${T}S1${T}Stop hook feedback: second$"
+chk "^s2${T}3${T}S1${T}Stop hook feedback: b$"
+chk "^s2${T}4${T}S2${T}Stop hook feedback: c$"
+chk "^r1${T}7${T}R1${T}boom$"
+chk "^d1${T}5${T}D1${T}Permission to use Bash has been denied$"
+chk "^f1${T}2${T}F1${T}all DONE$"
+chk '^anomalies=7 S1=3 S2=1 R1=1 D1=1 F1=1 skipped_lines=1$'
+out=$("$bin" --anomalies --session s2 --corpus "$adir") || { echo 'FAIL: --session rc nonzero' >&2; exit 1; }
+chk '^anomalies=3 S1=2 S2=1 R1=0 D1=0 F1=0 skipped_lines=0$'
+out=$("$bin" --anomalies --session n --corpus "$adir") || { echo 'FAIL: --session n rc nonzero' >&2; exit 1; }
+chk '^anomalies=0 S1=0 S2=0 R1=0 D1=0 F1=0 skipped_lines=0$'
+out=$("$bin" --anomalies --session nope --corpus "$adir") || { echo 'FAIL: --session nope rc nonzero' >&2; exit 1; }
+chk '^no transcript for nope$'
+chk '^anomalies=0 S1=0 S2=0 R1=0 D1=0 F1=0 skipped_lines=0$'
+"$bin" --anomalies --corpus "$tmp" >/dev/null || { echo 'FAIL: --anomalies on weekly corpus rc nonzero' >&2; exit 1; }
+"$bin" --help | grep -q -- '--anomalies' || { echo 'FAIL: --help lacks --anomalies' >&2; exit 1; }
 echo PASS

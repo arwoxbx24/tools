@@ -3,15 +3,20 @@ set -u
 
 CORPUS=/root/.claude/projects
 DAYS=7
+ANOM=0
+SESSION=
 
 usage() {
   cat <<'EOF'
 usage: agent-errors-baseline [--days N] [--corpus DIR]
+       agent-errors-baseline --anomalies [--session ID] [--days N] [--corpus DIR]
 
 Weekly error-rate report over agent transcripts (*.jsonl) against 4 owner targets:
   bash_rate<=3%, denial_rate<=0.4%, path_errors<=5 per 7 days (scaled by --days),
   injected_chars<=50% of 6165599/7 x days.
 Prints measures, then PASS/FAIL lines, then "targets=4 pass=N fail=M secs=S".
+Anomaly mode (--anomalies [--session ID]): one row per real breakage, tab-separated
+(session, line, class, quote); classes S1 S2 R1 D1 F1; then a summary line.
 rc 0 always: reports, does not gate. bash + jq + awk only.
 EOF
 }
@@ -32,6 +37,14 @@ while [[ $i -lt ${#args[@]} ]]; do
       if [[ $((i + 1)) -lt ${#args[@]} ]]; then CORPUS=${args[$((i + 1))]}; else usage >&2; exit 0; fi
       i=$((i + 2))
       ;;
+    --anomalies)
+      ANOM=1
+      i=$((i + 1))
+      ;;
+    --session)
+      if [[ $((i + 1)) -lt ${#args[@]} ]]; then SESSION=${args[$((i + 1))]}; else usage >&2; exit 0; fi
+      i=$((i + 2))
+      ;;
     *)
       usage >&2
       exit 0
@@ -41,12 +54,78 @@ done
 
 [[ $DAYS =~ ^[1-9][0-9]*$ ]] || DAYS=7
 start=$SECONDS
-
-JQPROG='
+BLOCKTEXT='
 def blocktext:
   if type == "string" then .
   elif type == "array" then (map(if type == "object" then ((.text // "") | tostring) elif type == "string" then . else "" end) | join(" "))
   else "" end;
+'
+
+if [[ $ANOM == 1 ]]; then
+ANOMPROG="$BLOCKTEXT"'
+def mc: if (.message | type) == "object" then .message.content else null end;
+def cs: mc | if type == "array" then . else [] end;
+def atext: [cs[] | objects | select(.type == "text") | ((.text // "") | tostring)] | join(" ");
+def row($ln; $c; $q): [.s, ($ln | tostring), $c, ($q | tostring | gsub("[\\n\\r\\t]"; " ") | .[0:200])] | join("\t");
+def closeturn:
+  if .tu == 0 and .lt != null and (.lt.t | contains("DONE")) then .rows += [row(.lt.n; "F1"; .lt.t)] else . end;
+([inputs] | to_entries) as $L
+| ($f | split("/") | .[-1] | rtrimstr(".jsonl")) as $s
+| reduce $L[] as $e
+  ( {s: $s, rows: [], sk: 0, fbn: 0, hp: false, zt: 0, tu: 0, lt: null, ids: {}, rc: {}, dc: {}};
+    ($e.key + 1) as $ln
+    | ($e.value | (try fromjson catch null) // null) as $r
+    | if $r == null then .sk += 1
+      elif ($r | type) != "object" then .
+      else
+        ($r.type // "") as $t
+        | ($r | mc) as $c
+        | ($t == "user" and ($c | type) == "string") as $us
+        | (if $us then $c else "" end) as $str
+        | ($us and ($str | startswith("Stop hook feedback:"))) as $fb
+        | ($us and $r.isMeta != true and ($str | startswith("Stop hook feedback:") | not) and ($str | startswith("<task-notification>") | not)) as $pr
+        | if $fb then
+            closeturn
+            | (if .tu == 0 then .zt += 1 else .zt = 0 end)
+            | (if .zt >= 3 then .rows += [row($ln; "S2"; $str)] else . end)
+            | (if .fbn >= 1 and (.hp | not) then .rows += [row($ln; "S1"; $str)] else . end)
+            | .fbn += 1 | .hp = false | .tu = 0 | .lt = null
+          elif $pr then closeturn | .zt = 0 | .hp = true | .tu = 0 | .lt = null
+          elif $t == "assistant" then
+            (reduce ($r | cs[] | objects | select(.type == "tool_use")) as $b (.;
+               .tu += 1 | .ids[((($b.id // "")) | tostring)] = {n: ($b.name // ""), c: (($b.input | objects | .command) // null)})
+             | ($r | atext) as $at | if $at != "" then .lt = {n: $ln, t: $at} else . end)
+          elif $t == "user" then
+            (reduce ($r | cs[] | objects | select(.type == "tool_result" and .is_error == true)) as $b (.;
+               (($b.tool_use_id // "") | tostring) as $id
+               | (.ids[$id] // {n: "", c: null}) as $u
+               | ($b.content | blocktext) as $tx
+               | (if $u.n == "Bash" and $u.c != null then
+                    (.rc[$u.c] = ((.rc[$u.c] // 0) + 1) | if .rc[$u.c] >= 3 then .rows += [row($ln; "R1"; $tx)] else . end)
+                  else . end)
+               | (if ($tx | test("^\\s*Permission to use ")) and ($tx | contains("has been denied")) and $u.n != "" then
+                    (.dc[$u.n] = ((.dc[$u.n] // 0) + 1) | if .dc[$u.n] >= 2 then .rows += [row($ln; "D1"; $tx)] else . end)
+                  else . end)))
+          else . end
+      end)
+| closeturn
+| (.rows[], ((["skipped", (.sk | tostring)]) | join("\t")))
+'
+  mt=(-mtime "-$DAYS")
+  if [[ -n $SESSION ]]; then mt=(); fi
+  stats=$(find "$CORPUS" -type f -name "$SESSION*.jsonl" "${mt[@]}" -size +1k -print0 \
+    | while IFS= read -r -d '' f; do jq -R -r -n --arg f "$f" "$ANOMPROG" "$f"; done || true)
+  awk -F'\t' -v sess="$SESSION" '
+    NF == 2 { files++; sk += $2; next }
+    NF == 4 { n++; c[$3]++; print }
+    END {
+      if (files == 0 && sess != "") print "no transcript for " sess
+      printf "anomalies=%d S1=%d S2=%d R1=%d D1=%d F1=%d skipped_lines=%d\n", n, c["S1"], c["S2"], c["R1"], c["D1"], c["F1"], sk
+    }' <<<"$stats"
+  exit 0
+fi
+
+JQPROG="$BLOCKTEXT"'
 reduce (
   inputs as $line
   | (input_filename // "") as $fn
