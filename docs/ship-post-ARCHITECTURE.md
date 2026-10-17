@@ -70,7 +70,7 @@ INFRA-отказы (30/70/71/75/прочие) паркуются: метка `de
 | `ship` | 80 | TЗ path not accepted | no, fix TЗ path |
 | `ship-post` | 21 | no remote PR result yet, or only a closed unmerged PR with the same head; `deliver_one` proceeds to `ship` | intermediate, not a terminal result |
 | `ship-post` | 22 | matching remote PR is open; `deliver_one` proceeds to `ship` | intermediate, not a terminal result |
-| `ship-post` | 23 | GitHub query failed or repository is not private | query failure may be temporary; privacy denial is not |
+| `ship-post` | 23 | GitHub query failed or returned malformed data (public and private origins are both accepted, owner 17.10) | temporary; retried by the watcher |
 | `ship-post` | 24 | remote result does not match the submitted SHA/state | no, reconcile before retry |
 
 `ship-post` records 23, 70 and 75 as retryable observations in `bin/ship-post:record_failure`; after a `ship` result, 10, 50 and 80 are final for that submitted SHA, while 70 remains repeatable. Other delivery errors reopen the atom and append one note `ship-post exit <code>: <cause>; действие: <action>` to it; no separate task (ADR-28/29).
