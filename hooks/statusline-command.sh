@@ -44,7 +44,7 @@ bar() {
 }
 
 reset_hm() { [[ $1 =~ ^[0-9]+$ ]] && date -d "@$1" +%H:%M 2>/dev/null; }
-reset_dm() { [[ $1 =~ ^[0-9]+$ ]] && date -d "@$1" '+%d.%m в %H:%M' 2>/dev/null; }
+reset_dm() { [[ $1 =~ ^[0-9]+$ ]] && date -d "@$1" '+%d.%m %H:%M' 2>/dev/null; }
 
 join() {
   local out="" seg
@@ -77,28 +77,28 @@ fi
 seg2=()
 if [[ -n $ctx_pct ]]; then
   c=$(whole "$ctx_pct")
-  seg2+=("контекст $(paint "$c" "$(bar "$c") $c%")")
+  seg2+=("context $(paint "$c" "$(bar "$c") $c%")")
 fi
 if [[ -n $cache_pct ]]; then
   k=$(whole "$cache_pct")
-  seg2+=("кэш $k%")
+  seg2+=("cache $k%")
 fi
 if [[ -n $session_cost ]]; then
-  seg2+=("сессия \$$(printf '%.2f' "$session_cost")")
+  seg2+=("session \$$(printf '%.2f' "$session_cost")")
 fi
 
 # line 3: limits, SDK spend appended below
 seg3=()
 if [[ -n $h5_pct ]]; then
   h=$(whole "$h5_pct")
-  s="лимит 5ч $(paint "$h" "$(bar "$h") $h%")"
-  t=$(reset_hm "$h5_reset"); [[ -n $t ]] && s+=" (сброс в $t)"
+  s="5h $(paint "$h" "$(bar "$h") $h%")"
+  t=$(reset_hm "$h5_reset"); [[ -n $t ]] && s+=" (reset $t)"
   seg3+=("$s")
 fi
 if [[ -n $d7_pct ]]; then
   d=$(whole "$d7_pct")
-  s="неделя $(paint "$d" "$(bar "$d") $d%")"
-  t=$(reset_dm "$d7_reset"); [[ -n $t ]] && s+=" (сброс $t)"
+  s="week $(paint "$d" "$(bar "$d") $d%")"
+  t=$(reset_dm "$d7_reset"); [[ -n $t ]] && s+=" (reset $t)"
   seg3+=("$s")
 fi
 
@@ -110,7 +110,7 @@ if [[ -r $runs ]]; then
   if [[ $cents =~ ^[0-9]+$ ]]; then
     sdk_pct=$(( cents / 3 ))
     sdk_usd="\$$((cents / 100)).$(printf '%02d' $((cents % 100)))"
-    seg3+=("SDK за день $(paint "$sdk_pct" "$(bar "$sdk_pct") $sdk_usd") из \$3.00")
+    seg3+=("SDK today $(paint "$sdk_pct" "$(bar "$sdk_pct") $sdk_usd") / \$3.00")
   fi
 fi
 
