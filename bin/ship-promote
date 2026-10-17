@@ -64,14 +64,16 @@ gg_log 0 "quote: $quote"
 promote(){
 	git -C "$repo" fetch -q origin || leave 70 fetch
 	sha=$(git -C "$repo" rev-parse origin/dev)
-	ga_ci_wait sha "$slug" "$sha" dev || { echo "ship-promote: CI dev для $sha не зелёный" >&2; leave 40 dev-ci; }
+	ga_ci_wait sha "$slug" "$sha" dev; ci_rc=$?
+	[[ $ci_rc == 0 ]] || { echo "ship-promote: CI dev для $sha не зелёный$([[ $ci_rc == 70 ]] && echo ' billing/quota')" >&2; leave 40 dev-ci; }
 	git -C "$repo" merge-base --is-ancestor "origin/$prod" "$sha" \
 		|| { echo 'ship-promote: в prod есть коммиты вне dev — влей prod в dev' >&2; leave 50 ancestor; }
 	push_ms=$(( $(date +%s) * 1000 ))
 	git -C "$repo" push -q origin "$sha:refs/heads/$prod" || leave 30 push
 	bd note "$atom" "promote: $sha quote=$quote"
-	ga_ci_wait sha "$slug" "$sha" "$prod" || {
-		echo 'ship-promote: CI prod красный/нет' >&2
+	ga_ci_wait sha "$slug" "$sha" "$prod"; ci_rc=$?
+	[[ $ci_rc == 0 ]] || {
+		echo "ship-promote: CI prod красный/нет$([[ $ci_rc == 70 ]] && echo ' billing/quota')" >&2
 		bd note "$atom" "prod-ci: red $sha"
 		leave 60 prod-ci
 	}
