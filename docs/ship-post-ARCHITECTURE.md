@@ -12,7 +12,7 @@ ship-post --submit <worktree> --atom <id> --tz <path#U> --evidence <text> --file
 
 Архитектура также читается без сети: `ship-post --status <atom>` — read-only сводка из файлов `SHIP_POST_STATE_DIR` (без `bd`, `git`, блокировок и записей), значения `none|submitted|delivering|failed|parked|<stage из receipt>`.
 `ship-post --wait <atom> [--timeout <s>]` (dcfg-p6mn5.2, default 900 s) — the same read-only `--status` line, but blocks on `inotifywait` events in `SHIP_POST_STATE_DIR` (re-check at least every 30 s) until a final state: rc 0 `delivered|wait-owner|prod-hold`, rc 1 `parked|failed`, rc 3 timeout. The agent runs it as a harness background command after `bd close`, so the courier's state change wakes the agent without polling.
-`scan_repo` logs every skip as `skip <atom|worktree> <reason>` (dcfg-p6mn5.6): no silent skip path, so a delivery delay is attributable from the PM2 log.
+`scan_repo` logs every skip as `skip <atom|worktree> <reason>` (dcfg-p6mn5.6; dcfg-p6mn5.7: for open atoms too, the Beads report stays closed-only): no silent skip path, so a delivery delay is attributable from the PM2 log.
 
 ## 2. C4: контекст и контейнеры
 
