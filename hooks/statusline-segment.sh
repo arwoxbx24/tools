@@ -1,10 +1,10 @@
 #!/bin/bash
 # ccstatusline Custom Command: prints one field of our statusline panel as plain text (no ANSI, ccstatusline colors it)
-# usage: statusline-segment.sh <folder|lines|ctx|ship|sdk|five|week>   (Claude Code status JSON on stdin)
+# usage: statusline-segment.sh <folder|lines|ctx|ship|sdk|five|week|sess>   (Claude Code status JSON on stdin)
 
 usage() {
   cat <<'EOF'
-usage: statusline-segment.sh <folder|lines|ctx|ship|sdk|five|week>
+usage: statusline-segment.sh <folder|lines|ctx|ship|sdk|five|week|sess>
   reads Claude Code status JSON on stdin, prints one plain-text line
 EOF
 }
@@ -12,7 +12,7 @@ EOF
 field=${1-}
 case $field in
   --help) usage; exit 0 ;;
-  folder|lines|ctx|ship|sdk|five|week) ;;
+  folder|lines|ctx|ship|sdk|five|week|sess) ;;
   *) usage >&2; exit 2 ;;
 esac
 
@@ -93,7 +93,8 @@ seg_ship() {
   local post=${SHIP_POST_BIN:-/root/workspaces/tools/bin/ship-post} bd=${BD_BIN:-bd}
   local cache=${TMPDIR:-/tmp}/statusline-ship-$sid sess=${sid:0:4}
   local atoms atom own line state delivered=0 busy=() stuck=() ship
-  [[ -n $sid && -d $st/submissions ]] || return
+  [[ -n $sid ]] || return
+  [[ -d $st/submissions ]] || { echo "ship ✓ 0"; return; }
   atoms=$(find "$st/submissions" -type f -mmin -1440 -printf '%h\n' 2>/dev/null | awk -F/ '{print $NF}' | sort -u)
   while IFS= read -r atom; do
     [[ -n $atom ]] || continue
@@ -120,10 +121,15 @@ seg_ship() {
   elif (( delivered > 0 )); then
     ship="✓ $delivered"
   else
-    return
+    ship="✓ 0"
   fi
   (( delivered > 0 && ${#busy[@]} + ${#stuck[@]} > 0 )) && ship+=" │ ✓ $delivered"
   echo "ship $ship"
+}
+
+seg_sess() {
+  [[ -n $sid ]] || return
+  echo "claude ${sid: -6}"
 }
 
 seg_sdk() {
