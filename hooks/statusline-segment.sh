@@ -88,45 +88,28 @@ seg_ctx() {
   echo "ctx $(bar "$c") $c%"
 }
 
-# ship: this session's deliveries only; atoms submitted in the last 24 h whose title carries our session tag; in flight ⏳, stuck ✗, delivered ✓ N
-# shortcut: ownership cached per session forever; an atom never changes session
+# why: the statusline refreshes every 3 s and gh is a network call, so the result lives 60 s
 seg_ship() {
-  local st=${SHIP_POST_STATE_DIR:-/root/workspaces/tools/state/ship-post}
-  local post=${SHIP_POST_BIN:-/root/workspaces/tools/bin/ship-post} bd=${BD_BIN:-bd}
-  local cache=${TMPDIR:-/tmp}/statusline-ship-$sid sess=${sid:0:4}
-  local atoms atom own line state delivered=0 busy=() stuck=() ship
+  local gh=${GH_BIN:-gh} bd=${BD_BIN:-bd} repo branches branch atom own n=0 ok=0
+  local cache=${TMPDIR:-/tmp}/statusline-ship-pr-$sid owned=${TMPDIR:-/tmp}/statusline-ship-$sid sess=${sid:0:4}
   [[ -n $sid ]] || return
-  [[ -d $st/submissions ]] || { echo "ship ✓ 0"; return; }
-  atoms=$(find "$st/submissions" -type f -mmin -1440 -printf '%h\n' 2>/dev/null | awk -F/ '{print $NF}' | sort -u)
-  while IFS= read -r atom; do
-    [[ -n $atom ]] || continue
-    own=$(awk -v a="$atom" '$1 == a {print $2; exit}' "$cache" 2>/dev/null)
-    if [[ -z $own ]]; then
-      if [[ $("$bd" show "$atom" --json | jq -r '.[0].title // empty') == *"-$sess]"* ]]; then own=own; else own=foreign; fi
-      echo "$atom $own" >>"$cache"
-    fi
-    [[ $own == own ]] || continue
-    line=$("$post" --status "$atom" | head -n1)
-    state=$(awk '{print $3}' <<<"$line")
-    case $state in
-      delivered) delivered=$((delivered + 1)) ;;
-      parked|failed) stuck+=("$atom") ;;
-      *) busy+=("$atom") ;;
-    esac
-  done <<<"$atoms"
-  if (( ${#busy[@]} > 0 )); then
-    ship="⏳ ${busy[0]}"
-    (( ${#busy[@]} > 1 )) && ship+=" +$(( ${#busy[@]} - 1 ))"
-  elif (( ${#stuck[@]} > 0 )); then
-    ship="✗ ${stuck[0]}"
-    (( ${#stuck[@]} > 1 )) && ship+=" +$(( ${#stuck[@]} - 1 ))"
-  elif (( delivered > 0 )); then
-    ship="✓ $delivered"
-  else
-    ship="✓ 0"
-  fi
-  (( delivered > 0 && ${#busy[@]} + ${#stuck[@]} > 0 )) && ship+=" │ ✓ $delivered"
-  echo "ship $ship"
+  [[ -n $(find "$cache" -mmin -1 2>/dev/null) ]] && { cat "$cache"; return; }
+  for repo in ${SHIP_REPOS:-arwoxbx24/agent-contour arwoxbx24/tools}; do
+    branches=$("$gh" pr list -R "$repo" --author @me --state merged --search "merged:>=$(date +%F)" --limit 100 --json headRefName --jq '.[].headRefName') || continue
+    ok=1
+    while IFS= read -r branch; do
+      [[ $branch =~ ^(claude|codex)/([a-z]+-[a-z0-9.]+)- ]] || continue
+      atom=${BASH_REMATCH[2]}
+      own=$(awk -v a="$atom" '$1 == a {print $2; exit}' "$owned" 2>/dev/null)
+      if [[ -z $own ]]; then
+        if [[ $("$bd" show "$atom" --json | jq -r '.[0].title // empty') == *"-$sess]"* ]]; then own=own; else own=foreign; fi
+        echo "$atom $own" >>"$owned"
+      fi
+      [[ $own == own ]] && n=$((n + 1))
+    done <<<"$branches"
+  done
+  (( ok )) || { echo "ship ?"; return; }
+  echo "ship ✓ $n" | tee "$cache"
 }
 
 seg_sess() {
