@@ -18,9 +18,10 @@ fields=$(jq -r 'def n: (numbers | tostring) // "";
   ((.prompt_cache.hit_ratio | numbers | . * 100 | tostring) // ""),
   (if .prompt_cache.warm == true then "warm" elif .prompt_cache.warm == false then "cold" else "" end),
   (.cost.total_cost_usd | n),
-  (.workspace.current_dir // "")
+  (.workspace.current_dir // ""),
+  (.context_window.context_window_size | n)
 ] | join("\u001f")' <<<"$input" 2>/dev/null)
-IFS=$'\x1f' read -r model effort dir branch added removed ctx_pct h5_pct h5_reset d7_pct d7_reset cache_pct warm session_cost cur_dir <<<"$fields"
+IFS=$'\x1f' read -r model effort dir branch added removed ctx_pct h5_pct h5_reset d7_pct d7_reset cache_pct warm session_cost cur_dir ctx_win <<<"$fields"
 
 color_for() {
   if (( $1 >= 80 )); then printf '\033[31m'
@@ -73,11 +74,22 @@ if [[ -n $added && -n $removed ]]; then
   (( a + r > 0 )) && seg1+=("+$a/-$r")
 fi
 
+# shortcut: reads only user settings, not project settings or modelSettings; upgrade if those set a window
+limit=$CLAUDE_CODE_AUTO_COMPACT_WINDOW
+[[ -z $limit ]] && limit=$(jq -r '.autoCompactWindow | numbers' "$HOME/.claude/settings.json" 2>/dev/null)
+[[ $limit =~ ^[0-9]+$ ]] || limit=""
+if [[ $ctx_win =~ ^[0-9]+$ && -n $limit ]] && (( limit > ctx_win )); then limit=$ctx_win; fi
+
 # line 2
 seg2=()
 if [[ -n $ctx_pct ]]; then
   c=$(whole "$ctx_pct")
-  seg2+=("context $(paint "$c" "$(bar "$c") $c%")")
+  suffix=""
+  if [[ $ctx_win =~ ^[0-9]+$ && $limit =~ ^[0-9]+$ ]] && (( ctx_win > 0 && limit > 0 )); then
+    c=$(( (c * ctx_win + limit / 2) / limit ))
+    suffix=" of $((limit / 1000))k"
+  fi
+  seg2+=("context $(paint "$c" "$(bar "$c") $c%")$suffix")
 fi
 if [[ -n $cache_pct ]]; then
   k=$(whole "$cache_pct")
