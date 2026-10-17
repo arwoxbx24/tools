@@ -29,8 +29,15 @@ if [ "$name" = "pre-push" ]; then
     trap 'rm -f "$tmp"' EXIT HUP INT TERM
     cat > "$tmp"
   else
-    warn "не удалось создать временный файл; проверка на секреты пропущена"
+    echo "pre-push: cannot read refs, push refused" >&2
+    exit 1
   fi
+  # gitleaks on the commits each pushed ref adds; deletes (local sha $Z) are skipped
+  while read -r lref lsha rref rsha; do
+    [ "$lsha" = "$Z" ] && continue
+    if [ "$rsha" = "$Z" ]; then range="$lsha --not --remotes"; else range="$rsha..$lsha"; fi
+    (cd "$(git rev-parse --show-toplevel)" && /root/.local/bin/gitleaks git --redact --no-banner --log-opts "$range") || { echo "gitleaks: push refused" >&2; exit 1; }
+  done < "$tmp"
 fi
 
 hook="$(git rev-parse --git-common-dir)/hooks/$name"
