@@ -68,7 +68,7 @@ def cs: mc | if type == "array" then . else [] end;
 def atext: [cs[] | objects | select(.type == "text") | ((.text // "") | tostring)] | join(" ");
 def row($ln; $c; $q): [.s, ($ln | tostring), $c, ($q | tostring | gsub("[\\n\\r\\t]"; " ") | .[0:200])] | join("\t");
 def closeturn:
-  if .tu == 0 and .lt != null and (.lt.t | contains("DONE")) then .rows += [row(.lt.n; "F1"; .lt.t)] else . end;
+  if .tu == 0 and .lt != null and (.lt.t | contains("✅ DONE")) and (.lt.t | (contains("NOT DONE") or contains("/goal") or contains("NEEDS INPUT") or contains("PARTIAL") or contains("BLOCKED") or contains("DONE нет")) | not) then .rows += [row(.lt.n; "F1"; .lt.t)] else . end;
 ([inputs] | to_entries) as $L
 | ($f | split("/") | .[-1] | rtrimstr(".jsonl")) as $s
 | reduce $L[] as $e
