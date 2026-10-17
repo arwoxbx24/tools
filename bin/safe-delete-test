@@ -146,8 +146,8 @@ if [[ $(grep -c '/root/workspaces/projects' "$bin/safe-delete") -ge 1 \
   echo 'PASS T17'; ok=$((ok+1))
 else echo 'FAIL T17: roots'; fi
 
-# T18: default roots include claude memory root, not whole .claude
-if [[ $(grep -c '/root/.claude/projects/-root-workspaces-projects/memory' "$bin/safe-delete") -ge 1 \
+# T18: default roots include claude projects root, not whole .claude
+if [[ $(grep -c ':/root/.claude/projects:' "$bin/safe-delete") -ge 1 \
    && $(grep -cE 'roots=.*:/root/\.claude(:|\})' "$bin/safe-delete") -eq 0 ]]; then
   echo 'PASS T18'; ok=$((ok+1))
 else echo 'FAIL T18: roots'; fi
@@ -613,5 +613,13 @@ out82a=$("$bin/safe-delete" --bk "$bk" dir "$d/md1" "$d/md2" 2>/dev/null); r82a=
 out82b=$("$bin/safe-delete" --bk "$bk" dir "$d/md3" "$d/md-bad" 2>/dev/null); r82b=$?
 if [[ $r82a == 0 && ! -e $d/md1 && ! -e $d/md2 && $out82a == *'ok=2, failed=0'* && $r82b == 2 && ! -e $d/md3 && -f $d/md-bad/secrets/k && $out82b == *'ok=1, failed=1'* ]]; then echo 'PASS T82 multi_dir'; ok=$((ok+1)); else echo "FAIL T82: rc=$r82a/$r82b"; fi
 
-[[ $ok == 83 ]] || exit 1
+# T83: claude projects root accepts a session transcript and its empty dir (real roots, SAFE_DELETE_ROOTS unset)
+mkdir -p "/root/.claude/projects/sd-test-$$"; printf '{}\n' > "/root/.claude/projects/sd-test-$$/x.jsonl"
+env -u SAFE_DELETE_ROOTS "$bin/safe-delete" --bk "$bk" file "/root/.claude/projects/sd-test-$$/x.jsonl" >/dev/null 2>&1; r83a=$?
+env -u SAFE_DELETE_ROOTS "$bin/safe-delete" --bk "$bk" dir "/root/.claude/projects/sd-test-$$" >/dev/null 2>&1; r83b=$?
+if [[ $r83a == 0 && ! -e "/root/.claude/projects/sd-test-$$/x.jsonl" && $r83b == 0 && ! -e "/root/.claude/projects/sd-test-$$" ]]; then
+  echo 'PASS T83 claude_projects_root'; ok=$((ok+1))
+else echo "FAIL T83: file=$r83a dir=$r83b"; fi
+
+[[ $ok == 84 ]] || exit 1
 echo "итог: PASS 83, FAIL 0"
