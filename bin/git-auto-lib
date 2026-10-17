@@ -137,11 +137,21 @@ ga_lock(){ # <name> <timeout_s> <cmd...>
 	return $?
 }
 
-ga_ci_wait(){ # pr <slug> <num> [<sha> [<since>]] | sha <slug> <sha> <branch> â€” 0 ok, 30 absent, 40 fail/timeout
+ga_billing_refused(){ # <slug> <check-run id>... â€” 0 if GitHub did not start a job for billing/quota (annotation text); 1 otherwise, and on any annotation read failure
+	local slug=$1 id msg
+	shift
+	for id in "$@"; do
+		msg=$(gh api "repos/$slug/check-runs/$id/annotations" --jq '.[].message' 2>/dev/null) || return 1
+		grep -qE 'job was not started because recent account payments have failed|spending limit needs to be increased' <<<"$msg" && return 0
+	done
+	return 1
+}
+
+ga_ci_wait(){ # pr <slug> <num> [<sha> [<since>]] | sha <slug> <sha> <branch> â€” 0 ok, 30 absent, 40 fail/timeout, 70 billing/quota
 	local kind=$1 slug=$2 b ok bad
 	case $kind in
 		pr)
-			local num=$3 sha=${4:-} since=${5:-} buckets deadline now runs
+			local num=$3 sha=${4:-} since=${5:-} buckets deadline now runs ids
 			deadline=$(( $(date +%s) + ${GA_CI_APPEAR:-60} ))
 			while :; do
 				if [[ -n $sha ]]; then
@@ -171,10 +181,12 @@ ga_ci_wait(){ # pr <slug> <num> [<sha> [<since>]] | sha <slug> <sha> <branch> â€
 			[[ $ok == 1 ]] && return 0
 			bad=$(gh pr checks "$num" -R "$slug" --json name,bucket --jq '.[]|select(.bucket=="fail" or .bucket=="cancel")|.name' 2>/dev/null)
 			[[ -n $bad ]] && printf '%s\n' "$bad" >&2
+			ids=$(gh pr checks "$num" -R "$slug" --json bucket,link --jq '.[]|select(.bucket=="fail" or .bucket=="cancel")|.link' 2>/dev/null | sed -n 's#.*/job/\([0-9][0-9]*\)$#\1#p')
+			ga_billing_refused "$slug" $ids && return 70
 			return 40
 			;;
 		sha)
-			local sha=$3 branch=$4 deadline now runs
+			local sha=$3 branch=$4 deadline now runs ids
 			deadline=$(( $(date +%s) + ${GA_CI_CAP:-900} ))
 			while :; do
 				runs=$(gh run list -R "$slug" --commit "$sha" --branch "$branch" --json status,conclusion 2>/dev/null) || return 40
@@ -182,6 +194,10 @@ ga_ci_wait(){ # pr <slug> <num> [<sha> [<since>]] | sha <slug> <sha> <branch> â€
 					return 0
 				fi
 				now=$(date +%s)
+				if jq -e 'length>0 and all(.[]; .status=="completed")' <<<"$runs" >/dev/null 2>&1; then
+					ids=$(gh api "repos/$slug/commits/$sha/check-runs" --jq '.check_runs[]|select(.conclusion=="failure" or .conclusion=="cancelled")|.id' 2>/dev/null)
+					ga_billing_refused "$slug" $ids && return 70
+				fi
 				(( now >= deadline )) && return 40
 				sleep "${GA_CI_POLL:-15}"
 			done
