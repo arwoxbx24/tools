@@ -177,6 +177,20 @@ apply_second_fails() {
   apply_refused "$d" "refused edit: not found: a.md"
 }
 
+dry_args_exclude_dynamic() {
+  local out rc
+  out=$(env SDK_AGENT_DRY_ARGS=1 SDK_AGENT_RUNS_LOG="$TMP/runs-dry.jsonl" "$ag" ask --budget 0.5 hi)
+  rc=$?
+  [[ $rc -eq 0 ]] && grep -qx -- '--exclude-dynamic-system-prompt-sections' <<<"$out" && [[ ! -e $TMP/runs-dry.jsonl ]]
+}
+
+dry_args_ignored_without_test() {
+  local out rc
+  out=$(env -u SDK_AGENT_TEST SDK_AGENT_DRY_ARGS=1 "$ag" ask --budget 9 hi 2>/dev/null)
+  rc=$?
+  [[ $rc -eq 2 ]] && ! grep -qx -- '--exclude-dynamic-system-prompt-sections' <<<"$out"
+}
+
 mkdir -p "$TMP/wt"
 git -C "$TMP/wt" init -q
 
@@ -209,6 +223,8 @@ check "--apply-edits: one exact edit changes only that fragment" apply_edit_once
 check "--apply-edits: old not found -> rc 5, file unchanged" apply_not_found
 check "--apply-edits: old found twice -> rc 5, file unchanged" apply_not_unique
 check "--apply-edits: 2nd edit fails -> rc 5, 1st not written" apply_second_fails
+check "dry args: engine always gets --exclude-dynamic-system-prompt-sections" dry_args_exclude_dynamic
+check "dry args ignored without SDK_AGENT_TEST" dry_args_ignored_without_test
 
 echo "ok $pass/$total"
 [[ $pass -eq $total ]]
