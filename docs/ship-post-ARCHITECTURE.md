@@ -8,11 +8,11 @@
 ship-post --submit <worktree> --atom <id> --tz <path#U> --evidence <text> --files <file>...
 ```
 
-`bin/ship-post:do_submit` accepts a registered linked worktree under `.worktrees/<agent>/`, a matching Claude/Codex branch and assignee, and an in-worktree TZ and file list. It rejects missing evidence, an invalid atom, an unserved repository, out-of-scope changes, invalid commit trailers, and a dirty worktree for a closed atom. On success it creates the local commit, checks for a conflict against a reachable `origin/<base>`, closes the atom with the committed SHA, writes the submission receipt, and prints `committed <atom> <sha> on <branch>`. If fetch is unavailable after commit, it warns that the conflict check is deferred, then closes and receipts the same SHA; the courier performs the later remote mergeability gate. Submit does not push.
+`bin/ship-post:do_submit` accepts a registered linked worktree under `.worktrees/<agent>/`, a matching Claude/Codex branch and assignee, and an in-worktree TZ and file list. It rejects missing evidence, an invalid atom, an unserved repository, out-of-scope changes, invalid commit trailers, and a dirty worktree for a closed atom. On success it creates the local commit, checks for a conflict against a reachable `origin/<base>`, closes the atom with the committed SHA, writes the submission receipt, and prints `committed <atom> <sha> on <branch>`. If fetch is unavailable after commit, it warns that the conflict check is deferred, then closes and receipts the same SHA; the courier performs the later remote mergeability gate. Then `--submit` runs one delivery pass for this atom only (`scan_repo` with `filter_atom`): no loop, no sleep, no retry; its summary is printed and a non-zero result is the exit code of `--submit`. The push happens inside that pass through `ship --handover`, not in the commit step.
 
 Архитектура также читается без сети: `ship-post --status <atom>` — read-only сводка из файлов `SHIP_POST_STATE_DIR` (без `bd`, `git`, блокировок и записей), значения `none|submitted|delivering|failed|parked|<stage из receipt>`.
-`ship-post --wait <atom> [--timeout <s>]` (dcfg-p6mn5.2, default 900 s) — the same read-only `--status` line, but blocks on `inotifywait` events in `SHIP_POST_STATE_DIR` (re-check at least every 30 s) until a final state: rc 0 `delivered|wait-owner|prod-hold`, rc 1 `parked|failed`, rc 3 timeout. The agent runs it as a harness background command after `bd close`, so the courier's state change wakes the agent without polling.
-`scan_repo` logs every skip as `skip <atom|worktree> <reason>` (dcfg-p6mn5.6; dcfg-p6mn5.7: for open atoms too, the Beads report stays closed-only): no silent skip path, so a delivery delay is attributable from the PM2 log.
+`ship-post --wait <atom> [--timeout <s>]` (dcfg-p6mn5.2, default 900 s) — the same read-only `--status` line, but blocks on `inotifywait` events in `SHIP_POST_STATE_DIR` (re-check at least every 30 s) until a final state: rc 0 `delivered|wait-owner|prod-hold`, rc 1 `parked|failed`, rc 3 timeout. The agent runs it as a harness background command after `bd close`, so the state change written by the delivery pass of `--submit` wakes the agent without polling.
+`scan_repo` logs every skip as `skip <atom|worktree> <reason>` (dcfg-p6mn5.6; dcfg-p6mn5.7: for open atoms too, the Beads report stays closed-only): no silent skip path, so a delivery delay is attributable from the `--submit` output and the log.
 
 ## 2. C4: контекст и контейнеры
 
@@ -20,23 +20,21 @@ ship-post --submit <worktree> --atom <id> --tz <path#U> --evidence <text> --file
 Claude/Codex agent
   -> ship-post --submit
   -> local commit + bd close + state/ship-post/submissions
-  -> PM2 process ship-post (ecosystem.config.js, --watch)
-  -> native bd events tail
-  -> ship-post --watch / per-repository worker
+  -> scan_repo restricted to this atom (filter_atom, one pass)
   -> ship --handover
   -> GitHub PR, CI, merge
   -> git-sync -> live repository folders
 ```
 
-`ecosystem.config.js` declares the `ship-post` process with `bin/ship-post --watch`. `bin/ship-post:do_watch` reads native Beads events and queues served repositories; it does not use file changes as events. `bin/ship-post:deliver_one` calls `ship --handover`; `bin/ship:locked_core` owns fetch, rebase, secret scan and branch push. After a proven remote merge `bin/ship-post:write_delivery_receipt` runs `git-sync` for the live repository.
+`ecosystem.config.js` no longer declares a `ship-post` process, so no PM2 app starts `bin/ship-post --watch` (TZ dcfg-4rqr4). `bin/ship-post:do_watch` remains in the code, unstarted: it reads native Beads events and queues served repositories; it does not use file changes as events. `bin/ship-post:deliver_one` calls `ship --handover`; `bin/ship:locked_core` owns fetch, rebase, secret scan and branch push. After a proven remote merge `bin/ship-post:write_delivery_receipt` runs `git-sync` for the live repository.
 
 ## 3. Одна доставка
 
 1. Агент submits exact files; `bin/ship-post:do_submit` validates, commits, closes the atom and records local SHA.
-2. Watcher queues a repository after a closed Beads event; a close event queues only that atom (`<pending>.atoms`), the worker scans those atoms first, then runs the `<pending>.full` scan if set (retries and startup, ADR-35); queued atoms are never dropped unprocessed. `bin/ship-post:do_watch` persists the cursor only after queueing.
+2. Delivery is started by `ship-post --submit` for its own atom: one pass of `scan_repo` restricted to that atom (`filter_atom`), without loop, sleep or retry. An explicit one-shot `ship-post` run is the only other entry point; no PM2 watcher queues repositories on Beads events any more (TZ dcfg-4rqr4).
 3. A worker finds a clean closed worktree; `bin/ship-post:scan_repo` verifies trailers, owner, branch and receipt state.
 5. A guarded delivery commits locally, writes `refs/dev-ready/<branch>`, prints `prod:hold guarded <reason>` and stops before fetch, push or GitHub. A plain delivery reaches `bin/ship:locked_core`, which pushes the fixed head; the remaining `ship` flow creates/uses a PR. A nonempty all-`.md` diff without pull-request CI prints `gate:auto docs-only`, checks mergeability, and merges the exact head without a CI wait. Other no-CI changes write `refs/dev-ready/<branch>`, record `wait-owner no-ci`, print `prod:wait-owner no-ci` and stop without merge, close, live sync or worktree cleanup. CI-backed plain delivery waits for CI and merges the exact head; a repository that disallows merge commits (`allow_merge_commit=false`) is merged with `--squash` (U22). `ship-post` обслуживает все репозитории `ga_roots`; после `ship` rc 0 читает вывод последнего запуска: `prod:wait-owner` создаёт квитанцию `wait-owner` с номером PR, `prod:hold` — `prod-hold`; обе стадии финальны, старая `wait-owner no-ci` один раз проходит через `ship`, коды `ship` 10/50/80 финальны для этого SHA до повторной сдачи автором (`ship-post --submit` снимает отметку, U24), 70 повторяется, а новый SHA поверх отправленного предка при неслитом PR пишет `superseded`, не code 24.
-4. `bin/ship-post:scan_repo` starts `deliver_one` for all ready atoms of a repository in parallel (up to `SHIP_POST_JOBS`, default 8) without waiting for them; a per-atom lock `<repo lock>.<atom>` prevents a second concurrent delivery of the same atom (ADR-34). Push and merge stay serialized by `ga_lock` in `bin/ship` (ADR-30). `bin/ship-post:deliver_one` reconciles an existing GitHub result or calls `bin/ship:locked_core` through `ship --handover`. `bin/git-auto-lib:ga_class` marks the repository `plain`, `staged`, or `guarded`: mode `two` is staged; a skip reason in mode `one` is guarded. Before merge `bin/ship` re-fetches `origin/<base>`; if it moved since CI and the moved files overlap the PR or the delivery chain, it reopens the PR and waits for a new CI run (`bin/git-auto-lib:ga_ci_wait` with `since`), up to 5 rounds, else 70; disjoint moves merge at once (ADR-31/32).
+4. `bin/ship-post:scan_repo` starts `deliver_one` for all ready atoms of a repository in parallel (up to `SHIP_POST_JOBS`, default 8) without waiting for them; a per-atom lock `<repo lock>.<atom>` prevents a second concurrent delivery of the same atom (ADR-34). Push and merge stay serialized by `ga_lock` in `bin/ship` (ADR-30). `bin/ship-post:deliver_one` reconciles an existing GitHub result or calls `bin/ship:locked_core` through `ship --handover`. `bin/git-auto-lib:ga_class` marks the repository `plain`, `staged`, or `guarded`: mode `two` is staged; a skip reason in mode `one` is guarded. Before merge `bin/ship` re-fetches `origin/<base>`; if it moved since CI and the moved files overlap the PR or the delivery chain, it reopens the PR and waits for a new CI run (`bin/git-auto-lib:ga_ci_wait` with `since`), up to 5 rounds, else 70; disjoint moves merge at once (ADR-31/32). A parked atom whose failure marker belongs to the same head SHA is not re-handed over: the scan prints `skip <atom> parked unchanged key`. A new SHA is a new key and is delivered normally; an explicit `--submit` of the same SHA clears the failure marker (`clear_final_failure`) and re-ships once.
 5. `ship-promote` has two owner-quoted prod paths: `staged` (mode `two`) keeps the existing Dev-to-Prod fast-forward after Dev CI; `plain` (mode `one`) finds the atom's open PR, requires `refs/dev-ready/<head>` to equal its head SHA, then merges the atom PR with a merge commit (ADR-26) using `--match-head-commit`, so stacked branches remain descendants of `main`. It records `promote:`, runs live sync, and closes only an open or in-progress atom. `guarded` ends with `prod:hold` and never calls GitHub.
 7. `bin/ship-post:write_delivery_receipt` stores remote proof, appends the Beads delivery note and runs `bin/git-sync:sync_one`.
 8. `bin/git-sync:sync_one` fast-forwards the live checkout or preserves local work under rescue refs; `bin/git-state:emit` exposes delivery/sync alarms.
@@ -45,7 +43,7 @@ Claude/Codex agent
 
 Default state root is `/root/workspaces/tools/state/ship-post` (`SHIP_POST_STATE_DIR`). It contains:
 
-INFRA-отказы (30/70/71/75/прочие) паркуются: метка `delivery-blocked`, инцидент `contour:delivery` на код (`state/ship-post/incidents/<rc>`), повтор каждым проходом, при успехе метка снимается (spec:099 v8, dcfg-c3gu3.2).
+INFRA-отказы (30/70/71/75/прочие) паркуются: метка `delivery-blocked`, инцидент `contour:delivery` на код (`state/ship-post/incidents/<rc>`), повтор при следующем явном проходе (`--submit` или one-shot), при успехе метка снимается (spec:099 v8, dcfg-c3gu3.2).
 
 - `submissions/<repo-hash>/<worktree-hash>/<atom>/<sha>` — local submission receipt;
 - `receipts/<repo-hash>/<atom>/<sha>` plus `.log`, `.failed`, `.reported`, `.ack` — delivery and diagnostic records;
@@ -70,7 +68,7 @@ INFRA-отказы (30/70/71/75/прочие) паркуются: метка `de
 | `ship` | 80 | TЗ path not accepted | no, fix TЗ path |
 | `ship-post` | 21 | no remote PR result yet, or only a closed unmerged PR with the same head; `deliver_one` proceeds to `ship` | intermediate, not a terminal result |
 | `ship-post` | 22 | matching remote PR is open; `deliver_one` proceeds to `ship` | intermediate, not a terminal result |
-| `ship-post` | 23 | GitHub query failed or returned malformed data (public and private origins are both accepted, owner 17.10) | temporary; retried by the watcher |
+| `ship-post` | 23 | GitHub query failed or returned malformed data (public and private origins are both accepted, owner 17.10) | temporary; retried on the next explicit `--submit` of that atom |
 | `ship-post` | 24 | remote result does not match the submitted SHA/state | no, reconcile before retry |
 
 `ship-post` records 23, 70 and 75 as retryable observations in `bin/ship-post:record_failure`; after a `ship` result, 10, 50 and 80 are final for that submitted SHA, while 70 remains repeatable. Other delivery errors reopen the atom and append one note `ship-post exit <code>: <cause>; действие: <action>` to it; no separate task (ADR-28/29).
@@ -89,13 +87,13 @@ INFRA-отказы (30/70/71/75/прочие) паркуются: метка `de
 
 ## 7. Наблюдаемость
 
-PM2 declares `/root/.pm2/logs/ship-post-out.log` and `/root/.pm2/logs/ship-post-error.log`. Per-delivery command output is `receipts/.../<sha>.log`; receipt JSON carries local and remote SHA/URL. `bin/ship-post:ack_delivery` adds a delivery marker to Beads notes. `bin/git-state:emit` reports branch, behind/ahead, dirty state, PR count, rescue-ref count and alarm; `bin/git-sync:emit` appends sync results to `${GA_LOG_DIR:-/root/workspaces/tools/logs}/git-sync.log`.
+No PM2 app declares ship-post logs any more (TZ dcfg-4rqr4). Per-delivery command output is `receipts/.../<sha>.log`; receipt JSON carries local and remote SHA/URL. `bin/ship-post:ack_delivery` adds a delivery marker to Beads notes. `bin/git-state:emit` reports branch, behind/ahead, dirty state, PR count, rescue-ref count and alarm; `bin/git-sync:emit` appends sync results to `${GA_LOG_DIR:-/root/workspaces/tools/logs}/git-sync.log`.
 
 ## 8. Перенос: environment и пути
 
-`ship-post` reads `SHIP_POST_STATE_DIR`, `SHIP_POST_JOBS`, `SHIP_POST_BEADS_ROOT`, `SHIP_POST_SINCE`, `SHIP_POST_RETRY_SECONDS`, `SHIP_POST_PARKED_RETRY_SECONDS` (default 3600: parked atom with a code outside 10|23|50|70|75|80 is re-handed over at most once per this interval), `SHIP_POST_AUTO_HOURS`, `SHIP_POST_REPOS` and `BEADS_ACTOR`. `git-auto-lib` defaults include `GA_PROJECTS=/root/workspaces/projects`, `GA_TOOLS=/root/workspaces/tools`, `GA_CONTOUR_GITDIR=/root/workspaces/system/contour-config.git` and `GA_CONTOUR_WT=/root`; `git-sync` and `git-state` use `GA_LOG_DIR` when set. `ship` defaults `BEADS_DIR` to `/root/workspaces/projects/.beads` and discovers worktrees under `/root/workspaces/projects/.worktrees` unless `GA_WT_ROOT` is set. PM2 hard-codes `/root/workspaces/tools/bin/ship-post` in `ecosystem.config.js`.
+`ship-post` reads `SHIP_POST_STATE_DIR`, `SHIP_POST_JOBS`, `SHIP_POST_BEADS_ROOT`, `SHIP_POST_SINCE`, `SHIP_POST_RETRY_SECONDS`, `SHIP_POST_AUTO_HOURS`, `SHIP_POST_REPOS` and `BEADS_ACTOR`. `git-auto-lib` defaults include `GA_PROJECTS=/root/workspaces/projects`, `GA_TOOLS=/root/workspaces/tools`, `GA_CONTOUR_GITDIR=/root/workspaces/system/contour-config.git` and `GA_CONTOUR_WT=/root`; `git-sync` and `git-state` use `GA_LOG_DIR` when set. `ship` defaults `BEADS_DIR` to `/root/workspaces/projects/.beads` and discovers worktrees under `/root/workspaces/projects/.worktrees` unless `GA_WT_ROOT` is set.
 
-`bin/ship-post:do_watch` exits 0 when `bin/ship-post` or `bin/git-auto-lib` changed and no delivery is in flight (`inflight/`); pm2 `autorestart` starts it again. The pm2 app has no `watch`. An interrupted delivery is reconciled from GitHub on startup.
+`bin/ship-post:do_watch` exits 0 when `bin/ship-post` or `bin/git-auto-lib` changed and no delivery is in flight (`inflight/`); nothing restarts it now (no PM2 app, TZ dcfg-4rqr4). An interrupted delivery is reconciled from GitHub on the next delivery of that atom.
 
 ## 9. Тесты и CI
 
@@ -144,7 +142,7 @@ PM2 declares `/root/.pm2/logs/ship-post-out.log` and `/root/.pm2/logs/ship-post-
 
 An agent delivers by `bd close <own atom> --reason <evidence>` only. For a dirty linked worktree on `claude/<atom>[-suffix]` or `codex/<atom>[-suffix]` whose HEAD has no `Atom: <atom>` trailer, `bin/ship-post:auto_submit_scan` (called from `scan_repo`) takes the atom from the branch, requires status `closed`, an assignee matching the branch agent and a close reason not starting with `PARTIAL`, `BLOCKED`, `FAILED`, `UNVERIFIED` or `NOT DONE`.
 The TZ comes from the atom description or notes (`ТЗ:`/`TZ: <path>#U<n>`), else from the single changed `docs/tz/*.md`; every other changed file must be named literally in that TZ, otherwise the skip cause is `auto-submit: files not named in TZ`.
-It then runs `do_submit` in a subshell with `auto_mode=1` and the CLI-mode flags reset (`dry_run watch submit status_mode filter_atom bg`, dcfg-74h33.7), so the live `--watch` courier is not refused by the `--submit` usage check: the atom stays closed, `bd update --append-notes "ship-post auto-submit <sha>"` is added, the submission receipt is written and `auto-submit <atom> <sha>` is printed. The next pass delivers the commit as usual.
+It then runs `do_submit` in a subshell with `auto_mode=1` and the CLI-mode flags reset (`dry_run watch submit status_mode filter_atom bg`, dcfg-74h33.7), so the `--submit` usage check does not refuse it: the atom stays closed, `bd update --append-notes "ship-post auto-submit <sha>"` is added, the submission receipt is written and `auto-submit <atom> <sha>` is printed. The next delivery pass (`--submit` of that atom or a one-shot run) delivers the commit as usual; auto-submit itself does not deliver.
 Auto-submit runs only when the atom's `closed_at` is newer than the worktree HEAD commit time and at most `SHIP_POST_AUTO_HOURS` (default 24) hours old; otherwise the normal closed-dirty report path applies. With `--dry-run` a passing scan prints `auto-submit-ready <atom> <wt>` and commits nothing.
 
 ## 15. Outcome accounting (spec 099 §v9, ADR-40, dcfg-80rgm)
