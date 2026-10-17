@@ -25,7 +25,7 @@ pbash=$(tmux -L "$srv" display -p -t "t:0.0" '#{pane_id}')
 
 [[ -n ${TMUX_SEND_SOCKET:-} ]] || { echo 'FAIL нет TMUX_SEND_SOCKET' >&2; exit 3; }
 
-"$bin/tmux-send" "$pbash" 'echo OK-123' --expect '^OK-123$' >/dev/null 2>"$e"; rc=$?
+"$bin/tmux-send" "$pbash" 'echo OK-123' --expect '^OK-123 ' >/dev/null 2>"$e"; rc=$?
 [[ $rc == 0 ]] && { echo 'PASS 2'; ok=$((ok+1)); } || echo "FAIL 2: rc=$rc"
 
 "$bin/tmux-send" "$pbash" 'echo OK-123' --expect '^NEVER$' >/dev/null 2>"$e"; rc=$?
@@ -52,7 +52,7 @@ done
 dotcap=$(tmux -L "$srv" capture-pane -p -t "$wdot")
 [[ $rc == 0 && $dotcap == *DOT-1* ]] && { echo 'PASS 6'; ok=$((ok+1)); } || echo "FAIL 6: rc=$rc"
 
-"$bin/tmux-send" 't:0' 'echo IDX-7' --expect '^IDX-7$' >/dev/null 2>"$e"; rc=$?
+"$bin/tmux-send" 't:0' 'echo IDX-7' --expect '^IDX-7 ' >/dev/null 2>"$e"; rc=$?
 cap0=$(tmux -L "$srv" capture-pane -p -t 't:0')
 [[ $rc == 0 && $cap0 == *IDX-7* && $cap != *IDX-7* ]] && { echo 'PASS 7'; ok=$((ok+1)); } || echo "FAIL 7: rc=$rc"
 
@@ -62,26 +62,33 @@ cat > "$tmux_stub/fake-tui" <<'EOF'
 #!/usr/bin/env bash
 mode=$1
 tdir=$2
+log=$3
+glyph=$4
 hist=()
 buf=""
 settled=1
+case $mode in
+	working) footer='Working (3s · esc to interrupt)';;
+	goal) footer='◎ /goal active (5m)';;
+	queue) footer='tab to queue message';;
+	*) footer=status;;
+esac
+[[ $mode == idle ]] && hist=("$glyph earlier" '· done')
 redraw(){
 	printf '\033[2J\033[H'
 	printf '%s\n' "${hist[@]}"
 	printf '%s\n' '─────'
-	printf '❯ %s\n' "$buf"
+	printf '%s %s\n' "$glyph" "$buf"
 	printf '%s\n' '─────'
-	printf '%s\n' 'status'
+	printf '%s\n' "$footer"
 }
 submit(){
-	hist+=("❯ $buf" '· Puttering… (3s · ↓ 10 tokens)')
+	[[ $mode == lost ]] || printf '%s\n' "$buf" >> "$log"
+	hist+=("$glyph $buf" '· Puttering… (3s · ↓ 10 tokens)')
 	buf=""
 }
-stty -echo -icanon 2>/dev/null
-[[ $mode != slow ]] || settled=0
-redraw
-on_enter(){
-	if [[ $mode == stuck ]]; then return; fi
+on_key(){
+	if [[ $mode == stuck || ( $mode == queue && $1 != tab ) ]]; then return; fi
 	if [[ $mode == slow && $settled != 1 ]]; then
 		echo x >> "$tdir/dropped"
 	else
@@ -89,32 +96,25 @@ on_enter(){
 		redraw
 	fi
 }
+key(){
+	case $1 in
+		''|$'\r'|$'\n') on_key enter;;
+		$'\t') on_key tab;;
+		*) buf+="$1"; [[ $mode != slow ]] && redraw;;
+	esac
+}
+stty -echo -icanon 2>/dev/null
+[[ $mode != slow ]] || settled=0
+redraw
 while IFS= read -rs -n1 c; do
-	if [[ $c == '' || $c == $'\r' || $c == $'\n' ]]; then
-		on_enter
-		continue
-	fi
-	buf+="$c"
-	[[ $mode != slow ]] && redraw
-	while :; do
-		IFS= read -rs -t 0.5 -n1 nc
-		rc=$?
-		if ((rc != 0)); then
-			if [[ $mode == slow ]]; then settled=1; redraw; fi
-			break
-		fi
-		if [[ $nc == '' || $nc == $'\r' || $nc == $'\n' ]]; then
-			on_enter
-			continue
-		fi
-		buf+="$nc"
-		[[ $mode != slow ]] && redraw
-	done
+	key "$c"
+	while IFS= read -rs -t 0.5 -n1 nc; do key "$nc"; done
+	if [[ $mode == slow ]]; then settled=1; redraw; fi
 done
 EOF
 chmod +x "$tmux_stub/fake-tui"
 
-mk_tui(){ tmux -L "$srv" new-window -d -t t: -n "$1" "$tmux_stub/fake-tui" "$2" "$tmux_stub"; }
+mk_tui(){ tmux -L "$srv" new-window -d -t t: -n "$1" "$tmux_stub/fake-tui" "$2" "$tmux_stub" "${3:-/dev/null}" "${4:-❯}"; }
 
 mk_tui claude-fake8 ok
 sleep 0.3
@@ -132,5 +132,34 @@ sleep 0.3
 cap10=$(tmux -L "$srv" capture-pane -p -t 't:slow10')
 [[ $rc == 0 && $cap10 == *'❯ slow paste message C10'* && ! -s "$tmux_stub/dropped" ]] && { echo 'PASS 10'; ok=$((ok+1)); } || echo "FAIL 10: rc=$rc dropped=$( [[ -s "$tmux_stub/dropped" ]] && wc -l < "$tmux_stub/dropped" || echo 0)"
 
-echo "PASS $ok/10"
-[[ $ok == 10 ]]
+mtot=0
+mok=0
+mcell(){ # <window> <state> <prompt glyph> <want rc>
+	local out rc id good=
+	mtot=$((mtot+1))
+	mk_tui "$1" "$2" "$tmux_stub/$1.log" "$3"
+	sleep 0.3
+	out=$(TMUX_SEND_RECEIPT_LOG="$tmux_stub/$1.log" TMUX_SEND_RECEIPT_WAIT=3 "$bin/tmux-send" "t:$1" "$1 ping" 2>"$e"); rc=$?
+	id=${out#delivered id=}
+	id=${id%% *}
+	if [[ $4 == 0 ]]; then
+		[[ $rc == 0 && -n $id ]] && grep -qF -- "[ts:$id]" "$tmux_stub/$1.log" && good=1
+	else
+		[[ $rc == 1 ]] && grep -qF 'no receipt' "$e" && good=1
+	fi
+	if [[ -n $good ]]; then ok=$((ok+1)); mok=$((mok+1)); echo "PASS matrix $1"; else echo "FAIL matrix $1: rc=$rc"; fi
+}
+mcell m-claude-idle idle '❯' 0
+mcell m-claude-working working '❯' 0
+mcell m-claude-goal goal '❯' 0
+mcell m-claude-fresh fresh '❯' 0
+mcell m-codex-idle idle '›' 0
+mcell m-codex-working working '›' 0
+mcell m-codex-goal goal '›' 0
+mcell m-codex-fresh fresh '›' 0
+mcell m-codex-queue queue '›' 0
+mcell m-lost lost '❯' 1
+total=$((10 + mtot))
+echo "matrix=$mok/$mtot"
+if [[ $ok == "$total" ]]; then echo "PASS $ok/$total"; else echo "FAIL $ok/$total"; fi
+[[ $ok == "$total" ]]
