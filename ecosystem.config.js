@@ -1370,23 +1370,6 @@ module.exports = {
       cron_restart: '0 6 * * 1',
       error_file: '/root/.pm2/logs/agent-errors-weekly-error.log',
       out_file: '/root/.pm2/logs/agent-errors-weekly-out.log'
-    },
-    {
-      name: 'ship-post',
-      time: true,
-      merge_logs: true,
-      script: '/root/workspaces/tools/bin/ship-post',
-      interpreter: 'bash',
-      args: '--watch',
-      exec_mode: 'fork_mode',
-      instances: 1,
-      autorestart: true,
-      min_uptime: 1000,
-      max_restarts: 10,
-      exp_backoff_restart_delay: 1000,
-      cron_restart: '0',
-      error_file: '/root/.pm2/logs/ship-post-error.log',
-      out_file: '/root/.pm2/logs/ship-post-out.log'
     }
   ]
 };

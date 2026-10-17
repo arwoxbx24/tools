@@ -8,7 +8,6 @@ ship_bin="$bin/ship"
 SHIP_POST_STATE_DIR=${SHIP_POST_STATE_DIR:-/root/workspaces/tools/state/ship-post}
 SHIP_POST_BEADS_ROOT=${SHIP_POST_BEADS_ROOT:-/root/workspaces/projects}
 SHIP_POST_SINCE=${SHIP_POST_SINCE:-1791205200}
-SHIP_POST_PARKED_RETRY_SECONDS=${SHIP_POST_PARKED_RETRY_SECONDS:-3600} # dcfg-c75sy.3: parked INFRA atoms re-handover after this backoff
 BEADS_ACTOR=${BEADS_ACTOR:-}
 SHIP_POST_RETRY_SECONDS=${SHIP_POST_RETRY_SECONDS:-30}
 [[ $SHIP_POST_RETRY_SECONDS =~ ^[1-9][0-9]*$ ]] || { echo 'ship-post: invalid retry interval' >&2; exit 2; }
@@ -203,6 +202,14 @@ do_break_glass(){
 
 # ── submit mode ──────────────────────────────────────────────────────
 
+deliver_submitted(){ # <repo> <atom> — owner 17.10: --submit delivers only its own atom once
+	local scan_rc
+	exec {submit_lock_fd}>&-
+	filter_atom=$2 scan_repo "$1"; scan_rc=$?
+	wait
+	[[ $scan_rc == 0 ]] || { echo "ship-post: delivery of $2 failed" >&2; return 1; }
+}
+
 do_submit(){
 	local wt=$1 atom=$2 tz=$3 evidence=$4; shift 4
 	local files=("$@")
@@ -271,6 +278,7 @@ do_submit(){
 			clear_final_failure "$repo" "$atom" "$head_sha" || die "cannot clear final failure"
 			write_submit_receipt "$repo" "$wt_real" "$atom" "$head_sha" "$evidence" || die "cannot write submission receipt"
 			echo "ship-post: already closed $atom"
+			[[ ${auto_mode:-0} == 1 ]] || deliver_submitted "$repo" "$atom" || return 1
 			return 0
 		fi
 	else
@@ -338,6 +346,7 @@ do_submit(){
 
 	clear_final_failure "$repo" "$atom" "$head_sha" || die "cannot clear final failure"
 	write_submit_receipt "$repo" "$wt_real" "$atom" "$head_sha" "$evidence" || die "cannot write submission receipt"
+	[[ ${auto_mode:-0} == 1 ]] || deliver_submitted "$repo" "$atom" || return 1
 	if [[ ${auto_mode:-0} == 1 ]]; then echo "auto-submit $atom $head_sha"; return 0; fi
 	echo "ship-post: closed $atom"
 	return 0
@@ -695,11 +704,9 @@ scan_repo(){
      (( ce > $(stat -c %Y "$rf.failed") )) || { echo "skip $atom failed $(cat "$rf.failed") not re-closed since marker"; skip=$((skip+1)); continue; }
      mv -f -- "$rf.failed" "$rf.failed.resubmitted"; rm -f -- "$rf.failed.reported" ;;
     23|70|75) ;;
-    *) pf="$SHIP_POST_STATE_DIR/incidents/parked/$atom" # dcfg-c75sy.3: wait out the backoff before re-handover of a parked INFRA atom
-       if [[ -f $pf ]]; then
-        if (( $(date +%s) - $(stat -c %Y "$pf") < SHIP_POST_PARKED_RETRY_SECONDS )); then echo "skip $atom parked backoff"; skip=$((skip+1)); continue; fi
-        touch "$pf"
-       fi ;;
+    *) pf="$SHIP_POST_STATE_DIR/incidents/parked/$atom"
+      [[ ! -f $pf ]] || { echo "skip $atom parked unchanged key"; skip=$((skip+1)); continue; } # parked atom: a scan never re-hands over the same (atom, SHA) key; --submit clears the marker
+    ;;
    esac
   fi
   [[ $status == closed ]] || { echo "skip $atom status $status"; skip=$((skip+1)); continue; }
