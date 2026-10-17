@@ -11,6 +11,7 @@ ship-post --submit <worktree> --atom <id> --tz <path#U> --evidence <text> --file
 `bin/ship-post:do_submit` accepts a registered linked worktree under `.worktrees/<agent>/`, a matching Claude/Codex branch and assignee, and an in-worktree TZ and file list. It rejects missing evidence, an invalid atom, an unserved repository, out-of-scope changes, invalid commit trailers, and a dirty worktree for a closed atom. On success it creates the local commit, checks for a conflict against a reachable `origin/<base>`, closes the atom with the committed SHA, writes the submission receipt, and prints `committed <atom> <sha> on <branch>`. If fetch is unavailable after commit, it warns that the conflict check is deferred, then closes and receipts the same SHA; the courier performs the later remote mergeability gate. Submit does not push.
 
 Архитектура также читается без сети: `ship-post --status <atom>` — read-only сводка из файлов `SHIP_POST_STATE_DIR` (без `bd`, `git`, блокировок и записей), значения `none|submitted|delivering|failed|parked|<stage из receipt>`.
+`ship-post --wait <atom> [--timeout <s>]` (dcfg-p6mn5.2, default 900 s) — the same read-only `--status` line, but blocks on `inotifywait` events in `SHIP_POST_STATE_DIR` (re-check at least every 30 s) until a final state: rc 0 `delivered|wait-owner|prod-hold`, rc 1 `parked|failed`, rc 3 timeout. The agent runs it as a harness background command after `bd close`, so the courier's state change wakes the agent without polling.
 
 ## 2. C4: контекст и контейнеры
 
