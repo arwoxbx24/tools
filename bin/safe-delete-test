@@ -550,5 +550,25 @@ printf 'x\n' > "$d/sb/test-c/.beads/x"
 out75=$(SAFE_DELETE_SANDBOX="$d/sb" "$bin/safe-delete" --bk "$bk" dir "$d/sb/test-c" 2>&1); r75=$?
 if [[ $r75 == 2 && $out75 == *'запрещённый сегмент'* && -f "$d/sb/test-c/.beads/x" ]]; then echo 'PASS T75 sandbox_dirty_beads_refused'; ok=$((ok+1)); else echo "FAIL T75: rc=$r75 out=$out75"; fi
 
-[[ $ok == 76 ]] || exit 1
-echo "итог: PASS 76, FAIL 0"
+# T76-T77: sandbox test repo with git-tracked clean .codex is deleted; dirty .codex is refused
+git init -q "$d/sb/test-d"
+git -C "$d/sb/test-d" config user.email t@t
+git -C "$d/sb/test-d" config user.name t
+printf 'a\n' > "$d/sb/test-d/a.txt"
+mkdir -p "$d/sb/test-d/.codex"; printf '{}\n' > "$d/sb/test-d/.codex/hooks.json"
+git -C "$d/sb/test-d" add -f a.txt .codex/hooks.json && git -C "$d/sb/test-d" commit -q -m d
+out76=$(SAFE_DELETE_SANDBOX="$d/sb" "$bin/safe-delete" --bk "$bk" dir "$d/sb/test-d" 2>&1); r76=$?
+if [[ $r76 == 0 && ! -e "$d/sb/test-d" ]]; then echo 'PASS T76 sandbox_tracked_codex'; ok=$((ok+1)); else echo "FAIL T76: rc=$r76 out=$out76"; fi
+
+git init -q "$d/sb/test-e"
+git -C "$d/sb/test-e" config user.email t@t
+git -C "$d/sb/test-e" config user.name t
+mkdir -p "$d/sb/test-e/.beads" "$d/sb/test-e/.codex"
+printf 'c\n' > "$d/sb/test-e/.beads/config.yaml"; printf '{}\n' > "$d/sb/test-e/.codex/hooks.json"
+git -C "$d/sb/test-e" add -f .beads/config.yaml .codex/hooks.json && git -C "$d/sb/test-e" commit -q -m e
+printf 'x\n' > "$d/sb/test-e/.codex/x"
+out77=$(SAFE_DELETE_SANDBOX="$d/sb" "$bin/safe-delete" --bk "$bk" dir "$d/sb/test-e" 2>&1); r77=$?
+if [[ $r77 == 2 && $out77 == *'запрещённый сегмент'* && -f "$d/sb/test-e/.codex/x" ]]; then echo 'PASS T77 sandbox_dirty_codex_refused'; ok=$((ok+1)); else echo "FAIL T77: rc=$r77 out=$out77"; fi
+
+[[ $ok == 78 ]] || exit 1
+echo "итог: PASS 78, FAIL 0"

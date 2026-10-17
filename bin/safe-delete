@@ -7,7 +7,8 @@ mkdir -p "$BK"
 led=$BK/ledger.tsv
 self=$(realpath -e "$(command -v -- "$0")") || exit 1
 allow_git_under=
-allow_beads_under=
+allow_tracked_under=
+allow_tracked_segs=
 sandbox=${SAFE_DELETE_SANDBOX:-/root/workspaces/sandbox}
 force_copy=
 ok_repowise=
@@ -70,7 +71,7 @@ check_path(){
   fi
   for seg in secrets hh-scoring .codex .git .beads; do
     [[ $seg == .git && -n ${allow_git_under:-} && ( $p == "$allow_git_under" || $p == "$allow_git_under"/* ) ]] && continue
-    [[ $seg == .beads && -n ${allow_beads_under:-} && ( $p == "$allow_beads_under"/.beads || $p == "$allow_beads_under"/.beads/* ) ]] && continue
+    [[ -n ${allow_tracked_under:-} && " $allow_tracked_segs " == *" $seg "* && ( $p == "$allow_tracked_under/$seg" || $p == "$allow_tracked_under/$seg"/* ) ]] && continue
     [[ $p == */"$seg" || $p == */"$seg"/* ]] && refuse "запрещённый сегмент: $p"
   done
   [[ $p == */clients/* && $p != */clients/*/.agent-work/* ]] && refuse "запрещённый сегмент: $p"
@@ -150,7 +151,9 @@ case "$cmd" in
   dir)
     [[ $# -eq 1 ]] || refuse 'usage'; check_path "$1"; dir=$p; [[ -d $dir ]] || refuse "не каталог: $dir"
     if [[ $dir == "$sandbox"/test-* && ${dir#"$sandbox"/} != */* ]]; then allow_git_under=$dir; force_copy=1
-      if [[ -e $dir/.git && -n $(git -C "$dir" ls-files -- .beads) && -z $(git -C "$dir" status --porcelain --ignored -- .beads) ]]; then allow_beads_under=$dir; fi
+      for s in .beads .codex; do
+        if [[ -e $dir/.git && -e $dir/$s && -n $(git -C "$dir" ls-files -- "$s") && -z $(git -C "$dir" status --porcelain --ignored -- "$s") ]]; then allow_tracked_segs+=" $s"; allow_tracked_under=$dir; fi
+      done
     elif self_contained "$dir"; then allow_git_under=$dir; else allow_git_under=; fi
     mapfile -d '' entries < <(find "$dir" -depth -print0); for entry in "${entries[@]}"; do [[ -L $entry ]] || check_path "$entry"; done
     mapfile -d '' files < <(find "$dir" -type f -print0)
