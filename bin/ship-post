@@ -8,7 +8,6 @@ ship_bin="$bin/ship"
 SHIP_POST_STATE_DIR=${SHIP_POST_STATE_DIR:-/root/workspaces/tools/state/ship-post}
 SHIP_POST_BEADS_ROOT=${SHIP_POST_BEADS_ROOT:-/root/workspaces/projects}
 SHIP_POST_SINCE=${SHIP_POST_SINCE:-1791205200}
-SHIP_POST_PARKED_RETRY_SECONDS=${SHIP_POST_PARKED_RETRY_SECONDS:-3600} # dcfg-c75sy.3: parked INFRA atoms re-handover after this backoff
 BEADS_ACTOR=${BEADS_ACTOR:-}
 SHIP_POST_RETRY_SECONDS=${SHIP_POST_RETRY_SECONDS:-30}
 [[ $SHIP_POST_RETRY_SECONDS =~ ^[1-9][0-9]*$ ]] || { echo 'ship-post: invalid retry interval' >&2; exit 2; }
@@ -203,6 +202,15 @@ do_break_glass(){
 
 # ── submit mode ──────────────────────────────────────────────────────
 
+deliver_submitted(){ # <repo> <atom> — owner 17.10: --submit delivers only its own atom once
+	local log=$SHIP_POST_STATE_DIR/submit-logs/$2.log
+	exec {submit_lock_fd}>&-
+	mkdir -p "$(dirname "$log")" || return 1
+	# why: setsid and the redirections detach the one-shot run from the caller's stdout, stderr and process group
+	setsid -f "$bin/ship-post" --atom "$2" >> "$log" 2>&1 < /dev/null || { echo "ship-post: cannot start delivery of $2" >&2; return 1; }
+	echo "ship-post: delivery of $2 started; check: ship-post --status $2 (log: $log)"
+}
+
 do_submit(){
 	local wt=$1 atom=$2 tz=$3 evidence=$4; shift 4
 	local files=("$@")
@@ -271,6 +279,7 @@ do_submit(){
 			clear_final_failure "$repo" "$atom" "$head_sha" || die "cannot clear final failure"
 			write_submit_receipt "$repo" "$wt_real" "$atom" "$head_sha" "$evidence" || die "cannot write submission receipt"
 			echo "ship-post: already closed $atom"
+			[[ ${auto_mode:-0} == 1 ]] || deliver_submitted "$repo" "$atom" || return 1
 			return 0
 		fi
 	else
@@ -338,6 +347,7 @@ do_submit(){
 
 	clear_final_failure "$repo" "$atom" "$head_sha" || die "cannot clear final failure"
 	write_submit_receipt "$repo" "$wt_real" "$atom" "$head_sha" "$evidence" || die "cannot write submission receipt"
+	[[ ${auto_mode:-0} == 1 ]] || deliver_submitted "$repo" "$atom" || return 1
 	if [[ ${auto_mode:-0} == 1 ]]; then echo "auto-submit $atom $head_sha"; return 0; fi
 	echo "ship-post: closed $atom"
 	return 0
@@ -415,7 +425,7 @@ actor_name(){
 }
 
 remote_result(){
- local wt=$1 head=$2 branch=$3 origin result
+ local wt=$1 head=$2 branch=$3 origin result old
 	remote_list='[]'
  origin=$(git -C "$wt" remote get-url origin) || return 23
  result=$(gh repo view "$origin" --json isPrivate 2>/dev/null) || return 23
@@ -428,6 +438,12 @@ remote_result(){
  [[ $(jq 'length' <<<"$result") == 0 ]] && return 21
  remote_open=$(jq -c --arg h "$head" '[.[] | select(.headRefOid==$h and .state=="OPEN")][0] // empty' <<<"$result")
  [[ -n $remote_open ]] && return 22
+ # why: a follow-up commit on top of an open PR head updates that PR instead of blocking delivery
+ while IFS= read -r old; do
+  git -C "$wt" merge-base --is-ancestor "$old" "$head" 2>/dev/null || continue
+  remote_open=$(jq -c --arg h "$old" '[.[] | select(.headRefOid==$h and .state=="OPEN")][0] // empty' <<<"$result")
+  return 22
+ done < <(jq -r --arg h "$head" '.[] | select(.state=="OPEN" and .headRefOid!=$h) | .headRefOid' <<<"$result")
  jq -e --arg h "$head" 'any(.[]; .headRefOid==$h and .state=="CLOSED")' <<<"$result" >/dev/null && return 21
  return 24
 }
@@ -694,12 +710,10 @@ scan_repo(){
      ce=$(date -d "$(jq -r '.[0].closed_at // empty' <<<"$st")" +%s 2>/dev/null) || ce=0
      (( ce > $(stat -c %Y "$rf.failed") )) || { echo "skip $atom failed $(cat "$rf.failed") not re-closed since marker"; skip=$((skip+1)); continue; }
      mv -f -- "$rf.failed" "$rf.failed.resubmitted"; rm -f -- "$rf.failed.reported" ;;
-    23|70|75) ;;
-    *) pf="$SHIP_POST_STATE_DIR/incidents/parked/$atom" # dcfg-c75sy.3: wait out the backoff before re-handover of a parked INFRA atom
-       if [[ -f $pf ]]; then
-        if (( $(date +%s) - $(stat -c %Y "$pf") < SHIP_POST_PARKED_RETRY_SECONDS )); then echo "skip $atom parked backoff"; skip=$((skip+1)); continue; fi
-        touch "$pf"
-       fi ;;
+    23) ;;
+    *) pf="$SHIP_POST_STATE_DIR/incidents/parked/$atom"
+      [[ ! -f $pf || ( ${filter_atom:-} == "$atom" && ${watch:-0} != 1 ) ]] || { echo "skip $atom parked unchanged key"; skip=$((skip+1)); continue; } # parked atom: only an explicit one-shot call for this atom (--atom/--submit, not --watch) re-hands over the same (atom, SHA) key
+    ;;
    esac
   fi
   [[ $status == closed ]] || { echo "skip $atom status $status"; skip=$((skip+1)); continue; }
