@@ -144,3 +144,11 @@ An agent delivers by `bd close <own atom> --reason <evidence>` only. For a dirty
 The TZ comes from the atom description or notes (`ТЗ:`/`TZ: <path>#U<n>`), else from the single changed `docs/tz/*.md`; every other changed file must be named literally in that TZ, otherwise the skip cause is `auto-submit: files not named in TZ`.
 It then runs `do_submit` in a subshell with `auto_mode=1` and the CLI-mode flags reset (`dry_run watch submit status_mode filter_atom bg`, dcfg-74h33.7), so the live `--watch` courier is not refused by the `--submit` usage check: the atom stays closed, `bd update --append-notes "ship-post auto-submit <sha>"` is added, the submission receipt is written and `auto-submit <atom> <sha>` is printed. The next pass delivers the commit as usual.
 Auto-submit runs only when the atom's `closed_at` is newer than the worktree HEAD commit time and at most `SHIP_POST_AUTO_HOURS` (default 24) hours old; otherwise the normal closed-dirty report path applies. With `--dry-run` a passing scan prints `auto-submit-ready <atom> <wt>` and commits nothing.
+
+## 15. Outcome accounting (spec 099 §v9, ADR-40, dcfg-80rgm)
+- F1a `bin/ship`: after «CI не появился» the courier re-reads PR `mergeable` up to 3 times; `CONFLICTING` → code 50 (author conflict), not 30 (INFRA). GitHub runs no `pull_request` CI on a conflicting PR.
+- F2 `bin/ship-post:ack_delivery`: the INFRA incident closes when the last atom parked under it is delivered; `incidents/<code>` files with its id are removed. `bin/ship-post:record_failure`: a non-INFRA code (10/20/24/40/50/80) unparks the atom and removes label `delivery-blocked`.
+- 130 (interrupt): marker only, retried next pass, no incident (`bin/ship-post:record_failure`, `bin/ship-post:scan_repo`).
+- F1b `bin/ship-post:deliver_one`: ship failed but the head is an ancestor of `origin/<base>` → delivery receipt, no incident.
+- F3 `bin/ship-post:scan_repo`: a 10/50/80 marker is retried when the atom's `closed_at` is newer than the marker.
+- Tests: `bin/ship-test.d/v9a-ci-absent-conflict.sh`; `bin/ship-post-test` `test_v9` (v9b, v9c, v9d, v9e, v9e_control).
