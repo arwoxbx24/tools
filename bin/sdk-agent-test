@@ -355,3 +355,9 @@ check "cap default daily cap is 7.00 (no test override)" cap_default_seven
 
 echo "ok $pass/$total"
 [[ $pass -eq $total ]]
+if [[ $pass -eq $total ]]; then
+  echo "PASS all"
+  exit 0
+fi
+echo "FAIL: $pass/$total"
+exit 1
