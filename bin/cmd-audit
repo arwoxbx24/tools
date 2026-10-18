@@ -6,7 +6,7 @@
 set -uo pipefail
 
 bin=$(cd -- "$(dirname -- "$0")" && pwd)
-CMD_AUDIT_SKILLS=${CMD_AUDIT_SKILLS:-/root/.claude/skills}
+CMD_AUDIT_SKILLS=${CMD_AUDIT_SKILLS:-/root/.claude/skills:/root/workspaces/projects/.claude/skills}
 CMD_AUDIT_WORKFLOWS=${CMD_AUDIT_WORKFLOWS:-/root/.claude/workflows}
 CMD_AUDIT_AGENTS=${CMD_AUDIT_AGENTS:-/root/.claude/agents}
 CMD_AUDIT_TRANSCRIPTS=${CMD_AUDIT_TRANSCRIPTS:-/root/.claude/projects}
@@ -73,12 +73,19 @@ bd_has() {
 
 # 1. наши команды -> recs "kind name"
 recs=()
-for p in "$CMD_AUDIT_SKILLS"/*; do
-  [[ -d $p && -f $p/SKILL.md ]] || continue
-  name=${p##*/}
-  is_vendor "$name" && continue
-  is_third_party "$p/SKILL.md" && continue
-  recs+=("skill $name")
+declare -A skill_dir=()
+IFS=: read -ra skill_roots <<< "$CMD_AUDIT_SKILLS"
+for root in "${skill_roots[@]}"; do
+  [[ -n $root ]] || continue
+  for p in "$root"/*; do
+    [[ -d $p && -f $p/SKILL.md ]] || continue
+    name=${p##*/}
+    [[ -n ${skill_dir[$name]+x} ]] && continue
+    is_vendor "$name" && continue
+    is_third_party "$p/SKILL.md" && continue
+    skill_dir[$name]=$root
+    recs+=("skill $name")
+  done
 done
 for f in "$CMD_AUDIT_WORKFLOWS"/*.js; do
   [[ -f $f ]] || continue
@@ -125,6 +132,25 @@ function scan(line, marker, isskill,   rest, p, e, v, k, parts) {
     if (isskill) { k = split(v, parts, ":"); if (k > 1) hit(parts[k]) }
   }
 }
+function scanpath(line,   rest, p, e, v, f) {
+  rest = line
+  while ((p = index(rest, "\"scriptPath\":")) > 0) {
+    rest = substr(rest, p + 13)
+    sub(/^ */, "", rest)
+    if (substr(rest, 1, 1) != Q) continue
+    rest = substr(rest, 2)
+    e = index(rest, Q)
+    if (e == 0) break
+    v = substr(rest, 1, e - 1)
+    rest = substr(rest, e + 1)
+    if (v !~ /\//) continue
+    f = v; sub(/.*\//, "", f)
+    if (f !~ /\.js$/) continue
+    sub(/\.js$/, "", f)
+    if (f in ours) hit(f)
+    else if (match(f, /-wf_[A-Za-z0-9-]+$/)) hit(substr(f, 1, RSTART - 1))
+  }
+}
 BEGIN {
   Q = sprintf("%c", 34)
   n = split(ENVIRON["NAMES"], arr, "\n")
@@ -144,6 +170,7 @@ FILENAME == hist {
   scan($0, Q "skill" Q ":" Q, 1)
   scan($0, Q "Workflow" Q "," Q "input" Q ":{" Q "name" Q ":" Q, 0)
   scan($0, Q "subagent_type" Q ":" Q, 0)
+  scanpath($0)
 }
 END { for (v in ours) printf "%s %d\n", v, cnt[v] }
 ' "${inputs[@]}")
@@ -186,7 +213,7 @@ for r in "${recs[@]}"; do
   kind=${r%% *}
   name=${r#* }
   case $kind in
-    skill) files=("$CMD_AUDIT_SKILLS/$name/SKILL.md" "$CMD_AUDIT_SKILLS/$name"/references/*.md) ;;
+    skill) files=("${skill_dir[$name]}/$name/SKILL.md" "${skill_dir[$name]}/$name"/references/*.md) ;;
     workflow) files=("$CMD_AUDIT_WORKFLOWS/$name.js") ;;
     agent) files=("$CMD_AUDIT_AGENTS/$name.md") ;;
   esac

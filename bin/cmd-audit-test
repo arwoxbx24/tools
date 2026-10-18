@@ -24,7 +24,7 @@ chmod +x "$T/fake/bd"
 L=$(printf 'q%.0s' {1..90})
 
 reset() {
-  rm -rf "$T/skills" "$T/workflows" "$T/agents" "$T/projects" "$T/ledger" "$T/history.jsonl" "$T/titles.txt" "$T/bd.log"
+  rm -rf "$T/skills" "$T/skills2" "$T/workflows" "$T/agents" "$T/projects" "$T/ledger" "$T/history.jsonl" "$T/titles.txt" "$T/bd.log"
   mkdir -p "$T/skills" "$T/workflows" "$T/agents" "$T/projects"
   printf '# comment\n' > "$T/vendor.txt"
 }
@@ -34,7 +34,7 @@ seed_zero() {
   for i in 1 2 3 4; do printf '2026-10-0%s\t%s\t0\n' "$i" "$1" >> "$T/ledger/ledger.tsv"; done
 }
 audit() {
-  CMD_AUDIT_SKILLS="$T/skills" CMD_AUDIT_WORKFLOWS="$T/workflows" CMD_AUDIT_AGENTS="$T/agents" \
+  CMD_AUDIT_SKILLS="${SKILLS_PATH:-$T/skills}" CMD_AUDIT_WORKFLOWS="$T/workflows" CMD_AUDIT_AGENTS="$T/agents" \
   CMD_AUDIT_TRANSCRIPTS="$T/projects" CMD_AUDIT_HISTORY="$T/history.jsonl" \
   CMD_AUDIT_VENDOR="$T/vendor.txt" CMD_AUDIT_LEDGER="$T/ledger/ledger.tsv" \
   CMD_AUDIT_BD="$T/fake/bd" "$bin/cmd-audit" "$@"
@@ -100,6 +100,22 @@ mkskill ours-q '---' 'name: ours-q' '---' "$B"
 mkskill ours-r '---' 'name: ours-r' '---' "$B"
 out=$(audit); rc=$?
 if [[ $out != *DUP* ]]; then pass T8 shared_boilerplate; else fail T8 "rc=$rc out=$out"; fi
+
+# T9 second_root: два каталога навыков через ':'; ours-z во втором, DUP с ours-a из первого
+reset
+mkskill ours-a '---' 'name: ours-a' '---' "$L"
+mkdir -p "$T/skills2/ours-z"
+printf '%s\n' '---' 'name: ours-z' '---' "$L" > "$T/skills2/ours-z/SKILL.md"
+out=$(SKILLS_PATH="$T/skills:$T/skills2" audit); rc=$?
+if [[ $rc == 1 && $out == *'DUP ours-a ours-z'* ]]; then pass T9 second_root; else fail T9 "rc=$rc out=$out"; fi
+
+# T10 scriptpath_used: вызов по scriptPath копии сессии засчитан, ZOMBIE нет
+reset
+printf 'x\n' > "$T/workflows/wf-a.js"
+printf '%s\n' '{"name":"Workflow","input":{"scriptPath":"/x/.claude/workflows/scripts/wf-a-wf_ab12-c3.js"}}' > "$T/projects/s.jsonl"
+seed_zero wf-a
+out=$(audit)
+if [[ $out != *'ZOMBIE wf-a'* ]]; then pass T10 scriptpath_used; else fail T10 "out=$out"; fi
 
 echo "итого PASS: $ok из $total"
 (( ok == total )) || exit 1
