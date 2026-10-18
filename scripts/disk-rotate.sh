@@ -16,6 +16,7 @@ DR_LEDGER=${DR_LEDGER:-${LEDGER:-/var/log/disk-rotate-ledger.tsv}}
 DR_STATE_FILE=${DR_STATE_FILE:-/var/lib/disk-rotate/fixed.tsv}
 DR_LOGROTATE_STATE=${DR_LOGROTATE_STATE:-/var/lib/disk-rotate/logrotate.state}
 DR_ALERT_STATE_FILE=${DR_ALERT_STATE_FILE:-/var/log/disk-rotate-alert-state.tsv}
+DR_REALERT_SEC=${DR_REALERT_SEC:-86400}
 DR_LOCK_FILE=${DR_LOCK_FILE:-/var/run/disk-rotate.lock}
 DR_LAST_OK=${DR_LAST_OK:-/root/workspaces/system/tools/scripts/data/server-backup.last-ok}
 DR_JOURNAL=${DR_JOURNAL:-/var/log/disk-rotate-deletions.tsv}
@@ -309,7 +310,7 @@ alert_active() { # состояние
 
 mark_alert() { # состояние
   sed -i "/^$1=/d" "$DR_ALERT_STATE_FILE" 2>/dev/null || true
-  echo "$1=active" >>"$DR_ALERT_STATE_FILE"
+  echo "$1=$(date +%s)" >>"$DR_ALERT_STATE_FILE"
 }
 
 clear_alert() { # состояние
@@ -319,9 +320,18 @@ clear_alert() { # состояние
 
 maybe_alert() { # состояние текст
   local st=$1 txt=$2
+  local val
   if alert_active "$st"; then
-    echo "ALERT-SKIP $st уже активен" >>"$DR_LOG"
-    return 0
+    if [ "$st" = exhausted ]; then
+      val=$(awk -F= -v st="$st" '$1==st{print $2}' "$DR_ALERT_STATE_FILE" 2>/dev/null)
+      if [[ "$val" =~ ^[0-9]+$ ]] && [ $(( $(date +%s) - val )) -lt "$DR_REALERT_SEC" ]; then
+        echo "ALERT-SKIP $st уже активен" >>"$DR_LOG"
+        return 0
+      fi
+    else
+      echo "ALERT-SKIP $st уже активен" >>"$DR_LOG"
+      return 0
+    fi
   fi
   if send_alert "$txt"; then
     ALERT_SENT=$((ALERT_SENT + 1))
@@ -330,6 +340,11 @@ maybe_alert() { # состояние текст
     ALERT_FAIL=$((ALERT_FAIL + 1))
   fi
 }
+
+# Только функции (тесты подключают скрипт через source): выход до основного потока.
+if [ "${DR_SOURCE_ONLY:-}" = 1 ]; then
+  return 0 2>/dev/null || exit 0
+fi
 
 # --check-declared: сверка объявленных путей; без уборки и без строки в ledger.
 if [ "$MODE" = check ]; then
@@ -698,7 +713,7 @@ gate_process() { # class listfile -> 0, либо RC_GATE_CLOSED при закр�
   fi
   rm -f "$tmp"
   # срок хранения снимков predelete: 10 дней (владелец 02.10, CR-02 §6 п.4); неудача не блокирует прогон
-  if ! "$RESTIC" forget --tag predelete --group-by host,tags --keep-within 10d --keep-tag keep-archive >>"$DR_LOG" 2>&1; then
+  if ! "$RESTIC" forget --quiet --tag predelete --group-by host,tags --keep-within 10d --keep-tag keep-archive >>"$DR_LOG" 2>&1; then
     journal_row gate forget-skipped - 0 - - forget-locked
   fi
   # при занятости >=95% свежие снимки проходят правило 24 ч сразу
