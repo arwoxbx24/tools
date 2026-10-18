@@ -416,7 +416,7 @@ run_check() {
 # Every edit is validated in memory first (earlier edits of a file are applied before later ones);
 # only when all pass is each changed file written once (temp file + mv). Otherwise exit 5, nothing written.
 apply_edits() {
-  local n i f op listed line p target tmp res state
+  local n i f op listed line p target tmp res
   local -a changes=()
   jq -e '.structured_output.edits | type == "array"' <<<"$RESULT" >/dev/null 2>&1 \
     || die "engine returned no edits array" 4
@@ -438,17 +438,21 @@ apply_edits() {
   done
 
   # Current state: every listed path -> its content (raw, trailing newline kept) or null when absent.
-  state='{}'
+  # Kept in the temp file STATE_F, never in argv (a file over 128 KiB would hit MAX_ARG_STRLEN).
+  STATE_F=$(mktemp -- "${TMPDIR:-/tmp}/sdk-agent-state.XXXXXX") || die "cannot write state file" 6
+  trap 'rm -f -- "$STATE_F" "$STATE_F.next"' EXIT
+  printf '{}\n' > "$STATE_F"
   for f in "${FILES[@]}"; do
     if [[ -f $WT_REAL/$f ]]; then
-      state=$(jq -n --argjson s "$state" --arg p "$f" --rawfile c "$WT_REAL/$f" '$s + {($p): $c}') || die "cannot read: $f" 6
+      jq -n --slurpfile ss "$STATE_F" --arg p "$f" --rawfile c "$WT_REAL/$f" '($ss[0]) + {($p): $c}' > "$STATE_F.next" || die "cannot read: $f" 6
     else
-      state=$(jq -n --argjson s "$state" --arg p "$f" '$s + {($p): null}') || die "cannot read: $f" 6
+      jq -n --slurpfile ss "$STATE_F" --arg p "$f" '($ss[0]) + {($p): null}' > "$STATE_F.next" || die "cannot read: $f" 6
     fi
+    mv -f -- "$STATE_F.next" "$STATE_F"
   done
 
   # Apply the edits in memory. old "" = create (file must not exist); otherwise old must occur exactly once.
-  res=$(jq -c --argjson s "$state" '
+  res=$(jq -c --slurpfile ss "$STATE_F" '
     def apply_one($st; $e):
       ($e.path) as $p
       | ($st[$p]) as $cur
@@ -460,13 +464,13 @@ apply_edits() {
             elif $n > 1 then error("refused edit: old not unique: \($p)")
             else $st + {($p): ($cur | split($e.old) | join($e.new))} end
         end;
-    try {ok: (reduce .structured_output.edits[] as $e ($s; apply_one(.; $e)))} catch {error: .}' <<<"$RESULT") \
+    ($ss[0]) as $s | try {ok: (reduce .structured_output.edits[] as $e ($s; apply_one(.; $e)))} catch {error: .}' <<<"$RESULT") \
     || die "cannot apply edits" 5
   if jq -e 'has("error")' <<<"$res" >/dev/null; then
     die "$(jq -r '.error' <<<"$res")" 5
   fi
 
-  mapfile -t changes < <(jq -c --argjson s "$state" '.ok | to_entries[] | select(.value != $s[.key]) | {path: .key, content: .value}' <<<"$res")
+  mapfile -t changes < <(jq -c --slurpfile ss "$STATE_F" '.ok | to_entries[] | select(.value != $ss[0][.key]) | {path: .key, content: .value}' <<<"$res")
 
   # Write each changed file once: temp file inside the target directory, then mv.
   for line in "${changes[@]}"; do
