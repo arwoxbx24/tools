@@ -3,8 +3,8 @@
   "opencode_config": "config/opencode-channel.json",
   "resume_idle_limit": 3,
   "ladder": [
-    {"id": "sdk", "enabled": true, "model": "claude-haiku-5-5"},
-    {"id": "go", "enabled": false, "model": "opencode-go/deepseek-v4-pro", "resume_model": "opencode-go/deepseek-v4-pro", "audit_model": "opencode-go/deepseek-v4-pro", "alt_models": ["opencode-go/glm-5.3-flash", "opencode-go/deepseek-v4.1-flash"]},
+    {"id": "sdk", "enabled": false, "model": "claude-haiku-5-5"},
+    {"id": "go", "enabled": true, "model": "opencode-go/deepseek-v4-pro", "resume_model": "opencode-go/deepseek-v4-pro", "audit_model": "opencode-go/deepseek-v4-pro", "alt_models": ["opencode-go/glm-5.3-flash", "opencode-go/deepseek-v4.1-flash"]},
     {"id": "codex", "enabled": false, "model": "", "effort": "high"},
     {"id": "openrouter", "enabled": false, "model": "openrouter/deepseek/deepseek-v4-flash", "key": "OPENROUTER_API_KEY", "secret": "openrouter", "base": "https://openrouter.ai/api/v1"},
     {"id": "bitrixgpt", "enabled": false, "model": "bitrixgpt/bitrix/bitrixgpt-5.6-agent", "key": "VIBECODE_API_KEY", "secret": "vibecode", "base": "https://vibecode.bitrix24.tech/v1"},
