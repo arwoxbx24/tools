@@ -57,22 +57,6 @@ module.exports = {
       out_file: '/root/.pm2/logs/amc-mvp-api-out.log'
     },
     {
-      name: 'arwox-landing-hub',
-      time: true,
-      merge_logs: true,
-      script: '/root/workspaces/projects/arwox-landing/hub/server.cjs',
-      cwd: '/root/workspaces/projects',
-      interpreter: '/root/.nvm/versions/node/v20.19.4/bin/node',
-      exec_mode: 'fork_mode',
-      instances: 1,
-      autorestart: true,
-      min_uptime: 10000,
-      max_restarts: 10,
-      exp_backoff_restart_delay: 1000,
-      error_file: '/root/.pm2/logs/arwox-landing-hub-error.log',
-      out_file: '/root/.pm2/logs/arwox-landing-hub-out.log'
-    },
-    {
       name: 'backup-rotation',
       time: true,
       merge_logs: true,
