@@ -530,6 +530,12 @@ ln -s "$d/missing-ro" "$d/ro-link"
 "$bin/safe-delete" --bk "$d/rbk" link "$d/ro-link" >/dev/null 2>&1; r73=$?
 if [[ $r73 != 0 && -L $d/ro-link ]]; then echo 'PASS T73 ledger_unwritable'; ok=$((ok+1)); else echo "FAIL T73: rc=$r73"; fi
 
+# T91: dead link outside the default link roots is refused and survives (SAFE_DELETE_ROOTS unset)
+ln -s "$d/missing-outside" "$d/dead-outside"
+env -u SAFE_DELETE_ROOTS "$bin/safe-delete" --bk "$bk" link "$d/dead-outside" >/dev/null 2>&1; r91=$?
+if [[ $r91 == 2 && -L $d/dead-outside ]]; then echo 'PASS T91 link_dead_outside_default_roots'; ok=$((ok+1))
+else echo "FAIL T91: rc=$r91"; fi
+
 # T74-T75: sandbox test repo with git-tracked clean .beads is deleted; dirty .beads is refused
 git init -q "$d/sb/test-b"
 git -C "$d/sb/test-b" config user.email t@t
@@ -704,5 +710,5 @@ bf90=$(ls "$bk"/*claude-x-probe*.bundle 2>/dev/null | head -1)
 bv90=1; if [[ -n $bf90 ]]; then git -C "$d/w" bundle verify "$bf90" >/dev/null 2>&1 && bv90=0; fi
 if [[ $r90 == 0 && -z $gone90 && $nb90 == 1 && $bv90 == 0 ]]; then echo 'PASS T90 no_origin_bundle_slash'; ok=$((ok+1)); else echo "FAIL T90: rc=$r90 br=$gone90 n=$nb90"; fi
 
-[[ $ok == 91 ]] || exit 1
+[[ $ok == 92 ]] || exit 1
 echo "итог: PASS $ok, FAIL 0"

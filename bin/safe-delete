@@ -327,7 +327,7 @@ $f"; done
       fi
     fi
     if [[ -z $live_ok ]]; then
-      roots=${SAFE_DELETE_ROOTS:-/root/.claude/agents}
+      roots=${SAFE_DELETE_ROOTS:-/root/.claude/skills:/root/.claude/agents}
       if [[ -n ${SAFE_DELETE_ROOTS:-} ]]; then
         IFS=: read -ra rts <<< "$roots"
         for r in "${rts[@]}"; do [[ $r == /tmp/* ]] || refuse "корень не под /tmp: $r"; done
