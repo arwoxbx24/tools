@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+# cmd-audit-test: T1–T6 для bin/cmd-audit. Всё во временном каталоге, боевые CMD_AUDIT_* не трогаются.
+set -u
+bin=$(cd -- "$(dirname -- "$0")" && pwd)
+T=$(mktemp -d)
+trap 'rm -rf "$T"' EXIT
+ok=0
+total=0
+pass() { echo "PASS $1 $2"; ok=$((ok+1)); total=$((total+1)); }
+fail() { echo "FAIL $1 $2"; total=$((total+1)); }
+
+# фейковый bd: search печатает уже созданные заголовки, create запоминает их и логирует
+mkdir -p "$T/fake"
+cat > "$T/fake/bd" <<EOF
+#!/usr/bin/env bash
+case \$1 in
+  search) cat "$T/titles.txt" 2>/dev/null ;;
+  create) printf '%s\n' "\$2" >> "$T/titles.txt"; printf 'create|%s\n' "\$2" >> "$T/bd.log" ;;
+esac
+exit 0
+EOF
+chmod +x "$T/fake/bd"
+
+L=$(printf 'q%.0s' {1..90})
+
+reset() {
+  rm -rf "$T/skills" "$T/skills2" "$T/workflows" "$T/agents" "$T/projects" "$T/ledger" "$T/history.jsonl" "$T/titles.txt" "$T/bd.log"
+  mkdir -p "$T/skills" "$T/workflows" "$T/agents" "$T/projects"
+  printf '# comment\n' > "$T/vendor.txt"
+}
+mkskill() { mkdir -p "$T/skills/$1"; printf '%s\n' "${@:2}" > "$T/skills/$1/SKILL.md"; }
+seed_zero() {
+  mkdir -p "$T/ledger"
+  for i in 1 2 3 4; do printf '2026-10-0%s\t%s\t0\n' "$i" "$1" >> "$T/ledger/ledger.tsv"; done
+}
+audit() {
+  CMD_AUDIT_SKILLS="${SKILLS_PATH:-$T/skills}" CMD_AUDIT_WORKFLOWS="$T/workflows" CMD_AUDIT_AGENTS="$T/agents" \
+  CMD_AUDIT_TRANSCRIPTS="$T/projects" CMD_AUDIT_HISTORY="$T/history.jsonl" \
+  CMD_AUDIT_VENDOR="$T/vendor.txt" CMD_AUDIT_LEDGER="$T/ledger/ledger.tsv" \
+  CMD_AUDIT_BD="$T/fake/bd" "$bin/cmd-audit" "$@"
+}
+
+# T1 dup_ours: одна длинная строка в двух наших навыках
+reset
+mkskill ours-a '---' 'name: ours-a' '---' "$L"
+mkskill ours-b '---' 'name: ours-b' '---' "$L"
+out=$(audit); rc=$?
+if [[ $rc == 1 && $out == *'DUP ours-a ours-b'* ]]; then pass T1 dup_ours; else fail T1 "rc=$rc out=$out"; fi
+
+# T2 vendor_excluded: license в frontmatter и имя из vendor-файла
+reset
+printf 'speck-y\n' >> "$T/vendor.txt"
+mkskill vendor-x '---' 'name: vendor-x' 'license: MIT' '---' "$L"
+mkskill speck-y "$L"
+out=$(audit); rc=$?
+if [[ $rc == 0 && $out != *vendor-x* && $out != *speck-y* ]]; then pass T2 vendor_excluded; else fail T2 "rc=$rc out=$out"; fi
+
+# T3 zombie: 4 нулевые недели в ledger, в журналах нет
+reset
+mkskill ours-c '---' 'name: ours-c' '---'
+seed_zero ours-c
+out=$(audit); rc=$?
+if [[ $rc == 1 && $out == *'ZOMBIE ours-c weeks=4'* ]]; then pass T3 zombie; else fail T3 "rc=$rc out=$out"; fi
+
+# T4 used_not_zombie: вызов есть, хотя ledger нулевой
+reset
+mkskill ours-a '---' 'name: ours-a' '---'
+printf '%s\n' '{"display":"x","skill":"ours-a"}' > "$T/projects/s.jsonl"
+seed_zero ours-a
+out=$(audit)
+if [[ $out != *'ZOMBIE ours-a'* ]]; then pass T4 used_not_zombie; else fail T4 "out=$out"; fi
+
+# T5 bd_once: два запуска с --bd, одна задача на находку
+reset
+mkskill ours-a '---' 'name: ours-a' '---' "$L"
+mkskill ours-b '---' 'name: ours-b' '---' "$L"
+audit --bd >/dev/null 2>&1; r1=$?
+audit --bd >/dev/null 2>&1; r2=$?
+n=$(grep -c '^create|' "$T/bd.log" 2>/dev/null)
+if [[ $r1 == 1 && $r2 == 1 && $n == 1 ]]; then pass T5 bd_once; else fail T5 "rc=$r1/$r2 creates=$n"; fi
+
+# T6 clean: нет дублей и нет истории
+reset
+out=$(audit); rc=$?
+if [[ $rc == 0 && -z $out ]]; then pass T6 clean; else fail T6 "rc=$rc out=$out"; fi
+
+# T7 same_week_once: два запуска в одну ISO-неделю → одна строка на команду, без ZOMBIE
+reset
+mkskill ours-a '---' 'name: ours-a' '---'
+audit >/dev/null 2>&1
+out=$(audit)
+n=$(grep -c $'\tours-a\t' "$T/ledger/ledger.tsv" 2>/dev/null)
+if [[ $n == 1 && $out != *ZOMBIE* ]]; then pass T7 same_week_once; else fail T7 "lines=$n out=$out"; fi
+
+# T8 shared_boilerplate: одна строка у трёх навыков = общий шаблон, DUP нет
+reset
+B=$(printf 'b%.0s' {1..90})
+mkskill ours-p '---' 'name: ours-p' '---' "$B"
+mkskill ours-q '---' 'name: ours-q' '---' "$B"
+mkskill ours-r '---' 'name: ours-r' '---' "$B"
+out=$(audit); rc=$?
+if [[ $out != *DUP* ]]; then pass T8 shared_boilerplate; else fail T8 "rc=$rc out=$out"; fi
+
+# T9 second_root: два каталога навыков через ':'; ours-z во втором, DUP с ours-a из первого
+reset
+mkskill ours-a '---' 'name: ours-a' '---' "$L"
+mkdir -p "$T/skills2/ours-z"
+printf '%s\n' '---' 'name: ours-z' '---' "$L" > "$T/skills2/ours-z/SKILL.md"
+out=$(SKILLS_PATH="$T/skills:$T/skills2" audit); rc=$?
+if [[ $rc == 1 && $out == *'DUP ours-a ours-z'* ]]; then pass T9 second_root; else fail T9 "rc=$rc out=$out"; fi
+
+# T10 scriptpath_used: вызов по scriptPath копии сессии засчитан, ZOMBIE нет
+reset
+printf 'x\n' > "$T/workflows/wf-a.js"
+printf '%s\n' '{"name":"Workflow","input":{"scriptPath":"/x/.claude/workflows/scripts/wf-a-wf_ab12-c3.js"}}' > "$T/projects/s.jsonl"
+seed_zero wf-a
+out=$(audit)
+if [[ $out != *'ZOMBIE wf-a'* ]]; then pass T10 scriptpath_used; else fail T10 "out=$out"; fi
+
+echo "итого PASS: $ok из $total"
+(( ok == total )) || exit 1
