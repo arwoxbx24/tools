@@ -26,6 +26,10 @@ DR_TEST_ONLY=${DR_TEST_ONLY:-}
 DR_TEST_IRREPLACEABLE_DIR=${DR_TEST_IRREPLACEABLE_DIR:-}
 DR_TEST_REPLACEABLE_DIR=${DR_TEST_REPLACEABLE_DIR:-}
 DR_JOURNAL_COPY=${DR_JOURNAL_COPY:-/root/workspaces/system/tools/scripts/data/disk-rotate-deletions.tsv}
+# /tmp: верхний уровень чистит cleanup_tmp (spec dcfg-oglfz); возраст и лимит за прогон.
+DR_TMP_ROOT=${DR_TMP_ROOT:-/tmp}
+DR_TMP_AGE_MIN=${DR_TMP_AGE_MIN:-1440}
+DR_TMP_MAX=${DR_TMP_MAX:-500}
 # Тест подменяет корень Codex; явно заданный путь отличаем от значения по умолчанию,
 # чтобы тестовый режим без DR_CODEX_HOME не трогал боевой /root/.codex.
 CODEX_HOME_EXPLICIT=${DR_CODEX_HOME:+1}
@@ -40,6 +44,7 @@ else
   JOURNAL_MODE=shadow
 fi
 RESTIC=${RESTIC:-/root/workspaces/tools/bin/restic}
+TOOLS=${TOOLS:-/root/workspaces/tools}
 
 SOFT_PCT=${SOFT_PCT:-80}
 HARD_PCT=${HARD_PCT:-90}
@@ -186,10 +191,6 @@ FIXED_MB=0
 DEFERRED_COUNT=0
 WT_CANDIDATES=()
 PROJECTS_NOTICES=()
-
-# Общий список незаменимых файлов прогона (копится во время классов, фиксируется
-# через гейт после них). Создаётся в начале каждого прогона.
-IRR_LIST=$(mktemp /tmp/disk-rotate-irr-XXXX) || exit 1
 
 use_pct() {
   if [ -n "$DR_USAGE_PCT" ]; then
@@ -341,10 +342,81 @@ maybe_alert() { # состояние текст
   fi
 }
 
+# Кандидаты ходят сюда: в dry-run печатаются, иначе удаляются. Все проверены по DENY_LIST.
+journal_row() { # class action path size snapshot restore reason -> 10-колоночная строка в $DR_JOURNAL
+  local class=$1 action=$2 path=$3 size=$4
+  if [ "$action" = fixed ] && [[ "$size" =~ ^[0-9]+$ ]]; then
+    FIXED_COUNT=$((FIXED_COUNT + 1))
+    FIXED_MB=$((FIXED_MB + size / 1024 / 1024))
+  elif [ "$action" = deferred ]; then
+    DEFERRED_COUNT=$((DEFERRED_COUNT + 1))
+  fi
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$(date -Iseconds)" "$RUN_ID" "$JOURNAL_MODE" "$@" >>"$DR_JOURNAL"
+}
+
+# Верхний уровень /tmp: удаляет старые записи каждый прогон (spec dcfg-oglfz).
+# Щадит чужие процессы, известные временные каталоги и сокеты; в dry-run только печатает.
+cleanup_tmp() {
+  local root=${DR_TMP_ROOT:-/tmp}
+  local age_min=${DR_TMP_AGE_MIN:-1440}
+  local max=${DR_TMP_MAX:-500}
+  [ -d "$root" ] && [ ! -L "$root" ] || return 0
+  local -a live_cwds=() candidates=()
+  local cwd tgt p name c skip deleted=0
+  # Один проход по cwd живых процессов до цикла кандидатов.
+  for cwd in /proc/[0-9]*/cwd; do
+    [ -L "$cwd" ] || continue
+    tgt=$(readlink -- "$cwd" 2>/dev/null) || continue
+    [ -n "$tgt" ] || continue
+    live_cwds+=("$tgt")
+  done
+  while IFS= read -r -d '' p; do
+    [ -n "$p" ] || continue
+    name=${p##*/}
+    case "$name" in
+      tmux-*|claude-*|systemd-private-*|snap-private-tmp|restic-*|.X*|.ICE-unix|.font-unix|*.lock|*.pid|*.sock) continue ;;
+    esac
+    skip=0
+    for c in "${live_cwds[@]}"; do
+      if [ "$p" = "$c" ] || [[ "$c" == "$p"/* ]]; then skip=1; break; fi
+    done
+    [ "$skip" -eq 1 ] && continue
+    candidates+=("$p")
+  done < <(find -P "$root" -mindepth 1 -maxdepth 1 -mmin +"$age_min" ! -type s -print0 2>/dev/null)
+  [ "${#candidates[@]}" -gt 0 ] || return 0
+  [ "${#candidates[@]}" -gt "$max" ] && candidates=("${candidates[@]:0:$max}")
+  if [ "$MODE" = dry-run ]; then
+    for p in "${candidates[@]}"; do
+      printf 'tmp candidate: %s\n' "$p"
+    done
+    return 0
+  fi
+  if [ "$root" = /tmp ]; then
+    nice -n 19 ionice -c3 "$TOOLS/bin/safe-delete" tmp "${candidates[@]}" 2>>"$DR_LOG"
+  else
+    nice -n 19 ionice -c3 rm -r -- "${candidates[@]}" 2>>"$DR_LOG"
+  fi
+  for p in "${candidates[@]}"; do
+    if [ -e "$p" ]; then
+      journal_row tmp failed "$p" - - - "removal failed"
+    else
+      journal_row tmp deleted "$p" - - - -
+      deleted=$((deleted + 1))
+    fi
+  done
+  echo "tmp: deleted $deleted" >>"$DR_LOG"
+}
+
 # Только функции (тесты подключают скрипт через source): выход до основного потока.
 if [ "${DR_SOURCE_ONLY:-}" = 1 ]; then
   return 0 2>/dev/null || exit 0
 fi
+
+# Общий список незаменимых файлов прогона (копится во время классов, фиксируется
+# через гейт после них). Создаётся в начале каждого прогона; удаляется при выходе.
+IRR_LIST=$(mktemp /tmp/disk-rotate-irr-XXXX) || exit 1
+trap 'rm -f -- "$IRR_LIST"' EXIT
 
 # --check-declared: сверка объявленных путей; без уборки и без строки в ledger.
 if [ "$MODE" = check ]; then
@@ -430,19 +502,6 @@ if [ "$MODE" = run ] && [ "$DR_TEST_ONLY" != 1 ]; then
     clear_alert declared
   fi
 fi
-
-# Кандидаты ходят сюда: в dry-run печатаются, иначе удаляются. Все проверены по DENY_LIST.
-journal_row() { # class action path size snapshot restore reason -> 10-колоночная строка в $DR_JOURNAL
-  local class=$1 action=$2 path=$3 size=$4
-  if [ "$action" = fixed ] && [[ "$size" =~ ^[0-9]+$ ]]; then
-    FIXED_COUNT=$((FIXED_COUNT + 1))
-    FIXED_MB=$((FIXED_MB + size / 1024 / 1024))
-  elif [ "$action" = deferred ]; then
-    DEFERRED_COUNT=$((DEFERRED_COUNT + 1))
-  fi
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$(date -Iseconds)" "$RUN_ID" "$JOURNAL_MODE" "$@" >>"$DR_JOURNAL"
-}
 
 restic_env() { # задать RESTIC_REPOSITORY/RESTIC_PASSWORD_FILE из DR_RESTIC_REPO или env-файлов
   RESTIC=${RESTIC:-/root/workspaces/tools/bin/restic}
@@ -763,14 +822,20 @@ clean_dir() { # base mtime class
   handle "$cls" < <(find -P "$base" -mindepth 1 -mtime "+$mtime" -type f -print0 2>/dev/null)
 }
 
-cleanup_cache() { # только доказанные заменимые кэши при soft и выше
-  clean_dir /root/.cache/pip     1 cache
-  clean_dir /root/.npm/_cacache  1 cache
-  clean_dir /root/.nvm/.cache    1 cache
-  clean_dir /var/lib/snapd/cache 1 cache
+cleanup_cache() { # только доказанные заменимые кэши, каждый прогон
+  clean_dir /root/.cache/pip               1 cache
+  clean_dir /root/.npm/_cacache            1 cache
+  clean_dir /root/.nvm/.cache              1 cache
+  clean_dir /var/lib/snapd/cache           1 cache
+  clean_dir /root/.cache/go-build          1 cache
+  clean_dir /root/.cache/pnpm              1 cache
+  clean_dir /root/.cache/typescript        1 cache
+  clean_dir /root/.cache/mesa_shader_cache 1 cache
+  clean_dir /root/.cache/composer          1 cache
+  clean_dir /root/.cache/uv                1 cache
 
   # _npx содержит установленный код; browser/session/project data не кандидаты.
-  # systemd-tmpfiles-clean.timer владеет возрастом /tmp и исключениями tmux.
+  # /tmp (верхний уровень) чистит cleanup_tmp.
   if [ "$MODE" = run ]; then
     if apt-get clean >>"$DR_LOG" 2>&1; then
       journal_row cache cleaned - - replaceable - "apt-get clean"
@@ -988,11 +1053,10 @@ elif [ "$MODE" != report ]; then
   fi
   if [ "$GATE_RC" -eq 0 ]; then
     cleanup_always
+    cleanup_tmp
     cleanup_codex
     cleanup_backups
-    if [ "$state" = soft ] || [ "$state" = hard ]; then
-      cleanup_cache
-    fi
+    cleanup_cache
     projects_gate
   fi
 fi
