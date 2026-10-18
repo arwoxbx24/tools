@@ -1,0 +1,12 @@
+# сторонние/штатные команды — cmd-audit не проверяет (слово владельца 18.10)
+speckit-*
+beads
+banner-design
+brand
+design
+design-system
+slides
+ui-styling
+ui-ux-pro-max
+webapp-testing
+security-audit

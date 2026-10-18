@@ -1,0 +1,246 @@
+#!/usr/bin/env bash
+# cmd-audit: еженедельный сторож НАШИХ команд Claude (навыки, сценарии, агенты).
+# ZOMBIE — ни одного вызова за CMD_AUDIT_WEEKS недель; DUP — одна и та же длинная строка в файлах двух наших команд.
+# Только сообщает: stdout — строки ZOMBIE/DUP; rc 0 — находок нет, 1 — есть, 2 — ошибка использования.
+# Пишет лишь ledger и (с --bd) задачи в bd. Сторонние и штатные команды не трогает.
+set -uo pipefail
+
+bin=$(cd -- "$(dirname -- "$0")" && pwd)
+CMD_AUDIT_SKILLS=${CMD_AUDIT_SKILLS:-/root/.claude/skills}
+CMD_AUDIT_WORKFLOWS=${CMD_AUDIT_WORKFLOWS:-/root/.claude/workflows}
+CMD_AUDIT_AGENTS=${CMD_AUDIT_AGENTS:-/root/.claude/agents}
+CMD_AUDIT_TRANSCRIPTS=${CMD_AUDIT_TRANSCRIPTS:-/root/.claude/projects}
+CMD_AUDIT_HISTORY=${CMD_AUDIT_HISTORY:-/root/.claude/history.jsonl}
+CMD_AUDIT_VENDOR=${CMD_AUDIT_VENDOR:-$bin/../config/cmd-audit-vendor.txt}
+CMD_AUDIT_LEDGER=${CMD_AUDIT_LEDGER:-/root/.local/state/cmd-audit/ledger.tsv}
+CMD_AUDIT_WEEKS=${CMD_AUDIT_WEEKS:-4}
+CMD_AUDIT_BD=${CMD_AUDIT_BD:-/root/workspaces/tools/bin/bd}
+
+do_bd=0
+for arg in "$@"; do
+  case $arg in
+    --bd) do_bd=1 ;;
+    -h|--help)
+      echo "usage: cmd-audit [--bd]"
+      echo "  ZOMBIE/DUP по нашим командам Claude; --bd заводит задачи в bd без дублей."
+      echo "  rc 0 — находок нет, 1 — есть, 2 — ошибка использования."
+      exit 0 ;;
+    *) echo "usage: cmd-audit [--bd]" >&2; echo "cmd-audit: неизвестный аргумент: $arg" >&2; exit 2 ;;
+  esac
+done
+[[ $CMD_AUDIT_WEEKS =~ ^[1-9][0-9]*$ ]] || { echo "cmd-audit: CMD_AUDIT_WEEKS должно быть целым числом >0" >&2; exit 2; }
+[[ -r $CMD_AUDIT_VENDOR ]] || { echo "cmd-audit: нет файла вендоров: $CMD_AUDIT_VENDOR" >&2; exit 2; }
+
+work=$(mktemp -d) || exit 2
+trap 'rm -rf "$work"' EXIT
+
+# шаблоны штатных/сторонних команд (bash glob); пустые строки и # пропускаем
+vendor=()
+while IFS= read -r line || [[ -n $line ]]; do
+  line=${line#"${line%%[![:space:]]*}"}
+  line=${line%"${line##*[![:space:]]}"}
+  [[ -z $line || $line == \#* ]] && continue
+  vendor+=("$line")
+done < "$CMD_AUDIT_VENDOR"
+
+is_vendor() {
+  local p
+  for p in "${vendor[@]}"; do
+    case $1 in $p) return 0 ;; esac
+  done
+  return 1
+}
+
+# сторонний навык: во frontmatter (между первыми ---) есть license/author/compatibility/metadata
+is_third_party() {
+  awk 'NR == 1 && $0 !~ /^---[ \t\r]*$/ { exit 1 }
+       NR > 1 && $0 ~ /^---[ \t\r]*$/ { exit }
+       NR > 1 { print }' "$1" | grep -qE '^(license|author|compatibility|metadata):'
+}
+
+# есть ли заголовок отдельным словом в выводе bd search (stdin)
+bd_has() {
+  want=$1 awk '{
+    n = length(ENVIRON["want"])
+    for (i = 1; i + n - 1 <= length($0); i++) {
+      if (substr($0, i, n) != ENVIRON["want"]) continue
+      b = (i == 1) ? "" : substr($0, i - 1, 1)
+      a = substr($0, i + n, 1)
+      if ((b == "" || b ~ /[ \t]/) && (a == "" || a ~ /[ \t]/)) { found = 1; exit }
+    }
+  } END { exit !found }'
+}
+
+# 1. наши команды -> recs "kind name"
+recs=()
+for p in "$CMD_AUDIT_SKILLS"/*; do
+  [[ -d $p && -f $p/SKILL.md ]] || continue
+  name=${p##*/}
+  is_vendor "$name" && continue
+  is_third_party "$p/SKILL.md" && continue
+  recs+=("skill $name")
+done
+for f in "$CMD_AUDIT_WORKFLOWS"/*.js; do
+  [[ -f $f ]] || continue
+  name=${f##*/}; name=${name%.js}
+  is_vendor "$name" && continue
+  recs+=("workflow $name")
+done
+for f in "$CMD_AUDIT_AGENTS"/*.md; do
+  [[ -f $f ]] || continue
+  name=${f##*/}; name=${name%.md}
+  is_vendor "$name" && continue
+  recs+=("agent $name")
+done
+
+names=()
+if ((${#recs[@]})); then
+  mapfile -t names < <(for r in "${recs[@]}"; do echo "${r#* }"; done | sort -u)
+fi
+
+# 2. использование за 7 дней: транскрипты (mtime) + история (timestamp, мс)
+inputs=()
+if [[ -d $CMD_AUDIT_TRANSCRIPTS ]]; then
+  mapfile -t inputs < <(find "$CMD_AUDIT_TRANSCRIPTS" -type f -name '*.jsonl' -mtime -7 2>/dev/null)
+fi
+[[ -f $CMD_AUDIT_HISTORY ]] && inputs+=("$CMD_AUDIT_HISTORY")
+
+usage_out=""
+if ((${#names[@]})); then
+  if ((${#inputs[@]})); then
+    lim=$(( $(date +%s) * 1000 - 7 * 86400000 ))
+    usage_out=$(NAMES=$(printf '%s\n' "${names[@]}") awk -v hist="$CMD_AUDIT_HISTORY" -v lim="$lim" '
+function hit(v) {
+  if ((v in ours) && last[v] != NR) { last[v] = NR; cnt[v]++ }
+}
+function scan(line, marker, isskill,   rest, p, e, v, k, parts) {
+  rest = line
+  while ((p = index(rest, marker)) > 0) {
+    rest = substr(rest, p + length(marker))
+    e = index(rest, Q)
+    if (e == 0) break
+    v = substr(rest, 1, e - 1)
+    rest = substr(rest, e + 1)
+    hit(v)
+    if (isskill) { k = split(v, parts, ":"); if (k > 1) hit(parts[k]) }
+  }
+}
+BEGIN {
+  Q = sprintf("%c", 34)
+  n = split(ENVIRON["NAMES"], arr, "\n")
+  for (i = 1; i <= n; i++) if (arr[i] != "") { ours[arr[i]] = 1; cnt[arr[i]] = 0 }
+}
+FILENAME == hist {
+  if (!match($0, Q "timestamp" Q ":[0-9]+")) next
+  if (substr($0, RSTART + 12, RLENGTH - 12) + 0 < lim) next
+  p = index($0, Q "display" Q ":" Q "/")
+  if (p == 0) next
+  rest = substr($0, p + 12)
+  if (!match(rest, "[ " Q "]")) next
+  hit(substr(rest, 1, RSTART - 1))
+  next
+}
+{
+  scan($0, Q "skill" Q ":" Q, 1)
+  scan($0, Q "Workflow" Q "," Q "input" Q ":{" Q "name" Q ":" Q, 0)
+  scan($0, Q "subagent_type" Q ":" Q, 0)
+}
+END { for (v in ours) printf "%s %d\n", v, cnt[v] }
+' "${inputs[@]}")
+  else
+    usage_out=$(printf '%s 0\n' "${names[@]}")
+  fi
+fi
+
+# 3. запись в ledger: дата, имя, число вызовов
+mkdir -p "$(dirname -- "$CMD_AUDIT_LEDGER")" || { echo "cmd-audit: не создать каталог ledger" >&2; exit 2; }
+today=$(date +%F)
+while read -r n c; do
+  [[ -n $n ]] || continue
+  printf '%s\t%s\t%s\n' "$today" "$n" "$c" >> "$CMD_AUDIT_LEDGER"
+done <<< "$usage_out"
+
+# ZOMBIE: последние CMD_AUDIT_WEEKS строк ledger у имени все с числом 0
+zombie_out=""
+if [[ -f $CMD_AUDIT_LEDGER ]]; then
+  zombie_out=$(awk -F '\t' -v w="$CMD_AUDIT_WEEKS" '
+    NF >= 3 { k[$2]++; v[$2, k[$2]] = $3 + 0 }
+    END {
+      for (n in k) {
+        if (k[n] < w) continue
+        z = 1
+        for (i = k[n] - w + 1; i <= k[n]; i++) if (v[n, i] != 0) z = 0
+        if (z) printf "ZOMBIE %s weeks=%s\n", n, w
+      }
+    }' "$CMD_AUDIT_LEDGER")
+fi
+
+# DUP: одна и та же строка (>=80 симв. после обрезки пробелов) в файлах двух разных наших команд
+dupfile="$work/dup.tsv"
+: > "$dupfile"
+for r in "${recs[@]}"; do
+  kind=${r%% *}
+  name=${r#* }
+  case $kind in
+    skill) files=("$CMD_AUDIT_SKILLS/$name/SKILL.md" "$CMD_AUDIT_SKILLS/$name"/references/*.md) ;;
+    workflow) files=("$CMD_AUDIT_WORKFLOWS/$name.js") ;;
+    agent) files=("$CMD_AUDIT_AGENTS/$name.md") ;;
+  esac
+  for f in "${files[@]}"; do
+    [[ -f $f ]] || continue
+    awk -v c="$name" '{ gsub(/^[ \t\r]+|[ \t\r]+$/, "") } length($0) >= 80 { print c "\t" $0 }' "$f" >> "$dupfile"
+  done
+done
+dup_out=$(awk '
+{
+  p = index($0, "\t"); c = substr($0, 1, p - 1); l = substr($0, p + 1)
+  if ((l SUBSEP c) in seen) next
+  seen[l SUBSEP c] = 1
+  m[l]++; mem[l, m[l]] = c
+}
+END {
+  for (l in m) {
+    if (m[l] < 2) continue
+    for (i = 1; i <= m[l]; i++)
+      for (j = i + 1; j <= m[l]; j++) {
+        a = mem[l, i]; b = mem[l, j]
+        if (a == b) continue
+        if (a > b) { t = a; a = b; b = t }
+        if ((a SUBSEP b) in done) continue
+        done[a SUBSEP b] = 1
+        printf "DUP %s %s\n", a, b
+      }
+  }
+}' "$dupfile")
+
+# 4. вывод и rc
+findings=$(printf '%s\n' "$zombie_out" "$dup_out" | grep -v '^$' | sort)
+rc=0
+if [[ -n $findings ]]; then
+  printf '%s\n' "$findings"
+  rc=1
+fi
+
+# 5. --bd: по одной задаче на находку, без повторов
+if ((do_bd)) && [[ -n $findings ]]; then
+  bd_ok=0; bd_failed=0
+  desc="Найдено cmd-audit. Только наши команды; сторонние (config/cmd-audit-vendor.txt и навыки с license/author/compatibility/metadata) не трогать. Перед удалением: 4 источника (журналы Claude, ~/.claude/history.jsonl, ~/.codex/history.jsonl, ссылки законов/сценариев/хуков) и удаление только через safe-delete."
+  while read -r kind a b <&3; do
+    case $kind in
+      ZOMBIE) title="cmd-audit: ZOMBIE $a" ;;
+      DUP) title="cmd-audit: DUP $a+$b" ;;
+      *) continue ;;
+    esac
+    search_out=$("$CMD_AUDIT_BD" search "$title" 2>/dev/null)
+    if bd_has "$title" <<< "$search_out"; then continue; fi
+    if "$CMD_AUDIT_BD" create "$title" -t task -l cmd-audit --description "$desc" >/dev/null; then
+      bd_ok=$((bd_ok+1))
+    else
+      echo "cmd-audit: bd create не удался: $title" >&2
+      bd_failed=$((bd_failed+1))
+    fi
+  done 3<<< "$findings"
+  echo "bd: ok=$bd_ok failed=$bd_failed" >&2
+fi
+
+exit "$rc"

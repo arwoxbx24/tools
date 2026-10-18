@@ -1370,6 +1370,24 @@ module.exports = {
       cron_restart: '0 6 * * 1',
       error_file: '/root/.pm2/logs/agent-errors-weekly-error.log',
       out_file: '/root/.pm2/logs/agent-errors-weekly-out.log'
+    },
+    {
+      name: 'cmd-audit',
+      time: true,
+      merge_logs: true,
+      script: '/root/workspaces/tools/bin/cmd-audit',
+      args: '--bd',
+      cwd: '/root/workspaces/tools',
+      interpreter: 'bash',
+      exec_mode: 'fork_mode',
+      instances: 1,
+      autorestart: false,
+      min_uptime: 1000,
+      max_restarts: 10,
+      exp_backoff_restart_delay: 1000,
+      cron_restart: '30 6 * * 1',
+      error_file: '/root/.pm2/logs/cmd-audit-error.log',
+      out_file: '/root/.pm2/logs/cmd-audit-out.log'
     }
   ]
 };
