@@ -84,5 +84,22 @@ reset
 out=$(audit); rc=$?
 if [[ $rc == 0 && -z $out ]]; then pass T6 clean; else fail T6 "rc=$rc out=$out"; fi
 
+# T7 same_week_once: два запуска в одну ISO-неделю → одна строка на команду, без ZOMBIE
+reset
+mkskill ours-a '---' 'name: ours-a' '---'
+audit >/dev/null 2>&1
+out=$(audit)
+n=$(grep -c $'\tours-a\t' "$T/ledger/ledger.tsv" 2>/dev/null)
+if [[ $n == 1 && $out != *ZOMBIE* ]]; then pass T7 same_week_once; else fail T7 "lines=$n out=$out"; fi
+
+# T8 shared_boilerplate: одна строка у трёх навыков = общий шаблон, DUP нет
+reset
+B=$(printf 'b%.0s' {1..90})
+mkskill ours-p '---' 'name: ours-p' '---' "$B"
+mkskill ours-q '---' 'name: ours-q' '---' "$B"
+mkskill ours-r '---' 'name: ours-r' '---' "$B"
+out=$(audit); rc=$?
+if [[ $out != *DUP* ]]; then pass T8 shared_boilerplate; else fail T8 "rc=$rc out=$out"; fi
+
 echo "итого PASS: $ok из $total"
 (( ok == total )) || exit 1

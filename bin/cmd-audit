@@ -152,12 +152,15 @@ END { for (v in ours) printf "%s %d\n", v, cnt[v] }
   fi
 fi
 
-# 3. запись в ledger: дата, имя, число вызовов
+# 3. запись в ledger: ISO-неделя, имя, число вызовов; строки этой недели заменяются числом последнего запуска
 mkdir -p "$(dirname -- "$CMD_AUDIT_LEDGER")" || { echo "cmd-audit: не создать каталог ledger" >&2; exit 2; }
-today=$(date +%F)
+week=$(date +%G-W%V)
+if [[ -f $CMD_AUDIT_LEDGER ]]; then
+  awk -F '\t' -v w="$week" '$1 != w' "$CMD_AUDIT_LEDGER" > "$work/ledger.tmp" && mv "$work/ledger.tmp" "$CMD_AUDIT_LEDGER"
+fi
 while read -r n c; do
   [[ -n $n ]] || continue
-  printf '%s\t%s\t%s\n' "$today" "$n" "$c" >> "$CMD_AUDIT_LEDGER"
+  printf '%s\t%s\t%s\n' "$week" "$n" "$c" >> "$CMD_AUDIT_LEDGER"
 done <<< "$usage_out"
 
 # ZOMBIE: последние CMD_AUDIT_WEEKS строк ledger у имени все с числом 0
@@ -176,6 +179,7 @@ if [[ -f $CMD_AUDIT_LEDGER ]]; then
 fi
 
 # DUP: одна и та же строка (>=80 симв. после обрезки пробелов) в файлах двух разных наших команд
+# shortcut: строка у >=3 команд = общий шаблон (запреты/режимы), не дубль; если понадобится ловить дубли и в шаблоне — список шаблонов в config
 dupfile="$work/dup.tsv"
 : > "$dupfile"
 for r in "${recs[@]}"; do
@@ -200,7 +204,7 @@ dup_out=$(awk '
 }
 END {
   for (l in m) {
-    if (m[l] < 2) continue
+    if (m[l] != 2) continue
     for (i = 1; i <= m[l]; i++)
       for (j = i + 1; j <= m[l]; j++) {
         a = mem[l, i]; b = mem[l, j]
