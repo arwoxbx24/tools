@@ -17,16 +17,16 @@
 
 | id | состояние | модель / параметр |
 | --- | --- | --- |
-| `sdk` | включён, первый (owner 16.10) | `bin/sdk-agent code` (audit: `sdk-agent read`), claude-haiku-5-5; any failure (budget, daily cap 5 USD, error) → rc 17 → next form |
-| `go` | включён | code, audit и продолжение: `opencode-go/deepseek-v4-pro` (owner 16.10) |
-| `codex` | включён | модель профиля; `effort: high` |
-| `openrouter` | выключен | — |
+| `sdk` | включён, по умолчанию (owner 16.10, 18.10) | `bin/sdk-agent code` (audit: `sdk-agent read`), claude-haiku-5-5; any failure (budget, daily cap 7 USD, error) → rc 17, вызов кончается |
+| `go` | выключен; включается словом владельца | OpenCode Go — code, audit и продолжение: `opencode-go/deepseek-v4-pro` (owner 16.10) |
+| `codex` | выключен | модель профиля; `effort: high` |
+| `openrouter` | выключен; включается словом владельца | `openrouter/deepseek/deepseek-v4-flash` |
 | `bitrixgpt` | выключен | — |
 | `kimi` | выключен | подписка Kimi For Coding через `opencode auth login` |
 
 ## Переключение и лестница
 
-Измените `enabled` у нужной записи в одной строке и проверьте `bin/code-channel --plan`. Модели и включение платных OpenRouter, Kimi или Bitrix GPT — только по слову владельца.
+Включена ровно одна запись — активный канал; по умолчанию `sdk`. Переключение — только по слову владельца, назвавшего канал («работаем через OpenCode Go», «через OpenRouter», «через SDK-агент»): у этой записи `enabled: true`, у остальных `false`, PR в tools, затем `git-sync tools`; `bin/code-channel --plan` печатает только её id. Канал общий для всех агентов сервера и держится до нового слова владельца; закон — `/root/CLAUDE.md` «CODE CHANNELS». Codex, Kimi и Bitrix GPT — только по слову владельца.
 
 Ошибка провайдера или rc 0 без изменений переводит к следующему включённому. Сразу остановиться: 3, 5, 15, 22, 24. Последний провайдер возвращает свой rc либо 16.
 
