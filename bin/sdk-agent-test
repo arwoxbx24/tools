@@ -189,6 +189,17 @@ apply_second_fails() {
   apply_refused "$d" "refused edit: not found: a.md"
 }
 
+apply_large_file() {  # a.md = 200 009 bytes (above 200 000, under the 204 800 cap); one unique edit at the end
+  local d="$TMP/ae-large" before after
+  apply_setup "$d" "seed" '{"structured_output":{"edits":[{"path":"a.md","old":"END-MARK","new":"END-REPLACED-LONGER"}]}}'
+  { head -c 200000 /dev/zero | tr '\0' 'a'; printf '\nEND-MARK\n'; } > "$d/wt/a.md"
+  before=$(stat -c %s "$d/wt/a.md")
+  "$ag" --apply-edits "$d/wt" "$d/tz.md" "$d/edits.json" >/dev/null 2>&1 || return 1
+  after=$(stat -c %s "$d/wt/a.md")
+  [[ $((after - before)) -eq 11 ]] || return 1
+  { head -c 200000 /dev/zero | tr '\0' 'a'; printf '\nEND-REPLACED-LONGER\n'; } | cmp -s - "$d/wt/a.md"
+}
+
 dry_args_exclude_dynamic() {
   local out rc
   out=$(env SDK_AGENT_DRY_ARGS=1 SDK_AGENT_RUNS_LOG="$TMP/runs-dry.jsonl" "$ag" ask --budget 0.5 hi)
@@ -345,6 +356,7 @@ check "--apply-edits: one exact edit changes only that fragment" apply_edit_once
 check "--apply-edits: old not found -> rc 5, file unchanged" apply_not_found
 check "--apply-edits: old found twice -> rc 5, file unchanged" apply_not_unique
 check "--apply-edits: 2nd edit fails -> rc 5, 1st not written" apply_second_fails
+check "--apply-edits: 200 KB file, one edit at the end applied (no argv limit)" apply_large_file
 check "dry args: engine always gets --exclude-dynamic-system-prompt-sections" dry_args_exclude_dynamic
 check "dry args ignored without SDK_AGENT_TEST" dry_args_ignored_without_test
 check "concurrent: two asks with a 3 s engine finish within 5 s" concurrent_asks_overlap
