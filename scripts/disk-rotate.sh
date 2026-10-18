@@ -363,13 +363,23 @@ cleanup_tmp() {
   local max=${DR_TMP_MAX:-500}
   [ -d "$root" ] && [ ! -L "$root" ] || return 0
   local -a live_cwds=() candidates=()
-  local cwd tgt p name c skip deleted=0
+  local -A open_fds=()
+  local cwd tgt p name c skip deleted=0 fd top
   # Один проход по cwd живых процессов до цикла кандидатов.
   for cwd in /proc/[0-9]*/cwd; do
     [ -L "$cwd" ] || continue
     tgt=$(readlink -- "$cwd" 2>/dev/null) || continue
     [ -n "$tgt" ] || continue
     live_cwds+=("$tgt")
+  done
+  # Цели открытых дескрипторов под корнем: верхний уровень в ассоциативный массив
+  # (без дублей), чтобы уборка не удаляла записи, открытые живыми процессами.
+  for fd in /proc/[0-9]*/fd/*; do
+    [ -L "$fd" ] || continue
+    tgt=$(readlink -- "$fd" 2>/dev/null) || continue
+    [[ "$tgt" == "$root/"* ]] || continue
+    top=${tgt#"$root/"}; top=${top%%/*}
+    open_fds["$root/$top"]=1
   done
   while IFS= read -r -d '' p; do
     [ -n "$p" ] || continue
@@ -382,6 +392,7 @@ cleanup_tmp() {
       if [ "$p" = "$c" ] || [[ "$c" == "$p"/* ]]; then skip=1; break; fi
     done
     [ "$skip" -eq 1 ] && continue
+    [ -n "${open_fds[$p]:-}" ] && continue
     candidates+=("$p")
   done < <(find -P "$root" -mindepth 1 -maxdepth 1 -mmin +"$age_min" ! -type s -print0 2>/dev/null)
   [ "${#candidates[@]}" -gt 0 ] || return 0

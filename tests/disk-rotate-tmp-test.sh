@@ -10,9 +10,11 @@ SCRIPT="$(cd "$(dirname "$0")/../scripts" && pwd -P)/disk-rotate.sh"
 TMP="$(mktemp -d)"
 ROOT="$(mktemp -d)"
 BUSY_PID=""
+OPENFD_PID=""
 
 cleanup() {
   [ -n "$BUSY_PID" ] && kill "$BUSY_PID" 2>/dev/null
+  [ -n "$OPENFD_PID" ] && kill "$OPENFD_PID" 2>/dev/null
   rm -rf -- "$ROOT" "$TMP"
 }
 trap cleanup EXIT
@@ -48,6 +50,16 @@ for _ in $(seq 1 100); do
   sleep 0.05
 done
 
+# Открытый на запись файл в openfd/ (cwd вне корня) — openfd не должен удаляться.
+mkdir -p "$ROOT/openfd"
+( cd / && exec sleep 30 ) 3>>"$ROOT/openfd/w.log" &
+OPENFD_PID=$!
+touch -d '2 days ago' "$ROOT/openfd"
+for _ in $(seq 1 100); do
+  [ "$(readlink /proc/$OPENFD_PID/fd/3 2>/dev/null)" = "$ROOT/openfd/w.log" ] && break
+  sleep 0.05
+done
+
 cleanup_tmp
 
 FAILS=0
@@ -62,6 +74,7 @@ check_kept "$ROOT/claude-0"  claude-0
 check_kept "$ROOT/x.lock"    x.lock
 check_kept "$ROOT/sock"      sock
 check_kept "$ROOT/busy"      busy
+check_kept "$ROOT/openfd"    openfd
 
 if [ "$FAILS" -eq 0 ]; then
   echo "TMP-TEST pass"
