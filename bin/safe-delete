@@ -424,7 +424,17 @@ $f"; done
         git -C "$repo" merge-base --is-ancestor "$sha" origin/main 2>/dev/null || {
           [[ -n $sha && $GH == true ]] || refuse "нет на origin: $br"
           m=$(gh pr list --head "$br" --state merged --repo "$rr" --json headRefOid -q '.[].headRefOid') || fail "gh pr list --state merged"
-          grep -qxF -- "$sha" <<<"$m" || refuse "нет на origin: $br"; }
+          grep -qxF -- "$sha" <<<"$m" || {
+            avail=$(df --output=avail -B1 "$BK" | tail -1)
+            est=$(git -C "$repo" bundle create - "refs/heads/$br" --not origin/main 2>/dev/null | wc -c)
+            (( avail >= 2*est )) || fail "мало места в $BK"
+            kf="$BK/$(basename "$repo")-${br//\//-}-$(date +%Y%m%d%H%M%S).bundle"
+            git -C "$repo" bundle create "$kf" "refs/heads/$br" --not origin/main >/dev/null 2>&1 || fail "bundle не создан: $kf"
+            git -C "$repo" bundle verify "$kf" >/dev/null 2>&1 || fail "bundle не проверен: $kf"
+            ks=$(sha256sum "$kf" | cut -d' ' -f1)
+            echo "сохранено: $kf | восстановить: git -C $repo fetch $kf $br:$br"
+            log branch "$(realpath "$repo"):$br" "$sha" - "$kf" "$ks" backup-ok || exit 1
+          }; }
       fi
       git -C "$repo" update-ref -d "refs/heads/$br" "$sha" || exit 1
       log branch "$(realpath "$repo"):$br" "$sha" - - - deleted || exit 1

@@ -670,5 +670,39 @@ n87=$(grep -c . "$d/bk87/ledger.tsv" 2>/dev/null)
 if [[ $r87 == 0 && ! -e "$d/p87/node_modules" && $n87 == 1 ]]; then echo 'PASS T87 fresh_ledger_batch'; ok=$((ok+1))
 else echo "FAIL T87: rc=$r87 n=$n87"; fi
 
-[[ $ok == 88 ]] || exit 1
+# T88-T89: GH=true with a gh mock: a local branch absent from origin is bundled and deleted; open PR, main, codex/x and -x still refuse
+mkdir -p "$d/gh88"; printf '#!/bin/sh\ncase "$*" in *"--head feat/pr88 --state open"*) echo 7;; esac\nexit 0\n' > "$d/gh88/gh"; chmod +x "$d/gh88/gh"
+git -C "$d/w" checkout -q -b local88 main
+git -C "$d/w" commit -q --allow-empty -m t88
+sha88=$(git -C "$d/w" rev-parse local88)
+git -C "$d/w" checkout -q main
+env SAFE_DELETE_GH=true PATH="$d/gh88:$PATH" "$bin/safe-delete" --bk "$bk" branch "$d/w" local88 >/dev/null 2>&1; r88=$?
+gone88=$(git -C "$d/w" branch --list local88)
+bf88=$(ls "$bk"/w-local88-*.bundle 2>/dev/null | head -1)
+bv88=1; if [[ -n $bf88 ]]; then git -C "$d/w" bundle verify "$bf88" >/dev/null 2>&1 && bv88=0; fi
+if [[ $r88 == 0 && -z $gone88 && $bv88 == 0 ]]; then
+  git -C "$d/w" fetch -q "$bf88" local88:local88; rs88=$(git -C "$d/w" rev-parse --verify --quiet refs/heads/local88)
+  if [[ $rs88 == "$sha88" ]]; then echo 'PASS T88 no_origin_bundle'; ok=$((ok+1)); git -C "$d/w" branch -D local88 >/dev/null; else echo "FAIL T88: restore=$rs88"; fi
+else echo "FAIL T88: rc=$r88 br=$gone88 bundle=$bf88"; fi
+git -C "$d/w" checkout -q -b feat/pr88 main
+git -C "$d/w" commit -q --allow-empty -m pr88
+git -C "$d/w" checkout -q main
+env SAFE_DELETE_GH=true PATH="$d/gh88:$PATH" "$bin/safe-delete" --bk "$bk" branch "$d/w" feat/pr88 >/dev/null 2>&1; rp88=$?
+ng89=0
+for br in main codex/x -x; do env SAFE_DELETE_GH=true PATH="$d/gh88:$PATH" "$bin/safe-delete" --bk "$bk" branch "$d/w" "$br" >/dev/null 2>&1; [[ $? == 2 ]] && ng89=$((ng89+1)); done
+if [[ $rp88 == 2 && $ng89 == 3 && -n $(git -C "$d/w" branch --list feat/pr88) ]]; then echo 'PASS T89 no_origin_refusals'; ok=$((ok+1)); else echo "FAIL T89: pr=$rp88 refused=$ng89"; fi
+
+# T90: branch name with "/" gives one bundle file directly in $BK, no subdirectory
+mkdir -p "$d/ghx"; printf '#!/bin/sh\nexit 0\n' > "$d/ghx/gh"; chmod +x "$d/ghx/gh"
+git -C "$d/w" checkout -q -b claude/x-probe main
+git -C "$d/w" commit -q --allow-empty -m t90
+git -C "$d/w" checkout -q main
+env SAFE_DELETE_GH=true PATH="$d/ghx:$PATH" "$bin/safe-delete" --bk "$bk" branch "$d/w" claude/x-probe >/dev/null 2>&1; r90=$?
+gone90=$(git -C "$d/w" branch --list claude/x-probe)
+nb90=$(ls "$bk"/*claude-x-probe*.bundle 2>/dev/null | wc -l)
+bf90=$(ls "$bk"/*claude-x-probe*.bundle 2>/dev/null | head -1)
+bv90=1; if [[ -n $bf90 ]]; then git -C "$d/w" bundle verify "$bf90" >/dev/null 2>&1 && bv90=0; fi
+if [[ $r90 == 0 && -z $gone90 && $nb90 == 1 && $bv90 == 0 ]]; then echo 'PASS T90 no_origin_bundle_slash'; ok=$((ok+1)); else echo "FAIL T90: rc=$r90 br=$gone90 n=$nb90"; fi
+
+[[ $ok == 91 ]] || exit 1
 echo "итог: PASS $ok, FAIL 0"
