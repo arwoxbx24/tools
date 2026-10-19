@@ -65,6 +65,53 @@ else
     FAIL=$((FAIL+1)); echo "FAIL[C] code=$c"
 fi
 
+# D: fixture renderer + stale routes committed -> push refused, ref absent on remote
+mkdir -p tools/ci .claude/rules
+cat > tools/ci/render_routes.py <<'EOF'
+import sys
+out = sys.argv[sys.argv.index('--out') + 1]
+if open(out).read() == 'fresh':
+    sys.exit(0)
+print('routes: permission-routes.md is stale', file=sys.stderr)
+sys.exit(1)
+EOF
+echo '{}' > .claude/rules/routes.json
+printf stale > .claude/rules/permission-routes.md
+git add tools .claude
+git commit -qm d
+fake 'exit 0'
+push HEAD:refs/heads/d; c=$?
+if [ "$c" -ne 0 ] && ! on_remote d && grep -qF 'routes gate: push refused' "$SANDBOX/err"; then
+    PASS=$((PASS+1))
+else
+    FAIL=$((FAIL+1)); echo "FAIL[D] code=$c"
+fi
+
+# E: same fixture, fresh routes committed -> push ok, ref present on remote
+printf fresh > .claude/rules/permission-routes.md
+git add .claude
+git commit -qm e
+fake 'exit 0'
+push HEAD:refs/heads/e; c=$?
+if [ "$c" -eq 0 ] && on_remote e; then
+    PASS=$((PASS+1))
+else
+    FAIL=$((FAIL+1)); echo "FAIL[E] code=$c"
+fi
+
+# F: fresh in the working tree, stale in the commit -> push refused (gate reads the commit)
+printf stale > .claude/rules/permission-routes.md
+git add .claude
+git commit -qm f
+printf fresh > .claude/rules/permission-routes.md
+fake 'exit 0'
+push HEAD:refs/heads/f; c=$?
+if [ "$c" -ne 0 ] && ! on_remote f && grep -qF 'routes gate: push refused' "$SANDBOX/err"; then
+    PASS=$((PASS+1))
+else
+    FAIL=$((FAIL+1)); echo "FAIL[F] code=$c"
+fi
+
 echo "PASS $PASS FAIL $FAIL"
 cd "$TOP" && rm -rf "$SANDBOX"
 [ "$FAIL" -eq 0 ]
