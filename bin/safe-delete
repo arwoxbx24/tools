@@ -91,6 +91,8 @@ check_resolved(){
       IFS=: read -ra rts <<< "$roots"; for r in "${rts[@]}"; do [[ $r == /tmp/* ]] || refuse "корень не под /tmp: $r"; done
     fi
     okr=; IFS=: read -ra rts <<< "$roots"; for r in "${rts[@]}"; do [[ $p == "$r" || $p == "$r"/* ]] && { okr=1; break; }; done
+    # бэкапы настроек пользователя: 14-дневная копия в BK сохраняет их восстановимыми
+    [[ $p == "$HOME"/.claude/settings.json.bak* && $p != "$HOME"/.claude/*/* && -f $p && ! -L $p ]] && okr=1
     [[ $okr ]] || refuse "вне разрешённых корней: $p"
   fi
   for seg in secrets hh-scoring .codex .git .beads; do

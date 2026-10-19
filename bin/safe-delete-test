@@ -420,6 +420,33 @@ if [[ $r56 == 2 && -f /etc/claude-code/CLAUDE.md ]]; then
   echo 'PASS T56 etc_claude_code_banned'; ok=$((ok+1))
 else echo "FAIL T56: rc=$r56"; fi
 
+# T92: settings.json.bak* under /root/.claude deletes with a restore number
+bak92="/root/.claude/settings.json.bak-sdtest-$$"
+printf 'bak\n' > "$bak92"
+out92=$("$bin/safe-delete" --bk "$bk" file "$bak92"); r92=$?
+if [[ $r92 == 0 && $out92 == *'восстановить: safe-delete restore '* && ! -e "$bak92" ]]; then
+  echo 'PASS T92 settings_json_bak_file'; ok=$((ok+1))
+else echo "FAIL T92: rc=$r92 out=$out92"; fi
+
+# T93: a settings.json.bak* directory refuses in dir and file mode
+bakdir93="/root/.claude/settings.json.bak-sdtest-dir-$$"
+mkdir -p "$bakdir93"
+"$bin/safe-delete" --bk "$bk" dir "$bakdir93" >/dev/null 2>&1; r93a=$?
+"$bin/safe-delete" --bk "$bk" file "$bakdir93" >/dev/null 2>&1; r93b=$?
+if [[ $r93a == 2 && $r93b == 2 && -d "$bakdir93" ]]; then
+  echo 'PASS T93 settings_json_bak_dir_refused'; ok=$((ok+1))
+else echo "FAIL T93: dir=$r93a file=$r93b"; fi
+rmdir "$bakdir93"
+
+# T94: a non-settings.json.bak* file under /root/.claude still refuses
+other94="/root/.claude/other-sdtest-$$.bak"
+printf 'x\n' > "$other94"
+out94=$("$bin/safe-delete" --bk "$bk" file "$other94" 2>&1); r94=$?
+if [[ $r94 == 2 && $out94 == *'вне разрешённых корней'* && -f "$other94" ]]; then
+  echo 'PASS T94 other_bak_refused'; ok=$((ok+1))
+else echo "FAIL T94: rc=$r94 out=$out94"; fi
+rm -f "$other94"
+
 # T57-T60: multi-path file and tmp (validate all before first delete, dedupe, all-or-nothing)
 mkdir -p "$d/mp-tmp"
 printf '1\n' > "$d/mp-tmp/f1"; printf '2\n' > "$d/mp-tmp/f2"; printf '3\n' > "$d/mp-tmp/f3"
@@ -734,5 +761,5 @@ env SAFE_DELETE_GH=true PATH="$d/ghx:$PATH" "$bin/safe-delete" --bk "$bk" branch
 kept92=$(git -C "$d/m91/w" branch --list master)
 if [[ $r92 == 2 && -n $kept92 ]]; then echo 'PASS T92 master_refused'; ok=$((ok+1)); else echo "FAIL T92: rc=$r92 br=$kept92"; fi
 
-[[ $ok == 94 ]] || exit 1
+[[ $ok == 97 ]] || exit 1
 echo "итог: PASS $ok, FAIL 0"
