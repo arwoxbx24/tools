@@ -13,7 +13,7 @@ export SDK_AGENT_TEST_CAP=5.00
 
 # stub engine: stands in for the paid engine; prints a success result that says whether it got the API key
 stub="$TMP/stub-engine"
-printf '%s\n' '#!/usr/bin/env bash' 'sleep "${STUB_SLEEP:-0}"' 'key=unset; [[ -n ${ANTHROPIC_API_KEY:-} ]] && key=set' 'printf '"'"'{"type":"result","subtype":"success","total_cost_usd":0,"modelUsage":{"claude-haiku-5-5":{}},"result":"%s"}\n'"'"' "$key"' > "$stub"
+printf '%s\n' '#!/usr/bin/env bash' 'sleep "${STUB_SLEEP:-0}"' 'key=unset; [[ -n ${ANTHROPIC_API_KEY:-} ]] && key=set' 'printf '"'"'{"type":"result","subtype":"success","total_cost_usd":0,"modelUsage":{"claude-sonnet-5-5":{}},"result":"%s"}\n'"'"' "$key"' > "$stub"
 chmod +x "$stub"
 export SDK_AGENT_ENGINE="$stub"
 
@@ -259,7 +259,7 @@ large_prompt_on_stdin() {  # ~200 KB prompt reaches the engine on stdin intact; 
   cat > "$stub_stdin" <<'STUB'
 #!/usr/bin/env bash
 cat > "$STUB_STDIN_COPY"
-printf '{"type":"result","subtype":"success","total_cost_usd":0,"modelUsage":{"claude-haiku-5-5":{}},"result":"ok"}\n'
+printf '{"type":"result","subtype":"success","total_cost_usd":0,"modelUsage":{"claude-sonnet-5-5":{}},"result":"ok"}\n'
 STUB
   chmod +x "$stub_stdin"
   head -c 200000 /dev/zero | tr '\0' 'a' > "$tz"
@@ -345,8 +345,8 @@ check "FILE: ../x refused" code_refuses_path "../x"
 check "FILE: .env refused" code_refuses_path ".env"
 check "FILE: /etc/passwd refused" code_refuses_path "/etc/passwd"
 check "FILE: secrets/a refused" code_refuses_path "secrets/a"
-check "model is claude-haiku-5-5" bash -c '[[ $(grep -c claude-haiku-5-5 "$1") -ge 1 ]]' _ "$ag"
-check "no other claude model names" bash -c '[[ $(grep -cE "claude-(sonnet|opus|fable)" "$1") -eq 0 ]]' _ "$ag"
+check "model is claude-sonnet-5-5" bash -c '[[ $(grep -c claude-sonnet-5-5 "$1") -ge 1 ]]' _ "$ag"
+check "no other claude model names" bash -c '[[ $(grep -cE "claude-(haiku|opus|fable)" "$1") -eq 0 ]]' _ "$ag"
 check "daily cap refuses ask (rc 6)" daily_cap_refuses
 check "Files: line ../outside.txt refused" code_files_line_refuses_path
 check "Check: names a listed file -> refused check (rc 7)" check_listed_refused
