@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -u
-case ${1:-} in -h|--help) echo "usage: safe-delete [--bk <каталог>] <branch|file|dir|worktree|tmp|cache|link|restore|purge|repo-autodelete> …  (safely deletes and restores approved files or branches)"; exit 0;; esac
+case ${1:-} in -h|--help) echo "usage: safe-delete [--bk <каталог>] <file|dir|worktree|tmp|cache|link|restore|purge|repo-autodelete> <path>… | branch <repo> <branch>  (safely deletes and restores approved files or branches)"; exit 0;; esac
 BK=${SAFE_DELETE_BK:-/root/workspaces/projects/.agent-work/backup}
 GH=${SAFE_DELETE_GH:-true}
 mkdir -p "$BK"
@@ -199,7 +199,7 @@ cache_del(){
   log_batch "${bl[@]}" || return 1
   for p in "$@"; do echo "удалено: $p | основание: кэш, без копии"; done
 }
-[[ $# -ge 1 ]] || refuse 'usage: safe-delete [--bk <каталог>] <branch|file|dir|worktree|tmp|cache|link|restore|purge|repo-autodelete> …'
+[[ $# -ge 1 ]] || refuse 'usage: safe-delete [--bk <каталог>] <file|dir|worktree|tmp|cache|link|restore|purge|repo-autodelete> <path>… | branch <repo> <branch>'
 if [[ $1 == --bk ]]; then [[ $# -ge 3 ]] || refuse 'usage'; BK=$2; shift 2; mkdir -p "$BK"; led=$BK/ledger.tsv; fi
 cmd=$1; shift
 if [[ -n ${SAFE_DELETE_SANDBOX:-} ]]; then [[ $SAFE_DELETE_SANDBOX == /tmp/* ]] || refuse "корень не под /tmp: $SAFE_DELETE_SANDBOX"; fi
@@ -400,7 +400,7 @@ $f"; done
     exit 0
     ;;
   branch)
-    [[ $# -ge 2 ]] || refuse 'usage'
+    [[ $# -ge 2 ]] || refuse 'usage: safe-delete branch <repo> <branch>'
     repo=$1; br=$2
     git check-ref-format --branch "$br" >/dev/null || refuse "некорректное имя ветки: $br"
     [[ $br == -* || $br == refs/* || $br == heads/* || $br == *'*'* || $br == *'?'* || $br == *'['* ]] && refuse "некорректное имя ветки: $br"

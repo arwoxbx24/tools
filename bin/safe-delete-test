@@ -761,5 +761,11 @@ env SAFE_DELETE_GH=true PATH="$d/ghx:$PATH" "$bin/safe-delete" --bk "$bk" branch
 kept92=$(git -C "$d/m91/w" branch --list master)
 if [[ $r92 == 2 && -n $kept92 ]]; then echo 'PASS T92 master_refused'; ok=$((ok+1)); else echo "FAIL T92: rc=$r92 br=$kept92"; fi
 
-[[ $ok == 97 ]] || exit 1
+# T95: usage form shows branch takes <repo> <branch>
+out95=$("$bin/safe-delete" --help); r95=$?
+"$bin/safe-delete" branch onlyone >/dev/null 2>"$d/err95"; r95b=$?
+err95=$(<"$d/err95")
+if [[ $r95 == 0 && $out95 == *'branch <repo> <branch>'* && $r95b == 2 && $err95 == *'safe-delete: usage: safe-delete branch <repo> <branch>'* ]]; then echo 'PASS T95 branch_usage_form'; ok=$((ok+1)); else echo "FAIL T95: rc=$r95 rc2=$r95b err=$err95"; fi
+
+[[ $ok == 98 ]] || exit 1
 echo "итог: PASS $ok, FAIL 0"
