@@ -710,5 +710,29 @@ bf90=$(ls "$bk"/*claude-x-probe*.bundle 2>/dev/null | head -1)
 bv90=1; if [[ -n $bf90 ]]; then git -C "$d/w" bundle verify "$bf90" >/dev/null 2>&1 && bv90=0; fi
 if [[ $r90 == 0 && -z $gone90 && $nb90 == 1 && $bv90 == 0 ]]; then echo 'PASS T90 no_origin_bundle_slash'; ok=$((ok+1)); else echo "FAIL T90: rc=$r90 br=$gone90 n=$nb90"; fi
 
-[[ $ok == 92 ]] || exit 1
+# T91: master-only default branch is detected as the base for the bundle
+mkdir -p "$d/m91"
+git init -q --bare "$d/m91/origin.git"
+git clone -q "$d/m91/origin.git" "$d/m91/w"
+git -C "$d/m91/w" config user.email t@t
+git -C "$d/m91/w" config user.name t
+git -C "$d/m91/w" checkout -q -b master
+git -C "$d/m91/w" commit -q --allow-empty -m master
+git -C "$d/m91/w" push -q origin master
+git -C "$d/m91/w" checkout -q -b claude/m91
+git -C "$d/m91/w" commit -q --allow-empty -m t91
+git -C "$d/m91/w" checkout -q master
+env SAFE_DELETE_GH=true PATH="$d/ghx:$PATH" "$bin/safe-delete" --bk "$bk" branch "$d/m91/w" claude/m91; r91m=$?
+gone91=$(git -C "$d/m91/w" branch --list claude/m91)
+nb91=$(ls "$bk"/*claude-m91*.bundle 2>/dev/null | wc -l)
+bf91=$(ls "$bk"/*claude-m91*.bundle 2>/dev/null | head -1)
+bv91=1; if [[ -n $bf91 ]]; then git -C "$d/m91/w" bundle verify "$bf91" >/dev/null 2>&1 && bv91=0; fi
+if [[ $r91m == 0 && -z $gone91 && $nb91 == 1 && $bv91 == 0 ]]; then echo 'PASS T91 master_default_bundle'; ok=$((ok+1)); else echo "FAIL T91: rc=$r91m br=$gone91 n=$nb91 bv=$bv91"; fi
+
+# T92: master is still refused as a branch name
+env SAFE_DELETE_GH=true PATH="$d/ghx:$PATH" "$bin/safe-delete" --bk "$bk" branch "$d/m91/w" master >/dev/null 2>&1; r92=$?
+kept92=$(git -C "$d/m91/w" branch --list master)
+if [[ $r92 == 2 && -n $kept92 ]]; then echo 'PASS T92 master_refused'; ok=$((ok+1)); else echo "FAIL T92: rc=$r92 br=$kept92"; fi
+
+[[ $ok == 94 ]] || exit 1
 echo "итог: PASS $ok, FAIL 0"
