@@ -17,7 +17,7 @@
 
 | id | состояние | модель / параметр |
 | --- | --- | --- |
-| `sdk` | выключен (owner 18.10: переключено на OpenCode Go) | `bin/sdk-agent code` (audit: `sdk-agent read`), claude-haiku-5-5; any failure (budget, daily cap 7 USD, error) → rc 17, вызов кончается |
+| `sdk` | включён (owner 19.10: переключено на SDK-агент) | `bin/sdk-agent code` (audit: `sdk-agent read`), claude-sonnet-5-5; any failure (budget, daily cap 7 USD, error) → rc 17, вызов кончается |
 | `go` | включён (owner 18.10: «использовать опенкод гоу модель дипсиик про для агентов») | OpenCode Go — code, audit и продолжение: `opencode-go/deepseek-v4-pro` (owner 16.10) |
 | `codex` | выключен | модель профиля; `effort: high` |
 | `openrouter` | выключен; включается словом владельца | `openrouter/deepseek/deepseek-v4-flash` |
@@ -26,7 +26,7 @@
 
 ## Переключение и лестница
 
-Включена ровно одна запись — активный канал; сейчас `go` (owner 18.10), `sdk` выключена. Переключение — только по слову владельца, назвавшего канал («работаем через OpenCode Go», «через OpenRouter», «через SDK-агент»): у этой записи `enabled: true`, у остальных `false`, PR в tools, затем `git-sync tools`; `bin/code-channel --plan` печатает только её id. Канал общий для всех агентов сервера и держится до нового слова владельца; закон — `/root/CLAUDE.md` «CODE CHANNELS». Codex, Kimi и Bitrix GPT — только по слову владельца.
+Включена ровно одна запись — активный канал; сейчас `sdk` (owner 19.10), `go` выключена. Переключение — только по слову владельца, назвавшего канал («работаем через OpenCode Go», «через OpenRouter», «через SDK-агент»): у этой записи `enabled: true`, у остальных `false`, PR в tools, затем `git-sync tools`; `bin/code-channel --plan` печатает только её id. Канал общий для всех агентов сервера и держится до нового слова владельца; закон — `/root/CLAUDE.md` «CODE CHANNELS». Codex, Kimi и Bitrix GPT — только по слову владельца.
 
 Ошибка провайдера или rc 0 без изменений переводит к следующему включённому. Сразу остановиться: 3, 5, 15, 22, 24. Последний провайдер возвращает свой rc либо 16.
 
