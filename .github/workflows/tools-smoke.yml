@@ -30,4 +30,6 @@ jobs:
         timeout-minutes: 15
         run: bash bin/ship-post-test
       - run: bash bin/code-channel-test
+      - run: bash bin/safe-delete-test
+      - run: bash bin/sdk-agent-test
       - run: bash bin/place-files-test
