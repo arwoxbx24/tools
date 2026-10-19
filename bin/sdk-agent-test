@@ -324,6 +324,13 @@ cap_default_seven() {  # no SDK_AGENT_TEST_CAP: the product cap is 7.00
   [[ $(jq -r '.cap' <<<"$out") == 7 ]]
 }
 
+ledger_records_tz() {
+  local tz="$TMP/tz-ledger.md" log="$TMP/runs-tz.jsonl"
+  printf 'read only\n' > "$tz"
+  env SDK_AGENT_ENGINE="$stub" SDK_AGENT_RUNS_LOG="$log" "$ag" read "$TMP/wt" "$tz" >/dev/null 2>&1
+  [[ $(tail -1 "$log" | jq -r '.tz') == "$tz" ]]
+}
+
 mkdir -p "$TMP/wt"
 git -C "$TMP/wt" init -q
 
@@ -368,6 +375,7 @@ check "dead reservations folded once (legacy: upper-bound; lock-free .out: resul
 check "orphan engine holds its .lock: reservation stays counted, no ledger line" orphan_engine_keeps_reservation
 check "cap --json is read-only: sha256 unchanged, rc 0, six keys" cap_json_readonly
 check "cap default daily cap is 7.00 (no test override)" cap_default_seven
+check "ledger entry records tz of the read run" ledger_records_tz
 
 echo "ok $pass/$total"
 [[ $pass -eq $total ]]

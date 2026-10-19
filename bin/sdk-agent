@@ -149,7 +149,7 @@ fold_dead_reservations() {
       source=result
     fi
     jq -cn --arg id "$run_id" --argjson ts "$ts" --argjson budget "$budget" --argjson cost "$cost" --arg src "$source" \
-      '{subtype: "aborted", mode: "aborted", run_id: $id, ts: $ts, budget: $budget, total_cost_usd: $cost, cost_source: $src, models: [], workdir: "", usage: {}}' >> "$RUNS_LOG" \
+      '{subtype: "aborted", mode: "aborted", run_id: $id, ts: $ts, budget: $budget, total_cost_usd: $cost, cost_source: $src, models: [], workdir: "", tz: "", usage: {}}' >> "$RUNS_LOG" \
       || die "cannot append runs log: $RUNS_LOG" 6
     tmp=$(mktemp -- "$inflight.tmp.XXXXXX") || die "cannot write in-flight file: $inflight" 6
     jq -c --arg id "$run_id" 'select(.run_id != $id)' "$inflight" > "$tmp" \
@@ -202,7 +202,7 @@ check_daily_cap() {
 # permission restrictions, the repowise MCP server only and WORKDIR as the only added directory.
 # Fail-closes the spend ledger, loads the key only for the engine call, checks the daily cap
 # and reserves the budget in-flight under flock, runs the engine with no lock held, then appends a trimmed result
-# (subtype, cost, ts, mode, models, workdir, usage: input/output/cache_read/cache_creation tokens) to runs.jsonl
+# (subtype, cost, ts, mode, models, workdir, tz, usage: input/output/cache_read/cache_creation tokens) to runs.jsonl
 # and releases the reservation, setting RESULT.
 # Refuses (exit 4) when the engine used any model outside the pin.
 run_engine() {
@@ -260,8 +260,8 @@ run_engine() {
 
   jq -e 'type == "object"' <<<"$RESULT" >/dev/null 2>&1 || die "engine returned no JSON result" 4
   flock "$lockfd" || die "cannot lock: $RUNS_LOG.lock" 6
-  jq -c --argjson ts "$(date +%s)" --arg mode "$mode" --arg workdir "$workdir" \
-    '{subtype, total_cost_usd, ts: $ts, mode: $mode, models: ((.modelUsage // {}) | keys), workdir: $workdir, usage: ((.usage // {}) | {input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens})}' <<<"$RESULT" >> "$RUNS_LOG" \
+  jq -c --argjson ts "$(date +%s)" --arg mode "$mode" --arg workdir "$workdir" --arg tz "${TZ:-}" \
+    '{subtype, total_cost_usd, ts: $ts, mode: $mode, models: ((.modelUsage // {}) | keys), workdir: $workdir, tz: $tz, usage: ((.usage // {}) | {input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens})}' <<<"$RESULT" >> "$RUNS_LOG" \
     || die "cannot append runs log: $RUNS_LOG" 6
   if [[ -e $inflight ]]; then
     tmp=$(mktemp -- "$inflight.tmp.XXXXXX") || die "cannot write in-flight file: $inflight" 6
