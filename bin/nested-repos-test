@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+set -u
+case ${1:-} in -h|--help) echo 'usage: bash bin/nested-repos-test [--help|-h] - self-test of nested-repos on temp fixtures'; exit 0;; esac
+dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+tmp=$(mktemp -d) || exit 1
+trap 'rm -rf "$tmp"' EXIT
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR
+ok=0 failed=0
+check(){ # name want_rc want_last_line root
+	local out rc
+	out=$(bash "$dir/nested-repos" "$4" 2>&1); rc=$?
+	if [ "$rc" -eq "$2" ] && [ "$(printf '%s\n' "$out" | tail -n 1)" = "$3" ]; then ok=$((ok + 1)); else failed=$((failed + 1)); echo "FAIL $1: rc=$rc out=$out"; fi
+}
+mkdir -p "$tmp/clean" "$tmp/outer"
+git init -q --template= "$tmp/clean/a"
+git init -q --template= "$tmp/clean/b"
+git init -q --template= "$tmp/outer"
+git init -q --template= "$tmp/outer/sub"
+git -C "$tmp/clean/a" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+git -C "$tmp/clean/a" worktree add -q "$tmp/clean/a/.worktrees/w"
+check clean 0 'nested=0' "$tmp/clean"
+check nested 1 'nested=1' "$tmp/outer"
+echo "ok=$ok failed=$failed"
+[ "$failed" -eq 0 ]

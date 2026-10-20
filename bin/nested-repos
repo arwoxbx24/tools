@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -u
+usage(){ echo 'usage: nested-repos [--help] ROOT  (finds git repos nested inside another repo work tree under ROOT; exit 1 if any)'; }
+case ${1:-} in -h|--help) usage; exit 0;; esac
+if [ $# -ne 1 ] || [ ! -d "$1" ]; then usage >&2; exit 2; fi
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR
+ROOT=$1
+n=0
+top=$(git -C "$ROOT" rev-parse --show-toplevel 2>/dev/null) && echo "root-in-repo: $top"
+while IFS= read -r -d '' c; do
+	[ "$c" = "${ROOT%/}/.git" ] && continue
+	r=$(dirname "$c")
+	p=$(dirname "$r")
+	if top=$(git -C "$p" rev-parse --show-toplevel 2>/dev/null); then
+		[ "$(git -C "$r" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" = "$(git -C "$p" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" ] && continue
+		echo "nested: $r inside $top"
+		n=$((n + 1))
+	fi
+done < <(find "$ROOT" \( -name node_modules -o -name .venv -o -name .repowise \) -prune -o -name .git -print0 -prune 2>/dev/null)
+echo "nested=$n"
+[ "$n" -eq 0 ]
