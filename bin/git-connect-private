@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+readonly OWNER=arwoxbx24
+usage='usage: git-connect-private <repo-dir> <name>  (connects a repo to an empty PRIVATE github repo of arwoxbx24)'
+case ${1:-} in -h|--help) echo "$usage"; exit 0;; esac
+fail(){ local rc=$1; shift; echo "git-connect-private: $*" >&2; exit "$rc"; }
+[[ $# -eq 2 ]] || fail 2 "$usage"
+dir=$1
+name=$2
+[[ $name =~ ^[A-Za-z0-9._-]+$ && $name != .* ]] || fail 2 "bad name: $name"
+top=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) || fail 2 "not a git work tree: $dir"
+real=$(realpath -- "$dir") || fail 2 "bad dir: $dir"
+[[ $top == "$real" ]] || fail 2 "not the top level of a work tree: $dir"
+if git -C "$dir" remote | grep -qx origin; then fail 3 'remote origin already exists'; fi
+info=$(gh repo view "$OWNER/$name" --json visibility,isEmpty 2>/dev/null) || fail 4 "gh repo view failed: $OWNER/$name"
+vis=$(jq -r '.visibility' <<<"$info" 2>/dev/null) || fail 4 'bad gh output'
+empty=$(jq -r '.isEmpty' <<<"$info" 2>/dev/null) || fail 4 'bad gh output'
+[[ $vis == PRIVATE && $empty == true ]] || fail 4 "$OWNER/$name is not an empty PRIVATE repo"
+sha=$(git -C "$dir" rev-parse --verify HEAD 2>/dev/null) || fail 2 'no commits'
+git -C "$dir" remote add origin "git@github.com:$OWNER/$name.git"
+if ! git -C "$dir" push -u origin HEAD >&2; then
+  git -C "$dir" remote remove origin
+  fail 5 'push failed'
+fi
+echo "connected $OWNER/$name PRIVATE $sha"

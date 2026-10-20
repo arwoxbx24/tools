@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+set -u
+bin=$(cd -- "$(dirname -- "$0")" && pwd)
+d=$(mktemp -d)
+trap 'rm -rf "$d"' EXIT
+fails=0
+
+mkdir -p "$d/fakebin"
+cat > "$d/fakebin/gh" <<'EOF'
+#!/usr/bin/env bash
+[[ ${FAKE_GH_FAIL:-} == 1 ]] && exit 1
+printf '%s\n' "$FAKE_GH_JSON"
+EOF
+chmod +x "$d/fakebin/gh"
+export PATH="$d/fakebin:$PATH"
+
+n=0
+mkwork(){ # sets $w and $bare; target of the fixed URL is the local bare repo
+  n=$((n+1)); w=$d/w$n; bare=$d/b$n.git
+  git init -q --bare -b main "$bare"
+  git init -q -b main "$w"
+  git -C "$w" config user.email t@t
+  git -C "$w" config user.name t
+  git -C "$w" commit -q --allow-empty -m init
+  git -C "$w" config "url.$bare.insteadOf" git@github.com:arwoxbx24/x.git
+}
+check(){ if [[ $2 == 1 ]]; then echo "PASS $1"; else echo "FAIL $1"; fails=$((fails+1)); fi; }
+noremote(){ [[ -z $(git -C "$w" remote) ]] && echo 1 || echo 0; }
+PRIV='{"visibility":"PRIVATE","isEmpty":true}'
+
+out=$("$bin/git-connect-private" --help); rc=$?
+check a $([[ $rc == 0 && $out == *usage* ]] && echo 1 || echo 0)
+
+mkwork
+FAKE_GH_JSON=$PRIV "$bin/git-connect-private" "$w" ../x >/dev/null 2>&1; rc=$?
+check b $([[ $rc == 2 ]] && echo 1 || echo 0)
+
+mkwork
+FAKE_GH_JSON='{"visibility":"PUBLIC","isEmpty":true}' "$bin/git-connect-private" "$w" x >/dev/null 2>&1; rc=$?
+check c $([[ $rc == 4 && $(noremote) == 1 ]] && echo 1 || echo 0)
+
+mkwork
+FAKE_GH_JSON='{"visibility":"PRIVATE","isEmpty":false}' "$bin/git-connect-private" "$w" x >/dev/null 2>&1; rc=$?
+check d $([[ $rc == 4 && $(noremote) == 1 ]] && echo 1 || echo 0)
+
+mkwork
+FAKE_GH_FAIL=1 "$bin/git-connect-private" "$w" x >/dev/null 2>&1; rc=$?
+check e $([[ $rc == 4 && $(noremote) == 1 ]] && echo 1 || echo 0)
+
+mkwork
+git -C "$w" remote add origin "$bare"
+FAKE_GH_JSON=$PRIV "$bin/git-connect-private" "$w" x >/dev/null 2>&1; rc=$?
+check f $([[ $rc == 3 ]] && echo 1 || echo 0)
+
+mkwork
+out=$(FAKE_GH_JSON=$PRIV "$bin/git-connect-private" "$w" x 2>/dev/null); rc=$?
+check g $([[ $rc == 0 && $out == 'connected arwoxbx24/'* && $(git -C "$bare" rev-parse HEAD 2>/dev/null) == "$(git -C "$w" rev-parse HEAD)" ]] && echo 1 || echo 0)
+
+mkwork
+git -C "$w" config "url.$d/missing.git.insteadOf" git@github.com:arwoxbx24/x.git
+git -C "$w" config --unset "url.$bare.insteadOf"
+FAKE_GH_JSON=$PRIV "$bin/git-connect-private" "$w" x >/dev/null 2>&1; rc=$?
+check h $([[ $rc == 5 && $(noremote) == 1 ]] && echo 1 || echo 0)
+
+if [[ $fails == 0 ]]; then echo 'PASS all'; exit 0; fi
+exit 1
