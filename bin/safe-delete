@@ -13,6 +13,8 @@ sandbox=${SAFE_DELETE_SANDBOX:-/root/workspaces/sandbox}
 force_copy=
 ok_repowise=
 declare -A nolink=() gblob=() grepo=() gmode=()
+allow_client_wt=
+client_pins=()
 log_n=
 log(){ { flock -x 9 || return 1; printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date +%Y-%m-%dT%H:%M:%S)" "$@" >>"$led" || return 1; log_n=$(wc -l <"$led"); log_n=${log_n//[[:space:]]/}; } 9>>"$led.lock"; }
 log_batch(){ { flock -x 9 || return 1; local n; : >>"$led" || return 1; n=$(wc -l <"$led") || return 1; n=${n//[[:space:]]/}; printf '%s\n' "$@" >>"$led" || return 1; log_n=$((n+1)); } 9>>"$led.lock"; }
@@ -100,7 +102,13 @@ check_resolved(){
     [[ -n ${allow_tracked_under:-} && " $allow_tracked_segs " == *" $seg "* && ( $p == "$allow_tracked_under/$seg" || $p == "$allow_tracked_under/$seg"/* ) ]] && continue
     [[ $p == */"$seg" || $p == */"$seg"/* ]] && refuse "запрещённый сегмент: $p"
   done
-  [[ $p == */clients/* && $p != */clients/*/.agent-work/* ]] && refuse "запрещённый сегмент: $p"
+  if [[ $p == */clients/* && $p != */clients/*/.agent-work/* ]]; then
+    local cdir lw
+    cdir=$p; [[ -d $p ]] || cdir=${p%/*}
+    lw=$(cd "$cdir" 2>/dev/null && gd=$(realpath -e -- "$(git rev-parse --git-dir)") && gc=$(realpath -e -- "$(git rev-parse --git-common-dir)") && [[ $gd != "$gc" ]] && echo 1)
+    [[ -n $allow_client_wt && ${2:-} != link && $lw == 1 ]] || refuse "запрещённый сегмент: $p"
+    client_pins+=("$p")
+  fi
   if [[ /$p/ == */.repowise*/* ]]; then case "
 $ok_repowise
 " in *"
@@ -113,6 +121,7 @@ $p
   case ${p##*/} in auth.json|hosts.yml|credentials*|*token*) refuse "запрещённый файл: $p";; esac
   case $p in "$HOME"/.config/gh|"$HOME"/.config/gh/*|"$HOME"/.config/yandex-cloud|"$HOME"/.config/yandex-cloud/*|"$HOME"/.config/gcloud|"$HOME"/.config/gcloud/*) refuse "запрещённый сегмент: $p";; esac
 }
+client_pinned(){ local p; for p in "${client_pins[@]}"; do [[ -d $p || -n ${gblob[$p]:-} ]] || refuse "запрещённый сегмент: $p"; done; }
 resolve_all(){
   rs=()
   (($#)) || return 0
@@ -223,6 +232,7 @@ case "$cmd" in
     ;;
   file)
     [[ $# -ge 1 ]] || refuse 'usage'
+    allow_client_wt=1
     resolve_all "$@"
     declare -A seen=(); paths=(); i=0
     for raw in "$@"; do
@@ -233,6 +243,7 @@ case "$cmd" in
       seen[$p]=1; paths+=("$p"); [[ -L $raw ]] && nolink[$p]=1
     done
     git_batch "${paths[@]}" || exit 1
+    client_pinned
     batch_delete "${paths[@]}" || exit 1
     exit 0
     ;;
@@ -267,8 +278,8 @@ case "$cmd" in
     exit 0
     ;;
   dir)
-    [[ $# -eq 1 ]] || refuse 'usage'; check_path "$1"; dir=$p; [[ -d $dir ]] || refuse "не каталог: $dir"
-    if is_cache "$dir" && ! tracked_in "$dir"; then cache_del "$dir" || exit 1; exit 0; fi
+    [[ $# -eq 1 ]] || refuse 'usage'; allow_client_wt=1; check_path "$1"; dir=$p; [[ -d $dir ]] || refuse "не каталог: $dir"
+    if ((${#client_pins[@]} == 0)) && is_cache "$dir" && ! tracked_in "$dir"; then cache_del "$dir" || exit 1; exit 0; fi
     if [[ $dir == "$sandbox"/test-* && ${dir#"$sandbox"/} != */* ]]; then allow_git_under=$dir; force_copy=1
       for s in .beads .codex; do
         if [[ -e $dir/.git && -e $dir/$s && -n $(git -C "$dir" ls-files -- "$s") && -z $(git -C "$dir" status --porcelain --ignored -- "$s") ]]; then allow_tracked_segs+=" $s"; allow_tracked_under=$dir; fi
@@ -279,6 +290,7 @@ case "$cmd" in
     resolve_all "${nl[@]}"; files=()
     for f in "${rs[@]}"; do check_resolved "$f"; [[ -f $f ]] && files+=("$f"); done
     git_batch "${files[@]}" || exit 1
+    client_pinned
     batch_delete "${files[@]}" || exit 1
     mapfile -d '' links < <(find "$dir" -type l -print0)
     for link in "${links[@]}"; do
