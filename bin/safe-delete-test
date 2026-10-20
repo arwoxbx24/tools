@@ -767,5 +767,30 @@ out95=$("$bin/safe-delete" --help); r95=$?
 err95=$(<"$d/err95")
 if [[ $r95 == 0 && $out95 == *'branch <repo> <branch>'* && $r95b == 2 && $err95 == *'safe-delete: usage: safe-delete branch <repo> <branch>'* ]]; then echo 'PASS T95 branch_usage_form'; ok=$((ok+1)); else echo "FAIL T95: rc=$r95 rc2=$r95b err=$err95"; fi
 
-[[ $ok == 98 ]] || exit 1
+# T96-T99: git-clean client files in a linked worktree are deletable; main checkout, dirty and untracked stay protected
+git init -q "$d/cl-r"
+git -C "$d/cl-r" config user.email t@t
+git -C "$d/cl-r" config user.name t
+mkdir -p "$d/cl-r/clients/x"; printf 'client\n' > "$d/cl-r/clients/x/f"; cp "$d/cl-r/clients/x/f" "$d/cl.original"
+git -C "$d/cl-r" add clients/x/f && git -C "$d/cl-r" commit -q -m cl
+git -C "$d/cl-r" worktree add -q -b wt-cl "$d/cl-w"
+"$bin/safe-delete" --bk "$bk" dir "$d/cl-w/clients/x" >/dev/null; r96=$?
+gone96=0; [[ ! -e $d/cl-w/clients/x ]] && gone96=1
+l96=$(awk -F '\t' -v p="$d/cl-w/clients/x/f" '$2 == "git" && $3 == p { n=NR } END { print n }' "$bk/ledger.tsv")
+"$bin/safe-delete" --bk "$bk" restore "$l96" >/dev/null 2>&1; rr96=$?
+if [[ $r96 == 0 && $gone96 == 1 && -f $d/cl-r/clients/x/f && $rr96 == 0 ]] && cmp -s "$d/cl.original" "$d/cl-w/clients/x/f"; then echo 'PASS T96 client_linked_worktree_clean'; ok=$((ok+1)); else echo "FAIL T96: rc=$r96 gone=$gone96 restore=$rr96"; fi
+
+err97=$("$bin/safe-delete" --bk "$bk" file "$d/cl-r/clients/x/f" 2>&1); r97=$?
+if [[ $r97 == 2 && $err97 == *'запрещённый сегмент'* && -f $d/cl-r/clients/x/f ]]; then echo 'PASS T97 client_main_checkout_refused'; ok=$((ok+1)); else echo "FAIL T97: rc=$r97 err=$err97"; fi
+
+printf 'dirty\n' > "$d/cl-w/clients/x/f"
+"$bin/safe-delete" --bk "$bk" file "$d/cl-w/clients/x/f" >/dev/null 2>&1; r98=$?
+if [[ $r98 == 2 && -f $d/cl-w/clients/x/f ]]; then echo 'PASS T98 client_dirty_refused'; ok=$((ok+1)); else echo "FAIL T98: rc=$r98"; fi
+
+git -C "$d/cl-w" checkout -q -- clients/x/f
+printf 'new\n' > "$d/cl-w/clients/x/new"
+"$bin/safe-delete" --bk "$bk" dir "$d/cl-w/clients/x" >/dev/null 2>&1; r99=$?
+if [[ $r99 == 2 && -f $d/cl-w/clients/x/f && -f $d/cl-w/clients/x/new ]]; then echo 'PASS T99 client_untracked_refused'; ok=$((ok+1)); else echo "FAIL T99: rc=$r99"; fi
+
+[[ $ok == 102 ]] || exit 1
 echo "итог: PASS $ok, FAIL 0"
