@@ -512,9 +512,8 @@ cmd_code() {
   fi
 
   local prompt body
-  prompt="<task>
-$(cat -- "$TZ")
-</task>
+  prompt="You are a careful senior engineer making a minimal, exact change in this repository.
+<files>
 "
   for f in "${FILES[@]}"; do
     if [[ -f $WT_REAL/$f ]]; then body=$(cat -- "$WT_REAL/$f"); else body="(new file)"; fi
@@ -523,7 +522,17 @@ $body
 </file>
 "
   done
-  prompt+="Return only exact edits as JSON {\"edits\":[{\"path\":...,\"old\":...,\"new\":...}]}. \`old\` is an exact, unique fragment of the current file (include enough surrounding lines to be unique); \`new\` replaces it. To create a new file use old \"\" (only when the file does not exist). Do not touch lines the task does not ask for. Use only the paths listed above. You may use Read, Grep, Glob, Skill and the repowise MCP tools."
+  prompt+="</files>
+<task>
+$(cat -- "$TZ")
+</task>
+<instructions>
+- Before editing, open the code the task touches with Read, Grep, Glob or the repowise MCP tools, so every edit is based on what the files really contain.
+- Change only what the task asks for or what it clearly needs; keep the existing structure, names and style, and add no extra features, refactors or comments.
+- Write a general solution that is correct for all valid inputs; never special-case or hard-code values just to make a test or check pass.
+- Edit only the paths listed inside <files>.
+- Return only exact edits as JSON {\"edits\":[{\"path\":...,\"old\":...,\"new\":...}]}. A wrapper applies them mechanically, so \`old\` must be an exact, unique fragment of the current file (include enough surrounding lines to be unique) or the whole run fails; \`new\` replaces it. To create a new file use old \"\" (only when the file does not exist).
+</instructions>"
 
   run_engine code "$EFFORT" "$BUDGET" "$prompt" "$CODE_SCHEMA" "" "$TOOLS_CODE" "$WT_REAL"
   finish
@@ -563,7 +572,13 @@ cmd_read() {
   local prompt
   prompt="$(cat -- "$TZ")
 
-Answer from the repository files; you may use Read, Grep, Glob, Skill, WebSearch, WebFetch and the repowise MCP tools. Reply with the answer text."
+<instructions>
+- Answer from the repository files and, where the task needs it, from official web pages; you may use Read, Grep, Glob, Skill, WebSearch, WebFetch and the repowise MCP tools.
+- Open every file you rely on before answering, so the answer describes what the code really does.
+- Back each factual claim with its source: path:line for repository files, the URL for web pages; for long documents quote the relevant line first.
+- When the sources do not contain the answer to a point, write \"unknown\" for that point.
+- Reply with the answer text only.
+</instructions>"
 
   run_engine read "$EFFORT" "$BUDGET" "$prompt" "" "" "$TOOLS_READ" "$WT_REAL"
   if [[ $JSONOUT == 1 ]]; then
