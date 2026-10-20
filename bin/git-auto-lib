@@ -18,13 +18,18 @@ _ga_emit(){ # name git_dir work_tree
 	return 0
 }
 
+ga_projects_gitdir(){ # git dir of the projects repo; lives outside the work tree since dcfg-z4gtt
+	local p=${GA_PROJECTS:-/root/workspaces/projects}
+	[[ -e $p/.git ]] && echo "$p/.git" || echo "${GA_PROJECTS_GITDIR:-/root/workspaces/git-dirs/agent-contour.git}"
+}
+
 ga_roots(){
 	local p=${GA_PROJECTS:-/root/workspaces/projects}
 	local t=${GA_TOOLS:-/root/workspaces/tools}
 	local cg=${GA_CONTOUR_GITDIR:-/root/workspaces/system/contour-config.git}
 	local cw=${GA_CONTOUR_WT:-/root}
 	local g rel name gd wt
-	_ga_emit projects "$p/.git" "$p"
+	_ga_emit projects "$(ga_projects_gitdir)" "$p"
 	_ga_emit tools "$t/.git" "$t"
 	_ga_emit contour "$cg" "$cw"
 	while IFS= read -r g; do
@@ -62,8 +67,15 @@ ga_repo_of(){ # <path> — registry name of containing repo; none -> 2
 }
 
 ga_beads_root(){ # <path> — dir holding .beads for the repo of <path>; none -> SHIP_POST_BEADS_ROOT
-	local gd d
-	gd=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) && d=$(dirname "$gd") || d=$1
+	local gd d name gd2 wt slug
+	if gd=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null); then
+		d=$(dirname "$gd")
+		while IFS=$'\t' read -r name gd2 wt slug; do
+			[[ $gd == "$gd2" ]] && { d=$wt; break; }
+		done < <(ga_roots)
+	else
+		d=$1
+	fi
 	while [[ -n $d && $d != / ]]; do [[ -d $d/.beads ]] && { echo "$d"; return 0; }; d=$(dirname "$d"); done
 	echo "${SHIP_POST_BEADS_ROOT:-/root/workspaces/projects}"
 }
