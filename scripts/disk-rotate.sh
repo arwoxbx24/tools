@@ -98,8 +98,8 @@ BACKUP_RULES=(
   '0|/root/backups/docker/20*_*'
   '0|/root/backups/hh-scoring-snapshots/*.tar.gz'
   '1|/root/workspaces/projects/rss-tg-ins/data/backups/rss-tg-ins-*.tar.gz'
-  '0|/root/workspaces/projects/stroyremont/*backup*.sql'
-  '0|/root/workspaces/projects/stroyremont/backups/*.sql'
+  '0|/root/workspaces/projects/clients/stroyremont/*backup*.sql'
+  '0|/root/workspaces/projects/clients/stroyremont/backups/*.sql'
   '0|/root/workspaces/system/infra/minio-b244/minio_backup_*.tar.gz'
   '0|/root/workspaces/system/archives/*'
 )
