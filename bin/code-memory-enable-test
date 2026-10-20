@@ -248,6 +248,24 @@ echo "$out" | grep -qv 'push=' || fail "т3: output contains push="
 AFTER="$(git -C "$T3" rev-list --count HEAD)"
 [ $((AFTER - BEFORE)) -eq 1 ] || fail "т3: commits delta=$((AFTER-BEFORE))"
 
+# (gd) projects root without .git, git dir elsewhere -> client re-indexed, no git error
+GP="$TMP/gdproj"; GD="$TMP/gd"
+mkdir -p "$GP/clients/x/.repowise"
+git init -q --bare "$GD"
+git --git-dir="$GD" config core.bare false
+git --git-dir="$GD" config core.worktree "$GP"
+printf 'f\n' > "$GP/clients/x/f.txt"
+printf '{}\n' > "$GP/clients/x/.repowise/state.json"
+git --git-dir="$GD" --work-tree="$GP" -c user.email=cme-test@example.com -c user.name=cme-test -c core.hooksPath=/dev/null commit -q --allow-empty -m init
+git --git-dir="$GD" --work-tree="$GP" add clients/x/f.txt
+git --git-dir="$GD" --work-tree="$GP" -c user.email=cme-test@example.com -c user.name=cme-test -c core.hooksPath=/dev/null commit -q -m initial
+: > "$REPOWISE_LOG"
+set +e; out="$(CME_PROJECTS_ROOT="$GP" CME_TOOLS_ROOT="$script_dir/.." GA_PROJECTS_GITDIR="$GD" "$enable" "$GP" 2>&1)"; rc=$?; set -e
+[ "$rc" -eq 0 ] || fail "gd: rc=$rc (want 0)"
+echo "$out" | grep -qiE 'fatal|error' && fail "gd: git error: $out" || true
+grep -q "update --index-only --no-workspace --no-agents $GP/clients/x" "$REPOWISE_LOG" \
+  || fail "gd: client x not re-indexed: $out"
+
 # ТЗ spec:085 — script must never contain git push
 grep -c 'git.*push' "$enable" >/dev/null 2>&1 && fail "т3: git push found in script" || true
 
