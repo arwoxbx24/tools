@@ -6,6 +6,7 @@ RESTIC=${RESTIC:-/root/workspaces/tools/bin/restic}
 S3_ENV=${S3_ENV:-/root/workspaces/secrets/yandex-s3.env}
 PW_ENV=${PW_ENV:-/root/workspaces/secrets/restic.env}
 LOG=${LOG:-/root/workspaces/system/tools/scripts/logs/server-backup.log}
+run_hour=${RUN_HOUR:-$(date +%H)}
 NOTIFY_ENV=${NOTIFY_ENV:-/root/workspaces/secrets/services/pm2-notify.env}
 STAGE=${STAGE:-/root/workspaces/system/tools/scripts/data/server-backup-stage}
 LAST_OK=${LAST_OK:-/root/workspaces/system/tools/scripts/data/server-backup.last-ok}
@@ -459,16 +460,21 @@ if [ "$mirror_s3" -lt "$mirror_local" ]; then
   fail mirror-check "$((mirror_local - mirror_s3))"
 fi
 
-run_step forget "${NICE_PREFIX[@]}" "$RESTIC" forget --tag server --group-by host,tags --keep-daily 14 --prune --retry-lock 30m
+run_step forget "${NICE_PREFIX[@]}" "$RESTIC" forget --tag server --group-by host,tags --keep-hourly 48 --keep-daily 14 --prune --retry-lock 30m
 forget_rc=$?
 case "$forget_rc" in 0|3) ;; *) fail forget "$forget_rc" ;; esac
 
-check_rc=0
-if [ "$(date +%u)" = 7 ]; then
-  run_step check "${NICE_PREFIX[@]}" "$RESTIC" check --read-data-subset="$(( ($(date +%-d) - 1) / 7 % 4 + 1 ))/4" --retry-lock 30m
+check_rc=skip
+if [ "$run_hour" = 03 ]; then
+  check_args=()
+  [ "$(date +%u)" = 7 ] && check_args=(--read-data-subset="$(( ($(date +%-d) - 1) / 7 % 4 + 1 ))/4")
+  run_step check "${NICE_PREFIX[@]}" "$RESTIC" check "${check_args[@]}" --retry-lock 30m
   check_rc=$?
   case "$check_rc" in 0|3) ;; *) fail check "$check_rc" ;; esac
-
+else
+  log "check=skip (не 03:30)"
+fi
+if [ "$(date +%u)" = 7 ] && [ "$run_hour" = 03 ]; then
   DRILL=/tmp/restic-drill
   rm -rf "$DRILL"
   run_step restore "${NICE_PREFIX[@]}" "$RESTIC" restore latest --tag server --target "$DRILL" \
@@ -486,8 +492,6 @@ if [ "$(date +%u)" = 7 ]; then
   log "restore-drill ok (2 files)"
   rm -rf "$DRILL"
   [ "$(date +%-d)" -le 7 ] && drill
-else
-  log "check rc=0 (не воскресенье)"
 fi
 
 stats_output=$(timeout 3600 "${NICE_PREFIX[@]}" "$RESTIC" stats --mode raw-data latest --tag server --retry-lock 30m 2>&1)
@@ -507,7 +511,7 @@ log "docker-retention rc=$docker_retention_rc"
 [ "$docker_retention_rc" -eq 0 ] || fail docker-retention "$docker_retention_rc"
 [ "$images_rc" -eq 0 ] || fail docker-images "$images_rc"
 date +%s >"$LAST_OK"
-if [ "$(date +%u)" = 7 ]; then
+if [ "$(date +%u)" = 7 ] && [ "$run_hour" = 03 ]; then
   send_telegram "✅ server-backup: неделя ок, snapshot latest, size ${stats_size:-unknown}, drill ok"
 fi
 
