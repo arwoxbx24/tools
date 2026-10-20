@@ -134,7 +134,8 @@ if [[ $R4 == FAIL || $R5 == FAIL || $R6 == FAIL || $R7 == FAIL || $R8 == FAIL ]]
 elif $UNIMPL || [[ $R4 == INCOMPLETE || $R5 == INCOMPLETE || $R6 == INCOMPLETE || $R7 == INCOMPLETE || $R8 == INCOMPLETE ]]; then VERDICT=INCOMPLETE; RC=2
 else VERDICT=PASS; RC=0; fi
 
-core=$(git -C "$PROJECTS" log -1 --format=%h -- .claude/skills/csb/SKILL.md)
+pgd=$PROJECTS/.git; [[ -e $pgd ]] || pgd=${GA_PROJECTS_GITDIR:-/root/workspaces/git-dirs/agent-contour.git}
+core=$(git --git-dir="$pgd" --work-tree="$PROJECTS" log -1 --format=%h -- .claude/skills/csb/SKILL.md)
 journal_note='journal: skipped'
 if ! $NO_JOURNAL; then
   today=$(date +%F); min_date=$(date -d "$today -6 days" +%F); latest=
