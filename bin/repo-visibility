@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# Opens an allowlisted repo to public only after a clean history scan; `report` shows this month's Actions minutes per repo.
+set -euo pipefail
+
+bin=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+config="$bin/../config/repo-visibility.json"
+SECRET_GATE="${SECRET_GATE:-$bin/secret-gate}"
+GITLEAKS="${GITLEAKS:-/root/.local/bin/gitleaks}"
+usage='usage: repo-visibility publish <repo> | report'
+
+if [[ ${1:-} == --help || ${1:-} == -h ]]; then
+  echo "$usage"
+  exit 0
+fi
+
+cmd=${1:-}
+case $cmd in
+  publish)
+    if [[ $# != 2 || ! $2 =~ ^[A-Za-z0-9._-]+$ ]]; then echo "$usage" >&2; exit 2; fi
+    repo=$2
+    ;;
+  report)
+    if [[ $# != 1 ]]; then echo "$usage" >&2; exit 2; fi
+    ;;
+  *)
+    echo "$usage" >&2
+    exit 2
+    ;;
+esac
+
+org=$(jq -r .org "$config")
+included=$(jq -r .included_minutes "$config")
+
+in_list() { jq -e --arg r "$repo" --arg k "$1" '.[$k] | index($r)' "$config" >/dev/null; }
+visibility() { gh repo view "$org/$repo" --json visibility -q .visibility; }
+
+publish() {
+  if in_list never_public; then echo "refused: $repo is never_public"; exit 1; fi
+  if ! in_list public; then echo "refused: $repo not in public allowlist"; exit 1; fi
+  if [[ $(visibility) == PUBLIC ]]; then echo "$repo: PUBLIC"; exit 0; fi
+
+  tmp=$(mktemp -d)
+  trap 'rm -rf -- "$tmp"' EXIT
+  if ! gh repo clone "$org/$repo" "$tmp/mirror" -- --mirror >/dev/null 2>&1; then
+    echo "refused: $repo scan failed"
+    exit 1
+  fi
+
+  failed=0
+  n1=0
+  n2=0
+  rc=0
+  "$SECRET_GATE" scan "$tmp/mirror" >/dev/null 2>"$tmp/sg.err" || rc=$?
+  case $rc in
+    0) ;;
+    1)
+      n1=$(grep -c '^secret-gate: BLOCKED' "$tmp/sg.err" || true)
+      if [[ $n1 == 0 ]]; then failed=1; fi
+      ;;
+    *) failed=1 ;;
+  esac
+
+  rc=0
+  "$GITLEAKS" git --no-banner --redact --log-opts=--all --report-format json --report-path "$tmp/gl.json" "$tmp/mirror" >/dev/null 2>&1 || rc=$?
+  case $rc in
+    0)
+      if [[ -f $tmp/gl.json ]]; then n2=$(jq length "$tmp/gl.json" 2>/dev/null) || failed=1; fi
+      ;;
+    1) n2=$(jq length "$tmp/gl.json" 2>/dev/null) || failed=1 ;;
+    *) failed=1 ;;
+  esac
+
+  if [[ $failed == 1 ]]; then echo "refused: $repo scan failed"; exit 1; fi
+  total=$((n1 + n2))
+  echo "secrets: $total"
+  if [[ $total -gt 0 ]]; then echo "refused: $repo has secrets in history"; exit 1; fi
+
+  gh repo edit "$org/$repo" --visibility public --accept-visibility-change-consequences >/dev/null 2>&1 || true
+  vis=$(visibility)
+  if [[ $vis == PUBLIC ]]; then echo "$repo: PUBLIC"; exit 0; fi
+  echo "failed: $repo is $vis"
+  exit 1
+}
+
+report() {
+  tmp=$(mktemp -d)
+  trap 'rm -rf -- "$tmp"' EXIT
+  gh api "/organizations/$org/settings/billing/usage?year=$(date +%Y)&month=$(date +%-m)" >"$tmp/usage.json"
+  gh repo list "$org" --limit 1000 --json name,visibility >"$tmp/repos.json"
+  jq -r -n --slurpfile u "$tmp/usage.json" --slurpfile r "$tmp/repos.json" --argjson inc "$included" '
+    ($r[0] | map({(.name): .visibility}) | add // {}) as $vis
+    | ($u[0].usageItems // []
+      | map(select(.product == "actions" and .unitType == "Minutes"))
+      | group_by(.repositoryName)
+      | map({name: .[0].repositoryName, min: (map(.quantity) | add | round)})
+      | map(. + {vis: ($vis[.name] // "UNKNOWN")})
+      | sort_by(.name)) as $rows
+    | ($rows[] | "\(.name) \(.vis) \(.min)"),
+      "private total: \([$rows[] | select(.vis == "PRIVATE") | .min] | add // 0)/\($inc)",
+      "all repos total: \([$rows[].min] | add // 0)/\($inc)"'
+}
+
+"$cmd"

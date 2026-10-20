@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+set -u
+
+bin=$(cd -- "$(dirname -- "$0")" && pwd)
+work=$(mktemp -d)
+trap 'rm -rf -- "$work"' EXIT
+log="$work/log"
+vis="$work/vis"
+stubs="$work/stubs"
+mkdir -p "$stubs"
+ok=0
+
+cat > "$stubs/gh" <<'EOF'
+#!/usr/bin/env bash
+x=${3#*/}
+case "$1 $2" in
+  "repo view") echo "view $x" >>"$LOG"; cat "$VIS/$x" 2>/dev/null || echo PRIVATE ;;
+  "repo clone") mkdir -p "$4"; echo "clone $x $4" >>"$LOG" ;;
+  "repo edit") echo "edit $x" >>"$LOG"; echo PUBLIC >"$VIS/$x" ;;
+  "repo list") echo list >>"$LOG"; cat "$FIX_REPOS" ;;
+  api*) echo api >>"$LOG"; cat "$FIX_USAGE" ;;
+esac
+EOF
+chmod +x "$stubs/gh"
+
+cat > "$work/sg" <<'EOF'
+#!/usr/bin/env bash
+echo sg >>"$LOG"
+if [[ ${STUB_SG_FIND:-} == 1 ]]; then
+  echo 'secret-gate: BLOCKED x y <- z' >&2
+  exit 1
+fi
+exit 0
+EOF
+chmod +x "$work/sg"
+
+cat > "$work/gl" <<'EOF'
+#!/usr/bin/env bash
+echo gl >>"$LOG"
+while [[ $# -gt 0 ]]; do
+  if [[ $1 == --report-path ]]; then echo '[]' >"$2"; break; fi
+  shift
+done
+exit 0
+EOF
+chmod +x "$work/gl"
+
+cat > "$work/usage.json" <<'EOF'
+{"usageItems":[
+{"product":"actions","unitType":"Minutes","quantity":300.4,"repositoryName":"agent-contour"},
+{"product":"actions","unitType":"Minutes","quantity":200.6,"repositoryName":"agent-contour"},
+{"product":"actions","unitType":"Minutes","quantity":10,"repositoryName":"eurosteklo"},
+{"product":"actions","unitType":"Minutes","quantity":1587,"repositoryName":"tools"},
+{"product":"actions","unitType":"Minutes","quantity":25,"repositoryName":"arwox-v3-src"},
+{"product":"actions","unitType":"GigabyteHours","quantity":999,"repositoryName":"tools"}
+]}
+EOF
+cat > "$work/repos.json" <<'EOF'
+[{"name":"agent-contour","visibility":"PRIVATE"},{"name":"eurosteklo","visibility":"PRIVATE"},{"name":"tools","visibility":"PUBLIC"},{"name":"arwox-v3-src","visibility":"PUBLIC"}]
+EOF
+
+export PATH="$stubs:$PATH" LOG="$log" VIS="$vis" FIX_USAGE="$work/usage.json" FIX_REPOS="$work/repos.json"
+export SECRET_GATE="$work/sg" GITLEAKS="$work/gl"
+
+bad=""
+out=""
+rc=0
+
+reset() { : >"$log"; rm -rf -- "$vis"; mkdir -p "$vis"; bad=""; }
+run() { out=$(bash "$bin/repo-visibility" "$@" 2>"$work/err"); rc=$?; }
+rcis() { [[ $rc == "$1" ]] || bad+="rc=$rc; "; }
+has() { grep -qxF -- "$1" <<<"$out" || bad+="missing '$1'; "; }
+nolog() { ! grep -q "^$1" "$log" || bad+="log has $1; "; }
+verdict() {
+  if [[ -z $bad ]]; then echo "ok $1 $2"; ok=$((ok + 1)); else echo "FAIL $1 $2: $bad"; fi
+}
+
+reset
+run publish eurosteklo
+rcis 1; has 'refused: eurosteklo is never_public'; nolog clone; nolog edit
+verdict 1 never_public-refused
+
+reset
+run publish arwox-biz
+rcis 1; has 'refused: arwox-biz not in public allowlist'; nolog clone; nolog edit
+verdict 2 not-in-allowlist-refused
+
+reset
+STUB_SG_FIND=1 run publish arwox-v3-src
+rcis 1; has 'secrets: 1'; has 'refused: arwox-v3-src has secrets in history'; nolog edit
+verdict 3 secrets-refused
+
+reset
+run publish arwox-v3-src
+rcis 0; has 'secrets: 0'; has 'arwox-v3-src: PUBLIC'
+[[ $(grep -c '^edit arwox-v3-src$' "$log") == 1 ]] || bad+="edit count != 1; "
+dir=$(awk '/^clone /{print $3}' "$log")
+if [[ -z $dir ]]; then bad+="no clone; "; elif [[ -e $dir ]]; then bad+="clone dir remains; "; fi
+verdict 4 clean-published
+
+reset
+echo PUBLIC >"$vis/tools"
+run publish tools
+rcis 0; has 'tools: PUBLIC'; nolog clone; nolog sg; nolog gl; nolog edit
+verdict 5 already-public
+
+reset
+run report
+rcis 0
+has 'agent-contour PRIVATE 501'; has 'arwox-v3-src PUBLIC 25'; has 'eurosteklo PRIVATE 10'; has 'tools PUBLIC 1587'
+has 'private total: 511/2000'; has 'all repos total: 2123/2000'
+verdict 6 report
+
+if [[ $ok == 6 ]]; then echo "PASS $ok/6"; exit 0; fi
+echo "FAIL $ok/6"
+exit 1

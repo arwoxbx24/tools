@@ -1,0 +1,6 @@
+{
+  "org": "arwoxbx24",
+  "included_minutes": 2000,
+  "public": ["tools", "arwox-v3-src"],
+  "never_public": ["agent-contour", "stroyremont", "eurosteklo", "sanatory-avto", "okna-plus", "clients-okna-plus", "asense-store", "agramak", "Savinsname", "agida-bream-tech", "mikhail-travel", "planeta-autostekla", "techsplav"]
+}
