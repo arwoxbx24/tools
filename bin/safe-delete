@@ -414,10 +414,16 @@ $f"; done
     if [[ $copy == *.bundle ]]; then
       ids=$(git --git-dir="$orig" bundle list-heads "$copy" 2>/dev/null | awk '{print $1}' | sort -u)
     else
+      avail=$(df --output=avail -B1 /tmp | tail -1)
+      (( avail >= 2*$(stat -c %s -- "$copy") )) || refuse "мало места в /tmp для проверки: $copy"
       tmpd=$(mktemp -d /tmp/safe-delete-dup.XXXXXX) || exit 1
       trap 'rm -rf "$tmpd"' EXIT
-      tar -xf "$copy" -C "$tmpd" --wildcards '*packed-refs' '*/refs/*' '*/logs/*' '*HEAD' >/dev/null 2>&1
-      ids=$(grep -rhoE '\b[0-9a-f]{40}\b' "$tmpd" 2>/dev/null | grep -vE '^0{40}$' | sort -u)
+      tar -xf "$copy" -C "$tmpd" --no-same-owner >/dev/null 2>&1
+      gds=()
+      while IFS= read -r o; do [[ -f ${o%/objects}/HEAD ]] && gds+=("${o%/objects}"); done < <(find "$tmpd" -maxdepth 4 -type d -name objects)
+      (( ${#gds[@]} == 1 )) || refuse "в архиве не один git-каталог: $copy"
+      gd=${gds[0]}
+      ids=$({ find "$gd" -type f \( -name packed-refs -o -path "$gd/refs/*" -o -path "$gd/logs/*" -o -name '*HEAD' \) -exec grep -hoE '\b[0-9a-f]{40}\b' {} + 2>/dev/null | grep -vE '^0{40}$'; git --git-dir="$gd" cat-file --batch-all-objects --batch-check='%(objectname)' 2>/dev/null; } | sort -u)
     fi
     [[ -n $ids ]] || refuse "в копии нет id объектов: $copy"
     n_ids=$(wc -l <<< "$ids"); n_ids=${n_ids//[[:space:]]/}

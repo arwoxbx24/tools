@@ -850,6 +850,12 @@ tar -C "$d/dgcopy" -cf "$aw/r$$.tar" .
 "$bin/safe-delete" --bk "$bk" dup "$aw/r$$.tar" "$dg" >/dev/null 2>&1; r113=$?
 if [[ $r113 == 2 && -f "$aw/r$$.tar" ]]; then echo 'PASS T113 dup_tar_reflog_missing'; ok=$((ok+1)); else echo "FAIL T113: rc=$r113"; fi
 
+cp -a "$dg" "$d/dgblob"
+printf 'only-in-copy\n' | git --git-dir="$d/dgblob" hash-object -w --stdin >/dev/null
+tar -C "$d/dgblob" -cf "$aw/x$$.tar" .
+"$bin/safe-delete" --bk "$bk" dup "$aw/x$$.tar" "$dg" >/dev/null 2>&1; r117=$?
+if [[ $r117 == 2 && -f "$aw/x$$.tar" ]]; then echo 'PASS T117 dup_tar_extra_blob'; ok=$((ok+1)); else echo "FAIL T117: rc=$r117"; fi
+
 mkdir -p "$d/outside-dup"
 git -C "$d/dorig" bundle create "$d/outside-dup/o$$.bundle" --all >/dev/null 2>&1
 "$bin/safe-delete" --bk "$bk" dup "$d/outside-dup/o$$.bundle" "$dg" >/dev/null 2>&1; r114=$?
@@ -866,5 +872,5 @@ git -C "$d/dorig" bundle create "$aw/.repowise/d$$.bundle" --all >/dev/null 2>&1
 if [[ $r116 == 2 && -f "$aw/.repowise/d$$.bundle" ]]; then echo 'PASS T116 dup_repowise_segment'; ok=$((ok+1)); else echo "FAIL T116: rc=$r116"; fi
 unset SAFE_DELETE_DUP_ROOT
 
-[[ $ok == 114 ]] || exit 1
+[[ $ok == 115 ]] || exit 1
 echo "итог: PASS $ok, FAIL 0"
