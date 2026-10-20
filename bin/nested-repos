@@ -10,12 +10,14 @@ top=$(git -C "$ROOT" rev-parse --show-toplevel 2>/dev/null) && echo "root-in-rep
 while IFS= read -r -d '' c; do
 	[ "$c" = "${ROOT%/}/.git" ] && continue
 	r=$(dirname "$c")
+	[ -f "$c" ] && grep -q '^gitdir: .*/\.git/modules/' "$c" && continue
+	case $r/ in */.pytest-tmp/*) continue;; esac
 	p=$(dirname "$r")
 	if top=$(git -C "$p" rev-parse --show-toplevel 2>/dev/null); then
 		[ "$(git -C "$r" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" = "$(git -C "$p" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" ] && continue
 		echo "nested: $r inside $top"
 		n=$((n + 1))
 	fi
-done < <(find "$ROOT" \( -name node_modules -o -name .venv -o -name .repowise \) -prune -o -name .git -print0 -prune 2>/dev/null)
+done < <(find "$ROOT" \( -name node_modules -o -name .venv -o -name .repowise -o -name .pytest-tmp \) -prune -o -name .git -print0 -prune 2>/dev/null)
 echo "nested=$n"
 [ "$n" -eq 0 ]
