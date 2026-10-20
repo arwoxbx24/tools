@@ -77,4 +77,29 @@ git -C "$repo" commit -qm new-bin-registered
 check_case
 expect 0
 
-echo 'ship-doc-check-test: PASS 6/6'
+new_case growth-red
+seq 1 41 | sed 's/^/# /' >> "$repo/bin/git-state"
+echo >> "$repo/docs/ship-post-ARCHITECTURE.md"
+git -C "$repo" add bin/git-state docs/ship-post-ARCHITECTURE.md
+git -C "$repo" commit -qm growth-red
+check_case
+expect 1
+[[ $output == *'лимит 40'* ]] || { echo "ship-doc-check-test: output lacks limit: $output" >&2; exit 1; }
+
+new_case growth-ok
+seq 1 41 | sed 's/^/# /' >> "$repo/bin/git-state"
+echo >> "$repo/docs/ship-post-ARCHITECTURE.md"
+git -C "$repo" add bin/git-state docs/ship-post-ARCHITECTURE.md
+git -C "$repo" commit -qm 'growth' -m 'growth-ok: bin/git-state dcfg-test1'
+check_case
+expect 0
+
+new_case growth-small
+seq 1 40 | sed 's/^/# /' >> "$repo/bin/git-state"
+echo >> "$repo/docs/ship-post-ARCHITECTURE.md"
+git -C "$repo" add bin/git-state docs/ship-post-ARCHITECTURE.md
+git -C "$repo" commit -qm growth-small
+check_case
+expect 0
+
+echo 'ship-doc-check-test: PASS 9/9'
