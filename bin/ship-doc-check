@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -eu
-case ${1:-} in -h|--help) echo "usage: ship-doc-check [base]  (CI-гейт: правка цепочки bin/ship* требует правки docs/ship-post-ARCHITECTURE.md)"; exit 0;; esac
+case ${1:-} in -h|--help) echo "usage: ship-doc-check [base]  (CI-гейт: правка цепочки bin/ship* требует правки docs/ship-post-ARCHITECTURE.md; новый bin/<имя> требует строки в TOOLS-REGISTRY.md)"; exit 0;; esac
 
 base=${1:-origin/main}
 doc=docs/ship-post-ARCHITECTURE.md
@@ -13,6 +13,15 @@ if printf '%s\n' "$changed" | grep -Eq '^bin/(ship|ship-post|git-sync|git-auto-l
 fi
 
 failed=0
+while IFS= read -r added; do
+  [[ -n $added ]] || continue
+  name=${added#bin/}
+  if ! grep -qF -e "\`$name\`" -e "bin/$name" TOOLS-REGISTRY.md 2>/dev/null; then
+    echo "ship-doc-check: bin/$name добавлен без строки в TOOLS-REGISTRY.md" >&2
+    failed=1
+  fi
+done < <(git diff --name-only --diff-filter=A "$base...HEAD" -- bin/)
+
 while IFS= read -r anchor; do
   target=${anchor#\`}
   target=${target%\`}
