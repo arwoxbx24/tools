@@ -171,11 +171,12 @@ if [ ! -d "$path" ]; then
 fi
 
 if [ "$path" = "$CME_PROJECTS_ROOT" ] && [ "$untrack" -eq 0 ]; then
+  GIT_DIR_PROJECTS=$(. "$CME_TOOLS_ROOT/bin/git-auto-lib"; GA_PROJECTS="$path" ga_projects_gitdir)
   if [ -n "$CME_PARENT_REV" ]; then
-    changed="$(git -C "$path" diff-tree --no-commit-id --name-only -r -m --first-parent "$CME_PARENT_REV")"
+    changed="$(git --git-dir="$GIT_DIR_PROJECTS" --work-tree="$path" diff-tree --no-commit-id --name-only -r -m --first-parent "$CME_PARENT_REV")"
   else
-    changed="$(git -C "$path" diff --name-only "HEAD@{1}" HEAD 2>/dev/null)" \
-      || changed="$(git -C "$path" diff-tree --no-commit-id --name-only -r -m --first-parent HEAD)"
+    changed="$(git --git-dir="$GIT_DIR_PROJECTS" --work-tree="$path" diff --name-only "HEAD@{1}" HEAD 2>/dev/null)" \
+      || changed="$(git --git-dir="$GIT_DIR_PROJECTS" --work-tree="$path" diff-tree --no-commit-id --name-only -r -m --first-parent HEAD)"
   fi
   clients="$(printf '%s\n' "$changed" | sed -n 's#^clients/\([^/]*\)/.*$#\1#p' | sort -u)"
   for x in $clients; do
