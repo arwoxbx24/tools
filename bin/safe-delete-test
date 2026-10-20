@@ -814,5 +814,57 @@ rmdir "$gq/quarantine-sdtest2-$$/x.git" "$gq/quarantine-sdtest2-$$" 2>/dev/null
 env -u SAFE_DELETE_ROOTS "$bin/safe-delete" --bk "$bk" dir "$gq" >/dev/null 2>&1; r104=$?
 if [[ $r104 == 2 && -d $gq ]]; then echo 'PASS T104 git_dirs_root_refused'; ok=$((ok+1)); else echo "FAIL T104: rc=$r104"; fi
 
-[[ $ok == 107 ]] || exit 1
+# T110-T116: dup deletes a copy only when every id is present in the original git dir
+aw="$d/aw"; mkdir -p "$aw"
+export SAFE_DELETE_DUP_ROOT="$aw"
+git init -q "$d/dorig"
+git -C "$d/dorig" config user.email t@t
+git -C "$d/dorig" config user.name t
+git -C "$d/dorig" commit -q --allow-empty -m d1
+git -C "$d/dorig" branch pk
+git -C "$d/dorig" commit -q --allow-empty -m d2
+git -C "$d/dorig" pack-refs --all
+git -C "$d/dorig" branch loose
+dg="$d/dorig/.git"
+
+git -C "$d/dorig" bundle create "$aw/a$$.bundle" --all >/dev/null 2>&1
+"$bin/safe-delete" --bk "$bk" dup "$aw/a$$.bundle" "$dg" >/dev/null 2>&1; r110=$?
+if [[ $r110 == 0 && ! -e "$aw/a$$.bundle" ]] && grep -q $'\tpurged-dup$' "$bk/ledger.tsv"; then echo 'PASS T110 dup_bundle'; ok=$((ok+1)); else echo "FAIL T110: rc=$r110"; fi
+
+git clone -q "$dg" "$d/dclone"
+git -C "$d/dclone" config user.email t@t
+git -C "$d/dclone" config user.name t
+git -C "$d/dclone" commit -q --allow-empty -m extra
+git -C "$d/dclone" bundle create "$aw/b$$.bundle" --all >/dev/null 2>&1
+"$bin/safe-delete" --bk "$bk" dup "$aw/b$$.bundle" "$dg" >/dev/null 2>&1; r111=$?
+if [[ $r111 == 2 && -f "$aw/b$$.bundle" ]]; then echo 'PASS T111 dup_bundle_extra_commit'; ok=$((ok+1)); else echo "FAIL T111: rc=$r111"; fi
+
+tar -C "$d/dorig" -cf "$aw/t$$.tar" .git
+"$bin/safe-delete" --bk "$bk" dup "$aw/t$$.tar" "$dg" >/dev/null 2>&1; r112=$?
+if [[ $r112 == 0 && ! -e "$aw/t$$.tar" ]]; then echo 'PASS T112 dup_tar'; ok=$((ok+1)); else echo "FAIL T112: rc=$r112"; fi
+
+cp -a "$dg" "$d/dgcopy"
+zero113=$(printf '0%.0s' $(seq 1 40)); fake113=$(printf 'a%.0s' $(seq 1 40))
+printf '%s %s t <t@t> 1 +0000\tfake\n' "$zero113" "$fake113" >> "$d/dgcopy/logs/HEAD"
+tar -C "$d/dgcopy" -cf "$aw/r$$.tar" .
+"$bin/safe-delete" --bk "$bk" dup "$aw/r$$.tar" "$dg" >/dev/null 2>&1; r113=$?
+if [[ $r113 == 2 && -f "$aw/r$$.tar" ]]; then echo 'PASS T113 dup_tar_reflog_missing'; ok=$((ok+1)); else echo "FAIL T113: rc=$r113"; fi
+
+mkdir -p "$d/outside-dup"
+git -C "$d/dorig" bundle create "$d/outside-dup/o$$.bundle" --all >/dev/null 2>&1
+"$bin/safe-delete" --bk "$bk" dup "$d/outside-dup/o$$.bundle" "$dg" >/dev/null 2>&1; r114=$?
+if [[ $r114 == 2 && -f "$d/outside-dup/o$$.bundle" ]]; then echo 'PASS T114 dup_outside_prefix'; ok=$((ok+1)); else echo "FAIL T114: rc=$r114"; fi
+
+mkdir -p "$d/notgit"
+git -C "$d/dorig" bundle create "$aw/c$$.bundle" --all >/dev/null 2>&1
+"$bin/safe-delete" --bk "$bk" dup "$aw/c$$.bundle" "$d/notgit" >/dev/null 2>&1; r115=$?
+if [[ $r115 == 2 && -f "$aw/c$$.bundle" ]]; then echo 'PASS T115 dup_orig_not_git'; ok=$((ok+1)); else echo "FAIL T115: rc=$r115"; fi
+
+mkdir -p "$aw/.repowise"
+git -C "$d/dorig" bundle create "$aw/.repowise/d$$.bundle" --all >/dev/null 2>&1
+"$bin/safe-delete" --bk "$bk" dup "$aw/.repowise/d$$.bundle" "$dg" >/dev/null 2>&1; r116=$?
+if [[ $r116 == 2 && -f "$aw/.repowise/d$$.bundle" ]]; then echo 'PASS T116 dup_repowise_segment'; ok=$((ok+1)); else echo "FAIL T116: rc=$r116"; fi
+unset SAFE_DELETE_DUP_ROOT
+
+[[ $ok == 114 ]] || exit 1
 echo "итог: PASS $ok, FAIL 0"

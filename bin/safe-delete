@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -u
-case ${1:-} in -h|--help) echo "usage: safe-delete [--bk <каталог>] <file|dir|worktree|tmp|cache|link|restore|purge|repo-autodelete> <path>… | branch <repo> <branch>  (safely deletes and restores approved files or branches)"; exit 0;; esac
+case ${1:-} in -h|--help) echo "usage: safe-delete [--bk <каталог>] <file|dir|worktree|tmp|cache|link|restore|purge|dup|repo-autodelete> <path>… | branch <repo> <branch>  (safely deletes and restores approved files or branches)"; exit 0;; esac
 BK=${SAFE_DELETE_BK:-/root/workspaces/projects/.agent-work/backup}
 GH=${SAFE_DELETE_GH:-true}
 mkdir -p "$BK"
@@ -211,7 +211,7 @@ cache_del(){
   log_batch "${bl[@]}" || return 1
   for p in "$@"; do echo "удалено: $p | основание: кэш, без копии"; done
 }
-[[ $# -ge 1 ]] || refuse 'usage: safe-delete [--bk <каталог>] <file|dir|worktree|tmp|cache|link|restore|purge|repo-autodelete> <path>… | branch <repo> <branch>'
+[[ $# -ge 1 ]] || refuse 'usage: safe-delete [--bk <каталог>] <file|dir|worktree|tmp|cache|link|restore|purge|dup|repo-autodelete> <path>… | branch <repo> <branch>'
 if [[ $1 == --bk ]]; then [[ $# -ge 3 ]] || refuse 'usage'; BK=$2; shift 2; mkdir -p "$BK"; led=$BK/ledger.tsv; fi
 cmd=$1; shift
 if [[ -n ${SAFE_DELETE_SANDBOX:-} ]]; then [[ $SAFE_DELETE_SANDBOX == /tmp/* ]] || refuse "корень не под /tmp: $SAFE_DELETE_SANDBOX"; fi
@@ -399,6 +399,36 @@ $f"; done
       git -C "$repo" worktree add "$obj" "$sha" || exit 1
       log worktree "$obj" "$sha" "$repo" "$ref" - restored
     else refuse "нельзя восстановить тип: $typ"; fi
+    exit 0
+    ;;
+  dup)
+    [[ $# -eq 2 ]] || refuse 'usage: safe-delete dup <copy> <orig-gitdir>'
+    copy=$1; orig=$2
+    [[ -f $copy && ! -L $copy ]] || refuse "не обычный файл: $copy"
+    check_path "$copy"; copy=$p
+    if [[ -n ${SAFE_DELETE_DUP_ROOT:-} ]]; then [[ $SAFE_DELETE_DUP_ROOT == /tmp/* ]] || refuse "корень не под /tmp: $SAFE_DELETE_DUP_ROOT"; fi
+    dupr=$(realpath -m -- "${SAFE_DELETE_DUP_ROOT:-/root/workspaces/projects/.agent-work}") || exit 1
+    [[ $copy == "$dupr"/* ]] || refuse "вне $dupr: $copy"
+    [[ $copy == *.bundle || $copy == *.tar ]] || refuse "не .bundle/.tar: $copy"
+    git --git-dir="$orig" rev-parse --git-dir >/dev/null 2>&1 && git --git-dir="$orig" fsck --connectivity-only >/dev/null 2>&1 || refuse "оригинал не прошёл fsck"
+    if [[ $copy == *.bundle ]]; then
+      ids=$(git --git-dir="$orig" bundle list-heads "$copy" 2>/dev/null | awk '{print $1}' | sort -u)
+    else
+      tmpd=$(mktemp -d /tmp/safe-delete-dup.XXXXXX) || exit 1
+      trap 'rm -rf "$tmpd"' EXIT
+      tar -xf "$copy" -C "$tmpd" --wildcards '*packed-refs' '*/refs/*' '*/logs/*' '*HEAD' >/dev/null 2>&1
+      ids=$(grep -rhoE '\b[0-9a-f]{40}\b' "$tmpd" 2>/dev/null | grep -vE '^0{40}$' | sort -u)
+    fi
+    [[ -n $ids ]] || refuse "в копии нет id объектов: $copy"
+    n_ids=$(wc -l <<< "$ids"); n_ids=${n_ids//[[:space:]]/}
+    chk=$(git --git-dir="$orig" cat-file --batch-check <<< "$ids" 2>/dev/null)
+    miss=$(grep -c ' missing$' <<< "$chk")
+    [[ $miss == 0 ]] || refuse "в оригинале нет $miss объектов копии"
+    [[ $(wc -l <<< "$chk") == "$n_ids" ]] || refuse "проверка объектов не полная: $copy"
+    size=$(stat -c %s -- "$copy") || exit 1
+    rm -f -- "$copy" || exit 1
+    log dup "$copy" "$orig" "$n_ids" - - purged-dup || exit 1
+    echo "dup: removed $copy ($size bytes, $n_ids ids verified in $orig)"
     exit 0
     ;;
   purge)
