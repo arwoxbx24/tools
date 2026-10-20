@@ -18,7 +18,21 @@ git init -q --template= "$tmp/outer"
 git init -q --template= "$tmp/outer/sub"
 git -C "$tmp/clean/a" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
 git -C "$tmp/clean/a" worktree add -q "$tmp/clean/a/.worktrees/w"
+mkdir -p "$tmp/sm" "$tmp/pt" "$tmp/pl"
+git init -q --template= "$tmp/sm/parent"
+git init -q --template= "$tmp/sm/src"
+git -C "$tmp/sm/parent" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+git -C "$tmp/sm/src" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+git -C "$tmp/sm/parent" -c protocol.file.allow=always submodule add -q "$tmp/sm/src" sub
+git -C "$tmp/sm/parent" -c user.name=t -c user.email=t@t commit -q -m submodule
+git init -q --template= "$tmp/pt"
+git init -q --template= "$tmp/pt/data/.pytest-tmp/x"
+git init -q --template= "$tmp/pl"
+git init -q --template= "$tmp/pl/data/.pytest-tmpx/y"
 check clean 0 'nested=0' "$tmp/clean"
 check nested 1 'nested=1' "$tmp/outer"
+check submodule 0 'nested=0' "$tmp/sm/parent"
+check pytest-tmp 0 'nested=0' "$tmp/pt"
+check pytest-lookalike 1 'nested=1' "$tmp/pl"
 echo "ok=$ok failed=$failed"
 [ "$failed" -eq 0 ]
