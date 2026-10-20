@@ -87,6 +87,8 @@ check_path(){
 check_resolved(){
   p=$1
   [[ $p == /etc/claude-code/* || $p == "$HOME"/.ssh/* || $p == "$HOME"/.claude/settings*.json ]] && refuse "запрещённый путь: $p"
+  local gdirs=/root/workspaces/git-dirs
+  [[ $p == "$gdirs"/* && ${p#"$gdirs"/}/ == *.git/* ]] && refuse "запрещённый сегмент: $p"
   if [[ ${2:-} != link ]]; then
     roots=${SAFE_DELETE_ROOTS:-/root/workspaces/projects:/root/workspaces/tools:/root/workspaces/sandbox:/home/gitmirror/state:/root/.claude/projects:/root/.local/share:/root/.local/state:/root/.cache:/root/.config:/root/.claude/skills}
     if [[ -n ${SAFE_DELETE_ROOTS:-} ]]; then
@@ -95,6 +97,7 @@ check_resolved(){
     okr=; IFS=: read -ra rts <<< "$roots"; for r in "${rts[@]}"; do [[ $p == "$r" || $p == "$r"/* ]] && { okr=1; break; }; done
     # бэкапы настроек пользователя: 14-дневная копия в BK сохраняет их восстановимыми
     [[ $p == "$HOME"/.claude/settings.json.bak* && $p != "$HOME"/.claude/*/* && -f $p && ! -L $p ]] && okr=1
+    [[ $p == "$gdirs"/quarantine-* ]] && okr=1
     [[ $okr ]] || refuse "вне разрешённых корней: $p"
   fi
   for seg in secrets hh-scoring .codex .git .beads; do
