@@ -792,5 +792,27 @@ printf 'new\n' > "$d/cl-w/clients/x/new"
 "$bin/safe-delete" --bk "$bk" dir "$d/cl-w/clients/x" >/dev/null 2>&1; r99=$?
 if [[ $r99 == 2 && -f $d/cl-w/clients/x/f && -f $d/cl-w/clients/x/new ]]; then echo 'PASS T99 client_untracked_refused'; ok=$((ok+1)); else echo "FAIL T99: rc=$r99"; fi
 
-[[ $ok == 102 ]] || exit 1
+# T100-T104: git-dirs quarantine-* deletable; any *.git component and git-dirs itself refused (real roots)
+gq=/root/workspaces/git-dirs
+mkdir -p "$gq/quarantine-sdtest-$$/a"; printf 'q\n' > "$gq/quarantine-sdtest-$$/a/f"
+env -u SAFE_DELETE_ROOTS "$bin/safe-delete" --bk "$bk" dir "$gq/quarantine-sdtest-$$" >/dev/null 2>&1; r100=$?
+l100=$(awk -F '\t' -v p="$gq/quarantine-sdtest-$$/a/f" '$2 == "file" && $3 == p && $8 == "deleted" { n=NR } END { print n }' "$bk/ledger.tsv")
+if [[ $r100 == 0 && ! -e "$gq/quarantine-sdtest-$$" && -n $l100 ]]; then echo 'PASS T100 git_dirs_quarantine_deleted'; ok=$((ok+1)); else echo "FAIL T100: rc=$r100 line=$l100"; fi
+rmdir "$gq/quarantine-sdtest-$$/a" "$gq/quarantine-sdtest-$$" 2>/dev/null
+
+env -u SAFE_DELETE_ROOTS "$bin/safe-delete" --bk "$bk" dir "$gq/agent-contour.git" >/dev/null 2>&1; r101=$?
+if [[ $r101 == 2 && -d $gq/agent-contour.git ]]; then echo 'PASS T101 git_dirs_gitdir_refused'; ok=$((ok+1)); else echo "FAIL T101: rc=$r101"; fi
+
+env -u SAFE_DELETE_ROOTS "$bin/safe-delete" --bk "$bk" dir "$gq/agent-contour.git/objects" >/dev/null 2>&1; r102=$?
+if [[ $r102 == 2 && -d $gq/agent-contour.git/objects ]]; then echo 'PASS T102 git_dirs_gitdir_objects_refused'; ok=$((ok+1)); else echo "FAIL T102: rc=$r102"; fi
+
+mkdir -p "$gq/quarantine-sdtest2-$$/x.git"
+env -u SAFE_DELETE_ROOTS "$bin/safe-delete" --bk "$bk" dir "$gq/quarantine-sdtest2-$$" >/dev/null 2>&1; r103=$?
+if [[ $r103 == 2 && -d $gq/quarantine-sdtest2-$$/x.git ]]; then echo 'PASS T103 git_dirs_quarantine_gitsuffix_refused'; ok=$((ok+1)); else echo "FAIL T103: rc=$r103"; fi
+rmdir "$gq/quarantine-sdtest2-$$/x.git" "$gq/quarantine-sdtest2-$$" 2>/dev/null
+
+env -u SAFE_DELETE_ROOTS "$bin/safe-delete" --bk "$bk" dir "$gq" >/dev/null 2>&1; r104=$?
+if [[ $r104 == 2 && -d $gq ]]; then echo 'PASS T104 git_dirs_root_refused'; ok=$((ok+1)); else echo "FAIL T104: rc=$r104"; fi
+
+[[ $ok == 107 ]] || exit 1
 echo "итог: PASS $ok, FAIL 0"
