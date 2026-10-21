@@ -24,7 +24,7 @@ if [ -f "$ALERT_PENDING" ]; then
     token="${TG_BOT_TOKEN:-}"; chat="${TG_CHAT_ID:-}"
   fi
   if [ -n "$token" ] && [ -n "$chat" ] \
-    && curl -s --max-time 10 "https://api.telegram.org/bot${token}/sendMessage" \
+    && curl -sf --max-time 10 "https://api.telegram.org/bot${token}/sendMessage" \
       -d "chat_id=${chat}" --data-urlencode "text=$(<"$ALERT_PENDING")" >/dev/null 2>&1; then
     rm -f "$ALERT_PENDING"
     log "pending alert sent"

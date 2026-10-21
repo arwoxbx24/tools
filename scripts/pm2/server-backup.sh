@@ -38,10 +38,10 @@ send_telegram() { # text
     log "telegram skipped (no token/chat): $1"
     return 1
   fi
-  curl -s --max-time 10 "https://api.telegram.org/bot${token}/sendMessage" \
+  curl -sf --max-time 10 "https://api.telegram.org/bot${token}/sendMessage" \
     -d "chat_id=${chat}" --data-urlencode "text=$1" >/dev/null 2>&1
   rc=$?
-  [ "$rc" -eq 0 ] || log "telegram send failed"
+  if [ "$rc" -eq 0 ]; then log "telegram sent"; else log "telegram send failed rc=$rc"; fi
   return "$rc"
 }
 
