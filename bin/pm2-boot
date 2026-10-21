@@ -19,7 +19,7 @@ mkdir -p "$PM2_HOME"
 
 log() { printf '%s\n' "$*" >&2; }
 
-# R3: pm2 copies its caller's environment into the processes it starts, so it gets only these names.
+# pm2 copies its caller's environment into the processes it starts, so it gets only these names.
 run_pm2() {
   local name keep=()
   for name in PATH HOME PM2_HOME USER LOGNAME SHELL; do

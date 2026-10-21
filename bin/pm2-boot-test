@@ -92,7 +92,7 @@ run_boot() {
     "$TARGET" "$@"
 }
 reset_case() { : >"$CALL_LOG"; : >"$CURL_TEXT"; rm -f -- "$JLIST_FILE" "$PM2_HOME_TEST"/boot-preflight.json "$PM2_HOME_TEST"/dump.pm2 "$PM2_HOME_TEST"/boot-alert.*; }
-# What pm2 saw (R3): each call logged its variable names; the session names must be absent, PATH and HOME present.
+# What pm2 saw: each call logged its variable names; the session names must be absent, PATH and HOME present.
 # Not the exact set: bash adds PWD, SHLVL and _ on its own.
 assert_pm2_env() { # label
   local calls envs leaked nopath nohome

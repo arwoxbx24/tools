@@ -476,23 +476,25 @@ else
 fi
 if [ "$(date +%u)" = 7 ] && [ "$run_hour" = 03 ]; then
   DRILL=/tmp/restic-drill
+  DRILL_FILES=(/root/CLAUDE.md /root/workspaces/tools/ecosystem.config.js /root/workspaces/git-dirs/agent-contour.git/HEAD)
+  drill_includes=()
+  for drill_file in "${DRILL_FILES[@]}"; do drill_includes+=(--include "$drill_file"); done
   rm -rf "$DRILL"
   run_step restore "${NICE_PREFIX[@]}" "$RESTIC" restore latest --tag server --target "$DRILL" \
-    --include /root/CLAUDE.md --include /root/workspaces/tools/ecosystem.config.js \
-    --include /root/workspaces/git-dirs/agent-contour.git/HEAD --retry-lock 30m
+    "${drill_includes[@]}" --retry-lock 30m
   restore_rc=$?
   if [ "$restore_rc" -ne 0 ]; then
     rm -rf "$DRILL"
     fail restore "$restore_rc"
   fi
-  for drill_file in /root/CLAUDE.md /root/workspaces/tools/ecosystem.config.js /root/workspaces/git-dirs/agent-contour.git/HEAD; do
+  for drill_file in "${DRILL_FILES[@]}"; do
     if ! cmp -s "$DRILL$drill_file" "$drill_file"; then
       log "restore-drill FAIL $drill_file"
       rm -rf "$DRILL"
       fail restore 1
     fi
   done
-  log "restore-drill ok (3 files)"
+  log "restore-drill ok (${#DRILL_FILES[@]} files)"
   rm -rf "$DRILL"
   [ "$(date +%-d)" -le 7 ] && drill
 fi

@@ -87,7 +87,6 @@ exit 0
 '
 
 # Воскресная ветка check требует date +%u=7, +%-d=8; форсируем только по флагу,
-# STUB_FORCE_WEEKDAY=1 даёт +%u=3 (результат не зависит от реального дня),
 # прочие вызовы date (лог, +%s) делегируем системной date.
 write_stub date '
 if [ "${STUB_FORCE_SUNDAY:-0}" = 1 ]; then
@@ -96,6 +95,7 @@ if [ "${STUB_FORCE_SUNDAY:-0}" = 1 ]; then
     +%-d) echo 8; exit 0;;
   esac
 fi
+# STUB_FORCE_WEEKDAY=1 даёт +%u=3 (результат не зависит от реального дня).
 if [ "${STUB_FORCE_WEEKDAY:-0}" = 1 ] && [ "${1:-}" = +%u ]; then echo 3; exit 0; fi
 exec /bin/date "$@"
 '
@@ -218,7 +218,7 @@ if [ "${STUB_HOST_INTEGRATION:-0}" != 1 ] || [ ! -w /root/backups/docker ] || [ 
   exit 0
 fi
 
-# --- (g)-(i): воскресное восстановление трёх файлов (R1, R2, AE1).
+# --- (g)-(i): воскресное восстановление трёх файлов.
 # RUN_HOUR=03 и форсированный день не зависят от реальных часа и дня.
 printf 'repos/repo1.git/HEAD\nrepos/repo2.git/HEAD\nrepos/repo3.git/HEAD\n' >"$TMP/ls-drill.txt"
 
