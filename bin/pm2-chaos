@@ -64,18 +64,25 @@ exit "$(cat "$(dirname "$0")/../curl.rc")"
 EOF
   chmod 700 "$STUBDIR/curl"
   export PM2_HOME="$CHAOS_HOME" PM2_BIN PM2_BOOT_ECOSYSTEM="$CHAOS_HOME/eco.config.js"
-  export PM2_ECO_LINT="$LINT" GUARD_STATE_DIR="$CHAOS_HOME/loop-guard"
+  export PM2_ECO_LINT="$LINT" GUARD_STATE_DIR="$CHAOS_HOME/loop-guard" GUARD_SCRIPT="$CHAOS_HOME/guard-env"
   export GUARD_INCIDENT_ROOT="$CHAOS_HOME/loop-guard/incidents" GUARD_BOOT_STATE="$CHAOS_HOME/boot-preflight.json"
   export GUARD_NOTIFY_ENV="$CHAOS_HOME/notify.env" GUARD_INTERVAL=2 GUARD_RATE_LIMIT=20 GUARD_MIN_STORM=5
   printf '0\n' >"$CURL_RC_FILE"
   export CURL_BIN="$STUBDIR/curl" CURL_LOG CURL_STUB_RC_FILE PATH="$STUBDIR:$PATH"
+  local n
+  { printf '#!/usr/bin/env bash\n'
+    for n in PM2_HOME PM2_BIN GUARD_STATE_DIR GUARD_INCIDENT_ROOT GUARD_BOOT_STATE GUARD_NOTIFY_ENV GUARD_INTERVAL GUARD_RATE_LIMIT GUARD_MIN_STORM CURL_BIN CURL_LOG; do printf 'export %s=%q\n' "$n" "${!n}"; done
+    printf 'exec bash %q "$@"\n' "$GUARD"
+  } >"$GUARD_SCRIPT"
+  chmod 700 "$GUARD_SCRIPT"
   command -v curl | grep -Fx "$STUBDIR/curl" >/dev/null || return 1
   printf 'TG_BOT_TOKEN=t\nTG_CHAT_ID=c\n' >"$GUARD_NOTIFY_ENV"
 }
 
 write_script() { local name=$1 body=$2; printf '#!/usr/bin/env bash\n%s\n' "$body" >"$CHAOS_HOME/apps/$name"; chmod 700 "$CHAOS_HOME/apps/$name"; }
+# pm2-boot passes pm2 six names, so on both start paths (ecosystem and fallback) the guard reads the stand's names from the guard-env wrapper.
 guard_app() { cat <<EOF
-    { name: 'pm2-loop-guard', script: '$GUARD', cwd: '$ROOT', interpreter: 'bash', min_uptime: 1000, max_restarts: 3, exp_backoff_restart_delay: 100 },
+    { name: 'pm2-loop-guard', script: '$GUARD_SCRIPT', cwd: '$ROOT', interpreter: 'bash', min_uptime: 1000, max_restarts: 3, exp_backoff_restart_delay: 100 },
 EOF
 }
 eco_begin() { printf 'module.exports = { apps: [\n'; guard_app; }

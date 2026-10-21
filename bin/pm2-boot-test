@@ -33,18 +33,23 @@ STUBS="$TMPDIR_BOOT/stubs"
 PM2_HOME_TEST="$TMPDIR_BOOT/pm2"
 CALL_LOG="$TMPDIR_BOOT/calls.log"
 CURL_TEXT="$TMPDIR_BOOT/curl-text.log"
+JLIST_FILE="$TMPDIR_BOOT/jlist.json"
 mkdir -p "$STUBS" "$PM2_HOME_TEST"
 REAL_CHMOD="$(command -v chmod)"
 : >"$CALL_LOG"
 : >"$CURL_TEXT"
 
-cat >"$STUBS/pm2" <<'EOF'
-#!/usr/bin/env bash
+# pm2-boot starts pm2 under env -i, so this stub gets its paths written into its body at creation, not from the
+# environment. It logs the NAMES of its exported variables (compgen -e), never their values.
+printf '#!/usr/bin/env bash\nCALL_LOG=%q\nJLIST_FILE=%q\nREAL_CHMOD=%q\n' "$CALL_LOG" "$JLIST_FILE" "$REAL_CHMOD" >"$STUBS/pm2"
+cat >>"$STUBS/pm2" <<'EOF'
 printf 'pm2' >>"$CALL_LOG"
 printf ' %q' "$@" >>"$CALL_LOG"
 printf '\n' >>"$CALL_LOG"
+names=$(compgen -e)
+printf 'pm2-env: %s\n' "${names//$'\n'/ }" >>"$CALL_LOG"
 [[ ${1:-} == ping ]] && exit 0
-[[ ${1:-} == jlist ]] && printf '%s\n' "${PM2_JLIST:-[]}"
+if [[ ${1:-} == jlist ]]; then if [[ -s $JLIST_FILE ]]; then cat "$JLIST_FILE"; else printf '[]\n'; fi; fi
 if [[ ${1:-} == save ]]; then : >"$PM2_HOME/dump.pm2"; "$REAL_CHMOD" 644 "$PM2_HOME/dump.pm2"; fi
 exit 0
 EOF
@@ -81,13 +86,28 @@ EOF
 chmod +x "$STUBS/pm2" "$STUBS/pm2-eco-lint" "$STUBS/curl" "$STUBS/chmod"
 
 run_boot() {
-  PATH="$STUBS:$PATH" CALL_LOG="$CALL_LOG" CURL_TEXT="$CURL_TEXT" \
+  PATH="$STUBS:$PATH" HOME="$TMPDIR_BOOT" CALL_LOG="$CALL_LOG" CURL_TEXT="$CURL_TEXT" \
     PM2_HOME="$PM2_HOME_TEST" PM2_BIN="$STUBS/pm2" PM2_ECO_LINT="$STUBS/pm2-eco-lint" \
   CURL_BIN="$STUBS/curl" GUARD_NOTIFY_ENV="$TMPDIR_BOOT/notify.env" REAL_CHMOD="$REAL_CHMOD" \
     "$TARGET" "$@"
 }
-reset_case() { : >"$CALL_LOG"; : >"$CURL_TEXT"; rm -f -- "$PM2_HOME_TEST"/boot-preflight.json "$PM2_HOME_TEST"/dump.pm2 "$PM2_HOME_TEST"/boot-alert.*; }
+reset_case() { : >"$CALL_LOG"; : >"$CURL_TEXT"; rm -f -- "$JLIST_FILE" "$PM2_HOME_TEST"/boot-preflight.json "$PM2_HOME_TEST"/dump.pm2 "$PM2_HOME_TEST"/boot-alert.*; }
+# What pm2 saw (R3): each call logged its variable names; the session names must be absent, PATH and HOME present.
+# Not the exact set: bash adds PWD, SHLVL and _ on its own.
+assert_pm2_env() { # label
+  local calls envs leaked nopath nohome
+  calls=$(grep -c '^pm2 ' "$CALL_LOG" || true)
+  envs=$(grep -c '^pm2-env: ' "$CALL_LOG" || true)
+  leaked=$(grep '^pm2-env: ' "$CALL_LOG" | grep -Ec ' (CLAUDE_CODE_FAKE_TEST|ANTHROPIC_API_KEY)( |$)' || true)
+  nopath=$(grep '^pm2-env: ' "$CALL_LOG" | grep -Evc ' PATH( |$)' || true)
+  nohome=$(grep '^pm2-env: ' "$CALL_LOG" | grep -Evc ' HOME( |$)' || true)
+  assert_true "$1: pm2 was called and every call logged its env names" test "$calls" -gt 0 -a "$calls" -eq "$envs"
+  assert_eq "$1: no session variable name reaches pm2" 0 "$leaked"
+  assert_eq "$1: PATH and HOME reach pm2" 0 "$((nopath + nohome))"
+}
 printf 'TG_BOT_TOKEN=t\nTG_CHAT_ID=1\n' >"$TMPDIR_BOOT/notify.env"
+# Fake agent-session variables (fake values): pm2-boot must keep their names away from pm2.
+export CLAUDE_CODE_FAKE_TEST=x ANTHROPIC_API_KEY=x
 
 reset_case
 run_boot
@@ -109,8 +129,10 @@ chmod_line=$(line_number '^chmod 600 ')
 assert_true 'save follows application reloads' test -n "$save_line" -a "$save_line" -gt "$app_line"
 assert_true 'chmod 600 follows save' test -n "$chmod_line" -a "$chmod_line" -gt "$save_line"
 assert_eq 'saved dump has mode 600' 600 "$(stat -c %a "$PM2_HOME_TEST/dump.pm2")"
+assert_pm2_env 'full boot'
 assert_true 'alerts do not include NAME=value text' bash -c "! grep -Eq '[A-Z_]+=[^[:space:]]+' \"$CURL_TEXT\""
 alerts_before=$(grep -c '^curl ' "$CALL_LOG" || true)
+assert_true 'failed pre-flight sends a telegram alert through curl' test "$alerts_before" -gt 0
 run_boot
 alerts_after=$(grep -c '^curl ' "$CALL_LOG" || true)
 assert_eq 'same boot id sends one alert' "$alerts_before" "$alerts_after"
@@ -123,6 +145,7 @@ assert_eq 'fallback boot exits zero' 0 "$rc"
 assert_true 'loaded:false resurrects a nonempty dump' grep -q '^pm2 resurrect$' "$CALL_LOG"
 assert_true 'fallback starts guard directly' grep -q 'pm2 start .*/pm2-loop-guard' "$CALL_LOG"
 assert_true 'fallback result is recorded' grep -q 'fallback-resurrect' "$PM2_HOME_TEST/boot-preflight.json"
+assert_pm2_env 'fallback with cached dump'
 
 reset_case
 LINT_MODE=fallback run_boot
@@ -130,9 +153,12 @@ assert_true 'empty fallback does not resurrect' bash -c "! grep -q '^pm2 resurre
 assert_true 'empty fallback starts guard directly' grep -q 'pm2 start .*/pm2-loop-guard' "$CALL_LOG"
 assert_true 'empty fallback guard uses bash interpreter and guard name' grep -Eq 'pm2 start .*--interpreter bash .*--name pm2-loop-guard' "$CALL_LOG"
 assert_true 'empty fallback result is recorded' grep -q 'fallback-empty' "$PM2_HOME_TEST/boot-preflight.json"
+assert_pm2_env 'empty fallback'
 
 reset_case
-PM2_JLIST='[{"name":"app-ok","pm2_env":{"status":"online","errored":1}}]' run_boot
+printf '%s\n' '[{"name":"app-ok","pm2_env":{"status":"online","errored":1}}]' >"$JLIST_FILE"
+run_boot
+assert_true 'errored scenario consulted jlist' grep -q '^pm2 jlist$' "$CALL_LOG"
 assert_true 'errored online target skips save' bash -c "! grep -q '^pm2 save$' \"$CALL_LOG\""
 
 reset_case
@@ -143,9 +169,22 @@ assert_true '--only failure never invokes startOrReload' bash -c "! grep -q star
 assert_true '--only failure reports the failed name' grep -q 'needs-secret' "$PM2_HOME_TEST/boot-preflight.json"
 
 reset_case
+run_boot --only app-ok
+assert_eq '--only on a healthy app exits zero' 0 "$?"
+assert_true '--only reloads the app with --update-env' grep -q 'startOrReload .*--only app-ok --update-env' "$CALL_LOG"
+assert_pm2_env '--only app-ok'
+
+reset_case
 run_boot --dry-run
 assert_eq 'dry run exits zero' 0 "$?"
 assert_true 'dry run does not invoke pm2' bash -c "! grep -q '^pm2 ' \"$CALL_LOG\""
+
+# Last: this unsets names for the rest of the run. pm2-boot runs under set -u, so an unset name must not kill it.
+reset_case
+unset USER LOGNAME SHELL
+run_boot --only app-ok
+assert_eq 'unset USER, LOGNAME and SHELL do not stop pm2-boot' 0 "$?"
+assert_pm2_env 'unset USER, LOGNAME and SHELL'
 
 printf 'PASS=%d FAIL=%d\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))
