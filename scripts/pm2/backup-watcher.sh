@@ -2,15 +2,13 @@
 # backup-watcher.sh — Watches profile tree and key project dirs for backup files
 # Catches: *.backup, *.bak, *.backup.*, *.bak-*
 # Runs as PM2 daemon, uses inotifywait -r for RECURSIVE monitoring
-# v2: scoped dirs only, heavy project dirs excluded, timeout watchdog (1h max)
+# v2: scoped dirs only, heavy project dirs excluded
 # Удаление копий старше 5 суток передано стадии уборки с гейтом restic (US3, spec:055); сбор *.bak* остаётся.
 set +e
 
 PROFILE_DIR="/root/workspaces/system/tools/scripts"
 BACKUP_DIR="${PROFILE_DIR}/backups"
 LOG_FILE="/tmp/backup-watcher.log"
-# Watchdog: auto-restart after 1h to prevent inotify fd accumulation
-WATCHDOG_TIMEOUT=3600
 FIFO=""
 
 mkdir -p "$BACKUP_DIR"
@@ -22,14 +20,11 @@ log() {
     fi
 }
 
-# Watchdog: kill self after WATCHDOG_TIMEOUT seconds (PM2 will restart)
-(sleep "$WATCHDOG_TIMEOUT" && log "Watchdog: timeout ${WATCHDOG_TIMEOUT}s reached, triggering restart" && kill $$) &
-WATCHDOG_PID=$!
 INOTIFY_PID=""
-# Kill tracked inotifywait + watchdog subshell on exit so no orphan tree survives a restart
+# Kill tracked inotifywait on exit so no orphan tree survives a restart
 FIFO="$(mktemp -u)"
 mkfifo "$FIFO"
-trap 'kill $INOTIFY_PID $WATCHDOG_PID 2>/dev/null; rm -f "$FIFO"' EXIT TERM INT
+trap 'kill $INOTIFY_PID 2>/dev/null; rm -f "$FIFO"' EXIT TERM INT
 
 move_all_backups() {
     local moved=0
@@ -55,7 +50,7 @@ WATCH_DIRS=(
 
 # Initial full sweep
 move_all_backups
-log "Watcher started. Monitoring ${#WATCH_DIRS[@]} scoped dirs (inotify watchdog: ${WATCHDOG_TIMEOUT}s)"
+log "Watcher started. Monitoring ${#WATCH_DIRS[@]} scoped dirs"
 
 # Recursive watch on scoped dirs only — avoids 7000+ inotify watches on full /root/workspaces/projects/
 # inotifywait runs in background with its real PID tracked (INOTIFY_PID); trap kills it on exit (no orphans)
