@@ -490,7 +490,7 @@ source_gate_functions() { # extracts the actual production gate functions withou
   local assignment
   for assignment in "${RUN_ENV[@]}"; do export "$assignment"; done
   RC_GATE_CLOSED=5
-  sed -n '/^journal_row() {/,/^handle() {/p' "$SCRIPT" | sed '$d' >"$S/gate-functions.sh"
+  { sed -n '/^journal_row() {/,/^}/p' "$SCRIPT"; sed -n '/^restic_env() {/,/^handle() {/p' "$SCRIPT" | sed '$d'; } >"$S/gate-functions.sh"
   # shellcheck disable=SC1090
   source "$S/gate-functions.sh"
   use_pct() { printf '85\n'; }
