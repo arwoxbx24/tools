@@ -10,6 +10,8 @@ trap 'rm -rf -- "$TMP"' EXIT
 export SDK_AGENT_TEST=1
 # the cases below were written for a 5.00 cap; the cap is 7.00 (owner, dcfg-aw1i7.3), so tests override it (honoured only under SDK_AGENT_TEST)
 export SDK_AGENT_TEST_CAP=5.00
+# calls without their own ledger must not touch the live runs.jsonl (dcfg-a5bre)
+export SDK_AGENT_RUNS_LOG="$TMP/default-runs.jsonl"
 
 # stub engine: stands in for the paid engine; prints a success result that says whether it got the API key
 stub="$TMP/stub-engine"
