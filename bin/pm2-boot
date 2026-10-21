@@ -19,6 +19,15 @@ mkdir -p "$PM2_HOME"
 
 log() { printf '%s\n' "$*" >&2; }
 
+# pm2 copies its caller's environment into the processes it starts, so it gets only these names.
+run_pm2() {
+  local name keep=()
+  for name in PATH HOME PM2_HOME USER LOGNAME SHELL; do
+    if [[ -v $name ]]; then keep+=("$name=${!name}"); fi
+  done
+  env -i "${keep[@]}" "$PM2_BIN" "$@"
+}
+
 alert() {
   local text="$1" token="" chat=""
   if [ -f "$GUARD_NOTIFY_ENV" ]; then
@@ -74,7 +83,7 @@ PY
 }
 
 guard_online() {
-  "$PM2_BIN" jlist 2>/dev/null | python3 -c '
+  run_pm2 jlist 2>/dev/null | python3 -c '
 import json, sys
 try: apps=json.load(sys.stdin)
 except Exception: sys.exit(1)
@@ -86,7 +95,7 @@ sys.exit(1)
 }
 
 save_allowed() {
-  "$PM2_BIN" jlist 2>/dev/null | python3 -c '
+  run_pm2 jlist 2>/dev/null | python3 -c '
 import json, sys
 try: apps=json.load(sys.stdin)
 except Exception: sys.exit(1)
@@ -118,7 +127,7 @@ case "${1:-}" in
   *) log "usage: pm2-boot [--only name|--dry-run|status]"; exit 2 ;;
 esac
 
-if [ "$MODE" = boot ]; then "$PM2_BIN" ping >/dev/null 2>&1 || exit 1; fi
+if [ "$MODE" = boot ]; then run_pm2 ping >/dev/null 2>&1 || exit 1; fi
 LINT_ARGS=(--json --ecosystem "$ECO")
 [ "$MODE" = only ] && LINT_ARGS+=(--only "$ONLY")
 JSON="$("$PM2_ECO_LINT" "${LINT_ARGS[@]}" 2>/dev/null || true)"
@@ -150,8 +159,8 @@ PY
     printf '{"name":"%s","check":"declaration","subject":"%s"}\n' "$ONLY" "$ERROR" >>"$FAILED"
     write_report declaration 0 false "$ERROR"; send_once "⚠️ PM2 boot: $ONLY: declaration $ERROR"; exit 2
   fi
-  if [ -s "$PM2_HOME/dump.pm2" ]; then "$PM2_BIN" resurrect; FALLBACK=fallback-resurrect; else FALLBACK=fallback-empty; fi
-  if ! guard_online; then "$PM2_BIN" start "$GUARD_SCRIPT" --interpreter bash --cwd /root/workspaces/projects --name "$GUARD_NAME"; GUARD=поднят-напрямую; else GUARD=online; fi
+  if [ -s "$PM2_HOME/dump.pm2" ]; then run_pm2 resurrect; FALLBACK=fallback-resurrect; else FALLBACK=fallback-empty; fi
+  if ! guard_online; then run_pm2 start "$GUARD_SCRIPT" --interpreter bash --cwd /root/workspaces/projects --name "$GUARD_NAME"; GUARD=поднят-напрямую; else GUARD=online; fi
   write_report "$FALLBACK" 0 false "$ERROR"
   send_once "⚠️ PM2 boot: декларация сломана ($ERROR), сторож: $GUARD"
   exit 0
@@ -163,23 +172,23 @@ if [ "$MODE" = only ]; then
     [ -s "$FAILED" ] || printf '{"name":"%s","check":"name","subject":"not found"}\n' "$ONLY" >>"$FAILED"
     write_report declaration 0 false ""; send_once "⚠️ PM2 boot: $(failed_text)"; exit 2
   fi
-  "$PM2_BIN" startOrReload "$ECO" --only "$ONLY" --update-env
+  run_pm2 startOrReload "$ECO" --only "$ONLY" --update-env
   write_report declaration 1 false ""
   exit 0
 fi
 
 STARTED=0 GUARD_FAILED=false
 if grep -Fxq "$GUARD_NAME" "$APPS"; then
-  "$PM2_BIN" startOrReload "$ECO" --only "$GUARD_NAME"; STARTED=$((STARTED + 1))
+  run_pm2 startOrReload "$ECO" --only "$GUARD_NAME"; STARTED=$((STARTED + 1))
 else GUARD_FAILED=true; fi
 while IFS= read -r name; do
   [ -n "$name" ] && [ "$name" != "$GUARD_NAME" ] || continue
-  "$PM2_BIN" startOrReload "$ECO" --only "$name"; STARTED=$((STARTED + 1))
+  run_pm2 startOrReload "$ECO" --only "$name"; STARTED=$((STARTED + 1))
 done <"$APPS"
 
 SAVED=false
 ERRORS="$(save_allowed)"; save_rc=$?
-if [ "$save_rc" -eq 0 ]; then "$PM2_BIN" save && SAVED=true; else send_once "⚠️ PM2 boot: save пропущен, errored: $ERRORS"; fi
+if [ "$save_rc" -eq 0 ]; then run_pm2 save && SAVED=true; else send_once "⚠️ PM2 boot: save пропущен, errored: $ERRORS"; fi
 for dump in "$PM2_HOME"/dump.pm2*; do [ -e "$dump" ] && chmod 600 "$dump"; done
 write_report declaration "$STARTED" "$SAVED" ""
 if [ -s "$FAILED" ]; then

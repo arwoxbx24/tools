@@ -52,19 +52,34 @@ if [ "$mode" = snapshots ] && [ "${STUB_IMAGE_MODE:-0}" = 1 ]; then
 fi
 if [ "$mode" = ls ]; then for a in "$@"; do [ "$a" = --recursive ] && { cat "$STUB_LS_FILE" 2>/dev/null; break; }; done; exit 0; fi
 if [ "$mode" = restore ]; then
-  target="" include=""
+  target="" includes=()
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --target) target="$2"; shift 2;;
-      --include) include="$2"; shift 2;;
+      --include) includes+=("$2"); shift 2;;
       *) shift;;
     esac
   done
-  case "$include" in /root/backups/docker/20*) ;; *) exit 1;; esac
-  [ -n "$target" ] && [ -d "$include" ] || exit 1
-  mkdir -p "$target$(dirname "$include")" || exit 1
-  cp -al -- "$include" "$target$include"
-  exit $?
+  case "$target" in /tmp/*) ;; *) exit 1;; esac
+  [ "${#includes[@]}" -gt 0 ] || exit 1
+  for include in "${includes[@]}"; do
+    case "$include" in
+      /root/backups/docker/20*|/root/backups/docker/current|/root/CLAUDE.md|/root/workspaces/tools/ecosystem.config.js|/root/workspaces/git-dirs/agent-contour.git/HEAD) ;;
+      *) exit 1;;
+    esac
+    mkdir -p "$target$(dirname "$include")" || exit 1
+    if [ -d "$include" ]; then
+      cp -al -- "$include" "$target$include" || exit 1
+    elif [ -f "$include" ]; then
+      cp -- "$include" "$target$include" || exit 1
+      if [ "${STUB_RESTORE_MISMATCH:-0}" = 1 ] && [ "$include" = /root/workspaces/git-dirs/agent-contour.git/HEAD ]; then
+        printf "corrupted\n" >"$target$include" || exit 1
+      fi
+    else
+      exit 1
+    fi
+  done
+  exit 0
 fi
 if [ "$mode" = stats ]; then printf "Total Size: 100 MiB\n"; exit 0; fi
 if [ "$mode" = check ]; then exit "${STUB_CHECK_RC:-0}"; fi
@@ -80,6 +95,8 @@ if [ "${STUB_FORCE_SUNDAY:-0}" = 1 ]; then
     +%-d) echo 8; exit 0;;
   esac
 fi
+# STUB_FORCE_WEEKDAY=1 даёт +%u=3 (результат не зависит от реального дня).
+if [ "${STUB_FORCE_WEEKDAY:-0}" = 1 ] && [ "${1:-}" = +%u ]; then echo 3; exit 0; fi
 exec /bin/date "$@"
 '
 
@@ -102,12 +119,18 @@ write_stub crontab 'exit 0'
 for c in dpkg apt-mark pip3 pipx uv npm snap redis-cli sqlite3 lsb_release; do
   write_stub "$c" 'exit 0'
 done
+# docker inspect: инвентаризация UpperDir контейнеров (server-backup.sh) получает реальный overlay2/*/diff.
 write_stub docker '
 if [ "${STUB_IMAGES:-0}" = 1 ] && [ "${1:-}" = image ]; then
   case "${2:-}" in
     ls) printf "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\nsha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\\n";;
     inspect) printf "1\\n";;
   esac
+fi
+if [ "${1:-}" = inspect ]; then
+  for d in /var/lib/docker/overlay2/*/diff; do
+    if [ -d "$d" ] && [ ! -L "$d" ]; then printf "%s\n" "$d"; exit 0; fi
+  done
 fi
 exit 0
 '
@@ -157,7 +180,7 @@ run_backup() { # ls_file notify_env argc_file [server-backup args...] -> rc
 }
 
 PASS=0
-TOTAL=17
+TOTAL=23
 SB_LOG="$TMP/logs/server-backup.log"
 
 # --- (f): образы идут по одному; второй пропущен из-за резерва на диске.
@@ -193,6 +216,51 @@ fi
 if [ "${STUB_HOST_INTEGRATION:-0}" != 1 ] || [ ! -w /root/backups/docker ] || [ -e /root/.codex/DELETE-APPROVED.json ]; then
   echo "PASS $PASS/6 (stub-only; host Docker integration skipped)"
   exit 0
+fi
+
+# --- (g)-(i): воскресное восстановление трёх файлов.
+# RUN_HOUR=03 и форсированный день не зависят от реальных часа и дня.
+printf 'repos/repo1.git/HEAD\nrepos/repo2.git/HEAD\nrepos/repo3.git/HEAD\n' >"$TMP/ls-drill.txt"
+
+# (g): воскресенье 03, три файла совпадают -> строка успеха считает три файла.
+: >"$SB_LOG"
+export RUN_HOUR=03 STUB_FORCE_SUNDAY=1
+run_backup "$TMP/ls-drill.txt" "$TMP/notify-empty.env" "$TMP/argv-g.txt"
+unset RUN_HOUR STUB_FORCE_SUNDAY
+if grep -q 'restore-drill ok (3 files)' "$SB_LOG"; then PASS=$((PASS+1)); else
+  echo "[g] нет 'restore-drill ok (3 files)' в логе"; grep 'restore' "$SB_LOG"; tail -n 3 "$SB_LOG"; exit 1
+fi
+
+# (h): воскресенье 03, HEAD git-каталога в восстановленной копии отличается от живого ->
+# в логе строка FAIL с именем файла и нет ok, в ALERT_PENDING restore rc=1 (fail restore 1).
+: >"$SB_LOG"
+: >"$TMP/alert-pending"
+export RUN_HOUR=03 STUB_FORCE_SUNDAY=1 STUB_RESTORE_MISMATCH=1
+if run_backup "$TMP/ls-drill.txt" "$TMP/notify-empty.env" "$TMP/argv-h.txt"; then
+  echo "[h] ожидали сбой restore, а бэкап завершился успешно"; exit 1
+fi
+unset RUN_HOUR STUB_FORCE_SUNDAY STUB_RESTORE_MISMATCH
+if grep -q 'restore-drill FAIL.*HEAD' "$SB_LOG"; then PASS=$((PASS+1)); else
+  echo "[h] нет 'restore-drill FAIL' с именем HEAD git-каталога в логе"; grep 'restore' "$SB_LOG"; tail -n 3 "$SB_LOG"; exit 1
+fi
+if ! grep -q 'restore-drill ok' "$SB_LOG"; then PASS=$((PASS+1)); else
+  echo "[h] при расхождении HEAD в логе есть 'restore-drill ok'"; exit 1
+fi
+if grep -q 'server-backup: restore rc=1' "$TMP/alert-pending"; then PASS=$((PASS+1)); else
+  echo "[h] нет 'restore rc=1' в ALERT_PENDING"; exit 1
+fi
+
+# (i): будний день (форсируем +%u=3), 03 час -> воскресное восстановление не запускается.
+# SUMMARY с check_rc=0 доказывает, что прогон прошёл место воскресной ветки и час был 03.
+: >"$SB_LOG"
+export RUN_HOUR=03 STUB_FORCE_WEEKDAY=1
+run_backup "$TMP/ls-drill.txt" "$TMP/notify-empty.env" "$TMP/argv-i.txt"
+unset RUN_HOUR STUB_FORCE_WEEKDAY
+if grep -q 'SUMMARY .*check_rc=0' "$SB_LOG"; then PASS=$((PASS+1)); else
+  echo "[i] прогон не дошёл до SUMMARY с check_rc=0"; tail -n 5 "$SB_LOG"; exit 1
+fi
+if ! grep -q 'restore-drill' "$SB_LOG"; then PASS=$((PASS+1)); else
+  echo "[i] в будний день в логе есть restore-drill"; exit 1
 fi
 
 # --- (a)+(b): штатный ночной бэкап, mirror-check сходится (3==3).
@@ -264,11 +332,11 @@ fi
 printf 'repos/repo1.git/HEAD\nrepos/repo2.git/HEAD\nrepos/repo3.git/HEAD\n' >"$TMP/ls-e.txt"
 ARGV_E="$TMP/argv-e.txt"
 : >"$TMP/alert-pending"
-export STUB_FORCE_SUNDAY=1 STUB_CHECK_RC=1
+export RUN_HOUR=03 STUB_FORCE_SUNDAY=1 STUB_CHECK_RC=1
 if run_backup "$TMP/ls-e.txt" "$TMP/notify-empty.env" "$ARGV_E"; then
   echo "[e] ожидали сбой check rc=1, а бэкап завершился успешно"; exit 1
 fi
-unset STUB_FORCE_SUNDAY STUB_CHECK_RC
+unset RUN_HOUR STUB_FORCE_SUNDAY STUB_CHECK_RC
 if grep -q 'check rc=1' "$TMP/alert-pending"; then PASS=$((PASS+1)); else
   echo "[e] нет 'check rc=1' в ALERT_PENDING"; exit 1
 fi
