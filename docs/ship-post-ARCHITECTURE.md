@@ -1,5 +1,7 @@
 # Доставка через ship-post
 
+> CLOSED PROGRAM (owner 22.10): `bin/ship`, `bin/ship-post`, `bin/ship-promote` refuse every run (stderr `closed (owner 22.10)`, rc 3). Delivery is the direct git/gh route. The text below is kept for rollback only.
+
 ## 1. Цель и контракт агента
 
 `ship-post --submit` — локальная граница завершения одной задачи для Claude и Codex. Агент передаёт абсолютный linked worktree, свой атом, существующий путь ТЗ с суффиксом `#U<number>`, фактическое локальное доказательство и явный список файлов:

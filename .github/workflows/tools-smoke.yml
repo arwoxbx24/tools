@@ -18,16 +18,5 @@ jobs:
       - if: github.event_name == 'pull_request'
         run: bash bin/ship-doc-check "origin/${{ github.base_ref || 'main' }}"
       - run: bash bin/ship-doc-check-test
-      - id: ship_chain
-        if: github.event_name == 'pull_request'
-        run: |
-          if git diff --name-only "origin/${{ github.base_ref }}...HEAD" | grep -Eq '^bin/(ship|ship-post|git-sync|git-auto-lib|git-state)$|^bin/ship-test$|^bin/ship-post-test$'; then
-            echo 'changed=true' >> "$GITHUB_OUTPUT"
-          fi
-      - if: github.event_name == 'push' || steps.ship_chain.outputs.changed == 'true'
-        run: bash bin/ship-test
-      - if: github.event_name == 'push' || steps.ship_chain.outputs.changed == 'true'
-        timeout-minutes: 15
-        run: bash bin/ship-post-test
       - run: bash bin/code-channel-test
       - run: bash bin/place-files-test

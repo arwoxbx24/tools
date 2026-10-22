@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# closed (owner 22.10): kept only for rollback; delete these 3 lines to restore.
+case ${1:-} in -h|--help) echo "usage: ${0##*/} — closed (owner 22.10)"; exit 0;; esac
+echo "closed (owner 22.10)" >&2; exit 3
 set -u
 export BEADS_DIR=${BEADS_DIR:-/root/workspaces/projects/.beads}
 bin=$(cd -- "$(dirname -- "$0")" && pwd)
