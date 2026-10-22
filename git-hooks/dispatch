@@ -39,8 +39,32 @@ if [ "$name" = "pre-push" ]; then
     echo "pre-push: cannot read refs, push refused" >&2
     exit 1
   fi
+  # branch guard (dcfg-lvdzi): no branch delete without safe-delete archive tag, no history overwrite; any command spelling
+  guard=on
+  case "$2" in /tmp/*|file:///tmp/*) guard=off ;; esac
   # gitleaks on the commits each pushed ref adds; deletes (local sha $Z) are skipped
   while read -r lref lsha rref rsha; do
+    if [ "$guard" = on ]; then
+      case "$rref" in
+        refs/heads/*)
+          b=${rref#refs/heads/}
+          if [ "$lsha" = "$Z" ]; then
+            case "$b" in
+              main|master) echo "pre-push: delete of $b refused" >&2; exit 1 ;;
+            esac
+            t=$(printf %s "$b" | tr / -)
+            ok=
+            for tsha in $(git ls-remote "$2" "refs/tags/archive/$t-*" 2>/dev/null | cut -f1); do
+              [ "$tsha" = "$rsha" ] && ok=1
+            done
+            [ -n "$ok" ] || { echo "pre-push: delete of $b refused: no archive tag; use tools/bin/safe-delete branch <repo> $b" >&2; exit 1; }
+          elif [ "$rsha" != "$Z" ] && ! git merge-base --is-ancestor "$rsha" "$lsha" 2>/dev/null; then
+            echo "pre-push: non-fast-forward update of $b refused" >&2
+            exit 1
+          fi
+          ;;
+      esac
+    fi
     [ "$lsha" = "$Z" ] && continue
     if [ "$rsha" = "$Z" ]; then range="$lsha --not --remotes"; else range="$rsha..$lsha"; fi
     (cd "$(git rev-parse --show-toplevel)" && /root/.local/bin/gitleaks git --redact --no-banner --log-opts "$range") || { echo "gitleaks: push refused" >&2; exit 1; }
