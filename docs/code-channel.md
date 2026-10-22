@@ -18,7 +18,7 @@
 | id | состояние | модель / параметр |
 | --- | --- | --- |
 | `sdk` | выключен (owner 22.10: переключено на Go) | `bin/sdk-agent code` (audit: `sdk-agent read`), claude-sonnet-5-5; any failure (budget, daily cap 7 USD, error) → rc 17, вызов кончается |
-| `go` | включён (owner 22.10: «Open Code Go: усилить … выбирай лучший вариант»; требование: большой контекст без остановок, запас лимитов — bd memory `owner-go-model-requirement-2210`) | code `opencode-go/deepseek-v4.1-flash`; продолжение `opencode-go/glm-5.3-flash`; audit `opencode-go/gpt-5.6-luna`; `--model opencode-go/deepseek-v4-pro` (шаг до 510 с) |
+| `go` | включён (owner 22.10: «Open Code Go: усилить … выбирай лучший вариант»; требование: большой контекст без остановок, запас лимитов — bd memory `owner-go-model-requirement-2210`) | code `opencode-go/deepseek-v4.1-flash`; продолжение `opencode-go/glm-5.3-flash`; audit `opencode-go/glm-5.3-flash` (хранение 0 дней по opencode.ai/docs/go; GPT Luna хранит логи до 30 дней — не для кода); `--model opencode-go/deepseek-v4-pro` (шаг до 510 с) |
 | `codex` | выключен | модель профиля; `effort: high` |
 | `openrouter` | выключен; включается словом владельца | `openrouter/deepseek/deepseek-v4-flash` |
 | `bitrixgpt` | выключен | — |

@@ -4,7 +4,7 @@
   "resume_idle_limit": 3,
   "ladder": [
     {"id": "sdk", "enabled": false, "model": "claude-sonnet-5-5"},
-    {"id": "go", "enabled": true, "model": "opencode-go/deepseek-v4.1-flash", "resume_model": "opencode-go/glm-5.3-flash", "audit_model": "opencode-go/gpt-5.6-luna", "alt_models": ["opencode-go/deepseek-v4-pro"]},
+    {"id": "go", "enabled": true, "model": "opencode-go/deepseek-v4.1-flash", "resume_model": "opencode-go/glm-5.3-flash", "audit_model": "opencode-go/glm-5.3-flash", "alt_models": ["opencode-go/deepseek-v4-pro"]},
     {"id": "codex", "enabled": false, "model": "", "effort": "high"},
     {"id": "openrouter", "enabled": false, "model": "openrouter/deepseek/deepseek-v4-flash", "key": "OPENROUTER_API_KEY", "secret": "openrouter", "base": "https://openrouter.ai/api/v1"},
     {"id": "bitrixgpt", "enabled": false, "model": "bitrixgpt/bitrix/bitrixgpt-5.6-agent", "key": "VIBECODE_API_KEY", "secret": "vibecode", "base": "https://vibecode.bitrix24.tech/v1"},

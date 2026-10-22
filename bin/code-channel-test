@@ -109,7 +109,7 @@ check 20 '[[ $rc == 0 ]] && grep -Fq -- /key "$log" && grep -Fq -- "opencode" "$
 check 21 '[[ $rc == 13 && $err == *"нет usage_daily"* ]]' \
   env CURL_USAGE_DAILY=none "$root/bin/code-channel" 3 "$project" "$root/AGENTS.md"
 
-CC_CONFIG='' check 22 '[[ $rc == 0 && $out == $'"'"'go opencode-go/deepseek-v4.1-flash - audit=opencode-go/gpt-5.6-luna'"'"' ]]' \
+CC_CONFIG='' check 22 '[[ $rc == 0 && $out == $'"'"'go opencode-go/deepseek-v4.1-flash - audit=opencode-go/glm-5.3-flash'"'"' ]]' \
   "$root/bin/code-channel" --plan
 CC_CONFIG=$disabled check 23 '[[ $rc == 16 ]] && ! grep -Fq -- /models "$log" && grep -Fq -- "codex " "$log"' \
   env OPENCODE_RC=1 bash -c 'plan=$("$1" --plan) || exit $?; [[ $plan != *openrouter* ]] || exit 90; "$1" auto "$2" "$3"' _ "$root/bin/code-channel" "$project" "$root/AGENTS.md"
