@@ -5,7 +5,8 @@ PATH="$(cd -- "$(dirname -- "$0")" && pwd):$PATH"
 live="$(cd -- "$(dirname -- "$0")/.." && pwd)/config/where.json"
 tmp="/tmp/where-test-$$.json"
 err="/tmp/where-test-$$.err"
-trap 'rm -f "$tmp" "$err"' EXIT
+tmpmd="/tmp/where-test-$$.md"
+trap 'rm -f "$tmp" "$err" "$tmpmd"' EXIT
 ok=0
 
 out=$(where --help 2>/dev/null); rc=$?
@@ -14,13 +15,22 @@ if [[ $rc == 0 && $out == *'usage:'* ]]; then echo 'PASS 1'; ((ok++)); else echo
 out=$(WHERE_FILE=$live where settings 2>"$err"); rc=$?
 if [[ $rc == 0 && $out == *'/root/.claude/settings.json'* ]]; then echo 'PASS 2'; ((ok++)); else echo "FAIL 2: settings rc $rc; $(<"$err")" >&2; fi
 
-out=$(where nosuchkey 2>"$err"); rc=$?
-if [[ $rc == 1 && -s "$err" && $out == '' ]]; then echo 'PASS 3'; ((ok++)); else echo "FAIL 3: rc $rc; out: $out" >&2; fi
+out=$(where nosuchkey-zq9x7 2>"$err"); rc=$?
+if [[ $rc == 1 && -s "$err" && $out == '' && $(<"$err") == *'Next: bd memories'* ]]; then echo 'PASS 3'; ((ok++)); else echo "FAIL 3: rc $rc; out: $out" >&2; fi
 
 printf '{"fake": {"paths": ["/tmp/where-test-definitely-not-here"], "note": "fake path"}}\n' >"$tmp"
 out=$(WHERE_FILE=$tmp where --check 2>"$err"); rc=$?
 if [[ $rc == 1 && $out == *'/tmp/where-test-definitely-not-here (missing)'* ]]; then echo 'PASS 4'; ((ok++)); else echo "FAIL 4: check rc $rc; out: $out" >&2; fi
 
-if [[ $ok == 4 ]]; then echo 'PASS'; exit 0; fi
-printf '%s\n' "$ok of 4 cases passed" >&2
+printf 'alpha Bitrix ' >"$tmpmd"
+printf 'ж%.0s' $(seq 200) >>"$tmpmd"
+printf '\n' >>"$tmpmd"
+printf '{"fake": {"paths": ["%s"], "note": "fake path"}}\n' "$tmpmd" >"$tmp"
+out=$(WHERE_FILE=$tmp where bitrix 2>"$err"); rc=$?
+utf=0
+printf '%s\n' "$out" | iconv -f UTF-8 -t UTF-8 -o /dev/null 2>/dev/null || utf=1
+if [[ $rc == 0 && $out == *"$tmpmd:1: alpha Bitrix"* && $utf == 0 ]]; then echo 'PASS 5'; ((ok++)); else echo "FAIL 5: rc $rc; utf $utf; out: $out" >&2; fi
+
+if [[ $ok == 5 ]]; then echo 'PASS'; exit 0; fi
+printf '%s\n' "$ok of 5 cases passed" >&2
 exit 1
