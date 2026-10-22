@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+set -u
+case ${1:-} in -h|--help) echo "usage: spec-sweep-test"; exit 0;; esac
+# Sandbox test: spec-sweep delivers by direct git/gh route (spec:113 FR-002).
+root=$(cd -- "$(dirname -- "$0")/.." && pwd)
+tmp=$(mktemp -d /tmp/spec-sweep-test.XXXXXX) || exit 1
+trap 'rm -rf -- "$tmp"' EXIT
+mkdir -p "$tmp/bin" "$tmp/state" "$tmp/tools/logs"
+
+export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid
+export GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid
+
+remote=$tmp/remote.git
+seed=$tmp/seed
+proj=$tmp/projects
+git init -q --bare "$remote"
+git -C "$remote" symbolic-ref HEAD refs/heads/main
+git init -q "$seed"
+git -C "$seed" symbolic-ref HEAD refs/heads/main
+mkdir -p "$seed/specs/987-sandbox"
+printf 'base\n' >"$seed/README.md"
+printf '# sandbox spec\n\n- [x] done\n' >"$seed/specs/987-sandbox/spec.md"
+git -C "$seed" add -A
+git -C "$seed" commit -q -m base
+git -C "$seed" remote add origin "$remote"
+git -C "$seed" push -q -u origin main >/dev/null 2>&1
+git clone -q "$remote" "$proj"
+printf '[{"id":"T1"}]\n' >"$tmp/state/closed.json"
+
+cat >"$tmp/bin/bd" <<'EOF'
+#!/usr/bin/env bash
+set -u
+printf '%s\n' "$*" >>"$BD_LOG"
+[[ ${1:-} == -C ]] && shift 2
+cmd=${1:-}; [[ $# -gt 0 ]] && shift
+case $cmd in
+  search) printf '[{"id":"T1","status":"closed"}]\n' ;;
+  list) case " $* " in *" --status closed "*) cat "$BD_STATE/closed.json" ;; *) printf '[]\n' ;; esac ;;
+  stale) printf '[]\n' ;;
+  export) o=; while [[ $# -gt 0 ]]; do [[ $1 == -o ]] && { o=$2; shift 2; continue; }; shift; done
+          printf '{"id":"T1"}\n' >"$o" ;;
+  prune) printf '[]\n' >"$BD_STATE/closed.json" ;;
+  create) printf 'stub-1\n' ;;
+  close) : ;;
+esac
+exit 0
+EOF
+cat >"$tmp/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+set -u
+printf '%s\n' "$*" >>"$GH_LOG"
+if [[ ${1:-} == pr ]]; then
+  case ${2:-} in create) printf 'https://github.com/x/y/pull/7\n' ;; esac
+fi
+exit 0
+EOF
+chmod +x "$tmp/bin/bd" "$tmp/bin/gh"
+
+out=$(PATH="$tmp/bin:$PATH" BD_LOG="$tmp/state/bd.log" BD_STATE="$tmp/state" \
+  GH_LOG="$tmp/state/gh.log" SPEC_SWEEP_ROOT="$proj" SPEC_SWEEP_TOOLS="$tmp/tools" \
+  SPEC_SWEEP_GITDIR="$proj/.git" bash "$root/bin/spec-sweep" --apply 2>&1)
+rc=$?
+today=$(date +%F)
+branch=claude/sweep-$today
+title="[SWEEP] $today: спеки 1, документы 0, задачи 1"
+log=$tmp/tools/logs/spec-sweep.log
+
+n=0; f=0
+pass(){ n=$((n+1)); }
+bad(){ n=$((n+1)); f=$((f+1)); printf 'FAIL %s\n' "$1"; }
+
+if [[ $rc -eq 0 ]]; then pass; else bad "spec-sweep exit $rc"; fi
+if git -C "$remote" rev-parse --verify -q "refs/heads/$branch" >/dev/null; then pass; else bad "remote branch $branch"; fi
+if [[ $(git -C "$remote" log -1 --format=%s "$branch" 2>/dev/null) == "$title" ]]; then pass; else bad "removal commit subject"; fi
+if git -C "$remote" ls-tree -r --name-only "$branch" 2>/dev/null | grep -q '^specs/987-sandbox/'; then bad "spec dir not removed"; else pass; fi
+if grep -qE 'pr create --base main .*--body-file' "$tmp/state/gh.log"; then pass; else bad "gh pr create args"; fi
+if grep -qE 'pr merge 7 --squash --delete-branch' "$tmp/state/gh.log"; then pass; else bad "gh pr merge args"; fi
+if grep -q 'bin/ship' <<<"$out" || { [[ -e $log ]] && grep -q 'bin/ship' "$log"; }; then bad "bin/ship still used"; else pass; fi
+
+if [[ $f -gt 0 ]]; then
+  printf 'spec-sweep-test: FAIL %d/%d\n' $((n-f)) "$n"
+  exit 1
+fi
+printf 'spec-sweep-test: PASS %d/%d\n' "$n" "$n"

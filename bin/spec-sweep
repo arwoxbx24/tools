@@ -5,13 +5,13 @@ case ${1:-} in -h|--help) echo "usage: spec-sweep [--dry-run|--apply]  (finds or
 # старых ТЗ/планов/исследований и закрытых задач. По умолчанию --dry-run.
 bin=$(cd -- "$(dirname -- "$0")" && pwd)
 . "$bin/git-auto-lib"
-ROOT=/root/workspaces/projects
-TOOLS=/root/workspaces/tools
+ROOT=${SPEC_SWEEP_ROOT:-/root/workspaces/projects}
+TOOLS=${SPEC_SWEEP_TOOLS:-/root/workspaces/tools}
 RUN=$ROOT/.agent-work/spec-sweep
 ARCH=$ROOT/.agent-work/bd-archive
 TZREF='docs/tz/2026-10-03-094-spec-sweep.md#U1'
 LOG=$TOOLS/logs/spec-sweep.log
-PGD=$(ga_projects_gitdir)
+PGD=${SPEC_SWEEP_GITDIR:-$(ga_projects_gitdir)}
 
 apply=0
 case ${1:-} in --apply) apply=1 ;; ''|--dry-run) ;; *) echo "spec-sweep: usage: ${0##*/} [--apply]" >&2; exit 2 ;; esac
@@ -83,7 +83,8 @@ if [[ $apply == 1 ]]; then
   fi
   # Недельный атом: застой и раздел критериев приёмки.
   desc="Застой (>=14 дн без обновления): ${stale_ids[*]}$nl$nl## Acceptance Criteria"
-  atom=$(bd create "[SWEEP] $today: спеки $specs, документы $docs, задачи $bd_ok" -d "$desc" --silent 2>>"$LOG")
+  title="[SWEEP] $today: спеки $specs, документы $docs, задачи $bd_ok"
+  atom=$(bd create "$title" -d "$desc" --silent 2>>"$LOG")
   if [[ ${#spec_dirs[@]} -gt 0 || ${#doc_files[@]} -gt 0 ]]; then
     wt=$ROOT/.worktrees/claude/sweep-$today
     prod=main; read -r _ _ prod <<< "$(ga_base "$ROOT" local 2>/dev/null)" 2>/dev/null || prod=main
@@ -91,8 +92,23 @@ if [[ $apply == 1 ]]; then
     git --git-dir="$PGD" --work-tree="$ROOT" worktree add "$wt" -b "claude/sweep-$today" origin/$prod >>"$LOG" 2>&1
     for d in "${spec_dirs[@]}"; do git -C "$wt" rm -r --quiet -- "specs/$d"; done
     for rel in "${doc_files[@]}"; do git -C "$wt" rm --quiet "$rel"; done
-    out=$("$TOOLS/bin/ship" "$wt" --atom "$atom" --tz "$TZREF" 2>&1); rc=$?
-    pr=$(printf '%s\n' "$out" | grep -oE '^pr:[0-9]+$' | head -1 | tr -dc '0-9')
+    body=$(mktemp "${TMPDIR:-/tmp}/spec-sweep-body.XXXXXX")
+    printf 'spec-sweep %s\n\nspecs: %s\ndocs: %s\ntasks: %s\natom: %s\n' \
+      "$today" "$specs" "$docs" "$bd_ok" "$atom" >"$body"
+    out=""; rc=0; pr=
+    o=$(git -C "$wt" commit -q -m "$title" 2>&1) || rc=$?; out+=$o$nl
+    if [[ $rc -eq 0 ]]; then
+      o=$(git -C "$wt" push -u origin "claude/sweep-$today" 2>&1) || rc=$?; out+=$o$nl
+    fi
+    if [[ $rc -eq 0 ]]; then
+      o=$(cd "$wt" && gh pr create --base "$prod" --head "claude/sweep-$today" --title "$title" --body-file "$body" 2>&1) || rc=$?
+      out+=$o$nl
+      pr=$(printf '%s\n' "$o" | grep -oE '/pull/[0-9]+' | tail -1 | tr -dc '0-9')
+    fi
+    if [[ $rc -eq 0 && -n $pr ]]; then
+      o=$(cd "$wt" && gh pr merge "$pr" --squash --delete-branch 2>&1) || rc=$?; out+=$o$nl
+    fi
+    rm -f -- "$body"
     printf '%s\n' "$out" >>"$LOG"
     if [[ $rc -eq 0 ]]; then
       bd close "$atom" -r "spec-sweep: спек $specs, документов $docs, задач $bd_ok → PR ${pr:-?}" >>"$LOG" 2>&1
