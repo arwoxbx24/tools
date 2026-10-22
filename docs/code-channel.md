@@ -17,8 +17,8 @@
 
 | id | состояние | модель / параметр |
 | --- | --- | --- |
-| `sdk` | включён (owner 19.10: переключено на SDK-агент) | `bin/sdk-agent code` (audit: `sdk-agent read`), claude-sonnet-5-5; any failure (budget, daily cap 7 USD, error) → rc 17, вызов кончается |
-| `go` | включён (owner 18.10: «использовать опенкод гоу модель дипсиик про для агентов») | OpenCode Go — code, audit и продолжение: `opencode-go/deepseek-v4-pro` (owner 16.10) |
+| `sdk` | выключен (owner 22.10: переключено на Go) | `bin/sdk-agent code` (audit: `sdk-agent read`), claude-sonnet-5-5; any failure (budget, daily cap 7 USD, error) → rc 17, вызов кончается |
+| `go` | включён (owner 22.10: «Open Code Go: усилить … выбирай лучший вариант»; требование: большой контекст без остановок, запас лимитов — bd memory `owner-go-model-requirement-2210`) | code `opencode-go/deepseek-v4.1-flash`; продолжение `opencode-go/glm-5.3-flash`; audit `opencode-go/gpt-5.6-luna`; `--model opencode-go/deepseek-v4-pro` (шаг до 510 с) |
 | `codex` | выключен | модель профиля; `effort: high` |
 | `openrouter` | выключен; включается словом владельца | `openrouter/deepseek/deepseek-v4-flash` |
 | `bitrixgpt` | выключен | — |
