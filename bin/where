@@ -5,6 +5,7 @@ usage=$(cat <<'EOF'
 usage: where [<word>|--check|--help]
   where             one line per key: key and note
   where <word>      for every key containing word: key, paths (missing marked), note
+  where <word>      no key matches -> file:line hits of the word in manifest .md files
   where --check     print each missing path; rc 1 when any path is missing
 manifest: config/where.json, override via WHERE_FILE (env)
 EOF
@@ -46,6 +47,23 @@ case $cmd in
       done < <(jq -r --arg key "$key" '.[$key].paths[]?' "$f" 2>/dev/null)
       jq -r --arg key "$key" '.[$key].note // empty' "$f" 2>/dev/null
     done < <(jq -r 'keys_unsorted[]' "$f" 2>/dev/null)
-    (( matched )) || { echo "where: no key matches '$cmd'; keys: $(jq -r '[keys_unsorted[]] | join(" ")' "$f" 2>/dev/null)" >&2; exit 1; }
+    (( matched )) || {
+      hits=$(
+        while IFS= read -r path; do
+          [[ $path == /root/workspaces/secrets/* || $path != *.md || ! -f $path ]] && continue
+          grep -n -i -F -m 3 -- "$cmd" "$path" 2>/dev/null | while IFS= read -r l; do
+            printf '%s:%s: %s\n' "$path" "${l%%:*}" "${l#*:}"
+          done | cut -c1-240 | iconv -c -f UTF-8 -t UTF-8 || true
+        done < <(jq -r 'to_entries[] | .value.paths[]?' "$f" 2>/dev/null)
+      )
+      if [[ -n $hits ]]; then
+        printf "where: no key '%s'; registry hits:\n" "$cmd"
+        printf '%s\n' "$hits"
+        exit 0
+      fi
+      printf "where: '%s' is not in any registry or law file. Next: bd memories %s; external product -> official docs (docs/JURISDICTION.md); do not guess paths.\nkeys: %s\n" \
+        "$cmd" "$cmd" "$(jq -r '[keys_unsorted[]] | join(" ")' "$f" 2>/dev/null)" >&2
+      exit 1
+    }
     ;;
 esac
