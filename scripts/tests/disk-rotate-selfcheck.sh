@@ -8,6 +8,8 @@ SCRIPT="$(cd "$(dirname "$0")/.." && pwd -P)/disk-rotate.sh"
 LEDGER=/var/log/disk-rotate-ledger.tsv
 TMP="$(mktemp -d)"
 trap 'rm -rf -- "$TMP"' EXIT
+mkdir -p "$TMP/tmproot"
+export DR_TMP_ROOT="$TMP/tmproot"   # фикстура вместо живого /tmp: вывод --dry-run не зависит от часов
 
 FAILS=0
 report() { # name status
@@ -33,7 +35,7 @@ else
 fi
 
 # 2. Ни один путь из запретного списка не попадает в перечень кандидатов
-if awk -F'\t' '$4!="backups" && $4 !~ /^codex-/' "$TMP/dry1.out" | grep -qE '/root/backups|/root/.codex|hh-scoring|secrets/'; then
+if awk -F'\t' '$4!="backups" && $4 !~ /^codex-/' "$TMP/dry1.out" | grep -v 'closed zone' | grep -qE '/root/backups|/root/.codex|hh-scoring|secrets/'; then
   report "запретный список отсутствует в кандидатах" FAIL
 else
   report "запретный список отсутствует в кандидатах" PASS

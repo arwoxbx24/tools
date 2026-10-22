@@ -23,6 +23,7 @@ DR_JOURNAL=${DR_JOURNAL:-/var/log/disk-rotate-deletions.tsv}
 DR_USAGE_PCT=${DR_USAGE_PCT:-}
 DR_NOTIFY_CMD=${DR_NOTIFY_CMD:-}
 DR_TEST_ONLY=${DR_TEST_ONLY:-}
+# DR_USED_KB_BEFORE / DR_USED_KB_AFTER: тест-подмены занятого места (КБ), как DR_USAGE_PCT
 DR_TEST_IRREPLACEABLE_DIR=${DR_TEST_IRREPLACEABLE_DIR:-}
 DR_TEST_REPLACEABLE_DIR=${DR_TEST_REPLACEABLE_DIR:-}
 DR_JOURNAL_COPY=${DR_JOURNAL_COPY:-/root/workspaces/system/tools/scripts/data/disk-rotate-deletions.tsv}
@@ -489,7 +490,7 @@ fi
 
 # Измерение до уборки и состояние.
 pct_before=$(use_pct)
-used_before=$(used_kb)
+used_before=${DR_USED_KB_BEFORE:-$(used_kb)}
 if [ "$pct_before" -ge "$HARD_PCT" ]; then
   state=hard
 elif [ "$pct_before" -ge "$SOFT_PCT" ]; then
@@ -1075,7 +1076,7 @@ fi
 if { [ "$MODE" = run ] || [ "$MODE" = dry-run ]; } && { [ "$DR_TEST_ONLY" != 1 ] || [ -n "${DR_YC:-}" ]; }; then s3_line; fi
 
 pct_after=$(use_pct)
-used_after=$(used_kb)
+used_after=${DR_USED_KB_AFTER:-$(used_kb)}
 case "$MODE" in
   dry-run) freed_mb=$(( TOTAL_KB / 1024 )) ;;
   report)  freed_mb=0 ;;
@@ -1185,7 +1186,11 @@ cp -f "$DR_JOURNAL" "$DR_JOURNAL_COPY" 2>/dev/null || true
 
 # Сводка за прогон — только обычный прогон (один вызов на run).
 if [ "$MODE" = run ]; then
-  _summary="Уборка диска: занято ${pct_after}% (было ${pct_before}%), освобождено ${freed_mb} МБ."
+  if [ "$freed_mb" -lt 0 ]; then
+    _summary="Уборка диска: занято ${pct_after}% (было ${pct_before}%), диск вырос на $(( -freed_mb )) МБ."
+  else
+    _summary="Уборка диска: занято ${pct_after}% (было ${pct_before}%), освобождено ${freed_mb} МБ."
+  fi
   if [ "$GATE_STATUS" != open ]; then
     _summary+=" Уборка приостановлена — нет свежей копии. Нужен атом."
   fi
