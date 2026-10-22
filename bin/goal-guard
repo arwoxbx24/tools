@@ -38,11 +38,12 @@ if [ "$neg" -eq 1 ] && [ "$routes" -lt 2 ]; then
 Маршрут: <что сделал> → <итог>" '{decision:"block",reason:$r}'
   exit 0
 fi
+[ "$neg" -eq 1 ] && [ "$routes" -ge 2 ] && exit 0
 ids=$(cd /root/workspaces/projects && bd list --status in_progress --limit 0 --json | jq -r --arg s "-$sid4]" '.[]|select(.title|contains($s))|.id') || exit 0
 [ -n "$ids" ] || exit 0
 printf '%s\n' "$((10#$count + 1))" > "$file" || exit 0
 ids=${ids//$'\n'/ }
 first=${ids%% *}
 jq -nc --arg r "goal-guard: атомы сессии в работе: $ids. Закрой каждый (bd close с командой и выводом) или остановись строкой «Контрольная точка: <шаг владельца>».
-Следующая команда: bd -C /root/workspaces/projects close $first --reason-file <файл с командой и выводом>" '{decision:"block",reason:$r}' || exit 0
+Следующая команда: bd close $first --reason-file <файл с командой и выводом>" '{decision:"block",reason:$r}' || exit 0
 exit 0
