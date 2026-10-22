@@ -27,7 +27,7 @@ out=$(run abcd 'done'); rc=$?
 r=$(jq -er '.reason' <<<"$out" 2>/dev/null) || r=''
 cnt=$(<"$d/goal-guard-abcd")
 if [[ $rc == 0 && $out == \{\"decision\":\"block\"* && $r == 'goal-guard: атомы сессии в работе: U3-test1 U3-test2.'* && \
-  $r == *'Следующая команда: bd -C /root/workspaces/projects close U3-test1 --reason-file <файл с командой и выводом>'* && $cnt == 1 ]]; then
+  $r == *'Следующая команда: bd close U3-test1 --reason-file <файл с командой и выводом>'* && $r != *'bd -C'* && $cnt == 1 ]]; then
   echo 'PASS A: atom block + next-command line'; ok=$((ok+1))
 else echo "FAIL A: rc=$rc out=$out cnt=$cnt"; fi
 
@@ -38,6 +38,11 @@ if [[ $rc == 0 && $r == 'goal-guard: негативный статус без м
   $last == 'Маршрут: <что сделал> → <итог>' ]]; then
   echo 'PASS D: negative status + Маршрут template line'; ok=$((ok+1))
 else echo "FAIL D: rc=$rc out=$out last=$last"; fi
+
+out=$(run abcd 'Статус: BLOCKED — нет доступа\nМаршрут: попробовал X → отказ\nМаршрут: попробовал Y → отказ'); rc=$?
+if [[ $rc == 0 && -z $out ]]; then
+  echo 'PASS F: negative status with ≥2 routes → passthrough rc 0, empty stdout'; ok=$((ok+1))
+else echo "FAIL F: rc=$rc out=$out"; fi
 
 printf '%s\n' 8 > "$d/goal-guard-t3b0"
 out=$(run t3b0 'done'); rc=$?
@@ -52,7 +57,7 @@ if [[ $rc == 0 && -z $out ]]; then
   echo 'PASS E: stop_hook_active=true → passthrough rc 0, empty stdout'; ok=$((ok+1))
 else echo "FAIL E: rc=$rc out=$out"; fi
 
-[[ $ok == 6 ]] || { echo "FAIL: $ok/6"; exit 1; }
+[[ $ok == 7 ]] || { echo "FAIL: $ok/7"; exit 1; }
 
 tx=$d/transcript.jsonl
 printf '%s\n' 'Task ID: abc123' 'agentId: def456' >"$tx"
@@ -69,5 +74,5 @@ if [[ $rc == 0 && -z $out ]]; then
   echo 'PASS background_tasks_absent_no_block'; ok=$((ok+1))
 else echo "FAIL background_tasks_absent_no_block: rc=$rc out=$out"; fi
 
-[[ $ok == 8 ]] || { echo "FAIL: $ok/8"; exit 1; }
+[[ $ok == 9 ]] || { echo "FAIL: $ok/9"; exit 1; }
 echo 'PASS all'
