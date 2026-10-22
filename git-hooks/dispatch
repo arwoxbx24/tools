@@ -3,6 +3,7 @@
 name=$(basename "$0")
 Z=0000000000000000000000000000000000000000
 SG=/root/workspaces/tools/bin/secret-gate
+MIRROR_REPOS_DIR="/home/gitmirror/repos/"
 
 # U13: barrier only warns — never blocks commit/push. Prints a WARN to stderr
 # and appends a line to the log; a log write failure is ignored. Always exits 0.
@@ -24,6 +25,12 @@ if [ "$name" = "pre-commit" ]; then
 fi
 
 if [ "$name" = "pre-push" ]; then
+  # bare GitLab mirrors re-push GitHub history and have no work tree: skip the scan
+  is_bare=$(git rev-parse --is-bare-repository 2>/dev/null)
+  gd=$(git rev-parse --absolute-git-dir 2>/dev/null)
+  if [ "$is_bare" = "true" ]; then
+    case "$gd/" in "$MIRROR_REPOS_DIR"*) exit 0 ;; esac
+  fi
   tmp=
   if tmp=$(mktemp); then
     trap 'rm -f "$tmp"' EXIT HUP INT TERM

@@ -12,7 +12,9 @@ R="$SANDBOX/repo"
 # fake gitleaks: its body is rewritten before each push
 fake() { printf '#!/bin/sh\n%s\n' "$1" > "$SANDBOX/gitleaks"; chmod 700 "$SANDBOX/gitleaks"; }
 
-sed -e "s|/root/.local/bin/gitleaks|$SANDBOX/gitleaks|" "$TOP/git-hooks/dispatch" > "$SANDBOX/hooks/pre-push"
+mkdir -p "$SANDBOX/mirrors"
+sed -e "s|/root/.local/bin/gitleaks|$SANDBOX/gitleaks|" \
+    -e "s|^MIRROR_REPOS_DIR=.*|MIRROR_REPOS_DIR=\"$SANDBOX/mirrors/\"|" "$TOP/git-hooks/dispatch" > "$SANDBOX/hooks/pre-push"
 chmod 700 "$SANDBOX/hooks/pre-push"
 
 git init -q --bare "$REMOTE"
@@ -63,6 +65,42 @@ if [ "$c" -eq 0 ] && grep -qF "$OLD..$NEW" "$ARGS"; then
     PASS=$((PASS+1))
 else
     FAIL=$((FAIL+1)); echo "FAIL[C] code=$c"
+fi
+
+# push from inside repo dir $1 to bare dest $2 (hook gets the pushed-ref line on stdin)
+push_from() { (cd "$1" && git -c core.hooksPath="$SANDBOX/hooks" push -q "$2" "$3" >/dev/null 2>"$SANDBOX/err"); }
+
+# D: bare repo inside the mirror dir -> scan skipped, push ok, gitleaks never called
+MARK="$SANDBOX/marker"
+rm -f "$MARK"
+fake "touch \"$MARK\"; exit 1"
+git clone -q --bare "$R" "$SANDBOX/mirrors/d.git"
+git init -q --bare "$SANDBOX/dest-d.git"
+push_from "$SANDBOX/mirrors/d.git" "$SANDBOX/dest-d.git" HEAD:refs/heads/d; c=$?
+if [ "$c" -eq 0 ] && [ ! -e "$MARK" ]; then
+    PASS=$((PASS+1))
+else
+    FAIL=$((FAIL+1)); echo "FAIL[D] code=$c"
+fi
+
+# E: bare repo outside the mirror dir -> scan runs, leak refuses the push
+fake 'echo "leaks found: 1" >&2; exit 1'
+git clone -q --bare "$R" "$SANDBOX/outside.git"
+git init -q --bare "$SANDBOX/dest-e.git"
+push_from "$SANDBOX/outside.git" "$SANDBOX/dest-e.git" HEAD:refs/heads/e; c=$?
+if [ "$c" -ne 0 ] && grep -qF 'gitleaks: push refused' "$SANDBOX/err"; then
+    PASS=$((PASS+1))
+else
+    FAIL=$((FAIL+1)); echo "FAIL[E] code=$c"
+fi
+
+# F: normal work-tree repo -> scan runs, leak refuses the push
+fake 'echo "leaks found: 1" >&2; exit 1'
+push_from "$R" origin HEAD:refs/heads/f; c=$?
+if [ "$c" -ne 0 ] && grep -qF 'gitleaks: push refused' "$SANDBOX/err"; then
+    PASS=$((PASS+1))
+else
+    FAIL=$((FAIL+1)); echo "FAIL[F] code=$c"
 fi
 
 echo "PASS $PASS FAIL $FAIL"
