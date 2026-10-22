@@ -152,13 +152,37 @@ scenario_u4() {
   fi
 }
 
+scenario_u4_grew() {
+  fixture u4grew
+  rm -rf "$REPO"
+  run_rotate DR_USED_KB_BEFORE=1000000 DR_USED_KB_AFTER=1006144 >/dev/null 2>&1
+  if grep -q 'диск вырос на 6 МБ' "$NOTIFY" 2>/dev/null && ! grep -Eq -- '-[0-9]+ МБ' "$NOTIFY" 2>/dev/null; then
+    report 7 "U4: диск вырос — «вырос на 6 МБ», без минуса" PASS
+  else
+    report 7 "U4: диск вырос — «вырос на 6 МБ», без минуса" FAIL
+  fi
+}
+
+scenario_u4_freed() {
+  fixture u4freed
+  rm -rf "$REPO"
+  run_rotate DR_USED_KB_BEFORE=1006144 DR_USED_KB_AFTER=1000000 >/dev/null 2>&1
+  if grep -q 'освобождено 6 МБ' "$NOTIFY" 2>/dev/null; then
+    report 8 "U4: диск уменьшился — «освобождено 6 МБ»" PASS
+  else
+    report 8 "U4: диск уменьшился — «освобождено 6 МБ»" FAIL
+  fi
+}
+
 scenario_ae3
 scenario_ae4
 scenario_u3_static
 scenario_u3_gate
 scenario_u4
+scenario_u4_grew
+scenario_u4_freed
 
-echo "PASS $((6 - FAILS))/6"
+echo "PASS $((8 - FAILS))/8"
 [ "$FAILS" -eq 0 ] && exit 0
-echo "$FAILS/6 FAILED"
+echo "$FAILS/8 FAILED"
 exit 1
