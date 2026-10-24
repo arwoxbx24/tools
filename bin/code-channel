@@ -9,6 +9,15 @@ root=$(cd -- "$(dirname -- "$0")/.." && pwd) || exit 3
 config=${CODE_CHANNEL_CONFIG:-"$root/config/code-channel.json"}
 sdk_agent=$root/bin/sdk-agent
 if [[ -n ${CODE_CHANNEL_TEST_LOG:-} ]]; then sdk_agent=${CODE_CHANNEL_SDK_AGENT:-$sdk_agent}; fi
+# helpers must use the default node (/usr/local/bin/node), not a caller's old nvm entry
+strip_nvm_path() {
+    local IFS=: p out=()
+    for p in $1; do
+        [[ $p == /root/.nvm/versions/node/*/bin ]] || out+=("$p")
+    done
+    printf '%s' "${out[*]}"
+}
+export PATH=$(strip_nvm_path "${PATH:-}")
 jq -e '(.ladder | type == "array") and ([.ladder[].id] | length == (unique | length)) and all(.ladder[]; (.id | type == "string") and (.enabled | type == "boolean") and (.model | type == "string") and ((.resume_model? // "") | type == "string") and ((.key? // "") | type == "string") and ((.secret? // "") | type == "string") and ((.base? // "") | type == "string") and ((.effort? // "") | type == "string") and ((.audit_model? // "") | type == "string") and ((.alt_models? // []) | type == "array" and all(.[]; type == "string")))' "$config" >/dev/null 2>&1 || { fail "конфиг $config не читается"; exit 3; }
 opencfg_rel=$(jq -er '.opencode_config // ""' "$config") || exit 3
 if [[ -n $opencfg_rel ]]; then
