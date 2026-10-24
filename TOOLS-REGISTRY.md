@@ -25,6 +25,7 @@
 | `agent-errors-baseline` (bin/, dcfg-gl57f.2) | недельный замер ошибок агента против 4 целей владельца (bash_rate, denial_rate, path_errors, injected_chars); pm2-джоб `agent-errors-weekly` (пн 06:00) | `bin/agent-errors-baseline --days N --corpus DIR`; аномалии: bin/agent-errors-baseline --anomalies [--session ID] [--days N] — строка на поломку (S1 S2 R1 D1 F1) + итог (rc 0 всегда); самотест `bin/agent-errors-baseline-test` | оркестратор | штатно |
 | `tools/bin/pm2-boot` | загрузка/перезапуск процессов PM2 fail-closed (spec:025) | `pm2-boot <имя>` | Claude, Codex | штатно |
 | `tools/bin/pm2-boot-test`, `pm2-chaos`, `pm2-loop-guard`, `pm2-loop-guard-test`, `pm2-eco-lint` | тесты/страж PM2 (spec:025) | по имени | Claude, Codex | штатно |
+| `scripts/pm2/pm2-boot-guard.sh` | после загрузки: если pm2-root поднял PM2 не на Node 24 — стоп юнита и `resurrect` обёрткой `/root/bin/pm2` (dcfg-k7a4t) | root crontab `@reboot`; `--help` | Claude, Codex | штатно |
 | `tools/bin/restic` | бэкапы (spec backup-coverage) | `restic …` через скрипты `tools/scripts/` | Codex | штатно |
 | `tools/bin/share-test` | самотест share | `share-test` | Claude | штатно |
 | `tools/bin/spec-sweep-test` | sandbox test of `spec-sweep --apply` direct git/gh delivery (bare remote, bd/gh stubs, /tmp only; dcfg-qqpkp.2) | `bin/spec-sweep-test` → `spec-sweep-test: PASS N/N` | Claude, Codex | штатно |
