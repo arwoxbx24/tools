@@ -8,8 +8,8 @@ if [[ ${1:-} == --help ]]; then
   echo "Reads one hook JSON object from stdin. With a non-empty .agent_id prints nothing."
   echo "PreToolUse: at LEAD_HINT_MAX (default 4) or more own investigative calls since the"
   echo "owner message or last helper run denies the tool (LEAD_HINT_STRICT=0 disables)."
-  echo "PostToolUse: above LEAD_HINT_MAX (default 4) own investigative calls in the current"
-  echo "turn prints a hint naming 'code-channel audit'. UserPromptSubmit: prints the"
+  echo "PostToolUse: at LEAD_HINT_MAX-1 (default 3) or more counted calls since the owner"
+  echo "message or last helper run prints a hint naming 'code-channel audit'. UserPromptSubmit: prints the"
   echo "helper-share line for .transcript_path (last 2000 lines)."
   echo "Stop: blocks when the last main-session assistant text asks the owner a question."
   echo "Bad input/other events: no output. Always exits 0."
@@ -58,6 +58,7 @@ scan_calls() {
       (.input.command // "") as $cmd
       | ($cmd | split(" ")[0]) as $word
       | if ($cmd | test("code-channel|sdk-agent")) then false
+        elif ($cmd | test("^\\s*gh\\s+(pr\\s+(view|list|checks)|run\\s+(view|list))(\\s|$)")) then false
         elif ((["grep","rg","find","ls","cat","head","tail","sed","wc","gh"] | index($word)) != null) then
           (($cmd | test("(^|[^A-Za-z0-9])(git|bd|jq|code-channel|sdk-agent|safe-delete)([^A-Za-z0-9]|$)")) | not)
         else
@@ -91,6 +92,18 @@ limit_reached() {
     *) return 1 ;;
   esac
 }
+
+# Counted-call jq program and stop window shared by PreToolUse and PostToolUse.
+calls_count='
+      if (.type == "assistant" and (.isSidechain != true)) then
+        reduce (.message.content[]? | select(.type == "tool_use")) as $tool (0;
+          if $tool.name == "Bash" then
+            (if ($tool | investigative_bash) then . + 1 else . end)
+          elif ((["Read","Grep","Glob","WebFetch","WebSearch"] | index($tool.name)) != null) then
+            (if ($tool | is_doc_read) then . else . + 1 end)
+          else . end)
+      else 0 end'
+count_window='is_owner or is_helper_run or is_task_notification'
 
 case $event in
   PreToolUse)
@@ -132,6 +145,9 @@ case $event in
         if (( investigative )) && [[ $tool_cmd =~ (^|[^A-Za-z0-9])(git|bd|jq|code-channel|sdk-agent|safe-delete)([^A-Za-z0-9]|$) ]]; then
           investigative=0
         fi
+        if (( investigative )) && [[ $tool_cmd =~ ^[[:space:]]*gh[[:space:]]+(pr[[:space:]]+(view|list|checks)|run[[:space:]]+(view|list))([[:space:]]|$) ]]; then
+          investigative=0
+        fi
         ;;
     esac
     (( investigative )) || exit 0
@@ -139,16 +155,7 @@ case $event in
 
     # Scan backwards and stop at the first boundary (owner message or helper run),
     # so jq breaks early and tac dies by SIGPIPE on an 18 MB transcript.
-    count=$(scan_calls '
-      if (.type == "assistant" and (.isSidechain != true)) then
-        reduce (.message.content[]? | select(.type == "tool_use")) as $tool (0;
-          if $tool.name == "Bash" then
-            (if ($tool | investigative_bash) then . + 1 else . end)
-          elif ((["Read","Grep","Glob","WebFetch","WebSearch"] | index($tool.name)) != null) then
-            (if ($tool | is_doc_read) then . else . + 1 end)
-          else . end)
-      else 0 end
-    ' 'is_owner or is_helper_run or is_task_notification') || exit 0
+    count=$(scan_calls "$calls_count" "$count_window") || exit 0
     [[ $count =~ ^[0-9]+$ ]] || exit 0
 
     max=$(hint_max)
@@ -162,35 +169,16 @@ case $event in
   PostToolUse)
     [[ -f $transcript_path && -r $transcript_path ]] || exit 0
 
-    # Same backwards scan: stop at the last owner message or completed helper notification.
-    count=$(scan_calls '
-      if (.type == "assistant" and (.isSidechain != true)) then
-        [ .message.content[]?
-          | select(.type == "tool_use")
-          | . as $tool
-          | select(
-              ((["Grep","Glob","WebFetch","WebSearch"] | index($tool.name)) != null)
-              or ($tool.name == "Read" and (($tool | is_doc_read) | not))
-              or ($tool.name == "Bash" and ($tool | investigative_bash))
-            )
-        ] | length
-      else 0 end
-    ' 'is_owner or is_task_notification') || exit 0
+    # Same counted-call program and window as the PreToolUse deny.
+    count=$(scan_calls "$calls_count" "$count_window") || exit 0
     [[ $count =~ ^[0-9]+$ ]] || exit 0
 
     max=$(hint_max)
-    limit_reached "$count" "$max" gt || exit 0
+    (( count >= 3 )) || exit 0
+    next=$((max + 1))
 
-    channel=${CODE_CHANNEL:-/root/workspaces/tools/bin/code-channel}
-    if plan_out=$("$channel" --plan 2>/dev/null); then
-      plan=$(printf '%s\n' "$plan_out" | head -n1)
-      [[ -n $plan ]] || plan=unknown
-    else
-      plan=unknown
-    fi
-
-    jq -cn --arg count "$count" --arg max "$max" --arg plan "$plan" \
-      '{hookSpecificOutput:{hookEventName:"PostToolUse",additionalContext:("lead-hint: " + $count + " own investigative calls this turn (limit " + $max + "). Route the rest to a helper: write a TZ file, run /root/workspaces/tools/bin/code-channel audit <project> <tz.md> in the background; active channel: " + $plan + ".")}}' \
+    jq -cn --arg count "$count" --arg max "$max" --arg next "$next" \
+      '{hookSpecificOutput:{hookEventName:"PostToolUse",additionalContext:("lead-hint: " + $count + " of " + $max + " counted calls used since the owner message or last helper run; call " + $next + " will be denied — start the helper (code-channel audit|auto) now.")}}' \
       2>/dev/null || exit 0
     ;;
 

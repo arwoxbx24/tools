@@ -5,7 +5,7 @@ dir=$(cd -- "$(dirname -- "$0")" && pwd)
 d=$(mktemp -d /tmp/lead-hint-test.XXXXXX)
 trap 'rm -rf "$d"' EXIT
 ok=0
-total=36
+total=40
 crdir=/tmp/lead-hint-stop
 srun="lh-$$-$RANDOM"
 clean_sid() { rm -f "$crdir/$1"; }
@@ -71,8 +71,7 @@ tx1=$d/tx1.jsonl
 { mk_user; for _ in $(seq 9); do mk_read; done; } >"$tx1"
 out=$(jq -cn --arg tp "$tx1" '{hook_event_name:"PostToolUse",transcript_path:$tp}' | run_hook); rc=$?
 ctx=$(ctx_of "$out"); ev=$(event_of "$out")
-if [[ $rc == 0 && $ev == PostToolUse && $ctx == 'lead-hint: 9 own investigative calls this turn (limit 4).'* && \
-  $ctx == *'code-channel audit'* && $ctx == *'active channel: stub-channel - audit=stub.'* ]]; then
+if [[ $rc == 0 && $ev == PostToolUse && $ctx == 'lead-hint: 9 of 4 counted calls used since the owner message or last helper run; call 5 will be denied — start the helper (code-channel audit|auto) now.' ]]; then
   echo 'PASS 1: PostToolUse 9 Reads -> hint'; ok=$((ok+1))
 else
   echo "FAIL 1: rc=$rc out=$out"
@@ -88,8 +87,9 @@ fi
 tx3=$d/tx3.jsonl
 { mk_user; for _ in $(seq 3); do mk_read; done; } >"$tx3"
 out=$(jq -cn --arg tp "$tx3" '{hook_event_name:"PostToolUse",transcript_path:$tp}' | run_hook); rc=$?
-if [[ $rc == 0 && -z $out ]]; then
-  echo 'PASS 3: PostToolUse 3 Reads -> empty'; ok=$((ok+1))
+ctx=$(ctx_of "$out"); ev=$(event_of "$out")
+if [[ $rc == 0 && $ev == PostToolUse && $ctx == 'lead-hint: 3 of 4 counted calls used since the owner message or last helper run; call 5 will be denied — start the helper (code-channel audit|auto) now.' ]]; then
+  echo 'PASS 3: PostToolUse 3 Reads -> hint 3 of 4'; ok=$((ok+1))
 else
   echo "FAIL 3: rc=$rc out=$out"
 fi
@@ -122,7 +122,7 @@ tx7=$d/tx7.jsonl
 { mk_attach; for _ in $(seq 9); do mk_read; done; mk_notice; } >"$tx7"
 out=$(jq -cn --arg tp "$tx7" '{hook_event_name:"PostToolUse",transcript_path:$tp}' | run_hook); rc=$?
 ctx=$(ctx_of "$out"); ev=$(event_of "$out")
-if [[ $rc == 0 && $ev == PostToolUse && $ctx == 'lead-hint: 9 own investigative calls this turn (limit 4).'* ]]; then
+if [[ $rc == 0 && $ev == PostToolUse && $ctx == 'lead-hint: 9 of 4 counted calls used since the owner message or last helper run; call 5 will be denied — start the helper (code-channel audit|auto) now.' ]]; then
   echo 'PASS 7: attachment owner + 9 Reads -> hint'; ok=$((ok+1))
 else
   echo "FAIL 7: rc=$rc out=$out"
@@ -375,8 +375,8 @@ else
 fi
 
 tx32=$d/tx32.jsonl
-{ mk_user; for _ in $(seq 4); do mk_bash 'gh pr view 1'; done; } >"$tx32"
-out=$(mk_pre "$tx32" Bash '{"command":"gh pr view 1"}' | run_hook); rc=$?
+{ mk_user; for _ in $(seq 4); do mk_bash 'gh pr merge 1 --merge'; done; } >"$tx32"
+out=$(mk_pre "$tx32" Bash '{"command":"gh pr merge 1 --merge"}' | run_hook); rc=$?
 dec=$(jq -r '.hookSpecificOutput.permissionDecision // empty' <<<"$out" 2>/dev/null)
 if [[ $rc == 0 && $dec == deny ]]; then
   echo 'PASS 32: Bash gh counted -> deny'; ok=$((ok+1))
@@ -421,6 +421,44 @@ if [[ $rc == 0 && $dec == deny ]]; then
   echo 'PASS 36: notification text in assistant message does not reset -> deny'; ok=$((ok+1))
 else
   echo "FAIL 36: rc=$rc out=$out"
+fi
+
+tx37=$d/tx37.jsonl
+{ mk_user; for _ in $(seq 4); do mk_read; done; } >"$tx37"
+out=$(mk_pre "$tx37" Bash '{"command":"gh pr view 386 --json state"}' | run_hook); rc=$?
+if [[ $rc == 0 && -z $out ]]; then
+  echo 'PASS 37: read-only gh pr view exempt -> empty'; ok=$((ok+1))
+else
+  echo "FAIL 37: rc=$rc out=$out"
+fi
+
+tx38=$d/tx38.jsonl
+{ mk_user; for _ in $(seq 4); do mk_read; done; } >"$tx38"
+out=$(mk_pre "$tx38" Bash '{"command":"gh pr merge 1 --merge"}' | run_hook); rc=$?
+dec=$(jq -r '.hookSpecificOutput.permissionDecision // empty' <<<"$out" 2>/dev/null)
+if [[ $rc == 0 && $dec == deny ]]; then
+  echo 'PASS 38: counted gh pr merge after 4 -> deny'; ok=$((ok+1))
+else
+  echo "FAIL 38: rc=$rc out=$out"
+fi
+
+tx39=$d/tx39.jsonl
+{ mk_user; for _ in $(seq 3); do mk_bash 'rg foo'; done; } >"$tx39"
+out=$(jq -cn --arg tp "$tx39" '{hook_event_name:"PostToolUse",transcript_path:$tp}' | run_hook); rc=$?
+ctx=$(ctx_of "$out"); ev=$(event_of "$out")
+if [[ $rc == 0 && $ev == PostToolUse && $ctx == *"3 of 4"* ]]; then
+  echo 'PASS 39: PostToolUse 3 counted -> hint 3 of 4'; ok=$((ok+1))
+else
+  echo "FAIL 39: rc=$rc out=$out"
+fi
+
+tx40=$d/tx40.jsonl
+{ mk_user; for _ in $(seq 2); do mk_read; done; } >"$tx40"
+out=$(jq -cn --arg tp "$tx40" '{hook_event_name:"PostToolUse",transcript_path:$tp}' | run_hook); rc=$?
+if [[ $rc == 0 && -z $out ]]; then
+  echo 'PASS 40: PostToolUse 2 counted -> empty'; ok=$((ok+1))
+else
+  echo "FAIL 40: rc=$rc out=$out"
 fi
 
 if [[ $ok == $total ]]; then
