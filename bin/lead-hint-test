@@ -5,7 +5,7 @@ dir=$(cd -- "$(dirname -- "$0")" && pwd)
 d=$(mktemp -d /tmp/lead-hint-test.XXXXXX)
 trap 'rm -rf "$d"' EXIT
 ok=0
-total=74
+total=76
 crdir=/tmp/lead-hint-stop
 srun="lh-$$-$RANDOM"
 clean_sid() { rm -f "$crdir/$1"; }
@@ -36,6 +36,10 @@ mk_user() {
 }
 mk_attach() {
   jq -cn '{type:"attachment",attachment:{humanTurn:true,prompt:"owner message",origin:{kind:"human"}}}'
+}
+mk_goal_cont() {
+  jq -cn '{type:"attachment",attachment:{type:"goal_status",met:false,condition:"goal condition"}}'
+  jq -cn '{type:"user",isMeta:true,message:{role:"user",content:"Stop hook feedback:\n[goal condition] keep going"}}'
 }
 mk_notice() {
   jq -cn '{type:"user",origin:{kind:"task-notification"},message:{content:"task finished"}}'
@@ -772,6 +776,25 @@ if [[ $rc == 0 && $dec == deny ]]; then
   echo 'PASS 74: t_count_json_read Read a.json counted -> deny'; ok=$((ok+1))
 else
   echo "FAIL 74: json read not counted rc=$rc out=$out"
+fi
+
+tx75=$d/tx75.jsonl
+{ mk_user; for _ in $(seq 8); do mk_read; done; mk_goal_cont; } >"$tx75"
+out=$(mk_pre "$tx75" Read '{"file_path":"/tmp/x"}' | run_hook); rc=$?
+if [[ $rc == 0 && -z $out ]]; then
+  echo 'PASS 75: goal continuation resets count -> empty'; ok=$((ok+1))
+else
+  echo "FAIL 75: rc=$rc out=$out"
+fi
+
+tx76=$d/tx76.jsonl
+{ mk_user; mk_goal_cont; for _ in $(seq 8); do mk_read; done; } >"$tx76"
+out=$(mk_pre "$tx76" Read '{"file_path":"/tmp/x"}' | run_hook); rc=$?
+dec=$(jq -r '.hookSpecificOutput.permissionDecision // empty' <<<"$out" 2>/dev/null)
+if [[ $rc == 0 && $dec == deny ]]; then
+  echo 'PASS 76: 9 counted within one goal turn -> deny'; ok=$((ok+1))
+else
+  echo "FAIL 76: rc=$rc out=$out"
 fi
 
 if [[ $ok == $total ]]; then
