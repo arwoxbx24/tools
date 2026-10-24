@@ -800,11 +800,9 @@ module.exports = {
       name: 'margin-calc',
       time: true,
       merge_logs: true,
-      script: '/usr/bin/bash',
-      args: [
-        '-c',
-        'npx vite --host 0.0.0.0 --port 3333'
-      ],
+      script: '/root/workspaces/projects/arwox-b24-apps/margin-calc/node_modules/vite/bin/vite.js',
+      interpreter: '/root/.nvm/versions/node/v24.22.1/bin/node',
+      args: ['--host', '0.0.0.0', '--port', '3333'],
       cwd: '/root/workspaces/projects/arwox-b24-apps/margin-calc',
       exec_mode: 'fork_mode',
       instances: 1,
