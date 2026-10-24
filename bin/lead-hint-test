@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+set -u
+
+dir=$(cd -- "$(dirname -- "$0")" && pwd)
+d=$(mktemp -d /tmp/lead-hint-test.XXXXXX)
+trap 'rm -rf "$d"' EXIT
+ok=0
+total=6
+
+cat > "$d/code-channel" <<'STUB'
+#!/usr/bin/env bash
+[[ ${1:-} == --plan ]] || exit 1
+echo 'stub-channel - audit=stub'
+echo 'second line ignored'
+STUB
+chmod 755 "$d/code-channel"
+
+cat > "$d/helper-share" <<'STUB'
+#!/usr/bin/env bash
+[[ ${1:-} == --session && -n ${2:-} ]] || exit 1
+echo 'helper-share: 50% helpers=1 lead=1'
+STUB
+chmod 755 "$d/helper-share"
+
+mk_read() {
+  jq -cn '{type:"assistant",isSidechain:false,message:{content:[{type:"tool_use",name:"Read",input:{file_path:"/tmp/x"}}]}}'
+}
+mk_user() {
+  jq -cn '{type:"user",message:{content:"owner message"}}'
+}
+run_hook() {
+  CODE_CHANNEL="$d/code-channel" HELPER_SHARE="$d/helper-share" "$dir/lead-hint"
+}
+ctx_of() {
+  jq -r '.hookSpecificOutput.additionalContext // empty' <<<"$1" 2>/dev/null
+}
+event_of() {
+  jq -r '.hookSpecificOutput.hookEventName // empty' <<<"$1" 2>/dev/null
+}
+
+tx1=$d/tx1.jsonl
+{ mk_user; for _ in $(seq 9); do mk_read; done; } >"$tx1"
+out=$(jq -cn --arg tp "$tx1" '{hook_event_name:"PostToolUse",transcript_path:$tp}' | run_hook); rc=$?
+ctx=$(ctx_of "$out"); ev=$(event_of "$out")
+if [[ $rc == 0 && $ev == PostToolUse && $ctx == 'lead-hint: 9 own investigative calls this turn (limit 8).'* && \
+  $ctx == *'code-channel audit'* && $ctx == *'active channel: stub-channel - audit=stub.'* ]]; then
+  echo 'PASS 1: PostToolUse 9 Reads -> hint'; ok=$((ok+1))
+else
+  echo "FAIL 1: rc=$rc out=$out"
+fi
+
+out=$(jq -cn --arg tp "$tx1" '{hook_event_name:"PostToolUse",transcript_path:$tp,agent_id:"x"}' | run_hook); rc=$?
+if [[ $rc == 0 && -z $out ]]; then
+  echo 'PASS 2: agent_id present -> empty'; ok=$((ok+1))
+else
+  echo "FAIL 2: rc=$rc out=$out"
+fi
+
+tx3=$d/tx3.jsonl
+{ mk_user; for _ in $(seq 3); do mk_read; done; } >"$tx3"
+out=$(jq -cn --arg tp "$tx3" '{hook_event_name:"PostToolUse",transcript_path:$tp}' | run_hook); rc=$?
+if [[ $rc == 0 && -z $out ]]; then
+  echo 'PASS 3: PostToolUse 3 Reads -> empty'; ok=$((ok+1))
+else
+  echo "FAIL 3: rc=$rc out=$out"
+fi
+
+tx4=$d/tx4.jsonl
+{ for _ in $(seq 8); do mk_read; done; mk_user; mk_read; mk_read; } >"$tx4"
+out=$(jq -cn --arg tp "$tx4" '{hook_event_name:"PostToolUse",transcript_path:$tp}' | run_hook); rc=$?
+if [[ $rc == 0 && -z $out ]]; then
+  echo 'PASS 4: old-turn Reads not counted -> empty'; ok=$((ok+1))
+else
+  echo "FAIL 4: rc=$rc out=$out"
+fi
+
+out=$(jq -cn --arg tp "$tx1" '{hook_event_name:"UserPromptSubmit",transcript_path:$tp}' | run_hook); rc=$?
+ctx=$(ctx_of "$out"); ev=$(event_of "$out")
+if [[ $rc == 0 && $ev == UserPromptSubmit && $ctx == 'helper-share: 50% helpers=1 lead=1' ]]; then
+  echo 'PASS 5: UserPromptSubmit -> helper-share line'; ok=$((ok+1))
+else
+  echo "FAIL 5: rc=$rc out=$out"
+fi
+
+help_out=$("$dir/lead-hint" --help); help_rc=$?
+if [[ $help_rc == 0 && $help_out == usage:* ]]; then
+  echo 'PASS 6: --help rc 0'; ok=$((ok+1))
+else
+  echo "FAIL 6: rc=$help_rc out=$help_out"
+fi
+
+if [[ $ok == $total ]]; then
+  echo "lead-hint-test: PASS $ok/$total"
+  exit 0
+fi
+echo "lead-hint-test: FAIL $ok/$total"
+exit 1

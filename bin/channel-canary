@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+set -u
+
+usage() {
+  printf '%s\n' \
+    'usage: channel-canary [<project>]' \
+    'confirms the active code channel: read-only canary TZ through `code-channel audit`, at most 2 runs'
+}
+
+case ${1:-} in
+  -h|--help) usage; exit 0 ;;
+esac
+if [[ $# -gt 1 || ${1:-} == -* ]]; then usage >&2; exit 2; fi
+
+project=${1:-/root/workspaces/tools}
+cc=${CODE_CHANNEL:-/root/workspaces/tools/bin/code-channel}
+
+tmpdir=$(mktemp -d /tmp/channel-canary.XXXXXX) || exit 1
+tz=$tmpdir/canary.md
+printf '%s\n' 'Read-only canary. Do not read or change any file. Reply with exactly the line: CANARY-OK' > "$tz"
+
+plan=$("$cc" --plan 2>/dev/null | head -n1)
+[[ -n $plan ]] || plan='-'
+
+R=0
+run() { # outfile
+  "$cc" audit "$project" "$tz" > "$1" 2>&1
+  R=$?
+  [[ $R == 0 ]] && grep -q 'CANARY-OK' "$1"
+}
+
+run "$tmpdir/run1.out"; ok1=$?; r1=$R
+if [[ $ok1 == 0 ]]; then
+  printf 'channel-canary: up (%s)\n' "$plan"
+  exit 0
+fi
+
+run "$tmpdir/run2.out"; ok2=$?; r2=$R
+if [[ $ok2 == 0 ]]; then
+  printf 'channel-canary: up after retry (%s)\n' "$plan"
+  exit 0
+fi
+
+printf 'channel-canary: down (%s) evidence: %s %s\n' "$plan" "$tmpdir/run1.out" "$tmpdir/run2.out"
+printf 'channel-canary: rc run1=%s run2=%s\n' "$r1" "$r2"
+exit 1

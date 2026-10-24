@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+set -u
+
+dir=$(cd -- "$(dirname -- "$0")" && pwd)
+d=$(mktemp -d "${TMPDIR:-/tmp}/helper-share-test.XXXXXX") || exit 1
+trap 'rm -rf "$d"' EXIT
+ok=0
+total=0
+
+check() { # name expected actual
+  total=$((total + 1))
+  if [[ $2 == "$3" ]]; then
+    echo "PASS $1"
+    ok=$((ok + 1))
+  else
+    echo "FAIL $1: expected [$2] got [$3]"
+  fi
+}
+
+bash -n "$dir/helper-share" && check 'bash -n' ok ok || check 'bash -n' ok fail
+
+cat > "$d/base.jsonl" <<'EOF'
+{"type":"assistant","isSidechain":false,"message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"code-channel auto --atom u3"}},{"type":"tool_use","name":"Bash","input":{"command":"bin/code-channel auto u3"}},{"type":"tool_use","name":"Bash","input":{"command":"/root/workspaces/tools/bin/code-channel auto u3"}},{"type":"tool_use","name":"Read","input":{"file_path":"docs/notes.md"}}]}}
+EOF
+
+check 'T1 helpers 3 lead 1 -> 75%' \
+  'helper-share: 75% helpers=3 lead=1' \
+  "$("$dir/helper-share" --session "$d/base.jsonl")"
+
+cp "$d/base.jsonl" "$d/sidechain.jsonl"
+printf '%s\n' '{"type":"assistant","isSidechain":true,"message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"docs/other.md"}}]}}' \
+  >> "$d/sidechain.jsonl"
+check 'T2 sidechain Read excluded -> 75%' \
+  'helper-share: 75% helpers=3 lead=1' \
+  "$("$dir/helper-share" --session "$d/sidechain.jsonl")"
+
+: > "$d/empty.jsonl"
+check 'T3 empty -> n/a' \
+  'helper-share: n/a helpers=0 lead=0' \
+  "$("$dir/helper-share" --session "$d/empty.jsonl")"
+
+help_out=$("$dir/helper-share" --help); help_rc=$?
+check 'T4 --help rc 0' '0' "$help_rc"
+case $help_out in
+  *usage*) check 'T4 --help mentions usage' yes yes ;;
+  *) check 'T4 --help mentions usage' yes no ;;
+esac
+
+mkdir -p "$d/projects/a" "$d/projects/b"
+cp "$d/base.jsonl" "$d/projects/a/one.jsonl"
+cp "$d/base.jsonl" "$d/projects/b/two.jsonl"
+check 'T5 --days aggregates files -> 75%' \
+  'helper-share: 75% helpers=6 lead=2' \
+  "$(HELPER_SHARE_DIR="$d/projects" "$dir/helper-share" --days 1)"
+
+"$dir/helper-share" --bogus >/dev/null 2>&1; bad_rc=$?
+check 'T6 unknown arg rc 2' '2' "$bad_rc"
+
+if [[ $ok == $total ]]; then
+  echo "helper-share-test: PASS $ok/$total"
+else
+  echo "helper-share-test: FAIL $ok/$total"
+  exit 1
+fi
