@@ -6,9 +6,9 @@ if [[ ${1:-} == --help ]]; then
   echo "usage: bin/lead-hint [--help]"
   echo "PreToolUse/PostToolUse/UserPromptSubmit/Stop hook for the lead Claude Code session only."
   echo "Reads one hook JSON object from stdin. With a non-empty .agent_id prints nothing."
-  echo "PreToolUse: at LEAD_HINT_MAX (default 4) or more own investigative calls since the"
+  echo "PreToolUse: at LEAD_HINT_MAX (default 8) or more own investigative calls since the"
   echo "owner message or last helper run denies the tool (LEAD_HINT_STRICT=0 disables)."
-  echo "PostToolUse: at LEAD_HINT_MAX-1 (default 3) or more counted calls since the owner"
+  echo "PostToolUse: at LEAD_HINT_MAX-1 (default 7) or more counted calls since the owner"
   echo "message or last helper run prints a hint naming 'code-channel audit'. UserPromptSubmit: prints the"
   echo "helper-share line for .transcript_path (last 2000 lines)."
   echo "Stop: blocks when the last main-session assistant text asks the owner a question."
@@ -87,10 +87,10 @@ scan_calls() {
   ' 2>/dev/null
 }
 
-# Validated LEAD_HINT_MAX (default 4).
+# Validated LEAD_HINT_MAX (default 8).
 hint_max() {
-  local max=${LEAD_HINT_MAX:-4}
-  [[ $max =~ ^[0-9]+$ ]] || max=4
+  local max=${LEAD_HINT_MAX:-8}
+  [[ $max =~ ^[0-9]+$ ]] || max=8
   printf '%s\n' "$max"
 }
 
@@ -114,6 +114,9 @@ calls_count='
           else . end)
       else 0 end'
 count_window='is_owner or is_helper_run or is_task_notification'
+
+# Helper launch: first word after optional env assignments and shell prefixes.
+helper_re='^[[:space:]]*(([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*|command|builtin|exec|env|nohup)[[:space:]]+)*(code-channel|sdk-agent|[^[:space:]=]*/bin/(code-channel|sdk-agent))([[:space:]]|$)'
 
 case $event in
   PreToolUse)
@@ -147,6 +150,8 @@ case $event in
         ;;
       Grep|Glob|WebFetch|WebSearch) investigative=1 ;;
       Bash)
+        # A helper launch is allowed and never counted, even over the limit.
+        [[ $tool_cmd =~ $helper_re ]] && exit 0
         read -ra cmd_words <<<"$tool_cmd"
         wi=0
         while (( wi < ${#cmd_words[@]} )); do
@@ -196,9 +201,11 @@ case $event in
 
     max=$(hint_max)
     (( count >= max - 1 )) || exit 0
+    shown=$count
+    (( shown > max )) && shown=$max
     next=$((max + 1))
 
-    jq -cn --arg count "$count" --arg max "$max" --arg next "$next" \
+    jq -cn --arg count "$shown" --arg max "$max" --arg next "$next" \
       '{hookSpecificOutput:{hookEventName:"PostToolUse",additionalContext:("lead-hint: " + $count + " of " + $max + " counted calls used since the owner message or last helper run; call " + $next + " will be denied — start the helper (code-channel audit|auto) now.")}}' \
       2>/dev/null || exit 0
     ;;
