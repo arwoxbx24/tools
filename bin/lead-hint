@@ -27,14 +27,9 @@ transcript_path=$(jq -r '.transcript_path // empty' <<<"$payload" 2>/dev/null) |
 case $event in
   PostToolUse)
     [[ -f $transcript_path && -r $transcript_path ]] || exit 0
-    count=$(jq -R 'fromjson? // empty' "$transcript_path" 2>/dev/null | jq -s '
-      [ .[] ] as $lines
-      | ([ $lines | to_entries[]
-           | select(.value.type == "user" and ((.value.message.content | type) == "string"))
-           | .key ] | last // -1) as $owner
-      | [ $lines[($owner + 1):][]
-          | select(.type == "assistant" and (.isSidechain != true))
-          | .message.content[]?
+    count=$(jq -R -n '
+      def inv_items:
+        [ .message.content[]?
           | select(.type == "tool_use")
           | . as $tool
           | select(
@@ -45,8 +40,21 @@ case $event in
                       | (["grep","rg","find","ls","cat","head","tail","sed","wc"] | index($word)) != null))
               )
             )
-        ] | length
-    ' 2>/dev/null) || exit 0
+        ];
+      def is_owner:
+        (.type == "user"
+         and ((.message.content | type) == "string")
+         and (((.origin.kind) // "human") == "human"))
+        or (.type == "attachment" and .attachment.humanTurn == true);
+      reduce inputs as $line ({count: 0};
+        (try ($line | fromjson) catch null) as $value
+        | if ($value | type) != "object" then .
+          elif ($value | is_owner) then {count: 0}
+          elif ($value.type == "assistant" and ($value.isSidechain != true))
+            then {count: (.count + ($value | inv_items | length))}
+          else . end)
+      | .count
+    ' "$transcript_path" 2>/dev/null) || exit 0
     [[ $count =~ ^[0-9]+$ ]] || exit 0
 
     max=${LEAD_HINT_MAX:-8}
