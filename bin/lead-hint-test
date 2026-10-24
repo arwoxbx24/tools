@@ -5,7 +5,10 @@ dir=$(cd -- "$(dirname -- "$0")" && pwd)
 d=$(mktemp -d /tmp/lead-hint-test.XXXXXX)
 trap 'rm -rf "$d"' EXIT
 ok=0
-total=7
+total=21
+crdir=/tmp/lead-hint-stop
+srun="lh-$$-$RANDOM"
+clean_sid() { rm -f "$crdir/$1"; }
 
 cat > "$d/code-channel" <<'STUB'
 #!/usr/bin/env bash
@@ -33,6 +36,20 @@ mk_attach() {
 }
 mk_notice() {
   jq -cn '{type:"user",origin:{kind:"task-notification"},message:{content:"task finished"}}'
+}
+mk_bash() {
+  jq -cn --arg c "$1" '{type:"assistant",isSidechain:false,message:{content:[{type:"tool_use",name:"Bash",input:{command:$c}}]}}'
+}
+mk_pre() {
+  jq -cn --arg tp "$1" --arg name "$2" --argjson input "$3" \
+    '{hook_event_name:"PreToolUse",transcript_path:$tp,tool_name:$name,tool_input:$input}'
+}
+mk_text() {
+  jq -cn --arg t "$1" '{type:"assistant",isSidechain:false,message:{content:[{type:"text",text:$t}]}}'
+}
+mk_stop() {
+  jq -cn --arg tp "$1" --arg sid "${2:-}" \
+    '{hook_event_name:"Stop",transcript_path:$tp} + (if $sid == "" then {} else {session_id:$sid} end)'
 }
 run_hook() {
   CODE_CHANNEL="$d/code-channel" HELPER_SHARE="$d/helper-share" "$dir/lead-hint"
@@ -103,6 +120,159 @@ if [[ $rc == 0 && $ev == PostToolUse && $ctx == 'lead-hint: 9 own investigative 
   echo 'PASS 7: attachment owner + 9 Reads -> hint'; ok=$((ok+1))
 else
   echo "FAIL 7: rc=$rc out=$out"
+fi
+
+reason_deny='lead-strict: 9 own investigative calls since the owner message or last helper run (limit 8). Write a TZ file and run /root/workspaces/tools/bin/code-channel audit|auto <project> <tz.md> in the background; after the helper run you may check its result.'
+out=$(mk_pre "$tx1" Read '{"file_path":"/tmp/x"}' | run_hook); rc=$?
+dec=$(jq -r '.hookSpecificOutput.permissionDecision // empty' <<<"$out" 2>/dev/null)
+ev=$(event_of "$out")
+reason=$(jq -r '.hookSpecificOutput.permissionDecisionReason // empty' <<<"$out" 2>/dev/null)
+if [[ $rc == 0 && $ev == PreToolUse && $dec == deny && $reason == "$reason_deny" ]]; then
+  echo 'PASS 8: PreToolUse 9 Reads -> deny'; ok=$((ok+1))
+else
+  echo "FAIL 8: rc=$rc out=$out"
+fi
+
+tx9=$d/tx9.jsonl
+{ mk_user; for _ in $(seq 9); do mk_read; done; mk_bash 'bin/code-channel audit proj tz.md'; mk_read; } >"$tx9"
+out=$(mk_pre "$tx9" Read '{"file_path":"/tmp/x"}' | run_hook); rc=$?
+if [[ $rc == 0 && -z $out ]]; then
+  echo 'PASS 9: helper run resets count -> empty'; ok=$((ok+1))
+else
+  echo "FAIL 9: rc=$rc out=$out"
+fi
+
+out=$(mk_pre "$tx1" Read '{"file_path":"/tmp/x"}' | jq -c '.agent_id="x"' | run_hook); rc=$?
+if [[ $rc == 0 && -z $out ]]; then
+  echo 'PASS 10: PreToolUse agent_id -> empty'; ok=$((ok+1))
+else
+  echo "FAIL 10: rc=$rc out=$out"
+fi
+
+out=$(mk_pre "$tx1" Read '{"file_path":"/tmp/x"}' | CODE_CHANNEL="$d/code-channel" HELPER_SHARE="$d/helper-share" LEAD_HINT_STRICT=0 "$dir/lead-hint"); rc=$?
+if [[ $rc == 0 && -z $out ]]; then
+  echo 'PASS 11: LEAD_HINT_STRICT=0 -> empty'; ok=$((ok+1))
+else
+  echo "FAIL 11: rc=$rc out=$out"
+fi
+
+out=$(mk_pre "$tx1" Bash '{"command":"git status"}' | run_hook); rc=$?
+if [[ $rc == 0 && -z $out ]]; then
+  echo 'PASS 12: PreToolUse Bash git status -> empty'; ok=$((ok+1))
+else
+  echo "FAIL 12: rc=$rc out=$out"
+fi
+
+tx13=$d/tx13.jsonl
+{ mk_user; mk_text 'Ответьте одним словом: Закрывай / Стоп'; } >"$tx13"
+reason_stop='lead-strict: the owner is not a developer and gave a standing order: no questions, no choices, no delegation to the owner (24.10). Make the decision yourself, record a one-line ADR in bd, do the step (bd/git/gh/safe-delete are your own sanctioned steps, never a reason to stop) and continue to the goal. Only a physical step (login, key) may be handed to the owner.'
+sid13="$srun-13"; clean_sid "$sid13"
+out=$(mk_stop "$tx13" "$sid13" | run_hook); rc=$?
+dec=$(jq -r '.decision // empty' <<<"$out" 2>/dev/null)
+reason=$(jq -r '.reason // empty' <<<"$out" 2>/dev/null)
+if [[ $rc == 0 && $dec == block && $reason == "$reason_stop" ]]; then
+  echo 'PASS 13: Stop owner question -> block'; ok=$((ok+1))
+else
+  echo "FAIL 13: rc=$rc out=$out"
+fi
+
+sid14="$srun-14"; clean_sid "$sid14"
+out=$(mk_stop "$tx13" "$sid14" | jq -c '.stop_hook_active=true' | run_hook); rc=$?
+dec=$(jq -r '.decision // empty' <<<"$out" 2>/dev/null)
+if [[ $rc == 0 && $dec == block ]]; then
+  echo 'PASS 14: Stop stop_hook_active question -> block'; ok=$((ok+1))
+else
+  echo "FAIL 14: rc=$rc out=$out"
+fi
+
+tx15=$d/tx15.jsonl
+{ mk_user; mk_text 'DONE: PR 5 MERGED'; } >"$tx15"
+sid15="$srun-15"; clean_sid "$sid15"
+out=$(mk_stop "$tx15" "$sid15" | run_hook); rc=$?
+if [[ $rc == 0 && -z $out ]]; then
+  echo 'PASS 15: Stop DONE text -> empty'; ok=$((ok+1))
+else
+  echo "FAIL 15: rc=$rc out=$out"
+fi
+
+sid16="$srun-16"; clean_sid "$sid16"
+out=$(mk_stop "$tx13" "$sid16" | jq -c '.agent_id="x"' | run_hook); rc=$?
+if [[ $rc == 0 && -z $out ]]; then
+  echo 'PASS 16: Stop agent_id -> empty'; ok=$((ok+1))
+else
+  echo "FAIL 16: rc=$rc out=$out"
+fi
+
+sid17="$srun-17"; clean_sid "$sid17"
+blocks=0
+for _ in 1 2 3; do
+  out=$(mk_stop "$tx13" "$sid17" | jq -c '.stop_hook_active=true' | run_hook)
+  dec=$(jq -r '.decision // empty' <<<"$out" 2>/dev/null)
+  [[ $dec == block ]] && blocks=$((blocks+1))
+done
+if [[ $blocks == 3 ]]; then
+  echo 'PASS 17: repeated stop_hook_active 1-3 -> block'; ok=$((ok+1))
+else
+  echo "FAIL 17: blocks=$blocks"
+fi
+
+out=$(mk_stop "$tx13" "$sid17" | jq -c '.stop_hook_active=true' | run_hook); rc=$?
+if [[ $rc == 0 && -z $out ]]; then
+  echo 'PASS 18: repeated stop_hook_active 4th -> empty'; ok=$((ok+1))
+else
+  echo "FAIL 18: rc=$rc out=$out"
+fi
+
+tx19=$d/tx19.jsonl
+{ mk_user; mk_text 'PR готов. Сливать PR?'; } >"$tx19"
+sid19="$srun-19"; clean_sid "$sid19"
+out=$(mk_stop "$tx19" "$sid19" | run_hook); rc=$?
+dec=$(jq -r '.decision // empty' <<<"$out" 2>/dev/null)
+if [[ $rc == 0 && $dec == block ]]; then
+  echo 'PASS 19: last line question -> block'; ok=$((ok+1))
+else
+  echo "FAIL 19: rc=$rc out=$out"
+fi
+
+tx20=$d/tx20.jsonl
+{ mk_user; mk_text $'Is this ok?\nDONE'; } >"$tx20"
+sid20="$srun-20"; clean_sid "$sid20"
+out=$(mk_stop "$tx20" "$sid20" | run_hook); rc=$?
+if [[ $rc == 0 && -z $out ]]; then
+  echo 'PASS 20: question in middle line -> empty'; ok=$((ok+1))
+else
+  echo "FAIL 20: rc=$rc out=$out"
+fi
+
+big=$d/big.jsonl
+pad=$(printf '%*s' 100000 '' | tr ' ' 'x')
+{
+  for _ in $(seq 190); do
+    printf '{"type":"assistant","isSidechain":false,"message":{"content":[{"type":"text","text":"%s"}]}}\n' "$pad"
+  done
+  mk_user
+  for _ in $(seq 9); do mk_read; done
+  mk_text 'DONE: PR 5 MERGED'
+} >"$big"
+big_bytes=$(wc -c <"$big")
+perf_max=0
+time_run() {
+  local name=$1 payload=$2 t0 t1 ms
+  t0=$(date +%s%N)
+  printf '%s' "$payload" | run_hook >/dev/null 2>&1
+  t1=$(date +%s%N)
+  ms=$(( (t1 - t0) / 1000000 ))
+  printf 'perf %s: %d ms (transcript %d bytes)\n' "$name" "$ms" "$big_bytes"
+  (( ms > perf_max )) && perf_max=$ms
+  return 0
+}
+time_run PreToolUse "$(mk_pre "$big" Read '{"file_path":"/tmp/x"}')"
+time_run PostToolUse "$(jq -cn --arg tp "$big" '{hook_event_name:"PostToolUse",transcript_path:$tp}')"
+time_run Stop "$(mk_stop "$big")"
+if (( perf_max <= 500 )); then
+  echo 'PASS 21: perf all events <= 500 ms'; ok=$((ok+1))
+else
+  echo "FAIL 21: perf max ${perf_max} ms"
 fi
 
 if [[ $ok == $total ]]; then
