@@ -114,13 +114,13 @@ module.exports = {
       name: 'bmc-api',
       time: true,
       merge_logs: true,
-      script: '/root/.nvm/versions/node/v20.19.4/bin/npm',
+      script: '/root/.nvm/versions/node/v24.22.1/bin/npm',
       args: [
         'run',
         'api'
       ],
       cwd: '/root/workspaces/projects/bitrix/bitrix-margin-cockpit',
-      interpreter: '/root/.nvm/versions/node/v20.19.4/bin/node',
+      interpreter: '/root/.nvm/versions/node/v24.22.1/bin/node',
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
@@ -134,13 +134,13 @@ module.exports = {
       name: 'bmc-ui',
       time: true,
       merge_logs: true,
-      script: '/root/.nvm/versions/node/v20.19.4/bin/npm',
+      script: '/root/.nvm/versions/node/v24.22.1/bin/npm',
       args: [
         'run',
         'dev'
       ],
       cwd: '/root/workspaces/projects/bitrix/bitrix-margin-cockpit',
-      interpreter: '/root/.nvm/versions/node/v20.19.4/bin/node',
+      interpreter: '/root/.nvm/versions/node/v24.22.1/bin/node',
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
