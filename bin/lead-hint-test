@@ -5,7 +5,7 @@ dir=$(cd -- "$(dirname -- "$0")" && pwd)
 d=$(mktemp -d /tmp/lead-hint-test.XXXXXX)
 trap 'rm -rf "$d"' EXIT
 ok=0
-total=62
+total=71
 crdir=/tmp/lead-hint-stop
 srun="lh-$$-$RANDOM"
 clean_sid() { rm -f "$crdir/$1"; }
@@ -55,6 +55,10 @@ mk_bash2() {
 mk_pre() {
   jq -cn --arg tp "$1" --arg name "$2" --argjson input "$3" \
     '{hook_event_name:"PreToolUse",transcript_path:$tp,tool_name:$name,tool_input:$input}'
+}
+mk_pre_cwd() {
+  jq -cn --arg tp "$1" --arg cwd "$2" --arg name "$3" --argjson input "$4" \
+    '{hook_event_name:"PreToolUse",transcript_path:$tp,cwd:$cwd,tool_name:$name,tool_input:$input}'
 }
 mk_text() {
   jq -cn --arg t "$1" '{type:"assistant",isSidechain:false,message:{content:[{type:"text",text:$t}]}}'
@@ -686,6 +690,73 @@ if [[ $rc == 0 && $ctx != *"1 helper stream"* ]]; then
 else
   echo "FAIL 62: rc=$rc out=$out"
 fi
+
+tx_lock=$d/txlock.jsonl
+{ mk_user; } >"$tx_lock"
+reason_lock='lead-hint code-lock (owner 24.10): the lead session in /root/workspaces/projects edits only .md/.txt; send code and config to /root/workspaces/tools/bin/code-channel auto <worktree> <TZ>'
+codelock_case() {
+  local num=$1 label=$2 want=$3 cwd=$4 name=$5 input=$6 agent=${7:-} out rc dec reason
+  out=$(mk_pre_cwd "$tx_lock" "$cwd" "$name" "$input" \
+    | jq -c --arg a "$agent" 'if $a == "" then . else .agent_id = $a end' | run_hook); rc=$?
+  dec=$(jq -r '.hookSpecificOutput.permissionDecision // empty' <<<"$out" 2>/dev/null)
+  reason=$(jq -r '.hookSpecificOutput.permissionDecisionReason // empty' <<<"$out" 2>/dev/null)
+  if [[ $want == deny ]]; then
+    if [[ $rc == 0 && $dec == deny && $reason == "$reason_lock" ]]; then
+      echo "PASS $num: $label"; ok=$((ok+1)); return
+    fi
+  elif [[ $rc == 0 && -z $out ]]; then
+    echo "PASS $num: $label"; ok=$((ok+1)); return
+  fi
+  echo "FAIL $num: rc=$rc out=$out"
+}
+
+t_codelock_deny_write_sh() {
+  codelock_case 63 'codelock deny Write x.sh in /root/workspaces/projects' deny \
+    /root/workspaces/projects Write '{"file_path":"x.sh"}'
+}
+t_codelock_deny_edit_py() {
+  codelock_case 64 'codelock deny Edit x.py in /root/workspaces/projects' deny \
+    /root/workspaces/projects Edit '{"file_path":"x.py"}'
+}
+t_codelock_allow_write_md() {
+  codelock_case 65 'codelock allow Write TZ.md in /root/workspaces/projects' allow \
+    /root/workspaces/projects Write '{"file_path":"TZ.md"}'
+}
+t_codelock_allow_write_sh_agent() {
+  codelock_case 66 'codelock allow Write x.sh with agent_id' allow \
+    /root/workspaces/projects Write '{"file_path":"x.sh"}' sub
+}
+t_codelock_allow_write_sh_subdir() {
+  codelock_case 67 'codelock allow Write x.sh in /root/workspaces/projects/incidents' allow \
+    /root/workspaces/projects/incidents Write '{"file_path":"x.sh"}'
+}
+t_codelock_allow_write_sh_root() {
+  codelock_case 68 'codelock allow Write x.sh in /root' allow \
+    /root Write '{"file_path":"x.sh"}'
+}
+t_codelock_allow_bash_redirect() {
+  codelock_case 69 'codelock allow Bash bash -i < /tmp/p.txt in /root/workspaces/projects' allow \
+    /root/workspaces/projects Bash '{"command":"bash -i < /tmp/p.txt"}'
+}
+t_codelock_allow_bash_bd_note() {
+  codelock_case 70 'codelock allow Bash bd note quoting a redirect in /root/workspaces/projects' allow \
+    /root/workspaces/projects Bash '{"command":"bd update x --append-notes \"echo a > x.sh\""}'
+}
+
+t_codelock_deny_edit_json() {
+  codelock_case 71 'codelock deny Edit x.json in /root/workspaces/projects' deny \
+    /root/workspaces/projects Edit '{"file_path":"x.json"}'
+}
+
+t_codelock_deny_write_sh
+t_codelock_deny_edit_py
+t_codelock_allow_write_md
+t_codelock_allow_write_sh_agent
+t_codelock_allow_write_sh_subdir
+t_codelock_allow_write_sh_root
+t_codelock_allow_bash_redirect
+t_codelock_allow_bash_bd_note
+t_codelock_deny_edit_json
 
 if [[ $ok == $total ]]; then
   echo "lead-hint-test: PASS $ok/$total"
