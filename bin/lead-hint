@@ -50,17 +50,27 @@ scan_calls() {
     def is_task_notification:
       .type == "user"
       and ((user_text) | test("<task-notification>")
-           and test("<status>\\s*(completed|failed)\\s*</status>"));
+           and test("<status>\\s*(completed|failed|killed)\\s*</status>"));
     def is_doc_read:
       (.name == "Read")
       and ((.input.file_path // "") | test("\\.(md|json|txt|yml)$"; "i"));
+    def first_word:
+      [scan("\\S+")]
+      | until((.[0] // "") as $h
+              | ((["command","builtin","exec","env","nohup"] | index($h)) == null);
+              .[1:])
+      | ((.[0] // "") | split("/") | last);
+    def gh_readonly:
+      test("^\\s*gh\\s+(pr\\s+(view|list|checks)|run\\s+(view|list))(\\s|$)");
+    def has_shell_op:
+      test("[;&|$()<>`\\n]");
     def investigative_bash:
       (.input.command // "") as $cmd
-      | ($cmd | split(" ")[0]) as $word
+      | ($cmd | first_word) as $word
       | if ($cmd | test("code-channel|sdk-agent")) then false
-        elif ($cmd | test("^\\s*gh\\s+(pr\\s+(view|list|checks)|run\\s+(view|list))(\\s|$)")) then false
+        elif (($cmd | gh_readonly) and (($cmd | has_shell_op) | not)) then false
         elif ((["grep","rg","find","ls","cat","head","tail","sed","wc","gh"] | index($word)) != null) then
-          (($cmd | test("(^|[^A-Za-z0-9])(git|bd|jq|code-channel|sdk-agent|safe-delete)([^A-Za-z0-9]|$)")) | not)
+          (($cmd | test("(^|[^A-Za-z0-9])(code-channel|sdk-agent)([^A-Za-z0-9]|$)")) | not)
         else
           ($cmd | test("(^|[^A-Za-z0-9])(pytest|jest|vitest|mocha|bats|tests?)([^A-Za-z0-9]|$)"))
         end;
@@ -137,15 +147,26 @@ case $event in
         ;;
       Grep|Glob|WebFetch|WebSearch) investigative=1 ;;
       Bash)
-        first=${tool_cmd%% *}
+        read -ra cmd_words <<<"$tool_cmd"
+        wi=0
+        while (( wi < ${#cmd_words[@]} )); do
+          case ${cmd_words[wi]} in
+            command|builtin|exec|env|nohup) wi=$((wi + 1)) ;;
+            *) break ;;
+          esac
+        done
+        first=${cmd_words[wi]:-}
+        first=${first##*/}
         case $first in
           grep|rg|find|ls|cat|head|tail|sed|wc|gh) investigative=1 ;;
         esac
         [[ $tool_cmd =~ (^|[^A-Za-z0-9])(pytest|jest|vitest|mocha|bats|tests?)([^A-Za-z0-9]|$) ]] && investigative=1
-        if (( investigative )) && [[ $tool_cmd =~ (^|[^A-Za-z0-9])(git|bd|jq|code-channel|sdk-agent|safe-delete)([^A-Za-z0-9]|$) ]]; then
+        if (( investigative )) && [[ $tool_cmd =~ (^|[^A-Za-z0-9])(code-channel|sdk-agent)([^A-Za-z0-9]|$) ]]; then
           investigative=0
         fi
-        if (( investigative )) && [[ $tool_cmd =~ ^[[:space:]]*gh[[:space:]]+(pr[[:space:]]+(view|list|checks)|run[[:space:]]+(view|list))([[:space:]]|$) ]]; then
+        shell_op_re='[;&|$()<>`]'
+        if (( investigative )) && [[ $tool_cmd =~ ^[[:space:]]*gh[[:space:]]+(pr[[:space:]]+(view|list|checks)|run[[:space:]]+(view|list))([[:space:]]|$) ]] \
+          && ! [[ $tool_cmd =~ $shell_op_re ]] && [[ $tool_cmd != *$'\n'* ]]; then
           investigative=0
         fi
         ;;
@@ -174,7 +195,7 @@ case $event in
     [[ $count =~ ^[0-9]+$ ]] || exit 0
 
     max=$(hint_max)
-    (( count >= 3 )) || exit 0
+    (( count >= max - 1 )) || exit 0
     next=$((max + 1))
 
     jq -cn --arg count "$count" --arg max "$max" --arg next "$next" \

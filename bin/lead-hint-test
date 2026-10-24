@@ -5,7 +5,7 @@ dir=$(cd -- "$(dirname -- "$0")" && pwd)
 d=$(mktemp -d /tmp/lead-hint-test.XXXXXX)
 trap 'rm -rf "$d"' EXIT
 ok=0
-total=40
+total=50
 crdir=/tmp/lead-hint-stop
 srun="lh-$$-$RANDOM"
 clean_sid() { rm -f "$crdir/$1"; }
@@ -42,6 +42,9 @@ mk_notice() {
 }
 mk_notify() {
   jq -cn '{type:"user",origin:{kind:"task-notification"},message:{content:"<task-notification>\n<status>completed</status>\n</task-notification>"}}'
+}
+mk_killed() {
+  jq -cn '{type:"user",origin:{kind:"task-notification"},message:{content:"<task-notification>\n<status>killed</status>\n</task-notification>"}}'
 }
 mk_bash() {
   jq -cn --arg c "$1" '{type:"assistant",isSidechain:false,message:{content:[{type:"tool_use",name:"Bash",input:{command:$c}}]}}'
@@ -459,6 +462,103 @@ if [[ $rc == 0 && -z $out ]]; then
   echo 'PASS 40: PostToolUse 2 counted -> empty'; ok=$((ok+1))
 else
   echo "FAIL 40: rc=$rc out=$out"
+fi
+
+tx41=$d/tx41.jsonl
+{ mk_user; for _ in $(seq 4); do mk_bash 'gh pr view 1 && gh pr merge 1 --merge'; done; } >"$tx41"
+out=$(mk_pre "$tx41" Bash '{"command":"gh pr view 1 && gh pr merge 1 --merge"}' | run_hook); rc=$?
+dec=$(jq -r '.hookSpecificOutput.permissionDecision // empty' <<<"$out" 2>/dev/null)
+if [[ $rc == 0 && $dec == deny ]]; then
+  echo 'PASS 41: gh view && gh merge counted -> deny'; ok=$((ok+1))
+else
+  echo "FAIL 41: rc=$rc out=$out"
+fi
+
+tx42=$d/tx42.jsonl
+{ mk_user; for _ in $(seq 4); do mk_bash 'gh pr view 1; gh pr merge 1'; done; } >"$tx42"
+out=$(mk_pre "$tx42" Bash '{"command":"gh pr view 1; gh pr merge 1"}' | run_hook); rc=$?
+dec=$(jq -r '.hookSpecificOutput.permissionDecision // empty' <<<"$out" 2>/dev/null)
+if [[ $rc == 0 && $dec == deny ]]; then
+  echo 'PASS 42: gh view ; gh merge counted -> deny'; ok=$((ok+1))
+else
+  echo "FAIL 42: rc=$rc out=$out"
+fi
+
+tx43=$d/tx43.jsonl
+{ mk_user; for _ in $(seq 4); do mk_bash 'gh pr view 1'; done; } >"$tx43"
+out=$(mk_pre "$tx43" Bash '{"command":"gh pr view 1"}' | run_hook); rc=$?
+if [[ $rc == 0 && -z $out ]]; then
+  echo 'PASS 43: plain gh pr view not counted -> empty'; ok=$((ok+1))
+else
+  echo "FAIL 43: rc=$rc out=$out"
+fi
+
+tx44=$d/tx44.jsonl
+{ mk_user; for _ in $(seq 5); do mk_read; done; mk_killed; mk_read; } >"$tx44"
+out=$(mk_pre "$tx44" Read '{"file_path":"/tmp/x"}' | run_hook); rc=$?
+if [[ $rc == 0 && -z $out ]]; then
+  echo 'PASS 44: killed task-notification resets count -> empty'; ok=$((ok+1))
+else
+  echo "FAIL 44: rc=$rc out=$out"
+fi
+
+tx45=$d/tx45.jsonl
+{ mk_user; for _ in $(seq 5); do mk_read; done; } >"$tx45"
+out=$(jq -cn --arg tp "$tx45" '{hook_event_name:"PostToolUse",transcript_path:$tp}' | LEAD_HINT_MAX=6 run_hook); rc=$?
+ctx=$(ctx_of "$out"); ev=$(event_of "$out")
+if [[ $rc == 0 && $ev == PostToolUse && $ctx == *"5 of 6"* ]]; then
+  echo 'PASS 45: LEAD_HINT_MAX=6 hints at 5'; ok=$((ok+1))
+else
+  echo "FAIL 45: rc=$rc out=$out"
+fi
+
+tx46=$d/tx46.jsonl
+{ mk_user; for _ in $(seq 4); do mk_read; done; } >"$tx46"
+out=$(jq -cn --arg tp "$tx46" '{hook_event_name:"PostToolUse",transcript_path:$tp}' | LEAD_HINT_MAX=6 run_hook); rc=$?
+if [[ $rc == 0 && -z $out ]]; then
+  echo 'PASS 46: LEAD_HINT_MAX=6 silent at 4'; ok=$((ok+1))
+else
+  echo "FAIL 46: rc=$rc out=$out"
+fi
+
+tx47=$d/tx47.jsonl
+{ mk_user; for _ in $(seq 4); do mk_bash 'command grep x f'; done; } >"$tx47"
+out=$(mk_pre "$tx47" Bash '{"command":"command grep x f"}' | run_hook); rc=$?
+dec=$(jq -r '.hookSpecificOutput.permissionDecision // empty' <<<"$out" 2>/dev/null)
+if [[ $rc == 0 && $dec == deny ]]; then
+  echo 'PASS 47: command grep counted -> deny'; ok=$((ok+1))
+else
+  echo "FAIL 47: rc=$rc out=$out"
+fi
+
+tx48=$d/tx48.jsonl
+{ mk_user; for _ in $(seq 4); do mk_bash 'grep x f | jq .'; done; } >"$tx48"
+out=$(mk_pre "$tx48" Bash '{"command":"grep x f | jq ."}' | run_hook); rc=$?
+dec=$(jq -r '.hookSpecificOutput.permissionDecision // empty' <<<"$out" 2>/dev/null)
+if [[ $rc == 0 && $dec == deny ]]; then
+  echo 'PASS 48: grep piped to jq counted -> deny'; ok=$((ok+1))
+else
+  echo "FAIL 48: rc=$rc out=$out"
+fi
+
+tx49=$d/tx49.jsonl
+{ mk_user; for _ in $(seq 4); do mk_bash 'grep -n foo bin/git-sync'; done; } >"$tx49"
+out=$(mk_pre "$tx49" Bash '{"command":"grep -n foo bin/git-sync"}' | run_hook); rc=$?
+dec=$(jq -r '.hookSpecificOutput.permissionDecision // empty' <<<"$out" 2>/dev/null)
+if [[ $rc == 0 && $dec == deny ]]; then
+  echo 'PASS 49: grep on git-named path counted -> deny'; ok=$((ok+1))
+else
+  echo "FAIL 49: rc=$rc out=$out"
+fi
+
+tx50=$d/tx50.jsonl
+{ mk_user; for _ in $(seq 4); do mk_bash 'git log'; mk_bash 'bd show x'; done; } >"$tx50"
+out=$(mk_pre "$tx50" Bash '{"command":"git log"}' | run_hook); rc=$?
+out2=$(mk_pre "$tx50" Bash '{"command":"bd show x"}' | run_hook); rc2=$?
+if [[ $rc == 0 && $rc2 == 0 && -z $out && -z $out2 ]]; then
+  echo 'PASS 50: git log / bd show not counted -> empty'; ok=$((ok+1))
+else
+  echo "FAIL 50: rc=$rc out=$out rc2=$rc2 out2=$out2"
 fi
 
 if [[ $ok == $total ]]; then
