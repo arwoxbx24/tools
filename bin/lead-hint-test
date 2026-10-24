@@ -5,7 +5,7 @@ dir=$(cd -- "$(dirname -- "$0")" && pwd)
 d=$(mktemp -d /tmp/lead-hint-test.XXXXXX)
 trap 'rm -rf "$d"' EXIT
 ok=0
-total=21
+total=25
 crdir=/tmp/lead-hint-stop
 srun="lh-$$-$RANDOM"
 clean_sid() { rm -f "$crdir/$1"; }
@@ -273,6 +273,45 @@ if (( perf_max <= 500 )); then
   echo 'PASS 21: perf all events <= 500 ms'; ok=$((ok+1))
 else
   echo "FAIL 21: perf max ${perf_max} ms"
+fi
+
+tx22=$d/tx22.jsonl
+{ mk_user; mk_text $'ИТОГ: замок работает.\nAC3: текст `Ответьте одним словом: Закрывай / Стоп` → block=1\nВладелец подтвердил цель.\n✅ DONE'; } >"$tx22"
+sid22="$srun-22"; clean_sid "$sid22"
+out=$(mk_stop "$tx22" "$sid22" | run_hook); rc=$?
+if [[ $rc == 0 && -z $out ]]; then
+  echo 'PASS 22: Stop phrase quoted in backticks -> empty'; ok=$((ok+1))
+else
+  echo "FAIL 22: rc=$rc out=$out"
+fi
+
+tx23=$d/tx23.jsonl
+{ mk_user; mk_text $'Отчёт: правило запрещает «ответьте одним словом».\nDONE'; } >"$tx23"
+sid23="$srun-23"; clean_sid "$sid23"
+out=$(mk_stop "$tx23" "$sid23" | run_hook); rc=$?
+if [[ $rc == 0 && -z $out ]]; then
+  echo 'PASS 23: Stop phrase inside «…» -> empty'; ok=$((ok+1))
+else
+  echo "FAIL 23: rc=$rc out=$out"
+fi
+
+sid24="$srun-24"; clean_sid "$sid24"
+out=$(mk_stop "$tx13" "$sid24" | run_hook); rc=$?
+dec=$(jq -r '.decision // empty' <<<"$out" 2>/dev/null)
+if [[ $rc == 0 && $dec == block ]]; then
+  echo 'PASS 24: Stop plain owner phrase -> block'; ok=$((ok+1))
+else
+  echo "FAIL 24: rc=$rc out=$out"
+fi
+
+tx25=$d/tx25.jsonl
+{ mk_user; mk_text $'Отчёт готов.\n`a?`'; } >"$tx25"
+sid25="$srun-25"; clean_sid "$sid25"
+out=$(mk_stop "$tx25" "$sid25" | run_hook); rc=$?
+if [[ $rc == 0 && -z $out ]]; then
+  echo 'PASS 25: Stop question only inside code -> empty'; ok=$((ok+1))
+else
+  echo "FAIL 25: rc=$rc out=$out"
 fi
 
 if [[ $ok == $total ]]; then

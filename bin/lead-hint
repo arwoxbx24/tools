@@ -27,6 +27,50 @@ event=$(jq -r '.hook_event_name // empty' <<<"$payload" 2>/dev/null) || exit 0
 transcript_path=$(jq -r '.transcript_path // empty' <<<"$payload" 2>/dev/null) || exit 0
 [[ -n $transcript_path ]] || exit 0
 
+# Backwards transcript scan shared by Pre/PostToolUse: stops at the first record
+# matching the jq predicate $2 and sums the per-record `calls` def $1. Prints
+# the count (empty on failure).
+scan_calls() {
+  tac -- "$transcript_path" 2>/dev/null | jq -R -n '
+    def is_owner:
+      (.type == "user"
+       and ((.message.content | type) == "string")
+       and (((.origin.kind) // "human") == "human"))
+      or (.type == "attachment" and .attachment.humanTurn == true);
+    def is_helper_run:
+      .type == "assistant" and (.isSidechain != true)
+      and any(.message.content[]?;
+              .type == "tool_use" and .name == "Bash"
+              and ((.input.command // "") | test("code-channel|sdk-agent")));
+    def calls: '"$1"';
+    [ label $out |
+      (foreach inputs as $line ({n: 0, stop: false};
+         (try ($line | fromjson) catch null) as $v
+         | if .stop then .
+           elif ($v | type) != "object" then .
+           elif ($v | '"$2"') then .stop = true
+           else .n += ($v | calls) end;
+         if .stop then ., break $out else . end) | .n)
+    ] | last // 0
+  ' 2>/dev/null
+}
+
+# Validated LEAD_HINT_MAX (default 8).
+hint_max() {
+  local max=${LEAD_HINT_MAX:-8}
+  [[ $max =~ ^[0-9]+$ ]] || max=8
+  printf '%s\n' "$max"
+}
+
+# $1 calls, $2 limit: "ge" denies at the limit, "gt" hints only above it.
+limit_reached() {
+  case $3 in
+    ge) (( $1 >= $2 )) ;;
+    gt) (( $1 > $2 )) ;;
+    *) return 1 ;;
+  esac
+}
+
 case $event in
   PreToolUse)
     [[ ${LEAD_HINT_STRICT:-1} == 0 ]] && exit 0
@@ -51,45 +95,24 @@ case $event in
 
     # Scan backwards and stop at the first boundary (owner message or helper run),
     # so jq breaks early and tac dies by SIGPIPE on an 18 MB transcript.
-    count=$(tac -- "$transcript_path" 2>/dev/null | jq -R -n '
-      def is_owner:
-        (.type == "user"
-         and ((.message.content | type) == "string")
-         and (((.origin.kind) // "human") == "human"))
-        or (.type == "attachment" and .attachment.humanTurn == true);
-      def is_helper_run:
-        .type == "assistant" and (.isSidechain != true)
-        and any(.message.content[]?;
-                .type == "tool_use" and .name == "Bash"
-                and ((.input.command // "") | test("code-channel|sdk-agent")));
-      def calls:
-        if (.type == "assistant" and (.isSidechain != true)) then
-          reduce (.message.content[]? | select(.type == "tool_use")) as $tool (0;
-            if $tool.name == "Bash" then
-              ($tool.input.command // "") as $cmd
-              | if ($cmd | test("code-channel|sdk-agent")) then .
-                elif ((($cmd | split(" ")[0]) as $word
-                       | (["grep","rg","find","ls","cat","head","tail","sed","wc"] | index($word))) == null) then .
-                elif ($cmd | test("(^|[^A-Za-z0-9])(git|gh|bd|jq|tests?|code-channel|sdk-agent|safe-delete)([^A-Za-z0-9]|$)")) then .
-                else . + 1 end
-            elif ((["Read","Grep","Glob","WebFetch","WebSearch"] | index($tool.name)) != null) then . + 1
-            else . end)
-        else 0 end;
-      [ label $out |
-        (foreach inputs as $line ({n: 0, stop: false};
-           (try ($line | fromjson) catch null) as $v
-           | if .stop then .
-             elif ($v | type) != "object" then .
-             elif ($v | is_owner) or ($v | is_helper_run) then .stop = true
-             else .n += ($v | calls) end;
-           if .stop then ., break $out else . end) | .n)
-      ] | last // 0
-    ' 2>/dev/null) || exit 0
+    count=$(scan_calls '
+      if (.type == "assistant" and (.isSidechain != true)) then
+        reduce (.message.content[]? | select(.type == "tool_use")) as $tool (0;
+          if $tool.name == "Bash" then
+            ($tool.input.command // "") as $cmd
+            | if ($cmd | test("code-channel|sdk-agent")) then .
+              elif ((($cmd | split(" ")[0]) as $word
+                     | (["grep","rg","find","ls","cat","head","tail","sed","wc"] | index($word))) == null) then .
+              elif ($cmd | test("(^|[^A-Za-z0-9])(git|gh|bd|jq|tests?|code-channel|sdk-agent|safe-delete)([^A-Za-z0-9]|$)")) then .
+              else . + 1 end
+          elif ((["Read","Grep","Glob","WebFetch","WebSearch"] | index($tool.name)) != null) then . + 1
+          else . end)
+      else 0 end
+    ' 'is_owner or is_helper_run') || exit 0
     [[ $count =~ ^[0-9]+$ ]] || exit 0
 
-    max=${LEAD_HINT_MAX:-8}
-    [[ $max =~ ^[0-9]+$ ]] || max=8
-    (( count >= max )) || exit 0
+    max=$(hint_max)
+    limit_reached "$count" "$max" ge || exit 0
 
     jq -cn --arg count "$count" --arg max "$max" \
       '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:("lead-strict: " + $count + " own investigative calls since the owner message or last helper run (limit " + $max + "). Write a TZ file and run /root/workspaces/tools/bin/code-channel audit|auto <project> <tz.md> in the background; after the helper run you may check its result.")}}' \
@@ -100,42 +123,26 @@ case $event in
     [[ -f $transcript_path && -r $transcript_path ]] || exit 0
 
     # Same backwards scan: stop at the last owner message.
-    count=$(tac -- "$transcript_path" 2>/dev/null | jq -R -n '
-      def is_owner:
-        (.type == "user"
-         and ((.message.content | type) == "string")
-         and (((.origin.kind) // "human") == "human"))
-        or (.type == "attachment" and .attachment.humanTurn == true);
-      def calls:
-        if (.type == "assistant" and (.isSidechain != true)) then
-          [ .message.content[]?
-            | select(.type == "tool_use")
-            | . as $tool
-            | select(
-                ((["Read","Grep","Glob","WebFetch","WebSearch"] | index($tool.name)) != null)
-                or (
-                  $tool.name == "Bash"
-                  and (((($tool.input.command // "") | split(" ")[0]) as $word
-                        | (["grep","rg","find","ls","cat","head","tail","sed","wc"] | index($word)) != null))
-                )
+    count=$(scan_calls '
+      if (.type == "assistant" and (.isSidechain != true)) then
+        [ .message.content[]?
+          | select(.type == "tool_use")
+          | . as $tool
+          | select(
+              ((["Read","Grep","Glob","WebFetch","WebSearch"] | index($tool.name)) != null)
+              or (
+                $tool.name == "Bash"
+                and (((($tool.input.command // "") | split(" ")[0]) as $word
+                      | (["grep","rg","find","ls","cat","head","tail","sed","wc"] | index($word)) != null))
               )
-          ] | length
-        else 0 end;
-      [ label $out |
-        (foreach inputs as $line ({n: 0, stop: false};
-           (try ($line | fromjson) catch null) as $v
-           | if .stop then .
-             elif ($v | type) != "object" then .
-             elif ($v | is_owner) then .stop = true
-             else .n += ($v | calls) end;
-           if .stop then ., break $out else . end) | .n)
-      ] | last // 0
-    ' 2>/dev/null) || exit 0
+            )
+        ] | length
+      else 0 end
+    ' 'is_owner') || exit 0
     [[ $count =~ ^[0-9]+$ ]] || exit 0
 
-    max=${LEAD_HINT_MAX:-8}
-    [[ $max =~ ^[0-9]+$ ]] || max=8
-    (( count > max )) || exit 0
+    max=$(hint_max)
+    limit_reached "$count" "$max" gt || exit 0
 
     channel=${CODE_CHANNEL:-/root/workspaces/tools/bin/code-channel}
     if plan_out=$("$channel" --plan 2>/dev/null); then
@@ -182,6 +189,17 @@ case $event in
              else . end;
            if .stop then .text, break $out else empty end) )
       ] | last // empty
+    ' 2>/dev/null) || exit 0
+    [[ -n $text ]] || exit 0
+
+    # Quoted text is a quote, not a question to the owner: drop fenced blocks,
+    # inline code spans and «…»/"…" quoted spans before both checks.
+    text=$(jq -rn --arg t "$text" '
+      $t
+      | gsub("(?s)```.*?```"; "")
+      | gsub("`[^`]*`"; "")
+      | gsub("«[^»]*»"; "")
+      | gsub("\"[^\"]*\""; "")
     ' 2>/dev/null) || exit 0
     [[ -n $text ]] || exit 0
 
