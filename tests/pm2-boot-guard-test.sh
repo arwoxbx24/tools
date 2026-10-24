@@ -35,11 +35,11 @@ export SYSTEMCTL="$T/bin/systemctl" PM2="$T/bin/pm2"
 
 SPAWNED=
 spawn() {
-  local p i=0
+  local p i=0 title=${2:-'PM2 v7.1.1: God Daemon (/root/.pm2)'}
   if [ "$1" = bash ]; then
-    ( exec -a 'PM2 God Daemon' /usr/bin/bash -c 'sleep 20; :' ) >/dev/null 2>&1 &
+    ( exec -a "$title" /usr/bin/bash -c 'sleep 20; :' ) >/dev/null 2>&1 &
   else
-    ( exec -a 'PM2 God Daemon' /usr/bin/sleep 20 ) >/dev/null 2>&1 &
+    ( exec -a "$title" /usr/bin/sleep 20 ) >/dev/null 2>&1 &
   fi
   p=$!
   while [ "$i" -lt 100 ]; do
@@ -93,5 +93,12 @@ s=$(grep -n '^stop pm2-root$' "$CALLS" | cut -d: -f1)
 r=$(grep -n '^resurrect$' "$CALLS" | cut -d: -f1)
 { [ -n "$s" ] && [ -n "$r" ] && [ "$s" -lt "$r" ]; } || bad case5 "stop not before resurrect"
 
-[ "$fail" = 0 ] && { echo "ok 5/5"; exit 0; }
+spawn sleep 'PM2 v6.0.14: God Daemon (/root/.pm2)'; V6=$SPAWNED
+rm -f "$CALLS" "$PM2PID"; echo "$V6" >"$PM2PID"
+out=$(WANT="$(want_of "$V6")" WAIT=4 bash "$S" 2>&1); rc=$?
+printf '%s' "$out" | grep -q 'ok: daemon' && bad case6 "logged ok: daemon"
+grep -qx 'stop pm2-root' "$CALLS" || bad case6 "no stop"
+grep -qx 'resurrect' "$CALLS" || bad case6 "no resurrect"
+
+[ "$fail" = 0 ] && { echo "ok 6/6"; exit 0; }
 exit 1

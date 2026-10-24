@@ -5,6 +5,7 @@ set -u
 
 PM2_HOME=${PM2_HOME:-/root/.pm2}
 WANT=${WANT:-/root/.nvm/versions/node/v24.22.1/bin/node}
+WANT_PM2=${WANT_PM2:-PM2 v7}
 PM2=${PM2:-/root/bin/pm2}
 UNIT=${UNIT:-pm2-root}
 WAIT=${WAIT:-300}
@@ -18,7 +19,9 @@ alive() {
   tr '\0' ' ' <"/proc/$p/cmdline" 2>/dev/null | grep -q 'God Daemon'
 }
 exe() { local p; p=$(pid); [ -n "$p" ] && readlink "/proc/$p/exe" 2>/dev/null; }
-ok() { alive && [ "$(exe)" = "$WANT" ] && { log "ok: daemon $(pid) on $WANT"; exit 0; }; }
+title() { local p; p=$(pid); [ -n "$p" ] && tr '\0' ' ' <"/proc/$p/cmdline" 2>/dev/null; }
+on_target() { [ "$(exe)" = "$WANT" ] && title | grep -q "^$WANT_PM2"; }
+ok() { alive && on_target && { log "ok: daemon $(pid) on $WANT"; exit 0; }; }
 
 case "${1:-}" in
   -h|--help) echo "usage: pm2-boot-guard.sh [-h|--help]  env: PM2_HOME WANT PM2 UNIT WAIT SYSTEMCTL"; exit 0 ;;
@@ -47,6 +50,6 @@ if alive; then
 fi
 
 "$PM2" resurrect
-[ "$(exe)" = "$WANT" ] && { log "ok: resurrected on $WANT"; exit 0; }
-log "error: after resurrect daemon $(pid) $(exe)"
+on_target && { log "ok: resurrected on $WANT"; exit 0; }
+log "error: after resurrect daemon $(pid) $(exe) $(title)"
 exit 1
