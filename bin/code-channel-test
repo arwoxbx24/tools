@@ -29,7 +29,7 @@ printf '%s\n' '{"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2
 printf '%s\n' '{"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash"},{"id":"codex","enabled":true,"model":"","effort":"high"},{"id":"openrouter","enabled":true,"model":"openrouter/deepseek/deepseek-v4-flash","key":"OPENROUTER_API_KEY","secret":"openrouter","base":"https://openrouter.ai/api/v1"}]}' >"$ladder"
 printf '%s\n' '{"ladder":[{"id":"codex","enabled":true,"model":"","effort":"high"}]}' >"$codexone"
 printf '%s\n' '{"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash"},{"id":"codex","enabled":true,"model":"","effort":"high"}]}' >"$gocodex"
-printf '%s\n' '{"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash","audit_model":"opencode-go/audit-free"}]}' >"$goaudit"
+printf '%s\n' '{"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash","audit_model":"opencode-go/mimo-v2.6-flash"}]}' >"$goaudit"
 printf '%s\n' '{"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash","alt_models":["opencode-go/deepseek-v4.1-flash"]}]}' >"$goalt"
 printf '%s\n' '{"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash"}],"opencode_config":"config/opencode-channel.json"}' >"$ocfg"
 printf '%s\n' '{"resume_idle_limit":3,"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash"}]}' >"$goidle"
@@ -45,7 +45,7 @@ chmod +x "$bin/curl" "$bin/opencode" "$bin/codex" "$bin/sqlite3" "$bin/sdk-agent
 ok=0
 check() {
   local n=$1 want=$2 out err rc ov
-  local -a env_args=("TMPDIR=$tmp" "PATH=$bin:$PATH" "XDG_CONFIG_HOME=$tmp/config-allow" "CODE_CHANNEL_TEST_LOG=$log" "CODE_CHANNEL_TEST_PROJECT=$project" "CODE_CHANNEL_STATE=$tmp/state" "CODE_CHANNEL_RUNS_LOG=$runs")
+  local -a env_args=("TMPDIR=$tmp" "PATH=$bin:$PATH" "XDG_CONFIG_HOME=$tmp/config-allow" "CODE_CHANNEL_TEST_LOG=$log" "CODE_CHANNEL_TEST_PROJECT=$project" "CODE_CHANNEL_STATE=$tmp/state" "CODE_CHANNEL_RUNS_LOG=$runs" "CC_RETRY_SLEEP=0")
   shift 2
   if [[ ${CC_CONFIG+x} ]]; then
     [[ -z $CC_CONFIG ]] || env_args+=("CODE_CHANNEL_CONFIG=$CC_CONFIG")
@@ -109,7 +109,7 @@ check 20 '[[ $rc == 0 ]] && grep -Fq -- /key "$log" && grep -Fq -- "opencode" "$
 check 21 '[[ $rc == 13 && $err == *"нет usage_daily"* ]]' \
   env CURL_USAGE_DAILY=none "$root/bin/code-channel" 3 "$project" "$root/AGENTS.md"
 
-CC_CONFIG='' check 22 '[[ $rc == 0 && $out == $'"'"'go opencode-go/deepseek-v4.1-flash - audit=opencode-go/glm-5.3-flash'"'"' ]]' \
+CC_CONFIG='' check 22 '[[ $rc == 0 && $out == $'"'"'go opencode-go/deepseek-v4.1-flash - audit=opencode-go/deepseek-v4.1-flash'"'"' ]]' \
   "$root/bin/code-channel" --plan
 CC_CONFIG=$disabled check 23 '[[ $rc == 16 ]] && ! grep -Fq -- /models "$log" && grep -Fq -- "codex " "$log"' \
   env OPENCODE_RC=1 bash -c 'plan=$("$1" --plan) || exit $?; [[ $plan != *openrouter* ]] || exit 90; "$1" auto "$2" "$3"' _ "$root/bin/code-channel" "$project" "$root/AGENTS.md"
@@ -139,15 +139,15 @@ CC_CONFIG=$disabled check 34 '[[ $rc == 3 && $err == *"выключен в ко�
   "$root/bin/code-channel" 3 "$project" "$tz"
 check 35 '[[ $rc == 3 && $err == *"модель не в конфиге: other/model"* && ! -s $log ]]' \
   "$root/bin/code-channel" 1 "$project" "$tz" --model other/model
-CC_CONFIG=$resume check 36 '[[ $rc == 124 && $(grep -c "^opencode " "$log") == 1 ]] && ! grep -q "resume" "$tmp/err"' \
-  env OPENCODE_SEQUENCE=124,0 SQLITE_SESSION_ID=session-123 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
-CC_CONFIG=$go check 37 '[[ $rc == 124 && $(grep -c "^opencode " "$log") == 1 ]]' \
+CC_CONFIG=$resume check 36 '[[ $rc == 124 && $(grep -c "^opencode " "$log") == 3 ]] && ! grep -q -- "--session" "$log" && grep -Fq -- "канал go недоступен" "$tmp/err"' \
+  env OPENCODE_RC=124 SQLITE_SESSION_ID=session-123 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
+CC_CONFIG=$go check 37 '[[ $rc == 124 && $(grep -c "^opencode " "$log") == 3 ]]' \
   env OPENCODE_RC=124 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
 
 printf '%s\n' '#!/usr/bin/env bash' "printf '%s\n' \"\$1\" >>\"$tlog\"" 'shift; exec "$@"' >"$bin/timeout"
 chmod +x "$bin/timeout"
 : >"$tlog"
-CC_CONFIG=$resume check 38 '[[ $rc == 124 ]] && grep -qx 1800 "$tlog"' \
+CC_CONFIG=$resume check 38 '[[ $rc == 0 ]] && [[ $(grep -cx 1800 "$tlog") == 2 ]]' \
   env OPENCODE_SEQUENCE=124,0 SQLITE_SESSION_ID=session-123 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
 : >"$tlog"
 CC_CONFIG=$go check 39 '[[ $rc == 0 ]] && grep -qx 1800 "$tlog"' \
@@ -173,7 +173,7 @@ printf 'old\n' >"$project/.agent-work/old.txt"
 CC_CONFIG=$go check 45 '[[ $rc == 0 ]] && [[ -f "$project/.agent-work/added.txt" ]] && ! grep -Fq -- "без изменений" "$tmp/err"' \
   env OPENCODE_RC=0 OPENCODE_TOUCH=.agent-work/added.txt SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
 
-CC_CONFIG=$go check 46 'grep -Eq "^code-channel: mode=code .* model=opencode-go/mimo-v2.6-flash precheck=" "$tmp/err"' \
+CC_CONFIG=$go check 46 'grep -Eq "^code-channel: mode=code .* model=opencode-go/mimo-v2.6-flash retries=0 precheck=" "$tmp/err"' \
   env OPENCODE_RC=0 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
 
 git -C "$project" clean -fdq
@@ -185,8 +185,8 @@ CC_CONFIG=$go check 47 '[[ $rc == 0 ]] && ! grep -Fq -- "без изменени
 CC_CONFIG=$go check 48 '[[ $rc == 0 ]] && ! grep -Fq -- "already running" "$tmp/err"' \
   env OPENCODE_TOUCH=pipe-change.txt OPENCODE_RC=0 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' bash -c 'set -o pipefail; "$1" go "$2" "$3" | cat' _ "$root/bin/code-channel" "$project" "$tz"
 
-CC_CONFIG=$goaudit check 49 '[[ $rc == 0 ]] && grep -Fq -- "--agent audit" "$log" && grep -Fq -- "-m opencode-go/audit-free" "$log"' \
-  env SQLITE_RESULT='opencode-go|audit-free' "$root/bin/code-channel" audit "$project" "$tz"
+CC_CONFIG=$goaudit check 49 '[[ $rc == 0 ]] && grep -Fq -- "--agent audit" "$log" && grep -Fq -- "-m opencode-go/mimo-v2.6-flash" "$log"' \
+  env SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" audit "$project" "$tz"
 
 CC_CONFIG=$goaudit check 50 '[[ $rc == 0 ]] && grep -Fq -- "-m opencode-go/mimo-v2.6-flash" "$log" && ! grep -q "audit-free" "$log"' \
   env SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
@@ -194,13 +194,13 @@ CC_CONFIG=$goaudit check 50 '[[ $rc == 0 ]] && grep -Fq -- "-m opencode-go/mimo-
 CC_CONFIG=$go check 51 '[[ $rc == 124 ]] && grep -q '"'"'"session":"session-123"'"'"' "$runs"' \
   env OPENCODE_RC=124 SQLITE_SESSION_ID=session-123 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
 
-CC_CONFIG=$goaudit check 52 '[[ $rc == 0 ]]' \
-  env OPENCODE_RC=0 SQLITE_RESULT='opencode-go|audit-free' "$root/bin/code-channel" go "$project" "$tz" --model opencode-go/audit-free
+CC_CONFIG=$goaudit check 52 '[[ $rc == 0 ]] && grep -Fq -- "-m opencode-go/mimo-v2.6-flash" "$log"' \
+  env OPENCODE_RC=0 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz" --model opencode-go/mimo-v2.6-flash
 
 CC_CONFIG=$gocodex check 53 '[[ $rc == 0 ]] && grep -q "^codex " "$log" && [[ $err == *switch\ go→codex\ rc=1* ]]' \
   env OPENCODE_RC=1 CODEX_TOUCH=codex-touch SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" auto "$project" "$tz"
-CC_CONFIG=$goalt check 61 '[[ $rc == 0 ]] && grep -Fq -- "-m opencode-go/deepseek-v4.1-flash" "$log"' \
-  env OPENCODE_RC=0 SQLITE_RESULT='opencode-go|deepseek-v4.1-flash' "$root/bin/code-channel" go "$project" "$tz" --model opencode-go/deepseek-v4.1-flash
+CC_CONFIG=$goalt check 61 '[[ $rc == 3 && $err == *"модель не в конфиге: opencode-go/deepseek-v4.1-flash"* && ! -s $log ]]' \
+  "$root/bin/code-channel" go "$project" "$tz" --model opencode-go/deepseek-v4.1-flash
 
 CC_CONFIG=$goalt check 62 '[[ $rc == 3 && $err == *"модель не в конфиге: opencode-go/other"* && ! -s $log ]]' \
   "$root/bin/code-channel" go "$project" "$tz" --model opencode-go/other
@@ -219,12 +219,12 @@ CC_CONFIG=$go check 56 '[[ $rc == 25 ]] && grep -Fq -- "worktree занят др
 flock -u 8
 exec 8>&-
 CC_CONFIG=$go check 57 '[[ $rc == 0 ]] && [[ $(grep -c "^opencode " "$log") == 2 ]] && grep -Fq -- "--session session-123" "$log"' \
-  env OPENCODE_SEQUENCE=124,0 OPENCODE_TOUCH=checkpoint-progress.txt SQLITE_SESSION_ID=session-123 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
+  env OPENCODE_SEQUENCE=1,0 OPENCODE_TOUCH=checkpoint-progress.txt SQLITE_SESSION_ID=session-123 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
 
 CC_CONFIG=$goidle check 58 '[[ $rc == 0 && $(grep -c "^opencode " "$log") == 2 ]] && [[ $(grep "^opencode " "$log" | sed -n 2p) == *"--session session-123"* ]]' \
   env OPENCODE_SEQUENCE=1,0 OPENCODE_TOUCH=resume-any-error.txt SQLITE_SESSION_ID=session-123 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
 
-CC_CONFIG=$go check 63 '[[ $rc != 0 && $(grep -c "^opencode " "$log") == 1 ]] && ! grep -q -- "--session" "$log" && grep -Fq -- "отказ провайдера, без продолжения сессии" "$tmp/err"' \
+CC_CONFIG=$go check 63 '[[ $rc == 1 && $(grep -c "^opencode " "$log") == 3 ]] && ! grep -q -- "--session" "$log" && grep -Fq -- "канал go недоступен" "$tmp/err"' \
   env OPENCODE_RC=1 OPENCODE_ERR='Error: Upstream request failed: test' SQLITE_SESSION_ID=session-123 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
 
 git -C "$project" clean -fdq
@@ -275,4 +275,17 @@ CC_CONFIG=$go check 74 '[[ $rc == 0 ]] && ! grep -Fq -- "/root/.nvm/versions/nod
 CC_CONFIG=$go check 75 '[[ $rc == 0 ]] && ! grep -Fq -- "/root/.nvm/versions/node/" "$log" && grep -Fxq -- "PATH='"$bin"':/usr/local/bin:/usr/bin:/bin" "$log"' \
   env PATH="$bin:/usr/local/bin:/usr/bin:/bin" SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
 
-[[ $ok == 75 ]] && echo 'PASS 75/75'
+CC_CONFIG='' check 76 '[[ $rc == 0 && $(grep -c -- "-m opencode-go/deepseek-v4.1-flash" "$log") == 2 ]] && grep -Fq -- "--agent audit" "$log"' \
+  env SQLITE_RESULT='opencode-go|deepseek-v4.1-flash' bash -c '"$1" go "$2" "$3" && "$1" audit "$2" "$3"' _ "$root/bin/code-channel" "$project" "$tz"
+CC_CONFIG='' check 77 '[[ $rc == 3 && $err == *"модель не в конфиге: opencode-go/deepseek-v4-pro"* && ! -s $log ]]' \
+  "$root/bin/code-channel" go "$project" "$tz" --model opencode-go/deepseek-v4-pro
+CC_CONFIG='' check 78 '[[ $rc == 23 && $err == *"сверка модели не прошла"* ]]' \
+  env SQLITE_RESULT='opencode-go|glm-5.3-flash' "$root/bin/code-channel" go "$project" "$tz"
+CC_CONFIG='' check 79 '[[ $rc == 0 ]] && grep -Eq "model=opencode-go/deepseek-v4.1-flash retries=1" "$tmp/err" && grep -q "\"retries\":1" "$runs"' \
+  env OPENCODE_SEQUENCE=1,0 OPENCODE_ERR='Error: Upstream request failed: test' SQLITE_RESULT='opencode-go|deepseek-v4.1-flash' "$root/bin/code-channel" go "$project" "$tz"
+CC_CONFIG='' check 80 '[[ $rc == 0 ]] && grep -Fq -- "запасная модель opencode-go/deepseek-v4-pro" "$tmp/err" && grep -Eq "model=opencode-go/deepseek-v4-pro retries=2" "$tmp/err"' \
+  env OPENCODE_SEQUENCE=1,1,1,0 OPENCODE_ERR='Error: Upstream request failed: test' SQLITE_RESULT='opencode-go|deepseek-v4-pro' "$root/bin/code-channel" go "$project" "$tz"
+CC_CONFIG='' check 81 '[[ $rc != 0 && $(grep -c "^opencode " "$log") == 4 ]] && grep -Fq -- "канал go недоступен" "$tmp/err"' \
+  env OPENCODE_RC=1 OPENCODE_ERR='Error: Upstream request failed: test' SQLITE_RESULT='opencode-go|deepseek-v4-pro' "$root/bin/code-channel" go "$project" "$tz"
+
+[[ $ok == 81 ]] && echo 'PASS 81/81'

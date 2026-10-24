@@ -18,7 +18,7 @@ strip_nvm_path() {
     printf '%s' "${out[*]}"
 }
 export PATH=$(strip_nvm_path "${PATH:-}")
-jq -e '(.ladder | type == "array") and ([.ladder[].id] | length == (unique | length)) and all(.ladder[]; (.id | type == "string") and (.enabled | type == "boolean") and (.model | type == "string") and ((.resume_model? // "") | type == "string") and ((.key? // "") | type == "string") and ((.secret? // "") | type == "string") and ((.base? // "") | type == "string") and ((.effort? // "") | type == "string") and ((.audit_model? // "") | type == "string") and ((.alt_models? // []) | type == "array" and all(.[]; type == "string")))' "$config" >/dev/null 2>&1 || { fail "конфиг $config не читается"; exit 3; }
+jq -e '(.ladder | type == "array") and ([.ladder[].id] | length == (unique | length)) and all(.ladder[]; (.id | type == "string") and (.enabled | type == "boolean") and (.model | type == "string") and ((.resume_model? // "") | type == "string") and ((.key? // "") | type == "string") and ((.secret? // "") | type == "string") and ((.base? // "") | type == "string") and ((.effort? // "") | type == "string") and ((.audit_model? // "") | type == "string") and ((.fallback_model? // "") | type == "string"))' "$config" >/dev/null 2>&1 || { fail "конфиг $config не читается"; exit 3; }
 opencfg_rel=$(jq -er '.opencode_config // ""' "$config") || exit 3
 if [[ -n $opencfg_rel ]]; then
     [[ $opencfg_rel == /* ]] && opencfg=$opencfg_rel || opencfg=$root/$opencfg_rel
@@ -116,12 +116,11 @@ run_sdk() {
 run_form() (
     export CODE_CHANNEL_ACTIVE=1
     id=$1; start=$SECONDS; pre=-; run=-; hdr=; tmpjson=; resphdr=; respbody=; codetmp=; oc_out=
-    IFS=$'\034' read -r model resume_model audit_model name secret base effort < <(entry_for "$id" | jq -r '[.model,.resume_model // "",.audit_model // "",.key // "",.secret // "",.base // "",.effort // ""] | join("\u001c")') || exit 3
-    if [[ -n $override && $override != "$model" && $override != "$resume_model" && $override != "$audit_model" ]]; then
-        entry_for "$id" | jq -e --arg m "$override" '((.alt_models? // []) | index($m)) != null' >/dev/null 2>&1 || {
-            fail "модель не в конфиге: $override"
-            exit 3
-        }
+    retries=0 primary_model= used_fallback=0
+    IFS=$'\034' read -r model resume_model audit_model fallback_model name secret base effort < <(entry_for "$id" | jq -r '[.model,.resume_model // "",.audit_model // "",.fallback_model // "",.key // "",.secret // "",.base // "",.effort // ""] | join("\u001c")') || exit 3
+    if [[ -n $override && $override != "$model" ]]; then
+        fail "модель не в конфиге: $override"
+        exit 3
     fi
     model=${override:-$model}
     if [[ $mode == audit && -z $override && -n $audit_model ]]; then model=$audit_model; fi
@@ -131,8 +130,8 @@ run_form() (
         local j=${CODE_CHANNEL_RUNS_LOG:-$S/runs.jsonl}
         mkdir -p -- "$(dirname -- "$j")"
         jq -nc --arg ts "$(date +%s)" --arg id "$id_run" --arg mode "$mode" --arg form "$id" \
-            --arg pe "$provider" --arg pa "$pa" --arg ma "$ma" --argjson rc "$r" --arg session "$session" \
-            '{ts:$ts,id:$id,mode:$mode,form:$form,provider_expected:$pe,provider_actual:$pa,model_actual:$ma,rc:$rc,session:$session}' \
+            --arg pe "$provider" --arg pa "$pa" --arg ma "$ma" --argjson rc "$r" --arg session "$session" --argjson retries "${retries:-0}" \
+            '{ts:$ts,id:$id,mode:$mode,form:$form,provider_expected:$pe,provider_actual:$pa,model_actual:$ma,rc:$rc,session:$session,retries:$retries}' \
             >>"$j"
     }
     reconcile() {
@@ -161,6 +160,10 @@ run_form() (
             printf 'code-channel: сверка провайдера не прошла\n' >&2
             return 23
         fi
+        if [[ $ma != "${model#*/}" ]]; then
+            printf 'code-channel: сверка модели не прошла: ожидалась %s, факт %s\n' "${model#*/}" "$ma" >&2
+            return 23
+        fi
         return 0
     }
     finish() {
@@ -171,7 +174,7 @@ run_form() (
         [[ -z $respbody ]] || unlink -- "$respbody"
         [[ -z $codetmp ]] || unlink -- "$codetmp"
         [[ -z $oc_out ]] || unlink -- "$oc_out"
-        printf 'code-channel: mode=%s form=%s provider=%s model=%s precheck=%s run=%s t=%s\n' "$mode" "$id" "$provider" "$model" "$pre" "$run" "$((SECONDS-start))" >&2
+        printf 'code-channel: mode=%s form=%s provider=%s model=%s retries=%s precheck=%s run=%s t=%s\n' "$mode" "$id" "$provider" "$model" "$retries" "$pre" "$run" "$((SECONDS-start))" >&2
         trap - EXIT; exit "$rc"
     }
     trap finish EXIT
@@ -306,6 +309,9 @@ run_form() (
     else
         oc_args=(--title "$id_run") oc_prompt=$prompt
         idle=0
+        primary_model=$model
+        retry_sleep=${CC_RETRY_SLEEP:-15}
+        [[ $retry_sleep =~ ^[0-9]+$ ]] || retry_sleep=15
         oc_out=$(mktemp "${TMPDIR:-/tmp}/code-channel-oc-XXXXXX") || exit 3
         seg_before=$(form_snap)
         cc_pre=$(cc_status)
@@ -313,6 +319,25 @@ run_form() (
         while :; do
             timeout 1800 opencode run "${oc_args[@]}" -m "$model" "$oc_prompt" < /dev/null 2>&1 | tee "$oc_out"; run=${PIPESTATUS[0]}
             [[ $run == 0 ]] && break
+            fresh=1; [[ ${oc_args[0]:-} != --session ]] || fresh=0
+            if [[ $fresh == 1 ]] && { [[ $run == 124 ]] || grep -q 'Upstream request failed:' "$oc_out"; }; then
+                if [[ $used_fallback == 0 ]]; then
+                    if (( retries < 2 )); then
+                        retries=$((retries + 1))
+                        printf 'code-channel: сбой провайдера rc=%s, повтор %s/2 через %ss\n' "$run" "$retries" "$((retry_sleep * retries))" >&2
+                        sleep $((retry_sleep * retries))
+                        continue
+                    fi
+                    if [[ -n $fallback_model && $fallback_model != "$primary_model" ]]; then
+                        used_fallback=1
+                        model=$fallback_model
+                        printf 'code-channel: запасная модель %s — причина: сбой провайдера %s\n' "$fallback_model" "$primary_model" >&2
+                        continue
+                    fi
+                fi
+                printf 'code-channel: канал %s недоступен — запасной выход: tools/bin/channel-canary, затем sdk-agent code\n' "$id" >&2
+                break
+            fi
             grep -q 'Upstream request failed:' "$oc_out" && { printf 'code-channel: отказ провайдера, без продолжения сессии\n' >&2; break; }
             sid=$(sqlite3 -readonly "$db" "$id_sid_sql" 2>/dev/null)
             [[ -n $sid ]] || break

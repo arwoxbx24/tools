@@ -7,7 +7,9 @@
 - `bin/code-channel auto <проект> <ТЗ-файл>` — автоматическая лестница.
 - `bin/code-channel audit <проект> <ТЗ-файл>` — аудит без изменений.
 - `bin/code-channel <id> <проект> <ТЗ-файл> [--model <m>]` — явный провайдер.
-- `alt_models` в записи провайдера — дополнительные модели, разрешённые для `--model`.
+- Одна закреплённая модель — для кода, audit и продолжения сессии; `resume_model` и `audit_model` равны `model`.
+- Сбой провайдера: 2 повтора на той же модели, затем один запуск `fallback_model`; если и он не поднялся — строка в stderr с запасным выходом `tools/bin/channel-canary`, затем `sdk-agent code` (переключение канала — решение ведущего).
+- Любая другая модель отвергается: rc 3 до запуска (`--model`), rc 23 после сверки, если `model_actual` не равна модели попытки.
 - Алиасы: `1` = `bitrixgpt`, `2` = `codex`, `3` = `openrouter`.
 - `bin/code-channel --plan` показывает включённую лестницу; `bin/code-channel --help` — справку, включая пути к конфигу и этой странице.
 
@@ -17,12 +19,12 @@
 
 ## Конфиг и провайдеры
 
-`config/code-channel.json` хранит массив с полями `id`, `enabled`, `model`, `resume_model` (продолжение сессии после rc 124), `audit_model` (модель режима `audit`; пусто — `model`), `effort` (только Codex); `key`, `secret`, `base` — только у платных HTTP-провайдеров. Порядок массива — порядок лестницы.
+`config/code-channel.json` хранит массив с полями `id`, `enabled`, `model`, `resume_model`/`audit_model` (равны `model`), `fallback_model` (один запуск при сбое провайдера), `effort` (только Codex); `key`, `secret`, `base` — только у платных HTTP-провайдеров. Порядок массива — порядок лестницы.
 
 | id | состояние | модель / параметр |
 | --- | --- | --- |
 | `sdk` | выключен (owner 22.10: переключено на Go) | `bin/sdk-agent code` (audit: `sdk-agent read`), claude-sonnet-5-5; any failure (budget, daily cap 7 USD, error) → rc 17, вызов кончается |
-| `go` | включён (owner 22.10: «Open Code Go: усилить … выбирай лучший вариант»; требование: большой контекст без остановок, запас лимитов — bd memory `owner-go-model-requirement-2210`) | code `opencode-go/deepseek-v4.1-flash`; продолжение `opencode-go/glm-5.3-flash`; audit `opencode-go/glm-5.3-flash` (хранение 0 дней по opencode.ai/docs/go; GPT Luna хранит логи до 30 дней — не для кода); `--model opencode-go/deepseek-v4-pro` (шаг до 510 с) |
+| `go` | включён (owner 22.10: «Open Code Go: усилить … выбирай лучший вариант»; требование: большой контекст без остановок, запас лимитов — bd memory `owner-go-model-requirement-2210`) | единая модель `opencode-go/deepseek-v4.1-flash` для code, audit и продолжения (хранение 0 дней по opencode.ai/docs/go; GPT Luna хранит логи до 30 дней — не для кода); при сбое провайдера — `opencode-go/deepseek-v4-pro`, затем `tools/bin/channel-canary`/`sdk-agent code` |
 | `codex` | выключен | модель профиля; `effort: high` |
 | `openrouter` | выключен; включается словом владельца | `openrouter/deepseek/deepseek-v4-flash` |
 | `bitrixgpt` | выключен | — |
@@ -32,7 +34,7 @@
 
 Включена ровно одна запись — активный канал; сейчас `sdk` (owner 19.10), `go` выключена. Переключение — только по слову владельца, назвавшего канал («работаем через OpenCode Go», «через OpenRouter», «через SDK-агент»): у этой записи `enabled: true`, у остальных `false`, PR в tools, затем `git-sync tools`; `bin/code-channel --plan` печатает только её id. Канал общий для всех агентов сервера и держится до нового слова владельца; закон — `/root/CLAUDE.md` «CODE CHANNELS». Codex, Kimi и Bitrix GPT — только по слову владельца.
 
-Ошибка провайдера или rc 0 без изменений переводит к следующему включённому. Сразу остановиться: 3, 5, 15, 22, 24. Последний провайдер возвращает свой rc либо 16.
+Сбой провайдера: 2 повтора на той же модели, затем один запуск `fallback_model`, затем остановка с подсказкой `channel-canary`/`sdk-agent code`. rc 0 без изменений переводит к следующему включённому. Сразу остановиться: 3, 5, 15, 22, 24. Последний провайдер возвращает свой rc либо 16.
 
 ## Коды выхода
 
@@ -47,7 +49,7 @@
 | 17 | форма `sdk` не выполнила задачу (код `sdk-agent` в stderr); лестница идёт дальше |
 | 21 | Codex; см. stderr |
 | 22 | audit изменил файлы |
-| 23 | сверка провайдера |
+| 23 | сверка провайдера или модели |
 | 24 | read-only среда Codex и нет правок (правки есть — rc 0) |
 | 30 | рекурсия |
 | 124 | таймаут самого исполнителя (канал своих таймеров не ставит, owner 12.10) |
@@ -58,7 +60,7 @@
 
 Внутри исполнителя задан `CODE_CHANNEL_ACTIVE`: любой вызов канала — exit 30. При ошибке не повторяйте канал: прочитайте stderr, исправьте причину, затем один повтор. Исполнитель не делает git add/commit: коммит делает оркестратор (ship-post).
 
-Журнал: `state/code-channel/runs.jsonl` — поля `provider_expected`, `provider_actual`, `rc`.
+Журнал: `state/code-channel/runs.jsonl` — поля `provider_expected`, `provider_actual`, `model_actual`, `rc`, `retries`, `session`.
 
 ## Пролонгация
 
