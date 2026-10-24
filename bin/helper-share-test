@@ -56,6 +56,13 @@ check 'T5 --days aggregates files -> 75%' \
 "$dir/helper-share" --bogus >/dev/null 2>&1; bad_rc=$?
 check 'T6 unknown arg rc 2' '2' "$bad_rc"
 
+cat > "$d/launch-vs-mention.jsonl" <<'EOF'
+{"type":"assistant","isSidechain":false,"message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"/root/workspaces/tools/bin/code-channel audit /tmp/x /tmp/x/TZ.md"}},{"type":"tool_use","name":"Bash","input":{"command":"tail -n 5 /tmp/a/code-channel.out"}}]}}
+EOF
+check 'T7 helper launch H, mention-only tail L' \
+  'helper-share: 50% helpers=1 lead=1' \
+  "$("$dir/helper-share" --session "$d/launch-vs-mention.jsonl")"
+
 if [[ $ok == $total ]]; then
   echo "helper-share-test: PASS $ok/$total"
 else
