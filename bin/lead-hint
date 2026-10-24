@@ -195,6 +195,33 @@ case $event in
   PostToolUse)
     [[ -f $transcript_path && -r $transcript_path ]] || exit 0
 
+    # A lone helper launch in its assistant message is nudged to start the rest
+    # of the ready units now; parallel launches (2+) get no nudge. Never denies.
+    tool_name=$(jq -r '.tool_name // empty' <<<"$payload" 2>/dev/null) || exit 0
+    tool_cmd=$(jq -r '.tool_input.command // empty' <<<"$payload" 2>/dev/null) || exit 0
+    if [[ $tool_name == Bash && $tool_cmd =~ $helper_re ]]; then
+      helpers=$(tac -- "$transcript_path" 2>/dev/null | jq -R -rn --arg re "$helper_re" '
+        [ label $out |
+          (foreach inputs as $line ({v: null, stop: false};
+             (try ($line | fromjson) catch null) as $v
+             | if .stop then .
+               elif ($v | type) != "object" then .
+               elif ($v.type == "assistant" and ($v.isSidechain != true)
+                     and any($v.message.content[]?; .type == "tool_use" and .name == "Bash")) then
+                 {v: $v, stop: true}
+               else . end;
+             if .stop then .v, break $out else empty end) )
+        ] | last // empty
+        | [ .message.content[]? | select(.type == "tool_use" and .name == "Bash")
+            | (.input.command // "") | select(test($re)) ] | length
+      ' 2>/dev/null)
+      if [[ $helpers == 1 ]]; then
+        jq -cn '{hookSpecificOutput:{hookEventName:"PostToolUse",additionalContext:"lead-hint: 1 helper stream running. Start every other ready independent unit now in parallel (PARALLEL HELPERS N=min(8,K)); waiting is forbidden."}}' \
+          2>/dev/null || exit 0
+        exit 0
+      fi
+    fi
+
     # Same counted-call program and window as the PreToolUse deny.
     count=$(scan_calls "$calls_count" "$count_window") || exit 0
     [[ $count =~ ^[0-9]+$ ]] || exit 0
@@ -256,17 +283,25 @@ case $event in
     ' 2>/dev/null) || exit 0
     [[ -n $text ]] || exit 0
 
-    match=0
+    reason_owner='lead-strict: the owner is not a developer and gave a standing order: no questions, no choices, no delegation to the owner (24.10). Make the decision yourself, record a one-line ADR in bd, do the step (bd/git/gh/safe-delete are your own sanctioned steps, never a reason to stop) and continue to the goal. Only a physical step (login, key) may be handed to the owner.'
+    reason_wait='lead-hint: waiting is forbidden (owner 24.10). Launch every other ready independent unit now in one message (PARALLEL HELPERS N=min(8,K)); if nothing independent remains, end with the result, not a wait announcement.'
+    match_reason=
     if jq -en --arg t "$text" \
+      --arg re 'жду|ожида(ю|ем|ние)|дожд(у|усь|ёмся)|подожд|waiting for|wait for|проверю[^.]*когда|когда придёт уведомление|after the notification' \
+      '($t | split("\n") | map(select(test("\\S")))) | last // ""
+       | test($re; "i")' \
+      >/dev/null 2>&1; then
+      match_reason=$reason_wait
+    elif jq -en --arg t "$text" \
       '$t | test("ответьте|NEEDS INPUT|выберите|какой вариант|что делаем\\?|как поступ|подтвердите|разрешите|делать ли|продолжать\\?|ваше слово|на ваше усмотрение|решать вам|скажите,? (что|как|какой)|одним словом"; "i")' \
       >/dev/null 2>&1; then
-      match=1
+      match_reason=$reason_owner
     elif jq -en --arg t "$text" \
       '($t | split("\n") | map(select(test("\\S")))) as $lines
        | ($lines | length) > 0
        and (($lines[-1] | gsub("^\\s+|\\s+$"; "")) | endswith("?") or endswith("？"))' \
       >/dev/null 2>&1; then
-      match=1
+      match_reason=$reason_owner
     fi
 
     counter_dir=/tmp/lead-hint-stop
@@ -279,7 +314,7 @@ case $event in
     [[ -f $cfile ]] && prev=$(cat -- "$cfile" 2>/dev/null)
     [[ $prev =~ ^[0-9]+$ ]] || prev=0
 
-    if (( ! match )); then
+    if [[ -z $match_reason ]]; then
       printf '0\n' >"$cfile" 2>/dev/null
       exit 0
     fi
@@ -291,7 +326,7 @@ case $event in
     fi
     printf '%d\n' $((prev + 1)) >"$cfile" 2>/dev/null
 
-    jq -cn --arg reason 'lead-strict: the owner is not a developer and gave a standing order: no questions, no choices, no delegation to the owner (24.10). Make the decision yourself, record a one-line ADR in bd, do the step (bd/git/gh/safe-delete are your own sanctioned steps, never a reason to stop) and continue to the goal. Only a physical step (login, key) may be handed to the owner.' \
+    jq -cn --arg reason "$match_reason" \
       '{decision:"block",reason:$reason}' 2>/dev/null || exit 0
     ;;
 esac

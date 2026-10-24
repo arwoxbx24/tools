@@ -11,6 +11,10 @@
 - Алиасы: `1` = `bitrixgpt`, `2` = `codex`, `3` = `openrouter`.
 - `bin/code-channel --plan` показывает включённую лестницу; `bin/code-channel --help` — справку, включая пути к конфигу и этой странице.
 
+## Parallel runs
+
+Замок — на каталог проекта: `bin/code-channel` делает `cd -- "$project"` и берёт `flock` на хеш `$PWD`, поэтому N параллельных прогонов требуют N разных каталогов проекта (worktree). Второй запуск в том же каталоге выходит с rc 25 «worktree занят». Read-only аудиты одного репозитория тоже идут каждый в своём worktree. Все N вызовов — одним сообщением, в фоне (`/root/CLAUDE.md`, PARALLEL HELPERS).
+
 ## Конфиг и провайдеры
 
 `config/code-channel.json` хранит массив с полями `id`, `enabled`, `model`, `resume_model` (продолжение сессии после rc 124), `audit_model` (модель режима `audit`; пусто — `model`), `effort` (только Codex); `key`, `secret`, `base` — только у платных HTTP-провайдеров. Порядок массива — порядок лестницы.

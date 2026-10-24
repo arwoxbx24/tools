@@ -5,7 +5,7 @@ dir=$(cd -- "$(dirname -- "$0")" && pwd)
 d=$(mktemp -d /tmp/lead-hint-test.XXXXXX)
 trap 'rm -rf "$d"' EXIT
 ok=0
-total=55
+total=62
 crdir=/tmp/lead-hint-stop
 srun="lh-$$-$RANDOM"
 clean_sid() { rm -f "$crdir/$1"; }
@@ -608,6 +608,83 @@ if [[ $rc == 0 && $dec == deny ]]; then
   echo 'PASS 55: 9 counted without helper -> deny'; ok=$((ok+1))
 else
   echo "FAIL 55: rc=$rc out=$out"
+fi
+
+reason_wait='lead-hint: waiting is forbidden (owner 24.10). Launch every other ready independent unit now in one message (PARALLEL HELPERS N=min(8,K)); if nothing independent remains, end with the result, not a wait announcement.'
+tx56=$d/tx56.jsonl
+{ mk_user; mk_text 'Проверю, когда придёт уведомление.'; } >"$tx56"
+sid56="$srun-56"; clean_sid "$sid56"
+out=$(mk_stop "$tx56" "$sid56" | run_hook); rc=$?
+dec=$(jq -r '.decision // empty' <<<"$out" 2>/dev/null)
+reason=$(jq -r '.reason // empty' <<<"$out" 2>/dev/null)
+if [[ $rc == 0 && $dec == block && $reason == "$reason_wait" ]]; then
+  echo 'PASS 56: Stop wait announcement -> block'; ok=$((ok+1))
+else
+  echo "FAIL 56: rc=$rc out=$out"
+fi
+
+sid57="$srun-57"; clean_sid "$sid57"
+blocks=0
+for _ in 1 2 3; do
+  out=$(mk_stop "$tx56" "$sid57" | jq -c '.stop_hook_active=true' | run_hook)
+  dec=$(jq -r '.decision // empty' <<<"$out" 2>/dev/null)
+  [[ $dec == block ]] && blocks=$((blocks+1))
+done
+out=$(mk_stop "$tx56" "$sid57" | jq -c '.stop_hook_active=true' | run_hook); rc=$?
+if [[ $rc == 0 && $blocks == 3 && -z $out ]]; then
+  echo 'PASS 57: repeated wait stop_hook_active 4th -> empty'; ok=$((ok+1))
+else
+  echo "FAIL 57: blocks=$blocks rc=$rc out=$out"
+fi
+
+tx58=$d/tx58.jsonl
+{ mk_user; mk_text 'DONE: PR 5 MERGED'; } >"$tx58"
+sid58="$srun-58"; clean_sid "$sid58"
+out=$(mk_stop "$tx58" "$sid58" | run_hook); rc=$?
+if [[ $rc == 0 && -z $out ]]; then
+  echo 'PASS 58: Stop result last line -> empty'; ok=$((ok+1))
+else
+  echo "FAIL 58: rc=$rc out=$out"
+fi
+
+tx59=$d/tx59.jsonl
+{ mk_user; mk_text 'DONE `жду`'; } >"$tx59"
+sid59="$srun-59"; clean_sid "$sid59"
+out=$(mk_stop "$tx59" "$sid59" | run_hook); rc=$?
+if [[ $rc == 0 && -z $out ]]; then
+  echo 'PASS 59: wait word in backticks -> empty'; ok=$((ok+1))
+else
+  echo "FAIL 59: rc=$rc out=$out"
+fi
+
+tx60=$d/tx60.jsonl
+{ mk_user; mk_text $'жду уведомления.\nDONE: PR 5 MERGED'; } >"$tx60"
+sid60="$srun-60"; clean_sid "$sid60"
+out=$(mk_stop "$tx60" "$sid60" | run_hook); rc=$?
+if [[ $rc == 0 && -z $out ]]; then
+  echo 'PASS 60: wait word in middle line -> empty'; ok=$((ok+1))
+else
+  echo "FAIL 60: rc=$rc out=$out"
+fi
+
+tx61=$d/tx61.jsonl
+{ mk_user; mk_bash 'code-channel audit a a/tz.md'; } >"$tx61"
+out=$(jq -cn --arg tp "$tx61" '{hook_event_name:"PostToolUse",transcript_path:$tp,tool_name:"Bash",tool_input:{command:"code-channel audit a a/tz.md"}}' | run_hook); rc=$?
+ctx=$(ctx_of "$out")
+if [[ $rc == 0 && $ctx == *"1 helper stream"* ]]; then
+  echo 'PASS 61: lone helper launch -> 1 helper stream nudge'; ok=$((ok+1))
+else
+  echo "FAIL 61: rc=$rc out=$out"
+fi
+
+tx62=$d/tx62.jsonl
+{ mk_user; mk_bash2 'code-channel audit a a/tz.md' 'sdk-agent audit b b/tz.md'; } >"$tx62"
+out=$(jq -cn --arg tp "$tx62" '{hook_event_name:"PostToolUse",transcript_path:$tp,tool_name:"Bash",tool_input:{command:"code-channel audit a a/tz.md"}}' | run_hook); rc=$?
+ctx=$(ctx_of "$out")
+if [[ $rc == 0 && $ctx != *"1 helper stream"* ]]; then
+  echo 'PASS 62: two helper launches -> no nudge'; ok=$((ok+1))
+else
+  echo "FAIL 62: rc=$rc out=$out"
 fi
 
 if [[ $ok == $total ]]; then
