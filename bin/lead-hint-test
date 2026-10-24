@@ -5,7 +5,7 @@ dir=$(cd -- "$(dirname -- "$0")" && pwd)
 d=$(mktemp -d /tmp/lead-hint-test.XXXXXX)
 trap 'rm -rf "$d"' EXIT
 ok=0
-total=6
+total=7
 
 cat > "$d/code-channel" <<'STUB'
 #!/usr/bin/env bash
@@ -27,6 +27,12 @@ mk_read() {
 }
 mk_user() {
   jq -cn '{type:"user",message:{content:"owner message"}}'
+}
+mk_attach() {
+  jq -cn '{type:"attachment",attachment:{humanTurn:true,prompt:"owner message",origin:{kind:"human"}}}'
+}
+mk_notice() {
+  jq -cn '{type:"user",origin:{kind:"task-notification"},message:{content:"task finished"}}'
 }
 run_hook() {
   CODE_CHANNEL="$d/code-channel" HELPER_SHARE="$d/helper-share" "$dir/lead-hint"
@@ -87,6 +93,16 @@ if [[ $help_rc == 0 && $help_out == usage:* ]]; then
   echo 'PASS 6: --help rc 0'; ok=$((ok+1))
 else
   echo "FAIL 6: rc=$help_rc out=$help_out"
+fi
+
+tx7=$d/tx7.jsonl
+{ mk_attach; for _ in $(seq 9); do mk_read; done; mk_notice; } >"$tx7"
+out=$(jq -cn --arg tp "$tx7" '{hook_event_name:"PostToolUse",transcript_path:$tp}' | run_hook); rc=$?
+ctx=$(ctx_of "$out"); ev=$(event_of "$out")
+if [[ $rc == 0 && $ev == PostToolUse && $ctx == 'lead-hint: 9 own investigative calls this turn (limit 8).'* ]]; then
+  echo 'PASS 7: attachment owner + 9 Reads -> hint'; ok=$((ok+1))
+else
+  echo "FAIL 7: rc=$rc out=$out"
 fi
 
 if [[ $ok == $total ]]; then
