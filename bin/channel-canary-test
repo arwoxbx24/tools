@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+set -u
+
+dir=$(cd -- "$(dirname -- "$0")" && pwd)
+d="${TMPDIR:-/tmp}/channel-canary-test-$$"
+mkdir -p "$d"
+trap 'rm -rf "$d"; for x in ${canary_dirs:-}; do rm -rf "$x"; done' EXIT
+ok=0
+canary_dirs=''
+
+cat > "$d/stub" <<'STUB'
+#!/usr/bin/env bash
+if [[ ${1:-} == --plan ]]; then printf '%s\n' 'stub-model high'; exit 0; fi
+n=$(cat "$STUB_DIR/count" 2>/dev/null || printf 0); n=$((n + 1)); printf '%s\n' "$n" > "$STUB_DIR/count"
+beh=$(sed -n "${n}p" "$STUB_DIR/seq")
+case $beh in
+  ok) printf 'CANARY-OK\n'; exit 0 ;;
+  nomark) printf 'CANARY-NO\n'; exit 0 ;;
+  *) printf 'stub: failed\n'; exit 1 ;;
+esac
+STUB
+chmod 755 "$d/stub"
+
+run_case() { # seq...
+  printf '%s\n' "$@" > "$d/seq"
+  printf '0\n' > "$d/count"
+  out=$(STUB_DIR="$d" CODE_CHANNEL="$d/stub" "$dir/channel-canary" /tmp/proj 2>&1); rc=$?
+}
+
+# 1: stub ok -> rc 0, called once
+run_case ok
+cnt=$(<"$d/count")
+if [[ $rc == 0 && $out == 'channel-canary: up ('* && $cnt == 1 ]]; then
+  echo 'PASS 1: up, single run'; ok=$((ok + 1))
+else echo "FAIL 1: rc=$rc cnt=$cnt out=$out"; fi
+
+# 2: stub fails twice -> rc 1, evidence named, both kept
+run_case fail fail
+r1=$(grep -oE '/tmp/channel-canary\.[A-Za-z0-9]+/run1\.out' <<<"$out" | head -n1)
+r2=$(grep -oE '/tmp/channel-canary\.[A-Za-z0-9]+/run2\.out' <<<"$out" | head -n1)
+canary_dirs="${r1%/run1.out} ${r2%/run2.out}"
+if [[ $rc == 1 && -n $r1 && -n $r2 && -f $r1 && -f $r2 && $out == 'channel-canary: down ('*"$r1 $r2"* && $out == *'rc run1=1 run2=1'* ]]; then
+  echo 'PASS 2: down, two runs, evidence kept'; ok=$((ok + 1))
+else echo "FAIL 2: rc=$rc r1=$r1 r2=$r2 out=$out"; fi
+
+# 3: fail then ok -> rc 0, up after retry
+run_case fail ok
+if [[ $rc == 0 && $out == 'channel-canary: up after retry ('* ]]; then
+  echo 'PASS 3: up after retry'; ok=$((ok + 1))
+else echo "FAIL 3: rc=$rc out=$out"; fi
+
+# 4: rc 0 without CANARY-OK -> failure
+run_case nomark
+if [[ $rc == 1 && $out == 'channel-canary: down ('* ]]; then
+  echo 'PASS 4: missing marker is a failure'; ok=$((ok + 1))
+else echo "FAIL 4: rc=$rc out=$out"; fi
+
+# 5: --help -> rc 0, usage on stdout
+out=$("$dir/channel-canary" --help 2>/dev/null); rc=$?
+if [[ $rc == 0 && $out == usage:* ]]; then
+  echo 'PASS 5: --help'; ok=$((ok + 1))
+else echo "FAIL 5: rc=$rc out=$out"; fi
+
+printf 'channel-canary-test: PASS %s/5\n' "$ok"
+[[ $ok == 5 ]]

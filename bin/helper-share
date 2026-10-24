@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# ponytail: bash+jq point glue; upgrade path = fold into a shared jq analyzer if a second metric appears
+set -u
+
+usage() {
+  cat <<'EOF'
+usage: bin/helper-share --session <file.jsonl> | --days N [--help]
+
+Print the helper share of a Claude Code main session (sidechains excluded).
+  H = Bash call whose command contains code-channel or sdk-agent as a word
+  L = Read/Grep/Glob/WebFetch/WebSearch, code-file Edit/Write, or Bash
+      starting with grep rg find ls cat head tail sed wc
+Output: helper-share: <pct>% helpers=<H> lead=<L>  (pct rounded down)
+--days N scans $HELPER_SHARE_DIR/*/*.jsonl (default /root/.claude/projects)
+modified in the last N days.
+EOF
+}
+
+# Emit H/L per counted tool_use; everything else is silent.
+classify() {
+  local -a files=("$@")
+  (( ${#files[@]} )) || return 0
+  jq -r '
+    def classify:
+      . as $c
+      | ($c.input.command // "") as $cmd
+      | if ($c.name == "Bash") and ($cmd | test("(^|[^A-Za-z0-9_-])(code-channel|sdk-agent)([^A-Za-z0-9_-]|$)")) then "H"
+        elif (["Read","Grep","Glob","WebFetch","WebSearch"] | index($c.name)) != null then "L"
+        elif (($c.name == "Edit" or $c.name == "Write")
+              and (($c.input.file_path // "") | test("\\.(sh|py|js|ts|mjs|cjs|go|rb|rs|java|php)$"))) then "L"
+        elif ($c.name == "Bash")
+             and ((["grep","rg","find","ls","cat","head","tail","sed","wc"]
+                   | index(([$cmd | scan("\\S+")][0]) // "")) != null) then "L"
+        else empty end;
+    select(.type == "assistant" and .isSidechain != true)
+    | .message.content[]?
+    | select(.type == "tool_use")
+    | classify
+  ' "${files[@]}" 2>/dev/null
+}
+
+report() {
+  read -r h l < <(classify "$@" | awk '{if ($1=="H") h++; else if ($1=="L") l++} END {print h+0, l+0}')
+  if (( h + l == 0 )); then
+    echo 'helper-share: n/a helpers=0 lead=0'
+  else
+    echo "helper-share: $((h * 100 / (h + l)))% helpers=$h lead=$l"
+  fi
+}
+
+case ${1:-} in
+  --help)
+    [[ $# == 1 ]] || { usage >&2; exit 2; }
+    usage
+    ;;
+  --session)
+    [[ $# == 2 ]] || { usage >&2; exit 2; }
+    report "$2"
+    ;;
+  --days)
+    [[ $# == 2 && $2 =~ ^[0-9]+$ ]] || { usage >&2; exit 2; }
+    dir=${HELPER_SHARE_DIR:-/root/.claude/projects}
+    files=()
+    while IFS= read -r -d '' f; do files+=("$f"); done \
+      < <(find "$dir" -type f -name '*.jsonl' -mtime "-$2" -print0 2>/dev/null)
+    report "${files[@]}"
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac
+exit 0

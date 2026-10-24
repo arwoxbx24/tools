@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# ponytail: bash+jq hook glue; upgrade path = shared jq module if siblings grow
+set -u
+
+if [[ ${1:-} == --help ]]; then
+  echo "usage: bin/lead-hint [--help]"
+  echo "PostToolUse/UserPromptSubmit hook for the lead Claude Code session only."
+  echo "Reads one hook JSON object from stdin. With a non-empty .agent_id prints nothing."
+  echo "PostToolUse: above LEAD_HINT_MAX (default 8) own investigative calls in the current"
+  echo "turn prints a hint naming 'code-channel audit'. UserPromptSubmit: prints the"
+  echo "helper-share line for .transcript_path. Bad input/other events: no output."
+  echo "Always exits 0."
+  exit 0
+fi
+
+payload=$(cat 2>/dev/null) || exit 0
+[[ -n $payload ]] || exit 0
+jq -e 'type == "object"' >/dev/null 2>&1 <<<"$payload" || exit 0
+
+agent_id=$(jq -r '.agent_id // empty' <<<"$payload" 2>/dev/null) || exit 0
+[[ -n $agent_id ]] && exit 0
+
+event=$(jq -r '.hook_event_name // empty' <<<"$payload" 2>/dev/null) || exit 0
+transcript_path=$(jq -r '.transcript_path // empty' <<<"$payload" 2>/dev/null) || exit 0
+[[ -n $transcript_path ]] || exit 0
+
+case $event in
+  PostToolUse)
+    [[ -f $transcript_path && -r $transcript_path ]] || exit 0
+    count=$(jq -R 'fromjson? // empty' "$transcript_path" 2>/dev/null | jq -s '
+      [ .[] ] as $lines
+      | ([ $lines | to_entries[]
+           | select(.value.type == "user" and ((.value.message.content | type) == "string"))
+           | .key ] | last // -1) as $owner
+      | [ $lines[($owner + 1):][]
+          | select(.type == "assistant" and (.isSidechain != true))
+          | .message.content[]?
+          | select(.type == "tool_use")
+          | . as $tool
+          | select(
+              ((["Read","Grep","Glob","WebFetch","WebSearch"] | index($tool.name)) != null)
+              or (
+                $tool.name == "Bash"
+                and (((($tool.input.command // "") | split(" ")[0]) as $word
+                      | (["grep","rg","find","ls","cat","head","tail","sed","wc"] | index($word)) != null))
+              )
+            )
+        ] | length
+    ' 2>/dev/null) || exit 0
+    [[ $count =~ ^[0-9]+$ ]] || exit 0
+
+    max=${LEAD_HINT_MAX:-8}
+    [[ $max =~ ^[0-9]+$ ]] || max=8
+    (( count > max )) || exit 0
+
+    channel=${CODE_CHANNEL:-/root/workspaces/tools/bin/code-channel}
+    if plan_out=$("$channel" --plan 2>/dev/null); then
+      plan=$(printf '%s\n' "$plan_out" | head -n1)
+      [[ -n $plan ]] || plan=unknown
+    else
+      plan=unknown
+    fi
+
+    jq -cn --arg count "$count" --arg max "$max" --arg plan "$plan" \
+      '{hookSpecificOutput:{hookEventName:"PostToolUse",additionalContext:("lead-hint: " + $count + " own investigative calls this turn (limit " + $max + "). Route the rest to a helper: write a TZ file, run /root/workspaces/tools/bin/code-channel audit <project> <tz.md> in the background; active channel: " + $plan + ".")}}' \
+      2>/dev/null || exit 0
+    ;;
+
+  UserPromptSubmit)
+    helper=${HELPER_SHARE:-/root/workspaces/tools/bin/helper-share}
+    helper_out=$("$helper" --session "$transcript_path" 2>/dev/null) || exit 0
+    line=$(printf '%s\n' "$helper_out" | head -n1)
+    [[ -n $line ]] || exit 0
+
+    jq -cn --arg text "$line" \
+      '{hookSpecificOutput:{hookEventName:"UserPromptSubmit",additionalContext:$text}}' \
+      2>/dev/null || exit 0
+    ;;
+esac
+
+exit 0
