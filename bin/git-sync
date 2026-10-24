@@ -29,7 +29,7 @@ emit(){ # <name> <status> [ref...] — печать + журнал; rc по stat
 }
 
 sync_one(){ # <name> — одно репо под ga_ctx; гейты до спасения
-	local name=$1 reason branch dirty s ref r refs active now ht p h obj dif cof savedmain prod=main
+	local name=$1 reason branch dirty s ref r refs active now ht p h obj dif cof savedmain prod=main t
 	reason=$(ga_skip_reason "$name")
 	[[ -z $reason ]] || { emit "$name" "skip:$reason"; return $?; }
 	ga_ctx "$name" 2>/dev/null || { emit "$name" err:ctx; return $?; }
@@ -65,9 +65,10 @@ sync_one(){ # <name> — одно репо под ga_ctx; гейты до спа
 	dif=$(git diff --name-only --diff-filter=A HEAD origin/$prod 2>/dev/null)
 	cof=""
 	while IFS= read -r p; do
-		[[ -n $p && -e $p ]] || continue
+		t="$GIT_WORK_TREE/$p"
+		[[ -n $p && -e $t ]] || continue
 		cof="-f"
-		h=$(git hash-object -- "$p" 2>/dev/null)
+		h=$(git hash-object -- "$t" 2>/dev/null)
 		obj=$(git rev-parse "origin/$prod:$p" 2>/dev/null)
 		[[ $h == "$obj" ]] || { emit "$name" err:untracked; return $?; }
 	done <<<"$dif"
@@ -116,7 +117,11 @@ run_one(){ # <name> — замок; без него skip:locked
 }
 
 arg=${1:-}
-[[ ${1:-} == --min-idle ]] && { min_idle=${2:?--min-idle N}; shift 2; arg=${1:-}; }
+if [[ ${1:-} == --min-idle ]]; then
+	min_idle=${2:?--min-idle N}; shift 2; arg=${1:-}
+elif [[ ${2:-} == --min-idle ]]; then
+	min_idle=${3:?--min-idle N}
+fi
 if [[ $arg == --all ]]; then
 	buf=$({ ga_roots | cut -f1 | timeout 240 xargs -P 4 -n 1 "$0" --min-idle "$min_idle" 2>&1; }); rc=$?
 	(( rc == 124 )) && { printf 'err:budget\n'; rc=1; }
