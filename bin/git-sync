@@ -29,17 +29,18 @@ emit(){ # <name> <status> [ref...] — печать + журнал; rc по stat
 }
 
 sync_one(){ # <name> — одно репо под ga_ctx; гейты до спасения
-	local name=$1 reason branch dirty s ref r refs active now ht p h obj dif cof savedmain prod=main t
+	local name=$1 reason branch dirty s ref r refs active now ht p h obj dif cof savedmain prod=main t e
 	reason=$(ga_skip_reason "$name")
 	[[ -z $reason ]] || { emit "$name" "skip:$reason"; return $?; }
 	ga_ctx "$name" 2>/dev/null || { emit "$name" err:ctx; return $?; }
 	read -r _ _ prod <<< "$(ga_base "$GA_LIVE" local 2>/dev/null)" 2>/dev/null || prod=main
 	[[ -n ${prod:-} ]] || prod=main
 	git remote get-url origin >/dev/null 2>&1 || { emit "$name" skip:no-remote; return $?; }
-	timeout 20 git fetch --quiet origin $prod 2>/dev/null \
+	e=$(timeout 20 git fetch --quiet origin $prod 2>&1 >/dev/null) \
 		|| { git rev-parse -q --verify refs/remotes/origin/$prod >/dev/null 2>&1 \
 			|| { emit "$name" skip:no-main; return $?; }
-			emit "$name" err:fetch; return $?; }
+			e=${e%%$'\n'*}; e=${e//err:/}
+			emit "$name" err:fetch ${e:+"$e"}; return $?; }
 	branch=$(git symbolic-ref --short -q HEAD 2>/dev/null) || branch=detached
 	dirty=$(git status --porcelain -uno 2>/dev/null | wc -l)
 	if [[ $branch == $prod && $dirty == 0 ]]; then
@@ -50,10 +51,12 @@ sync_one(){ # <name> — одно репо под ga_ctx; гейты до спа
 		fi
 		# локальный $prod впереди origin — спасение prod-local
 		ref="refs/rescue/$stamp/$prod-local"
-		git update-ref "$ref" HEAD || { emit "$name" err:main-local; return $?; }
+		e=$(git update-ref "$ref" HEAD 2>&1 >/dev/null) \
+			|| { e=${e%%$'\n'*}; e=${e//err:/}; emit "$name" err:main-local ${e:+"$e"}; return $?; }
 		[[ $(git rev-parse --verify -q "$ref" 2>/dev/null) == "$(git rev-parse HEAD)" ]] \
 			|| { emit "$name" err:main-local; return $?; }
-		git reset --hard -q origin/$prod 2>/dev/null || { emit "$name" err:reset; return $?; }
+		e=$(git reset --hard -q origin/$prod 2>&1 >/dev/null) \
+			|| { e=${e%%$'\n'*}; e=${e//err:/}; emit "$name" err:reset ${e:+"$e"}; return $?; }
 		emit "$name" rescued "$ref"; return $?
 	fi
 	now=$(date +%s); active=""
@@ -77,13 +80,15 @@ sync_one(){ # <name> — одно репо под ga_ctx; гейты до спа
 	s=$(git stash create) || { emit "$name" err:rescue; return $?; }
 	if [[ -n $s ]]; then
 		r="refs/rescue/$stamp/$branch-wip"
-		git update-ref "$r" "$s" || { emit "$name" err:rescue; return $?; }
+		e=$(git update-ref "$r" "$s" 2>&1 >/dev/null) \
+			|| { e=${e%%$'\n'*}; e=${e//err:/}; emit "$name" err:rescue ${e:+"$e"}; return $?; }
 		[[ $(git rev-parse --verify -q "$r" 2>/dev/null) == "$s" ]] || { emit "$name" err:rescue; return $?; }
 		refs="$refs $r"
 	fi
 	if [[ $branch != $prod ]]; then
 		r="refs/rescue/$stamp/$branch-tip"
-		git update-ref "$r" HEAD || { emit "$name" err:rescue; return $?; }
+		e=$(git update-ref "$r" HEAD 2>&1 >/dev/null) \
+			|| { e=${e%%$'\n'*}; e=${e//err:/}; emit "$name" err:rescue ${e:+"$e"}; return $?; }
 		[[ $(git rev-parse --verify -q "$r" 2>/dev/null) == "$(git rev-parse HEAD)" ]] \
 			|| { emit "$name" err:rescue; return $?; }
 		refs="$refs $r"
@@ -93,15 +98,17 @@ sync_one(){ # <name> — одно репо под ga_ctx; гейты до спа
 	if git show-ref -q --verify refs/heads/$prod 2>/dev/null \
 		&& ! git merge-base --is-ancestor $prod origin/$prod 2>/dev/null; then
 		r="refs/rescue/$stamp/$prod-local"
-		git update-ref "$r" refs/heads/$prod || { emit "$name" err:main-local; return $?; }
+		e=$(git update-ref "$r" refs/heads/$prod 2>&1 >/dev/null) \
+			|| { e=${e%%$'\n'*}; e=${e//err:/}; emit "$name" err:main-local ${e:+"$e"}; return $?; }
 		[[ $(git rev-parse --verify -q "$r" 2>/dev/null) == "$(git rev-parse refs/heads/$prod)" ]] \
 			|| { emit "$name" err:main-local; return $?; }
 		savedmain=1
 	fi
-	if ! git reset --hard -q HEAD 2>/dev/null || ! git checkout -q $cof -B $prod origin/$prod 2>/dev/null; then
+	if ! e=$(git reset --hard -q HEAD 2>&1 >/dev/null) || ! e=$(git checkout -q $cof -B $prod origin/$prod 2>&1 >/dev/null); then
 		(( savedmain )) && git update-ref refs/heads/$prod "$r" 2>/dev/null
 		git checkout -q "$branch" 2>/dev/null; [[ -n ${s:-} ]] && git stash apply -q "$s" 2>/dev/null
-		emit "$name" err:checkout; return $?
+		e=${e%%$'\n'*}; e=${e//err:/}
+		emit "$name" err:checkout ${e:+"$e"}; return $?
 	fi
 	git branch -q --set-upstream-to=origin/$prod $prod 2>/dev/null || true
 	emit "$name" rescued $refs

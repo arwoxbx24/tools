@@ -439,5 +439,25 @@ out=$(cd "$GA_PROJECTS/p-idle29" && "$bin/git-sync" p-idle29 --min-idle 0 2>&1)
 { grep -qF rescued <<<"$out" && ! grep -qF 'skip:active' <<<"$out"; } \
 	&& p '29 min-idle-after-name' || f '29 min-idle-after-name'
 
-[[ $ok == 29 ]]
+# 30: err line carries git message — untracked file blocks a directory added in origin/main
+repo "$GA_PROJECTS/p-errline"
+printf 'a\n' > "$GA_PROJECTS/p-errline/f"
+git -C "$GA_PROJECTS/p-errline" add f
+old30=$(date -d '2 hours ago' +%s)
+GIT_COMMITTER_DATE="@$old30" GIT_AUTHOR_DATE="@$old30" git -C "$GA_PROJECTS/p-errline" commit -q -m base
+mkbare "$GA_PROJECTS/p-errline" "$d/origin-errline.git"
+git -C "$GA_PROJECTS/p-errline" branch old HEAD~1
+git -C "$GA_PROJECTS/p-errline" checkout -q old
+git clone -q "$d/origin-errline.git" "$d/adv-errline"
+git -C "$d/adv-errline" config user.email t@t; git -C "$d/adv-errline" config user.name t
+mkdir "$d/adv-errline/d"; printf 'remote\n' > "$d/adv-errline/d/x"
+git -C "$d/adv-errline" add d/x && git -C "$d/adv-errline" commit -q -m add && git -C "$d/adv-errline" push -q origin main
+printf 'blocker\n' > "$GA_PROJECTS/p-errline/d"
+out=$(cd "$GA_PROJECTS/p-errline" && "$bin/git-sync" p-errline 2>&1)
+log=$GA_LOG_DIR/git-sync.log
+{ grep -qE '^[^ ]+ p-errline err:checkout ' <<<"$out" \
+	&& grep -qF 'p-errline err:checkout' "$log" && grep -qF 'would be overwritten' "$log" \
+	&& [[ $(cat "$GA_PROJECTS/p-errline/d") == blocker ]]; } && p '30 err-line-carries-git-message' || f '30 err-line-carries-git-message'
+
+[[ $ok == 30 ]]
 
