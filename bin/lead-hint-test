@@ -5,7 +5,7 @@ dir=$(cd -- "$(dirname -- "$0")" && pwd)
 d=$(mktemp -d /tmp/lead-hint-test.XXXXXX)
 trap 'rm -rf "$d"' EXIT
 ok=0
-total=33
+total=36
 crdir=/tmp/lead-hint-stop
 srun="lh-$$-$RANDOM"
 clean_sid() { rm -f "$crdir/$1"; }
@@ -39,6 +39,9 @@ mk_attach() {
 }
 mk_notice() {
   jq -cn '{type:"user",origin:{kind:"task-notification"},message:{content:"task finished"}}'
+}
+mk_notify() {
+  jq -cn '{type:"user",origin:{kind:"task-notification"},message:{content:"<task-notification>\n<status>completed</status>\n</task-notification>"}}'
 }
 mk_bash() {
   jq -cn --arg c "$1" '{type:"assistant",isSidechain:false,message:{content:[{type:"tool_use",name:"Bash",input:{command:$c}}]}}'
@@ -388,6 +391,36 @@ if [[ $rc == 0 && -z $out ]]; then
   echo 'PASS 33: Bash bd not counted -> empty'; ok=$((ok+1))
 else
   echo "FAIL 33: rc=$rc out=$out"
+fi
+
+tx34=$d/tx34.jsonl
+{ mk_user; for _ in $(seq 5); do mk_read; done; mk_notify; mk_read; } >"$tx34"
+out=$(mk_pre "$tx34" Read '{"file_path":"/tmp/x"}' | run_hook); rc=$?
+if [[ $rc == 0 && -z $out ]]; then
+  echo 'PASS 34: completed task-notification resets count -> empty'; ok=$((ok+1))
+else
+  echo "FAIL 34: rc=$rc out=$out"
+fi
+
+tx35=$d/tx35.jsonl
+{ mk_user; for _ in $(seq 5); do mk_read; done; } >"$tx35"
+out=$(mk_pre "$tx35" Read '{"file_path":"/tmp/x"}' | run_hook); rc=$?
+dec=$(jq -r '.hookSpecificOutput.permissionDecision // empty' <<<"$out" 2>/dev/null)
+if [[ $rc == 0 && $dec == deny ]]; then
+  echo 'PASS 35: no notification -> deny stays'; ok=$((ok+1))
+else
+  echo "FAIL 35: rc=$rc out=$out"
+fi
+
+tx36=$d/tx36.jsonl
+{ mk_user; for _ in $(seq 5); do mk_read; done; \
+  mk_text $'<task-notification>\n<status>completed</status>\n</task-notification>'; } >"$tx36"
+out=$(mk_pre "$tx36" Read '{"file_path":"/tmp/x"}' | run_hook); rc=$?
+dec=$(jq -r '.hookSpecificOutput.permissionDecision // empty' <<<"$out" 2>/dev/null)
+if [[ $rc == 0 && $dec == deny ]]; then
+  echo 'PASS 36: notification text in assistant message does not reset -> deny'; ok=$((ok+1))
+else
+  echo "FAIL 36: rc=$rc out=$out"
 fi
 
 if [[ $ok == $total ]]; then
