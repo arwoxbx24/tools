@@ -42,6 +42,15 @@ scan_calls() {
       and any(.message.content[]?;
               .type == "tool_use" and .name == "Bash"
               and ((.input.command // "") | test("code-channel|sdk-agent")));
+    def user_text:
+      (.message.content // "")
+      | if type == "string" then .
+        elif type == "array" then (map(select(.type == "text") | .text) | join("\n"))
+        else "" end;
+    def is_task_notification:
+      .type == "user"
+      and ((user_text) | test("<task-notification>")
+           and test("<status>\\s*(completed|failed)\\s*</status>"));
     def is_doc_read:
       (.name == "Read")
       and ((.input.file_path // "") | test("\\.(md|json|txt|yml)$"; "i"));
@@ -139,7 +148,7 @@ case $event in
             (if ($tool | is_doc_read) then . else . + 1 end)
           else . end)
       else 0 end
-    ' 'is_owner or is_helper_run') || exit 0
+    ' 'is_owner or is_helper_run or is_task_notification') || exit 0
     [[ $count =~ ^[0-9]+$ ]] || exit 0
 
     max=$(hint_max)
@@ -153,7 +162,7 @@ case $event in
   PostToolUse)
     [[ -f $transcript_path && -r $transcript_path ]] || exit 0
 
-    # Same backwards scan: stop at the last owner message.
+    # Same backwards scan: stop at the last owner message or completed helper notification.
     count=$(scan_calls '
       if (.type == "assistant" and (.isSidechain != true)) then
         [ .message.content[]?
@@ -166,7 +175,7 @@ case $event in
             )
         ] | length
       else 0 end
-    ' 'is_owner') || exit 0
+    ' 'is_owner or is_task_notification') || exit 0
     [[ $count =~ ^[0-9]+$ ]] || exit 0
 
     max=$(hint_max)
