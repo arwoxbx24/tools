@@ -6,9 +6,9 @@ if [[ ${1:-} == --help ]]; then
   echo "usage: bin/lead-hint [--help]"
   echo "PreToolUse/PostToolUse/UserPromptSubmit/Stop hook for the lead Claude Code session only."
   echo "Reads one hook JSON object from stdin. With a non-empty .agent_id prints nothing."
-  echo "PreToolUse: at LEAD_HINT_MAX (default 8) or more own investigative calls since the"
+  echo "PreToolUse: at LEAD_HINT_MAX (default 4) or more own investigative calls since the"
   echo "owner message or last helper run denies the tool (LEAD_HINT_STRICT=0 disables)."
-  echo "PostToolUse: above LEAD_HINT_MAX (default 8) own investigative calls in the current"
+  echo "PostToolUse: above LEAD_HINT_MAX (default 4) own investigative calls in the current"
   echo "turn prints a hint naming 'code-channel audit'. UserPromptSubmit: prints the"
   echo "helper-share line for .transcript_path (last 2000 lines)."
   echo "Stop: blocks when the last main-session assistant text asks the owner a question."
@@ -42,6 +42,18 @@ scan_calls() {
       and any(.message.content[]?;
               .type == "tool_use" and .name == "Bash"
               and ((.input.command // "") | test("code-channel|sdk-agent")));
+    def is_doc_read:
+      (.name == "Read")
+      and ((.input.file_path // "") | test("\\.(md|json|txt|yml)$"; "i"));
+    def investigative_bash:
+      (.input.command // "") as $cmd
+      | ($cmd | split(" ")[0]) as $word
+      | if ($cmd | test("code-channel|sdk-agent")) then false
+        elif ((["grep","rg","find","ls","cat","head","tail","sed","wc","gh"] | index($word)) != null) then
+          (($cmd | test("(^|[^A-Za-z0-9])(git|bd|jq|code-channel|sdk-agent|safe-delete)([^A-Za-z0-9]|$)")) | not)
+        else
+          ($cmd | test("(^|[^A-Za-z0-9])(pytest|jest|vitest|mocha|bats|tests?)([^A-Za-z0-9]|$)"))
+        end;
     def calls: '"$1"';
     [ label $out |
       (foreach inputs as $line ({n: 0, stop: false};
@@ -55,10 +67,10 @@ scan_calls() {
   ' 2>/dev/null
 }
 
-# Validated LEAD_HINT_MAX (default 8).
+# Validated LEAD_HINT_MAX (default 4).
 hint_max() {
-  local max=${LEAD_HINT_MAX:-8}
-  [[ $max =~ ^[0-9]+$ ]] || max=8
+  local max=${LEAD_HINT_MAX:-4}
+  [[ $max =~ ^[0-9]+$ ]] || max=4
   printf '%s\n' "$max"
 }
 
@@ -77,15 +89,38 @@ case $event in
     tool_name=$(jq -r '.tool_name // empty' <<<"$payload" 2>/dev/null) || exit 0
     tool_cmd=$(jq -r '.tool_input.command // empty' <<<"$payload" 2>/dev/null) || exit 0
 
+    case $tool_name in
+      Read|Grep)
+        if jq -e '
+          def code_path:
+            test("\\.(py|js|ts|tsx|sh|mjs|cjs|go|rb)$"; "i")
+            or (test("(^|/)bin/") and ((split("/") | last | test("\\.")) | not));
+          [ .tool_input.file_path?, .tool_input.path?, .tool_input.glob? ]
+          | map(select(type == "string" and length > 0))
+          | any(code_path)
+        ' >/dev/null 2>&1 <<<"$payload"; then
+          jq -cn --arg reason 'lead-strict: the main agent does not read code (owner 24.10: 2% — specs, TZ, tasks only); route: code-channel audit' \
+            '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$reason}}' \
+            2>/dev/null || exit 0
+          exit 0
+        fi
+        ;;
+    esac
+
     investigative=0
     case $tool_name in
-      Read|Grep|Glob|WebFetch|WebSearch) investigative=1 ;;
+      Read)
+        path=$(jq -r '.tool_input.file_path // empty' <<<"$payload" 2>/dev/null) || exit 0
+        [[ ${path,,} =~ \.(md|json|txt|yml)$ ]] || investigative=1
+        ;;
+      Grep|Glob|WebFetch|WebSearch) investigative=1 ;;
       Bash)
         first=${tool_cmd%% *}
         case $first in
-          grep|rg|find|ls|cat|head|tail|sed|wc) investigative=1 ;;
+          grep|rg|find|ls|cat|head|tail|sed|wc|gh) investigative=1 ;;
         esac
-        if (( investigative )) && [[ $tool_cmd =~ (^|[^A-Za-z0-9])(git|gh|bd|jq|tests?|code-channel|sdk-agent|safe-delete)([^A-Za-z0-9]|$) ]]; then
+        [[ $tool_cmd =~ (^|[^A-Za-z0-9])(pytest|jest|vitest|mocha|bats|tests?)([^A-Za-z0-9]|$) ]] && investigative=1
+        if (( investigative )) && [[ $tool_cmd =~ (^|[^A-Za-z0-9])(git|bd|jq|code-channel|sdk-agent|safe-delete)([^A-Za-z0-9]|$) ]]; then
           investigative=0
         fi
         ;;
@@ -99,13 +134,9 @@ case $event in
       if (.type == "assistant" and (.isSidechain != true)) then
         reduce (.message.content[]? | select(.type == "tool_use")) as $tool (0;
           if $tool.name == "Bash" then
-            ($tool.input.command // "") as $cmd
-            | if ($cmd | test("code-channel|sdk-agent")) then .
-              elif ((($cmd | split(" ")[0]) as $word
-                     | (["grep","rg","find","ls","cat","head","tail","sed","wc"] | index($word))) == null) then .
-              elif ($cmd | test("(^|[^A-Za-z0-9])(git|gh|bd|jq|tests?|code-channel|sdk-agent|safe-delete)([^A-Za-z0-9]|$)")) then .
-              else . + 1 end
-          elif ((["Read","Grep","Glob","WebFetch","WebSearch"] | index($tool.name)) != null) then . + 1
+            (if ($tool | investigative_bash) then . + 1 else . end)
+          elif ((["Read","Grep","Glob","WebFetch","WebSearch"] | index($tool.name)) != null) then
+            (if ($tool | is_doc_read) then . else . + 1 end)
           else . end)
       else 0 end
     ' 'is_owner or is_helper_run') || exit 0
@@ -129,12 +160,9 @@ case $event in
           | select(.type == "tool_use")
           | . as $tool
           | select(
-              ((["Read","Grep","Glob","WebFetch","WebSearch"] | index($tool.name)) != null)
-              or (
-                $tool.name == "Bash"
-                and (((($tool.input.command // "") | split(" ")[0]) as $word
-                      | (["grep","rg","find","ls","cat","head","tail","sed","wc"] | index($word)) != null))
-              )
+              ((["Grep","Glob","WebFetch","WebSearch"] | index($tool.name)) != null)
+              or ($tool.name == "Read" and (($tool | is_doc_read) | not))
+              or ($tool.name == "Bash" and ($tool | investigative_bash))
             )
         ] | length
       else 0 end
