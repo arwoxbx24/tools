@@ -37,6 +37,29 @@ mkbare(){ # $1 repo $2 bare — origin -> push main, fetch, set HEAD
 	git -C "$1" fetch -q origin
 	git --git-dir="$2" symbolic-ref HEAD refs/heads/main
 }
+twinrepo(){ # <tag> — live tree with GIT_DIR outside it; origin/main adds twin.txt
+	local t=$1 wt gd org
+	wt="$d/twin-$t-wt"; gd="$d/twin-$t.git"; org="$d/twin-$t-origin.git"
+	git init -q --separate-git-dir="$gd" "$wt"
+	git -C "$wt" config user.email t@t
+	git -C "$wt" config user.name t
+	git -C "$wt" checkout -q -b main
+	printf 'a\n' > "$wt/f"
+	git -C "$wt" add f
+	git -C "$wt" commit -q -m base
+	git init -q --bare "$org"
+	git -C "$wt" remote add origin "$org"
+	git -C "$wt" push -q -u origin main
+	git -C "$wt" fetch -q origin
+	git --git-dir="$org" symbolic-ref HEAD refs/heads/main
+	git clone -q "$org" "$d/twin-$t-adv"
+	git -C "$d/twin-$t-adv" config user.email t@t
+	git -C "$d/twin-$t-adv" config user.name t
+	printf 'twin\n' > "$d/twin-$t-adv/twin.txt"
+	git -C "$d/twin-$t-adv" add twin.txt
+	git -C "$d/twin-$t-adv" commit -q -m add
+	git -C "$d/twin-$t-adv" push -q origin main
+}
 
 # 1: allowlist
 repo "$GA_PROJECTS/stroyremont"; mkbare "$GA_PROJECTS/stroyremont" "$d/origin-sr.git"
@@ -382,5 +405,39 @@ while IFS= read -r n; do [[ -z $n ]] || grep -qF -- "$n" <<<"$(printf '%s\n' "$h
 { [[ $hrc == 0 ]] && [[ $urc == 2 ]] && grep -qF 'valid:' <<<"$help" && grep -qF 'valid:' <<<"$uerr" \
 	&& (( allnames )); } && p 26 || f 26
 
-[[ $ok == 26 ]]
+# 27: twin from another cwd — GIT_DIR outside the live tree, identical untracked twin -> rescued
+mkdir -p "$d/twin-empty-p" "$d/twin-empty-t"
+twinrepo a
+printf 'b\n' >> "$d/twin-a-wt/f"
+touch -d '2 hours ago' "$d/twin-a-wt/f"
+printf 'twin\n' > "$d/twin-a-wt/twin.txt"
+out=$(cd / && GA_PROJECTS="$d/twin-empty-p" GA_TOOLS="$d/twin-empty-t" \
+	GA_CONTOUR_GITDIR="$d/twin-a.git" GA_CONTOUR_WT="$d/twin-a-wt" "$bin/git-sync" contour 2>&1)
+{ grep -qF rescued <<<"$out" && ! grep -qF 'err:' <<<"$out" \
+	&& git --git-dir="$d/twin-a.git" --work-tree="$d/twin-a-wt" ls-files --error-unmatch twin.txt >/dev/null 2>&1 \
+	&& [[ $(git --git-dir="$d/twin-a.git" --work-tree="$d/twin-a-wt" rev-parse HEAD) == "$(git -C "$d/twin-a-origin.git" rev-parse main)" ]]; } \
+	&& p '27 twin-from-other-cwd' || f '27 twin-from-other-cwd'
+
+# 28: differing untracked twin from another cwd still err:untracked
+twinrepo b
+printf 'b\n' >> "$d/twin-b-wt/f"
+touch -d '2 hours ago' "$d/twin-b-wt/f"
+printf 'other\n' > "$d/twin-b-wt/twin.txt"
+out=$(cd / && GA_PROJECTS="$d/twin-empty-p" GA_TOOLS="$d/twin-empty-t" \
+	GA_CONTOUR_GITDIR="$d/twin-b.git" GA_CONTOUR_WT="$d/twin-b-wt" "$bin/git-sync" contour 2>&1)
+{ grep -qF 'err:untracked' <<<"$out" && [[ $(cat "$d/twin-b-wt/twin.txt") == other ]]; } \
+	&& p '28 differing-twin-refused' || f '28 differing-twin-refused'
+
+# 29: --min-idle after the name is honored (0 disables the recent-edit gate)
+repo "$GA_PROJECTS/p-idle29"
+printf 'a\n' > "$GA_PROJECTS/p-idle29/f"
+git -C "$GA_PROJECTS/p-idle29" add f
+git -C "$GA_PROJECTS/p-idle29" commit -q -m base
+mkbare "$GA_PROJECTS/p-idle29" "$d/origin-p-idle29.git"
+printf 'b\n' >> "$GA_PROJECTS/p-idle29/f"
+out=$(cd "$GA_PROJECTS/p-idle29" && "$bin/git-sync" p-idle29 --min-idle 0 2>&1)
+{ grep -qF rescued <<<"$out" && ! grep -qF 'skip:active' <<<"$out"; } \
+	&& p '29 min-idle-after-name' || f '29 min-idle-after-name'
+
+[[ $ok == 29 ]]
 
