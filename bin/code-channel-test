@@ -265,4 +265,9 @@ CC_CONFIG=$sdkgo check 71 '[[ $rc == 7 && ! -e "$project/go-made" && $(grep -c "
   env SDK_RC=7 SDK_TOUCH=x OPENCODE_TOUCH=go-made CODE_CHANNEL_SDK_AGENT="$bin/sdk-agent-fake" "$root/bin/code-channel" auto "$project" "$tz"
 git -C "$project" clean -fdq
 
-[[ $ok == 71 ]] && echo 'PASS 71/71'
+check 72 '[[ $rc == 0 && $out == *delivery* ]]' \
+  "$root/bin/code-channel" delivery --help
+CC_CONFIG=$go check 73 '[[ $rc == 0 ]] && grep -Fq -- "git push -u origin" "$log" && ! grep -Fq -- "--no-verify allowed" "$log" && ! grep -Fq -- "allowed: --no-verify" "$log"' \
+  env OPENCODE_RC=0 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" delivery "$project" "$tz"
+
+[[ $ok == 73 ]] && echo 'PASS 73/73'
