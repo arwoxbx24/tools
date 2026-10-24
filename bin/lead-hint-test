@@ -5,7 +5,7 @@ dir=$(cd -- "$(dirname -- "$0")" && pwd)
 d=$(mktemp -d /tmp/lead-hint-test.XXXXXX)
 trap 'rm -rf "$d"' EXIT
 ok=0
-total=62
+total=72
 crdir=/tmp/lead-hint-stop
 srun="lh-$$-$RANDOM"
 clean_sid() { rm -f "$crdir/$1"; }
@@ -686,6 +686,113 @@ if [[ $rc == 0 && $ctx != *"1 helper stream"* ]]; then
 else
   echo "FAIL 62: rc=$rc out=$out"
 fi
+
+reason_codelock='lead-hint code-lock (owner 24.10): the lead never edits code or config files; write a TZ and run /root/workspaces/tools/bin/code-channel auto <worktree> <TZ>'
+codelock_deny_out() {
+  [[ $(jq -r '.hookSpecificOutput.permissionDecision // empty' <<<"$1" 2>/dev/null) == deny \
+     && $(jq -r '.hookSpecificOutput.permissionDecisionReason // empty' <<<"$1" 2>/dev/null) == "$reason_codelock" ]]
+}
+t_codelock_edit_sh_deny() {
+  local out rc
+  out=$(mk_pre "$tx_doc" Edit '{"file_path":"/tmp/x.sh"}' | run_hook); rc=$?
+  if [[ $rc == 0 ]] && codelock_deny_out "$out"; then
+    echo 'PASS 63: code-lock denies Edit of x.sh'; ok=$((ok+1))
+  else
+    echo "FAIL 63: rc=$rc out=$out"
+  fi
+}
+t_codelock_write_json_deny() {
+  local out rc
+  out=$(mk_pre "$tx_doc" Write '{"file_path":"/tmp/x.json","content":"{}"}' | run_hook); rc=$?
+  if [[ $rc == 0 ]] && codelock_deny_out "$out"; then
+    echo 'PASS 64: code-lock denies Write of x.json'; ok=$((ok+1))
+  else
+    echo "FAIL 64: rc=$rc out=$out"
+  fi
+}
+t_codelock_write_md_allow() {
+  local out rc
+  out=$(mk_pre "$tx_doc" Write '{"file_path":"/tmp/TZ.md","content":"x"}' | run_hook); rc=$?
+  if [[ $rc == 0 && -z $out ]]; then
+    echo 'PASS 65: code-lock allows Write of TZ.md'; ok=$((ok+1))
+  else
+    echo "FAIL 65: rc=$rc out=$out"
+  fi
+}
+t_codelock_subagent_allow() {
+  local out rc
+  out=$(mk_pre "$tx_doc" Edit '{"file_path":"/tmp/x.sh"}' | jq -c '.agent_id="x"' | run_hook); rc=$?
+  if [[ $rc == 0 && -z $out ]]; then
+    echo 'PASS 66: code-lock allows subagent Edit of x.sh'; ok=$((ok+1))
+  else
+    echo "FAIL 66: rc=$rc out=$out"
+  fi
+}
+t_codelock_redirect_deny() {
+  local out rc
+  out=$(mk_pre "$tx_doc" Bash '{"command":"echo a > /tmp/x.sh"}' | run_hook); rc=$?
+  if [[ $rc == 0 ]] && codelock_deny_out "$out"; then
+    echo 'PASS 67: code-lock denies echo > x.sh'; ok=$((ok+1))
+  else
+    echo "FAIL 67: rc=$rc out=$out"
+  fi
+}
+t_codelock_devnull_allow() {
+  local out rc
+  out=$(mk_pre "$tx_doc" Bash '{"command":"bd list 2>/dev/null"}' | run_hook); rc=$?
+  if [[ $rc == 0 && -z $out ]]; then
+    echo 'PASS 68: code-lock allows 2>/dev/null'; ok=$((ok+1))
+  else
+    echo "FAIL 68: rc=$rc out=$out"
+  fi
+}
+t_codelock_interp_deny() {
+  local out rc
+  out=$(mk_pre "$tx_doc" Bash '{"command":"sh /tmp/x.sh"}' | run_hook); rc=$?
+  if [[ $rc == 0 ]] && codelock_deny_out "$out"; then
+    echo 'PASS 69: code-lock denies sh /tmp/x.sh'; ok=$((ok+1))
+  else
+    echo "FAIL 69: rc=$rc out=$out"
+  fi
+}
+t_codelock_jq_f_deny() {
+  local out rc
+  out=$(mk_pre "$tx_doc" Bash '{"command":"jq -f /tmp/f.jq x.json"}' | run_hook); rc=$?
+  if [[ $rc == 0 ]] && codelock_deny_out "$out"; then
+    echo 'PASS 70: code-lock denies jq -f'; ok=$((ok+1))
+  else
+    echo "FAIL 70: rc=$rc out=$out"
+  fi
+}
+t_codelock_wrapper_allow() {
+  local out rc
+  out=$(mk_pre "$tx_doc" Bash '{"command":"/root/workspaces/tools/bin/code-channel auto /tmp/w /tmp/TZ.md"}' | run_hook); rc=$?
+  if [[ $rc == 0 && -z $out ]]; then
+    echo 'PASS 71: code-lock allows tools/bin wrapper'; ok=$((ok+1))
+  else
+    echo "FAIL 71: rc=$rc out=$out"
+  fi
+}
+t_codelock_git_allow() {
+  local out rc
+  out=$(mk_pre "$tx_doc" Bash '{"command":"git status"}' | run_hook); rc=$?
+  if [[ $rc == 0 && -z $out ]]; then
+    echo 'PASS 72: code-lock allows git status'; ok=$((ok+1))
+  else
+    echo "FAIL 72: rc=$rc out=$out"
+  fi
+}
+
+t_codelock_edit_sh_deny
+t_codelock_write_json_deny
+t_codelock_write_md_allow
+t_codelock_subagent_allow
+t_codelock_redirect_deny
+t_codelock_devnull_allow
+t_codelock_interp_deny
+t_codelock_jq_f_deny
+t_codelock_wrapper_allow
+t_codelock_git_allow
 
 if [[ $ok == $total ]]; then
   echo "lead-hint-test: PASS $ok/$total"

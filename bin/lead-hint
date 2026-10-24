@@ -118,6 +118,82 @@ count_window='is_owner or is_helper_run or is_task_notification'
 # Helper launch: first word after optional env assignments and shell prefixes.
 helper_re='^[[:space:]]*(([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*|command|builtin|exec|env|nohup)[[:space:]]+)*(code-channel|sdk-agent|[^[:space:]=]*/bin/(code-channel|sdk-agent))([[:space:]]|$)'
 
+# Code-lock for the lead (owner 24.10): the main session never edits code or
+# config files and never runs a lead script. Only .md/.txt documents, the
+# sanctioned tools/bin wrappers, git/gh/bd and plain jq stay allowed.
+reason_codelock='lead-hint code-lock (owner 24.10): the lead never edits code or config files; write a TZ and run /root/workspaces/tools/bin/code-channel auto <worktree> <TZ>'
+codelock_deny() {
+  jq -cn --arg reason "$reason_codelock" \
+    '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$reason}}' \
+    2>/dev/null || exit 0
+  exit 0
+}
+doc_path() {
+  [[ ${1,,} =~ \.(md|txt)$ ]]
+}
+non_doc_path() {  # true for a path that carries a non-doc extension
+  local p=${1//\"/}
+  p=${p//\'/}
+  [[ $p =~ \.[^./[:space:]]+$ ]] && ! doc_path "$p"
+}
+redirect_writes() {  # true when > / >> targets a non-doc file (2> and >&N skipped)
+  local s=$1 t m
+  local re="(^|[^0-9&])(>>?)[[:space:]]*(\"[^\"]*\"|'([^']*)'|[^[:space:];|&()<>\`]+)"
+  while [[ $s =~ $re ]]; do
+    m=${BASH_REMATCH[0]}
+    t=${BASH_REMATCH[3]}
+    non_doc_path "$t" && return 0
+    s=${s#*"$m"}
+  done
+  return 1
+}
+codelock_bash_denied() {  # true when the Bash command writes or runs lead code
+  local cmd=$1 k k2 n x at_cmd=1
+  redirect_writes "$cmd" && return 0
+  local -a w
+  read -ra w <<<"$cmd"
+  n=${#w[@]}
+  for (( k = 0; k < n; k++ )); do
+    case ${w[k]} in
+      '|'|'||'|';'|'&&'|'&'|'('|')'|'{'|'}'|*'|'*) at_cmd=1; continue ;;
+    esac
+    (( at_cmd )) || continue
+    case ${w[k]} in
+      [A-Za-z_][A-Za-z0-9_]*=*|command|builtin|exec|env|nohup|sudo) continue ;;
+      /root/workspaces/tools/bin/*) at_cmd=0; continue ;;
+    esac
+    at_cmd=0
+    case ${w[k]##*/} in
+      sh|bash|zsh|python*|node)
+        for (( x = k + 1; x < n; x++ )); do
+          [[ ${w[x]} == -* || ${w[x]} =~ ^[0-9]+$ ]] && continue
+          return 0
+        done ;;
+      jq)
+        for (( x = k + 1; x < n; x++ )); do
+          case ${w[x]} in -f|--from-file|--from-file=*) return 0 ;; esac
+        done ;;
+      sed|perl)
+        for (( x = k + 1; x < n; x++ )); do
+          [[ ${w[x]} =~ ^-[A-Za-z]*i ]] && return 0
+        done ;;
+      tee)
+        for (( x = k + 1; x < n; x++ )); do
+          [[ ${w[x]} == -* ]] && continue
+          non_doc_path "${w[x]}" && return 0
+        done ;;
+      cp|mv)
+        x=-1
+        for (( k2 = k + 1; k2 < n; k2++ )); do
+          [[ ${w[k2]} == -* || ${w[k2]} == *'>'* || ${w[k2]} == '|' || ${w[k2]} == ';' ]] && continue
+          x=$k2
+        done
+        (( x > 0 )) && non_doc_path "${w[x]}" && return 0 ;;
+    esac
+  done
+  return 1
+}
+
 case $event in
   PreToolUse)
     [[ ${LEAD_HINT_STRICT:-1} == 0 ]] && exit 0
@@ -139,6 +215,16 @@ case $event in
             2>/dev/null || exit 0
           exit 0
         fi
+        ;;
+    esac
+
+    case $tool_name in
+      Edit|Write|MultiEdit|NotebookEdit)
+        path=$(jq -r '.tool_input.file_path // empty' <<<"$payload" 2>/dev/null) || exit 0
+        doc_path "$path" || codelock_deny
+        ;;
+      Bash)
+        codelock_bash_denied "$tool_cmd" && codelock_deny
         ;;
     esac
 
