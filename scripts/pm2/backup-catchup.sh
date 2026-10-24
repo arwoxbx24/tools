@@ -7,7 +7,7 @@ ALERT_PENDING=${ALERT_PENDING:-/root/workspaces/system/tools/scripts/data/server
 NOTIFY_ENV=${NOTIFY_ENV:-/root/workspaces/secrets/services/pm2-notify.env}
 LOG=${LOG:-/root/workspaces/system/tools/scripts/logs/backup-catchup.log}
 MAX_AGE=93600
-PM2=${PM2:-$(command -v pm2 || echo /usr/local/bin/pm2)}
+PM2=${PM2:-/root/bin/pm2}
 
 mkdir -p "$(dirname "$LOG")"
 if [ -f "$LOG" ] && [ "$(stat -c%s "$LOG")" -gt $((1024 * 1024)) ]; then
