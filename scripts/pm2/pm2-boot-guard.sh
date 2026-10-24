@@ -12,7 +12,11 @@ SYSTEMCTL=${SYSTEMCTL:-systemctl}
 
 log() { printf '%s pm2-boot-guard: %s\n' "$(date -Is)" "$*"; }
 pid() { [ -f "$PM2_HOME/pm2.pid" ] && cat "$PM2_HOME/pm2.pid" 2>/dev/null; }
-alive() { local p; p=$(pid); [ -n "$p" ] && [ -d "/proc/$p" ]; }
+alive() {
+  local p; p=$(pid)
+  [ -n "$p" ] && [ -d "/proc/$p" ] || return 1
+  tr '\0' ' ' <"/proc/$p/cmdline" 2>/dev/null | grep -q 'God Daemon'
+}
 exe() { local p; p=$(pid); [ -n "$p" ] && readlink "/proc/$p/exe" 2>/dev/null; }
 ok() { alive && [ "$(exe)" = "$WANT" ] && { log "ok: daemon $(pid) on $WANT"; exit 0; }; }
 
@@ -32,10 +36,9 @@ fi
 
 ok
 
-if "$SYSTEMCTL" is-active --quiet "$UNIT" 2>/dev/null; then
-  "$SYSTEMCTL" stop "$UNIT"
-  log "stopped $UNIT (daemon $(pid) $(exe))"
-fi
+state=$("$SYSTEMCTL" is-active "$UNIT" 2>/dev/null)
+"$SYSTEMCTL" stop "$UNIT"
+log "stopped $UNIT (state was $state)"
 
 # resurrect while any daemon is alive would duplicate every process
 if alive; then
