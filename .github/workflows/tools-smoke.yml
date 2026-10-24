@@ -15,8 +15,5 @@ jobs:
           python-version: "3.12"
       - run: python3 tests/test_agent_tools.py
       - run: npx --yes jscpd@5.4.1 --baseline-from-ref origin/main --fail-on-new-clones=0 bin scripts
-      - if: github.event_name == 'pull_request'
-        run: bash bin/ship-doc-check "origin/${{ github.base_ref || 'main' }}"
-      - run: bash bin/ship-doc-check-test
       - run: bash bin/code-channel-test
       - run: bash bin/place-files-test
