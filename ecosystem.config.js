@@ -121,6 +121,9 @@ module.exports = {
       ],
       cwd: '/root/workspaces/projects/bitrix/bitrix-margin-cockpit',
       interpreter: '/root/.nvm/versions/node/v24.22.1/bin/node',
+      env: {
+        PATH: '/root/.nvm/versions/node/v24.22.1/bin:/root/.local/bin:/root/.opencode/bin:/root/.kimi-code/bin:/root/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/root/yandex-cloud/bin:/root/workspaces/projects/.bin'
+      },
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
@@ -141,6 +144,9 @@ module.exports = {
       ],
       cwd: '/root/workspaces/projects/bitrix/bitrix-margin-cockpit',
       interpreter: '/root/.nvm/versions/node/v24.22.1/bin/node',
+      env: {
+        PATH: '/root/.nvm/versions/node/v24.22.1/bin:/root/.local/bin:/root/.opencode/bin:/root/.kimi-code/bin:/root/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/root/yandex-cloud/bin:/root/workspaces/projects/.bin'
+      },
       exec_mode: 'fork_mode',
       instances: 1,
       autorestart: true,
