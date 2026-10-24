@@ -5,7 +5,7 @@ dir=$(cd -- "$(dirname -- "$0")" && pwd)
 d=$(mktemp -d /tmp/lead-hint-test.XXXXXX)
 trap 'rm -rf "$d"' EXIT
 ok=0
-total=71
+total=74
 crdir=/tmp/lead-hint-stop
 srun="lh-$$-$RANDOM"
 clean_sid() { rm -f "$crdir/$1"; }
@@ -695,13 +695,13 @@ tx_lock=$d/txlock.jsonl
 { mk_user; } >"$tx_lock"
 reason_lock='lead-hint code-lock (owner 24.10): the lead session in /root/workspaces/projects edits only .md/.txt; send code and config to /root/workspaces/tools/bin/code-channel auto <worktree> <TZ>'
 codelock_case() {
-  local num=$1 label=$2 want=$3 cwd=$4 name=$5 input=$6 agent=${7:-} out rc dec reason
+  local num=$1 label=$2 want=$3 cwd=$4 name=$5 input=$6 agent=${7:-} want_reason=${8:-$reason_lock} out rc dec reason
   out=$(mk_pre_cwd "$tx_lock" "$cwd" "$name" "$input" \
     | jq -c --arg a "$agent" 'if $a == "" then . else .agent_id = $a end' | run_hook); rc=$?
   dec=$(jq -r '.hookSpecificOutput.permissionDecision // empty' <<<"$out" 2>/dev/null)
   reason=$(jq -r '.hookSpecificOutput.permissionDecisionReason // empty' <<<"$out" 2>/dev/null)
   if [[ $want == deny ]]; then
-    if [[ $rc == 0 && $dec == deny && $reason == "$reason_lock" ]]; then
+    if [[ $rc == 0 && $dec == deny && $reason == "$want_reason" ]]; then
       echo "PASS $num: $label"; ok=$((ok+1)); return
     fi
   elif [[ $rc == 0 && -z $out ]]; then
@@ -757,6 +757,22 @@ t_codelock_allow_write_sh_root
 t_codelock_allow_bash_redirect
 t_codelock_allow_bash_bd_note
 t_codelock_deny_edit_json
+
+reason_runlock='lead-run-lock (owner 24.10): the lead does not run scripts; route: /root/workspaces/tools/bin/code-channel auto|audit <worktree> <TZ>'
+codelock_case 72 't_runlock_deny_sh: Bash sh /tmp/u42/p.sh -> deny' deny \
+  /root/workspaces/projects Bash '{"command":"sh /tmp/u42/p.sh"}' '' "$reason_runlock"
+codelock_case 73 't_runlock_allow_jq: Bash jq -n 1+1 -> allow' allow \
+  /root/workspaces/projects Bash '{"command":"jq -n 1+1"}'
+
+tx_json=$d/txjson.jsonl
+{ mk_user; for _ in $(seq 8); do mk_read; done; } >"$tx_json"
+out=$(mk_pre "$tx_json" Read '{"file_path":"/tmp/x/a.json"}' | run_hook); rc=$?
+dec=$(jq -r '.hookSpecificOutput.permissionDecision // empty' <<<"$out" 2>/dev/null)
+if [[ $rc == 0 && $dec == deny ]]; then
+  echo 'PASS 74: t_count_json_read Read a.json counted -> deny'; ok=$((ok+1))
+else
+  echo "FAIL 74: json read not counted rc=$rc out=$out"
+fi
 
 if [[ $ok == $total ]]; then
   echo "lead-hint-test: PASS $ok/$total"
