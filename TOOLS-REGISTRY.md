@@ -26,6 +26,7 @@
 | `tools/bin/pm2-boot` | загрузка/перезапуск процессов PM2 fail-closed (spec:025) | `pm2-boot <имя>` | Claude, Codex | штатно |
 | `tools/bin/pm2-boot-test`, `pm2-chaos`, `pm2-loop-guard`, `pm2-loop-guard-test`, `pm2-eco-lint` | тесты/страж PM2 (spec:025) | по имени | Claude, Codex | штатно |
 | `scripts/pm2/pm2-boot-guard.sh` | после загрузки: если pm2-root поднял PM2 не на Node 24 — стоп юнита и `resurrect` обёрткой `/root/bin/pm2` (dcfg-k7a4t) | root crontab `@reboot`; `--help` | Claude, Codex | штатно |
+| `scripts/node-shims/` | node/npm/npx entrypoints for /usr/local/bin, follow nvm alias default | `sh scripts/node-shims/test.sh` | Claude, Codex | штатно |
 | `tools/bin/restic` | бэкапы (spec backup-coverage) | `restic …` через скрипты `tools/scripts/` | Codex | штатно |
 | `tools/bin/share-test` | самотест share | `share-test` | Claude | штатно |
 | `tools/bin/spec-sweep-test` | sandbox test of `spec-sweep --apply` direct git/gh delivery (bare remote, bd/gh stubs, /tmp only; dcfg-qqpkp.2) | `bin/spec-sweep-test` → `spec-sweep-test: PASS N/N` | Claude, Codex | штатно |

@@ -1,0 +1,11 @@
+#!/bin/sh
+# npm entrypoint: runs the npm named by the nvm default alias (single source of the server Node version).
+# shortcut: alias must be a version (24, v24, 24.22.1), not an alias chain (lts/*, stable); upgrade if such an alias is ever used.
+d="${NVM_DIR:-/root/.nvm}"
+v=$(cat "$d/alias/default" 2>/dev/null)
+v=${v#v}
+for b in "$d/versions/node/v$v/bin" "$d"/versions/node/v"$v".*/bin; do
+    [ -x "$b/npm" ] && exec "$b/npm" "$@"
+done
+echo "npm: nvm default '$v' not installed" >&2
+exit 127

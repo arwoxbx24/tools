@@ -30,7 +30,7 @@
     "script": "/root/workspaces/projects/arwox-landing/hub/server.cjs",
     "args": [],
     "cwd": "/root/workspaces/projects",
-    "interpreter": "/root/.nvm/versions/node/v20.19.4/bin/node",
+    "interpreter": "/root/.nvm/versions/node/v24.22.1/bin/node",
     "exec_mode": "fork_mode",
     "instances": 1,
     "autorestart": true,
@@ -110,13 +110,13 @@
   },
   {
     "name": "bmc-api",
-    "script": "/root/.nvm/versions/node/v20.19.4/bin/npm",
+    "script": "/root/.nvm/versions/node/v24.22.1/bin/npm",
     "args": [
       "run",
       "api"
     ],
     "cwd": "/root/workspaces/projects/bitrix-margin-cockpit",
-    "interpreter": "/root/.nvm/versions/node/v20.19.4/bin/node",
+    "interpreter": "/root/.nvm/versions/node/v24.22.1/bin/node",
     "exec_mode": "fork_mode",
     "instances": 1,
     "autorestart": true,
@@ -126,13 +126,13 @@
   },
   {
     "name": "bmc-ui",
-    "script": "/root/.nvm/versions/node/v20.19.4/bin/npm",
+    "script": "/root/.nvm/versions/node/v24.22.1/bin/npm",
     "args": [
       "run",
       "dev"
     ],
     "cwd": "/root/workspaces/projects/bitrix-margin-cockpit",
-    "interpreter": "/root/.nvm/versions/node/v20.19.4/bin/node",
+    "interpreter": "/root/.nvm/versions/node/v24.22.1/bin/node",
     "exec_mode": "fork_mode",
     "instances": 1,
     "autorestart": true,
