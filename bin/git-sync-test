@@ -137,9 +137,17 @@ git -C "$GA_PROJECTS/p-fetch" remote set-url origin "$d/no-such-origin.git"
 out=$(cd "$GA_PROJECTS/p-fetch" && "$bin/git-sync" p-fetch 2>&1); rc=$?
 { grep -qF 'err:fetch' <<<"$out" && [[ $rc == 1 ]]; } && p 11 || f 11
 
-# 12: err:ctx — not in registry
-out=$("$bin/git-sync" no-such-repo 2>&1)
-grep -qF 'err:ctx' <<<"$out" && p 12 || f 12
+# 12: unknown name — rc 2, stderr lists valid names from ga_roots, no bd call
+mkdir -p "$d/stubbin"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"$BD_CALLS"\n' >"$d/stubbin/bd"
+chmod +x "$d/stubbin/bd"
+export BD_CALLS="$d/bd-calls"; : >"$BD_CALLS"
+err=$( (unset GA_NO_BD; PATH="$d/stubbin:$PATH" "$bin/git-sync" no-such-repo 2>&1 >/dev/null) ); rc=$?
+names=$(. "$bin/git-auto-lib"; ga_roots | cut -f1)
+allnames=1
+while IFS= read -r n; do [[ -z $n ]] || grep -qF -- "$n" <<<"$err" || allnames=0; done <<<"$names"
+{ [[ $rc == 2 ]] && grep -qF "git-sync: unknown name 'no-such-repo'; valid:" <<<"$err" \
+	&& (( allnames )) && [[ ! -s $BD_CALLS ]]; } && p 12 || f 12
 
 usnap(){ # <tag> <cmd...> — snapshot `git ls-files --others` of a repo (sc 19)
 	local tag=$1; shift
@@ -361,7 +369,18 @@ git init -q --bare "$d/origin-nomain.git"
 git -C "$GA_PROJECTS/p-nomain" remote add origin "$d/origin-nomain.git"
 git -C "$GA_PROJECTS/p-nomain" push -q -u origin master
 git -C "$GA_PROJECTS/p-nomain" fetch -q origin
+git -C "$GA_PROJECTS/p-nomain" update-ref -d refs/remotes/origin/master
 out=$(cd "$GA_PROJECTS/p-nomain" && "$bin/git-sync" p-nomain 2>&1); rc=$?
 { grep -qF 'skip:no-main' <<<"$out" && [[ $rc == 0 ]]; } && p 25 || f 25
 
-[[ $ok == 25 ]]
+# 26: usage lists every ga_roots name — --help on stdout rc 0, missing arg rc 2
+names=$(. "$bin/git-auto-lib"; ga_roots | cut -f1)
+help=$("$bin/git-sync" --help 2>/dev/null); hrc=$?
+uerr=$("$bin/git-sync" 2>&1 >/dev/null); urc=$?
+allnames=1
+while IFS= read -r n; do [[ -z $n ]] || grep -qF -- "$n" <<<"$(printf '%s\n' "$help" "$uerr")" || allnames=0; done <<<"$names"
+{ [[ $hrc == 0 ]] && [[ $urc == 2 ]] && grep -qF 'valid:' <<<"$help" && grep -qF 'valid:' <<<"$uerr" \
+	&& (( allnames )); } && p 26 || f 26
+
+[[ $ok == 26 ]]
+

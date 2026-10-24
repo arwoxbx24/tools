@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 set -u
-case ${1:-} in -h|--help) echo "usage: git-sync <name>|--all [--min-idle N]  (синхронизирует репозитории контура)"; exit 0;; esac
 bin=$(cd -- "$(dirname -- "$0")" && pwd)
 . "$bin/git-auto-lib"
+
+valid_names(){ ga_roots | cut -f1 | paste -sd' ' -; }
+case ${1:-} in -h|--help) echo "usage: git-sync <name>|--all [--min-idle N]  (синхронизирует репозитории контура); valid: $(valid_names)"; exit 0;; esac
 
 LOG=${GA_LOG_DIR:-/root/workspaces/tools/logs}/git-sync.log
 mkdir -p "$(dirname "$LOG")"
@@ -122,6 +124,9 @@ if [[ $arg == --all ]]; then
 	[[ -z $buf ]] || printf '%s\n' "$buf"
 	exit $rc
 fi
-[[ -n $arg && $arg != --* ]] || { echo "usage: git-sync <name>|--all [--min-idle N]" >&2; exit 2; }
+[[ -n $arg && $arg != --* ]] || { echo "usage: git-sync <name>|--all [--min-idle N]; valid: $(valid_names)" >&2; exit 2; }
+names=$(ga_roots | cut -f1); valid=$(paste -sd' ' <<<"$names")
+[[ $'\n'"$names"$'\n' == *$'\n'"$arg"$'\n'* ]] \
+	|| { printf "git-sync: unknown name '%s'; valid: %s\n" "$arg" "$valid" >&2; exit 2; }
 run_one "$arg"
 exit $?
