@@ -53,7 +53,7 @@ scan_calls() {
            and test("<status>\\s*(completed|failed|killed)\\s*</status>"));
     def is_doc_read:
       (.name == "Read")
-      and ((.input.file_path // "") | test("\\.(md|json|txt|yml)$"; "i"));
+      and ((.input.file_path // "") | test("\\.(md|txt)$"; "i"));
     def first_word:
       [scan("\\S+")]
       | until((.[0] // "") as $h
@@ -140,6 +140,21 @@ case $event in
       exit 0
     fi
 
+    # Session-scoped run lock (owner 24.10): the same lead session does not run script files.
+    if jq -e '
+      .cwd == "/root/workspaces/projects"
+      and .tool_name == "Bash"
+      and (([ (.tool_input.command // "") | scan("\\S+") ]) as $w
+        | (($w | length) >= 2)
+          and ((["sh","bash","python3","python","node"] | index($w[0])) != null)
+          and (($w[1] | startswith("-")) | not))
+    ' >/dev/null 2>&1 <<<"$payload"; then
+      jq -cn --arg reason 'lead-run-lock (owner 24.10): the lead does not run scripts; route: /root/workspaces/tools/bin/code-channel auto|audit <worktree> <TZ>' \
+        '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$reason}}' \
+        2>/dev/null || exit 0
+      exit 0
+    fi
+
     case $tool_name in
       Read|Grep)
         if jq -e '
@@ -162,7 +177,7 @@ case $event in
     case $tool_name in
       Read)
         path=$(jq -r '.tool_input.file_path // empty' <<<"$payload" 2>/dev/null) || exit 0
-        [[ ${path,,} =~ \.(md|json|txt|yml)$ ]] || investigative=1
+        [[ ${path,,} =~ \.(md|txt)$ ]] || investigative=1
         ;;
       Grep|Glob|WebFetch|WebSearch) investigative=1 ;;
       Bash)
