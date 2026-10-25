@@ -43,7 +43,17 @@ TEST_ONCE_DIR=$d/state3 "$t" "$r" ./t.sh >/dev/null
 n3=$(runs)
 chmod +x "$r/new.txt"
 out3=$(TEST_ONCE_DIR=$d/state3 "$t" "$r" ./t.sh); rc3=$?
-if [ "$rc" = 0 ] && [[ $out != *cached* ]] && [ "$n" = 2 ] && [ "$rc2" = 0 ] && [[ $out2 != *cached* ]] && [ "$n3" = 3 ] && [ "$rc3" = 0 ] && [[ $out3 != *cached* ]] && [ "$(runs)" = 4 ]; then pass 3; else bad 3 "rc=$rc runs=$n out=$out rc2=$rc2 n3=$n3 rc3=$rc3 runs=$(runs) out2=$out2 out3=$out3"; fi
+cat > "$d/edit.sh" <<EOF
+#!/usr/bin/env bash
+echo x >> "$d/count"
+echo edited >> "$r/f.txt"
+echo "RESULT ok"
+EOF
+chmod +x "$d/edit.sh"
+out4=$(TEST_ONCE_DIR=$d/state3 "$t" "$r" "$d/edit.sh" 2>&1); rc4=$?
+echo b > "$r/f.txt"
+out5=$(TEST_ONCE_DIR=$d/state3 "$t" "$r" "$d/edit.sh" 2>&1); rc5=$?
+if [ "$rc" = 0 ] && [[ $out != *cached* ]] && [ "$n" = 2 ] && [ "$rc2" = 0 ] && [[ $out2 != *cached* ]] && [ "$n3" = 3 ] && [ "$rc3" = 0 ] && [[ $out3 != *cached* ]] && [ "$rc4" = 0 ] && [[ $out4 == *"tree changed during run, not cached"* ]] && [ "$rc5" = 0 ] && [[ $out5 != *"test-once: cached"* ]] && [ "$(runs)" = 6 ]; then pass 3; else bad 3 "rc=$rc runs=$n out=$out rc2=$rc2 n3=$n3 rc3=$rc3 runs=$(runs) out2=$out2 out3=$out3 rc4=$rc4 out4=$out4 rc5=$rc5 out5=$out5"; fi
 
 : > "$d/count"; echo x > "$d/dep.txt"; echo x > "$r/rel.txt"; echo rel.txt >> "$r/.git/info/exclude"
 TEST_ONCE_DIR=$d/state4 TEST_ONCE_DEPS=$d/dep.txt "$t" "$r" ./t.sh >/dev/null
@@ -54,7 +64,13 @@ n4=$(runs)
 (cd -- "$d" && TEST_ONCE_DIR=$d/state4 TEST_ONCE_DEPS=rel.txt "$t" "$r" ./t.sh >/dev/null)
 echo z > "$r/rel.txt"
 (cd -- "$d" && TEST_ONCE_DIR=$d/state4 TEST_ONCE_DEPS=rel.txt "$t" "$r" ./t.sh >/dev/null)
-if [ "$n4" = 2 ] && [ "$(runs)" = 4 ]; then pass 4; else bad 4 "runs=$(runs) before=$n4"; fi
+mkdir -p "$d/depdir"; echo x > "$d/depdir/a.txt"; ln -sfn "$d/depdir" "$d/depln"
+TEST_ONCE_DIR=$d/state7 TEST_ONCE_DEPS=$d/depln "$t" "$r" ./t.sh >/dev/null
+TEST_ONCE_DIR=$d/state7 TEST_ONCE_DEPS=$d/depln "$t" "$r" ./t.sh >/dev/null
+n7=$(runs)
+echo y > "$d/depdir/a.txt"
+TEST_ONCE_DIR=$d/state7 TEST_ONCE_DEPS=$d/depln "$t" "$r" ./t.sh >/dev/null
+if [ "$n4" = 2 ] && [ "$n7" = 5 ] && [ "$(runs)" = 6 ]; then pass 4; else bad 4 "runs=$(runs) before=$n4 n7=$n7"; fi
 
 : > "$d/count"
 TEST_ONCE_DIR=$d/state5 TEST_ONCE_TTL=0 "$t" "$r" ./t.sh >/dev/null
