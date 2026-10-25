@@ -41,6 +41,9 @@ printf '%s\n' '#!/usr/bin/env bash' 'printf "opencode active=%s %s\\n" "${CODE_C
 printf '%s\n' '#!/usr/bin/env bash' 'printf "codex active=%s %s\\n" "${CODE_CHANNEL_ACTIVE:-}" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "REPORT\\n"' '[[ ${CODEX_SWITCH_BRANCH:-} ]] && git -C "$CODE_CHANNEL_TEST_PROJECT" switch -c "codex/x-branch"' '[[ ${CODEX_TOUCH:-} ]] && printf x >"$CODE_CHANNEL_TEST_PROJECT/$CODEX_TOUCH"' '[[ ${CODEX_ERR:-} ]] && printf "%s\n" "$CODEX_ERR" >&2' 'exit "${CODEX_RC:-0}"' >"$bin/codex"
 printf '%s\n' '#!/usr/bin/env bash' 'if [[ $* == *"select id from session"* ]]; then printf "%s\n" "${SQLITE_SESSION_ID:-}"; else printf "%s\n" "${SQLITE_RESULT:-bitrixgpt|bitrix/bitrixgpt-5.6-agent}"; fi' >"$bin/sqlite3"
 printf '%s\n' '#!/usr/bin/env bash' 'printf "sdk-agent %s\\n" "$*" >>"$CODE_CHANNEL_TEST_LOG"' '[[ ${SDK_TOUCH:-} ]] && printf x >"$CODE_CHANNEL_TEST_PROJECT/$SDK_TOUCH"' 'exit "${SDK_RC:-0}"' >"$bin/sdk-agent-fake"
+for f in "$legacy" "$disabled" "$go" "$resume" "$ladder" "$codexone" "$gocodex" "$goaudit" "$goalt" "$ocfg" "$goidle" "$sdkgo" "$tmp/repogo.json"; do
+  jq '.ladder |= map(if .enabled then .owner_word = "test" else . end)' "$f" >"$f.t" && mv -f -- "$f.t" "$f"
+done
 chmod +x "$bin/curl" "$bin/opencode" "$bin/codex" "$bin/sqlite3" "$bin/sdk-agent-fake"
 
 ok=0
@@ -302,4 +305,17 @@ CC_CONFIG=$go check 84 '[[ $rc == 0 && $err != *loop-guard* ]]' \
   env LOOP_PASS=1 CODE_CHANNEL_LOOP_LIMIT=5 PATH="$loopbin:$bin:$PATH" SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
 echo "loop-guard ok=$((ok-lg0)) failed=$((3-(ok-lg0)))"
 
-[[ $ok == 84 ]] && echo 'PASS 84/84'
+sl_ok=$tmp/sl-ok.json sl_two=$tmp/sl-two.json sl_none=$tmp/sl-none.json
+printf '%s\n' '{"ladder":[{"id":"a","enabled":true,"model":"x/y","owner_word":"w"},{"id":"b","enabled":false,"model":"x/z"}]}' >"$sl_ok"
+printf '%s\n' '{"ladder":[{"id":"a","enabled":true,"model":"x/y","owner_word":"w"},{"id":"b","enabled":true,"model":"x/z","owner_word":"w"}]}' >"$sl_two"
+printf '%s\n' '{"ladder":[{"id":"a","enabled":true,"model":"x/y"},{"id":"b","enabled":false,"model":"x/z"}]}' >"$sl_none"
+slrun() { env -u CODE_CHANNEL_ACTIVE -u CODE_CHANNEL_TEST_LOG "CODE_CHANNEL_CONFIG=$1" "$root/bin/code-channel" --plan >/dev/null 2>"$tmp/sl-err"; }
+sl0=$ok
+slrun "$sl_ok"; slr0=$?
+[[ $slr0 == 0 ]] && ((ok++))
+slrun "$sl_two"; slr1=$?; sle1=$(<"$tmp/sl-err")
+slrun "$sl_none"; slr2=$?; sle2=$(<"$tmp/sl-err")
+[[ $slr1 != 0 && $sle1 == *switch-lock* && $slr2 != 0 && $sle2 == *switch-lock* ]] && ((ok++))
+echo "switch-lock ok=$((ok-sl0)) failed=$((2-(ok-sl0)))"
+
+[[ $ok == 86 ]] && echo 'PASS 86/86'

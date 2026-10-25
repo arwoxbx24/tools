@@ -4,7 +4,7 @@
   "resume_idle_limit": 3,
   "switch": {"channel": "sdk", "owner_word": "работаем через SDK-агент, Sonnet 5.5 (владелец 25.10)", "date": "2026-10-25"},
   "ladder": [
-    {"id": "sdk", "enabled": true, "model": "claude-sonnet-5-5"},
+    {"id": "sdk", "enabled": true, "model": "claude-sonnet-5-5", "owner_word": "25.10 владелец: «Мы переключаемся на SDK-агента»"},
     {"id": "go", "enabled": false, "model": "opencode-go/deepseek-v4.1-flash", "resume_model": "opencode-go/deepseek-v4.1-flash", "audit_model": "opencode-go/deepseek-v4.1-flash", "fallback_model": "opencode-go/deepseek-v4-pro"},
     {"id": "codex", "enabled": false, "model": "", "effort": "high"},
     {"id": "openrouter", "enabled": false, "model": "openrouter/deepseek/deepseek-v4-flash", "key": "OPENROUTER_API_KEY", "secret": "openrouter", "base": "https://openrouter.ai/api/v1"},
