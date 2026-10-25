@@ -35,7 +35,11 @@ if [ "$rc" = 0 ] && [[ $out == *"test-once: cached rc=0"* && $out == *"RESULT ok
 TEST_ONCE_DIR=$d/state3 "$t" "$r" ./t.sh >/dev/null
 echo b > "$r/f.txt"
 out=$(TEST_ONCE_DIR=$d/state3 "$t" "$r" ./t.sh); rc=$?
-if [ "$rc" = 0 ] && [[ $out != *cached* ]] && [ "$(runs)" = 2 ]; then pass 3; else bad 3 "rc=$rc runs=$(runs) out=$out"; fi
+n=$(runs)
+TEST_ONCE_DIR=$d/state3 "$t" "$r" ./t.sh >/dev/null
+echo new > "$r/new.txt"
+out2=$(TEST_ONCE_DIR=$d/state3 "$t" "$r" ./t.sh); rc2=$?
+if [ "$rc" = 0 ] && [[ $out != *cached* ]] && [ "$n" = 2 ] && [ "$rc2" = 0 ] && [[ $out2 != *cached* ]] && [ "$(runs)" = 3 ]; then pass 3; else bad 3 "rc=$rc runs=$n out=$out rc2=$rc2 runs=$(runs) out2=$out2"; fi
 
 : > "$d/count"; echo x > "$d/dep.txt"
 TEST_ONCE_DIR=$d/state4 TEST_ONCE_DEPS=$d/dep.txt "$t" "$r" ./t.sh >/dev/null

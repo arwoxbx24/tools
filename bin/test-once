@@ -21,12 +21,8 @@ key=$({
         git -C "$repo" diff --binary
         git -C "$repo" diff --cached --binary
     fi
-    cmd=$1; cp=$cmd; [[ $cp = /* ]] || cp=$repo/$cp
-    # shortcut: untracked files count only under the command's dir; other inputs → TEST_ONCE_DEPS
-    if [ -f "$cp" ] && top=$(realpath -- "$(git -C "$repo" rev-parse --show-toplevel)") && rp=$(realpath -- "$cp") && [[ $rp = "$top"/* ]]; then
-        cdir=$(dirname -- "$rp"); cdir=${cdir#"$top"}; cdir=${cdir#/}
-        git -C "$repo" ls-files --others --exclude-standard -z -- "${cdir:-.}" | while IFS= read -r -d '' p; do printf '%s %s\n' "$p" "$(fp "$repo/$p")"; done
-    fi
+    top=$(git -C "$repo" rev-parse --show-toplevel)
+    git -C "$top" ls-files --others --exclude-standard -z | while IFS= read -r -d '' p; do printf '%s %s\n' "$p" "$(fp "$top/$p")"; done
     p=$1; [[ $p = /* ]] || p=$repo/$p
     if [ -f "$p" ]; then printf 'cmd %s\n' "$(fp "$p")"; fi
     IFS=: read -ra deps <<< "${TEST_ONCE_DEPS:-}"
