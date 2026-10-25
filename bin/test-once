@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -u
+usage() { echo "usage: test-once <repo> <cmd> [args...]"; }
+case ${1:-} in -h|--help) usage; exit 0 ;; esac
+if [ $# -lt 2 ] || [[ $1 != /* ]] || ! git -C "$1" rev-parse --show-toplevel >/dev/null 2>&1; then usage >&2; exit 2; fi
+repo=$1; shift
+D=${TEST_ONCE_DIR:-/tmp/test-once}; T=${TEST_ONCE_TTL:-3600}
+mkdir -p "$D/res" "$D/fail"
+fp() {
+    if [ -d "$1" ]; then find "$1" -type f -print0 | sort -z | xargs -0 -r sha256sum | sha256sum
+    elif [ -f "$1" ]; then sha256sum < "$1"
+    else echo missing; fi
+}
+key=$({
+    printf '%s\0' "$@"
+    if git -C "$repo" rev-parse -q --verify HEAD >/dev/null; then
+        git -C "$repo" rev-parse 'HEAD^{tree}'
+        git -C "$repo" diff HEAD --binary
+    else
+        echo nohead
+        git -C "$repo" diff --binary
+        git -C "$repo" diff --cached --binary
+    fi
+    git -C "$repo" ls-files --others --exclude-standard -z | while IFS= read -r -d '' p; do printf '%s %s\n' "$p" "$(fp "$repo/$p")"; done
+    p=$1; [[ $p = /* ]] || p=$repo/$p
+    if [ -f "$p" ]; then printf 'cmd %s\n' "$(fp "$p")"; fi
+    IFS=: read -ra deps <<< "${TEST_ONCE_DEPS:-}"
+    for dep in "${deps[@]}"; do
+        if [ -n "$dep" ]; then printf '%s %s\n' "$dep" "$(fp "$dep")"; fi
+    done
+} | sha256sum | cut -d' ' -f1)
+pair=$({ printf '%s\0' "$(realpath -- "$repo")" "$@"; } | sha256sum | cut -d' ' -f1)
+now=$(date +%s)
+res=$D/res/$key
+if [ -f "$res" ]; then
+    rc=$(sed -n 1p "$res"); ep=$(sed -n 2p "$res")
+    if [ $((now - ep)) -lt "$T" ]; then
+        echo "test-once: cached rc=$rc age=$((now - ep))s"; sed -n 3p "$res"; exit "$rc"
+    fi
+fi
+pf=$D/fail/$pair; count=0; fe=0
+if [ -f "$pf" ]; then count=$(sed -n 1p "$pf"); fe=$(sed -n 2p "$pf"); fi
+if [ $((now - fe)) -ge "$T" ]; then count=0; fi
+if [ "$count" -ge 3 ]; then echo "test-once: STALLED $count failing runs of $* in $repo; fix the cause, do not re-run"; exit 29; fi
+out=$(mktemp); trap 'rm -f -- "$out"' EXIT
+(cd -- "$repo" && "$@") 2>&1 | tee "$out"
+rc=${PIPESTATUS[0]}
+last=$(grep -v '^$' "$out" | tail -n 1)
+now=$(date +%s)
+tmp=$(mktemp "$D/res/.tmp.XXXXXX"); printf '%s\n%s\n%s\n' "$rc" "$now" "$last" > "$tmp" && mv -f -- "$tmp" "$res"
+if [ "$rc" = 0 ]; then n=0; else n=$((count + 1)); fi
+tmp=$(mktemp "$D/fail/.tmp.XXXXXX"); printf '%s\n%s\n' "$n" "$now" > "$tmp" && mv -f -- "$tmp" "$pf"
+exit "$rc"
