@@ -134,7 +134,12 @@ for i in "${!nums[@]}"; do
           pass=1
         fi
         ;;
-      *) [[ $out == *"$exp"* ]] && pass=1 ;;
+      *) if [[ $out == *"$exp"* ]]; then
+           pass=1
+           shown=$(printf '%s\n' "$out" | grep -F -m1 -- "$exp")
+           shown=${shown:0:160}
+         fi
+         ;;
     esac
   fi
   if [ "$pass" -eq 1 ]; then
