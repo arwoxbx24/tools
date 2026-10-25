@@ -52,7 +52,7 @@ cat > "$d/4.txt" <<EOF
 AC1: cat $d/a.txt; touch $d/pwned => hello
 EOF
 out=$("$gc" --file "$d/4.txt"); rc=$?
-if [ "$rc" -eq 2 ] && [[ $out == *REFUSED* ]] && [ ! -e "$d/pwned" ]; then
+if [ "$rc" -eq 2 ] && [[ $out == *REFUSED* ]] && [[ $out == *"reason=unsafe-char"* ]] && [ ! -e "$d/pwned" ]; then
   passed=$((passed+1)); echo "PASS unsafe-cmd refused rc=2"
 else
   case_fail unsafe-cmd "rc=$rc out=$out"
@@ -63,7 +63,7 @@ cat > "$d/5.txt" <<EOF
 AC1: find $d -name a.txt -delete => <empty>
 EOF
 out=$("$gc" --file "$d/5.txt"); rc=$?
-if [ "$rc" -eq 2 ] && [ -e "$d/a.txt" ]; then
+if [ "$rc" -eq 2 ] && [ -e "$d/a.txt" ] && [[ $out == *"reason=find-exec"* ]]; then
   passed=$((passed+1)); echo "PASS find-delete refused rc=2"
 else
   case_fail find-delete "rc=$rc out=$out"
@@ -74,7 +74,7 @@ cat > "$d/6.txt" <<EOF
 AC1: /root/workspaces/tools/bin/safe-delete tmp $d/a.txt => removed
 EOF
 out=$("$gc" --file "$d/6.txt"); rc=$?
-if [ "$rc" -eq 2 ] && [[ $out == *REFUSED* ]] && [ -e "$d/a.txt" ]; then
+if [ "$rc" -eq 2 ] && [[ $out == *REFUSED* ]] && [[ $out == *"reason=bad-command"* ]] && [ -e "$d/a.txt" ]; then
   passed=$((passed+1)); echo "PASS tool-not-test refused rc=2"
 else
   case_fail tool-not-test "rc=$rc out=$out"
@@ -85,7 +85,7 @@ cat > "$d/7.txt" <<EOF
 AC1: git log --output=$d/out.txt => x
 EOF
 out=$("$gc" --file "$d/7.txt"); rc=$?
-if [ "$rc" -eq 2 ] && [ ! -e "$d/out.txt" ]; then
+if [ "$rc" -eq 2 ] && [ ! -e "$d/out.txt" ] && [[ $out == *"reason=write-arg"* ]]; then
   passed=$((passed+1)); echo "PASS write-arg refused rc=2"
 else
   case_fail write-arg "rc=$rc out=$out"
@@ -96,7 +96,7 @@ cat > "$d/8.txt" <<EOF
 AC1: git log --textconv => x
 EOF
 out=$("$gc" --file "$d/8.txt"); rc=$?
-if [ "$rc" -eq 2 ] && [[ $out == *REFUSED* ]]; then
+if [ "$rc" -eq 2 ] && [[ $out == *REFUSED* ]] && [[ $out == *"reason=write-arg"* ]]; then
   passed=$((passed+1)); echo "PASS textconv refused rc=2"
 else
   case_fail textconv "rc=$rc out=$out"
@@ -113,8 +113,121 @@ else
   case_fail multi-line-match "rc=$rc out=$out"
 fi
 
+# epic mode via stub bd
+mkdir "$d/stubbin"
+cat > "$d/stubbin/bd" <<'EOF'
+#!/usr/bin/env bash
+jq -Rs '[{acceptance_criteria: .}]' "$BD_ACC"
+EOF
+chmod +x "$d/stubbin/bd"
+export BD_ACC="$d/acc.txt"
+ok=0; failed=0
+epic_case() {
+  printf '%s\n' "$2" > "$BD_ACC"
+  out=$(PATH="$d/stubbin:$PATH" "$gc" epic-x); rc=$?
+  last=$(printf '%s\n' "$out" | tail -n1)
+  if [ "$3" = MET ]; then
+    [ "$rc" -eq 0 ] && [ "$last" = "GOAL=MET" ] && [[ $out == *"$4"* ]] && { ok=$((ok+1)); return; }
+  else
+    [ "$rc" -eq 2 ] && [ "$last" = "GOAL=REFUSED" ] && [[ $out != *GOAL=MET* ]] && [[ $out == *"reason=$4"* ]] && { ok=$((ok+1)); return; }
+  fi
+  failed=$((failed+1)); echo "FAIL $1 rc=$rc out=$out"
+}
+epic_case off-list "AC1: curl http://x => ok" REFUSED bad-command
+epic_case pipe "AC1: cat $d/a.txt | grep hello => hello" REFUSED unsafe-char
+epic_case no-ac "no criteria here" REFUSED no-ac-lines
+epic_case allowed "AC1: test -d /tmp => <empty>" MET "AC1 PASS"
+epic_case no-arrow "$(printf 'AC1: test -d /tmp => <empty>\nAC2: rm -rf /tmp/x')" REFUSED malformed-ac
+epic_case space-colon "$(printf 'AC1 : curl x => y\nAC2: test -d /tmp => <empty>')" REFUSED malformed-ac
+epic_case rawfile "AC1: jq --rawfile x /root/.ssh/id_rsa .x => B" REFUSED secret-arg
+epic_case secret-env "AC1: cat /root/workspaces/secrets/a.env => x" REFUSED secret-arg
+epic_case jq-env "AC1: jq -n env => PATH" REFUSED secret-arg
+epic_case ac10 "$(printf 'AC10: test -d /tmp => <empty>\nAC1: test -d /tmp => <empty>')" MET "AC10 PASS"
+epic_case ac1-of-10 "$(printf 'AC10: test -d /tmp => <empty>\nAC1: test -d /tmp => <empty>')" MET "AC1 PASS"
+gca=$(realpath "$gc")
+printf 'gc-harmless\n' > "$d/h.txt"
+ac_case() {
+  printf '%s\n' "$2" > "$BD_ACC"
+  out=$(cd "${6:-.}" && PATH="$d/stubbin:$PATH" "$gca" epic-x); rc=$?
+  last=$(printf '%s\n' "$out" | tail -n1)
+  [ "$rc" -eq "$3" ] && [ "$last" = "$4" ] && [[ $out =~ $5 ]] && { ok=$((ok+1)); return; }
+  failed=$((failed+1)); echo "FAIL $1 rc=$rc out=$out"
+}
+secret_re='reason=(secret-arg|path-outside)'
+ac_case norm-double-slash "AC1: cat /root//.ssh/gc-nonexistent => x" 2 GOAL=REFUSED "$secret_re"
+ac_case norm-dot "AC1: cat /root/./.ssh/gc-nonexistent => x" 2 GOAL=REFUSED "$secret_re"
+ac_case norm-dotdot "AC1: cat /root/workspaces/tools/../secrets/gc-nonexistent => x" 2 GOAL=REFUSED "$secret_re"
+ac_case outside-etc "AC1: cat /etc//gc-nonexistent => x" 2 GOAL=REFUSED 'reason=path-outside'
+ac_case outside-proc "AC1: cat /proc/self/gc-nonexistent => x" 2 GOAL=REFUSED 'reason=path-outside'
+ac_case outside-gh "AC1: cat /root/.config/gh/gc-nonexistent => x" 2 GOAL=REFUSED 'reason=path-outside'
+mkdir -p "$d/ws/secrets" "$d/ar/bin"
+: > "$d/ar/bin/gc-fixture"
+ac_case relative-secrets "AC1: ls secrets => x" 2 GOAL=REFUSED 'reason=secret-arg' "$d/ws"
+ac_case recursive-r "AC1: grep -r gc-zzz /tmp => x" 2 GOAL=REFUSED 'reason=recursive'
+ac_case recursive-rn "AC1: grep -rn gc-zzz /tmp => x" 2 GOAL=REFUSED 'reason=recursive'
+ac_case recursive-long "AC1: grep --recursive gc-zzz /tmp => x" 2 GOAL=REFUSED 'reason=recursive'
+ac_case empty-exp "AC1: ls /tmp =>" 2 GOAL=REFUSED 'reason=malformed-ac'
+ac_case empty-exp-space "AC1: ls /tmp => " 2 GOAL=REFUSED 'reason=malformed-ac'
+ac_case dropped-dash "$(printf 'AC1: ls /tmp => tmp\nAC-2: ls /tmp => x')" 2 GOAL=REFUSED 'reason=malformed-ac'
+ac_case dropped-paren "$(printf 'AC1: ls /tmp => tmp\nAC1) ls /tmp => x')" 2 GOAL=REFUSED 'reason=malformed-ac'
+ac_case dropped-hyphen "$(printf 'AC1: ls /tmp => tmp\nAC1 - ls /tmp => x')" 2 GOAL=REFUSED 'reason=malformed-ac'
+ac_case duplicate-ac "$(printf 'AC1: ls /tmp => tmp\nAC1: ls /tmp => tmp')" 2 GOAL=REFUSED 'reason=malformed-ac'
+ac_case rc-respected "AC1: test -f /tmp/gc-nonexistent-file => <empty>" 1 GOAL=NOT_MET 'AC1 FAIL rc=1'
+ac_case grep-rc1-by-output "AC1: grep -c gc-zzz-never $d/h.txt => 0" 0 GOAL=MET 'AC1 PASS'
+ac_case allowed-root "AC1: ls $d/ar/bin => gc-fixture" 0 GOAL=MET 'AC1 PASS'
+ac_case jq-slurpfile "AC1: jq --slurpfile a $d/h.txt -n 1 => x" 2 GOAL=REFUSED 'reason=secret-arg'
+ac_case jq-f "AC1: jq -f $d/h.txt -n => x" 2 GOAL=REFUSED 'reason=secret-arg'
+ac_case jq-from-file "AC1: jq --from-file $d/h.txt -n => x" 2 GOAL=REFUSED 'reason=secret-arg'
+ac_case jq-input-filename "AC1: jq -n input_filename => x" 2 GOAL=REFUSED 'reason=secret-arg'
+ac_case flag-wc-files0 "AC1: wc --files0-from=$d/x => x" 2 GOAL=REFUSED 'reason=flag'
+ac_case flag-grep-file-eq "AC1: grep --file=$d/x a $d/h.txt => x" 2 GOAL=REFUSED 'reason=flag'
+ac_case flag-grep-attached "AC1: grep -f$d/x a $d/h.txt => x" 2 GOAL=REFUSED 'reason=flag'
+ac_case flag-grep-nd "AC1: grep -nd recurse a $d => x" 2 GOAL=REFUSED 'reason=flag'
+ac_case flag-grep-directories "AC1: grep --directories recurse a $d => x" 2 GOAL=REFUSED 'reason=flag'
+ac_case flag-grep-R "AC1: grep -R a $d => x" 2 GOAL=REFUSED 'reason=flag'
+ac_case flag-grep-nr "AC1: grep -nr a $d => x" 2 GOAL=REFUSED 'reason=flag'
+ac_case flag-find-exec "AC1: find $d -exec true => x" 2 GOAL=REFUSED 'reason=flag'
+ac_case flag-find-execdir "AC1: find $d -execdir true => x" 2 GOAL=REFUSED 'reason=flag'
+ac_case flag-find-fprint "AC1: find $d -fprint $d/o => x" 2 GOAL=REFUSED 'reason=flag'
+ac_case flag-git-ext-diff "AC1: git diff --ext-diff => x" 2 GOAL=REFUSED 'reason=flag'
+ac_case flag-jq-rawfile "AC1: jq --rawfile v $d/h.txt -n 1 => x" 2 GOAL=REFUSED 'reason=flag'
+ac_case pass-grep-slash-pattern "AC1: grep -c http://x $d/h.txt => 0" 0 GOAL=MET 'AC1 PASS'
+ac_case pass-jq-n "AC1: jq -n 1 => 1" 0 GOAL=MET 'AC1 PASS'
+ac_case pass-git-log "AC1: git log -1 --oneline => e" 0 GOAL=MET 'AC1 PASS'
+ac_case pass-ls-claude-md "AC1: ls /root/CLAUDE.md => CLAUDE.md" 0 GOAL=MET 'AC1 PASS'
+ac_case pass-ls-etc-claude-code "AC1: ls -d /etc/claude-code/ => claude-code" 0 GOAL=MET 'AC1 PASS'
+ac_case pass-ls-root-claude "AC1: ls -d /root/.claude/ => claude" 0 GOAL=MET 'AC1 PASS'
+ac_case malformed-dash-bullet "$(printf 'AC1: ls /tmp => tmp\n- AC-2: x => y')" 2 GOAL=REFUSED 'reason=malformed-ac'
+ac_case malformed-star-paren "$(printf 'AC1: ls /tmp => tmp\n* AC1) x => y')" 2 GOAL=REFUSED 'reason=malformed-ac'
+ac_case duplicate-ac-leading-zero "$(printf 'AC1: ls /tmp => tmp\nAC01: ls /tmp => tmp')" 2 GOAL=REFUSED 'reason=malformed-ac'
+gr="$(dirname "$gca")/.."
+nr_case() {
+  printf '%s\n' "$2" > "$BD_ACC"
+  out=$(PATH="$d/stubbin:$PATH" "$gca" epic-x)
+  [[ $out != *reason=flag* ]] && { ok=$((ok+1)); return; }
+  failed=$((failed+1)); echo "FAIL $1 out=$out"
+}
+ac_case real-ls-red-fixes "AC1: ls bin/goal-check => goal-check" 0 GOAL=MET 'AC1 PASS rc=0 output=bin/goal-check' "$gr"
+ac_case real-grep-c-i "AC1: grep -c -i goal-check bin/goal-check => >=1" 0 GOAL=MET 'AC1 PASS rc=0 output=[1-9][0-9]*' "$gr"
+nr_case real-gh-pr-view-json "AC1: gh pr view 20 --repo arwoxbx24/incidents --json state => MERGED"
+ac_case count-tail-1 "AC1: tail -1 bin/goal-check => exit 1" 0 GOAL=MET 'AC1 PASS rc=0 output=exit 1' "$gr"
+ac_case count-head-5 "AC1: head -5 bin/goal-check => #!/usr/bin/env bash" 0 GOAL=MET 'AC1 PASS rc=0 output=#!/usr/bin/env bash' "$gr"
+ac_case count-git-log-3 "AC1: git log -3 --oneline e82bc66 => e82bc66" 0 GOAL=MET 'AC1 PASS rc=0 output=e82bc66 Merge pull request #429' "$gr"
+nr_case gh-state-limit "AC1: gh pr list --state open --limit 1 => x"
+nr_case gh-short-flags "AC1: gh pr list -R arwoxbx24/incidents -L 1 => x"
+nr_case bd-json-status-parent-limit-brief "AC1: bd list --json --status open --parent x --limit 1 --brief => x"
+nr_case bd-label-flags "AC1: bd list -l a --label b => x"
+ac_case gh-jq-refused "AC1: gh pr view 20 --jq .state => x" 2 GOAL=REFUSED 'reason=flag'
+ac_case gh-web-refused "AC1: gh pr view 20 --web => x" 2 GOAL=REFUSED 'reason=flag'
+ac_case gh-pr-merge-refused "AC1: gh pr merge 1 => x" 2 GOAL=REFUSED 'reason=gh-subcmd'
+ac_case bd-close-refused "AC1: bd close x => x" 2 GOAL=REFUSED 'reason=bd-subcmd'
+ac_case tail-bad-count-refused "AC1: tail -1x $d/h.txt => x" 2 GOAL=REFUSED 'reason=flag'
+echo "goal-check-ac ok=$ok failed=$failed"
+[ "$failed" -eq 0 ] || exit 1
+
 if [ "$passed" -eq 9 ]; then
-  echo "PASS 9/9"
+  total=$((passed+ok))
+  echo "PASS $total/$total"
   exit 0
 fi
 echo "FAIL $passed/9"

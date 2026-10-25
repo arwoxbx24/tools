@@ -8,6 +8,7 @@ usage() {
   echo "goal-check --file <path> — acceptance-текст из файла (для теста)."
   echo "AC-строка: AC<n>: <команда> => <ожидание>; ожидание — текст, >=N или <empty>."
   echo "Вердикт: GOAL=MET (rc 0) / GOAL=NOT_MET (rc 1) / GOAL=REFUSED (rc 2)."
+  echo "REFUSED reason: no-ac-lines, malformed-ac (строка, похожая на AC, не вида ACn: <команда> => <ожидание>), unsafe-char, bad-command, tool-not-test, write-arg, secret-arg, find-exec, git-subcmd, gh-subcmd, bd-subcmd, path-outside, recursive."
 }
 
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
@@ -28,26 +29,94 @@ else
 fi
 
 nums=(); cmds=(); exps=()
+malformed=0
 while IFS= read -r line; do
-  [[ $line =~ AC([0-9]+):[[:space:]]*(.*)$ ]] || continue
-  n=${BASH_REMATCH[1]}
+  if [[ $line =~ ^[[:space:]]*[-*][[:space:]]*AC ]]; then malformed=1; continue; fi
+  if ! [[ $line =~ AC([0-9]+):[[:space:]]*(.*)$ ]]; then
+    [[ $line =~ [Aa][Cc][[:space:]*]*[0-9]+[[:space:]*]*: || $line =~ ^[[:space:]]*AC ]] && malformed=1
+    continue
+  fi
+  n=$((10#${BASH_REMATCH[1]}))
   rest=${BASH_REMATCH[2]}
-  [[ $rest == *" => "* ]] || continue
+  [[ " ${nums[*]} " == *" $n "* ]] && { malformed=1; continue; }
+  [[ $rest == *" => "* ]] || { malformed=1; continue; }
   cmd=${rest%' => '*}
   exp=${rest##*' => '}
   cmd=${cmd%"${cmd##*[![:space:]]}"}
   cmd=${cmd#"${cmd%%[![:space:]]*}"}
   exp=${exp%"${exp##*[![:space:]]}"}
   exp=${exp#"${exp%%[![:space:]]*}"}
+  [ -n "$exp" ] || { malformed=1; continue; }
   nums+=("$n"); cmds+=("$cmd"); exps+=("$exp")
 done <<< "$acc"
 
+if [ "$malformed" -eq 1 ]; then
+  echo "REFUSED reason=malformed-ac"
+  echo "GOAL=REFUSED"
+  exit 2
+fi
+
 if [ ${#nums[@]} -eq 0 ]; then
-  echo "GOAL=NOT_MET reason=no-ac-lines"
-  exit 1
+  echo "REFUSED reason=no-ac-lines"
+  echo "GOAL=REFUSED"
+  exit 2
 fi
 
 bad=';|&$`<>(){}'"'"'\'
+flagscan() {
+  local c=${argv[0]} sub=${argv[1]:-} sok="" sval="" lok="" lval="" lval2="" a l rest i=1 n=${#argv[@]} npos=0
+  sk=()
+  case $c in
+    grep) sok=cniEFqxwlvhosm; sval=m ;;
+    wc) sok=lcwm ;;
+    ls) sok=la1dh ;;
+    head|tail) sok=nc; sval=nc ;;
+    stat) sok=c; sval=c ;;
+    test) sok=defLhnrswxz ;;
+    cat) ;;
+    find) lval="-maxdepth -mindepth -name -type -newer" ;;
+    jq) sok=recns; lval2="--arg --argjson" ;;
+    git) sok=n; sval=n; lok="--oneline --stat --name-only" ;;
+    gh) sok=RL; sval=RL; lval="--repo --json --state --limit" ;;
+    bd) sok=l; sval=l; lok="--json --brief"; lval="--status --parent --limit --label" ;;
+    *) return ;;
+  esac
+  while [ "$i" -lt "$n" ]; do
+    a=${argv[i]}
+    if [[ " $lval " == *" $a "* ]]; then
+      [ $((i+1)) -lt "$n" ] || { fbad=1; return; }
+      [ "$a" = -newer ] || sk[i+1]=1
+      i=$((i+2))
+    elif [[ " $lval2 " == *" $a "* ]]; then
+      [ $((i+2)) -lt "$n" ] || { fbad=1; return; }
+      sk[i+1]=1; sk[i+2]=1
+      i=$((i+3))
+    elif [[ " $lok " == *" $a "* ]]; then
+      i=$((i+1))
+    elif [[ $a =~ ^-[0-9]+$ ]] && { [[ $c == head || $c == tail ]] || [[ $c == git && ( $sub == log || $a == -1 ) ]]; }; then
+      i=$((i+1))
+    elif [[ $c == git && $a == --format=* ]]; then
+      i=$((i+1))
+    elif [[ $a == -* && $a != --* && ${#a} -gt 1 ]]; then
+      rest=${a:1}
+      while [ -n "$rest" ]; do
+        l=${rest:0:1}; rest=${rest:1}
+        [[ -n $sok && $sok == *"$l"* ]] || { fbad=1; return; }
+        if [[ $sval == *"$l"* ]]; then
+          [ -z "$rest" ] && [ $((i+1)) -lt "$n" ] || { fbad=1; return; }
+          sk[i+1]=1; i=$((i+1))
+        fi
+      done
+      i=$((i+1))
+    elif [[ $a == -* ]]; then
+      fbad=1; return
+    else
+      npos=$((npos+1))
+      { [ "$c" = grep ] || [ "$c" = jq ]; } && [ "$npos" -eq 1 ] && sk[i]=1
+      i=$((i+1))
+    fi
+  done
+}
 reasons=()
 for i in "${!nums[@]}"; do
   cmd=${cmds[i]}
@@ -66,7 +135,7 @@ for i in "${!nums[@]}"; do
         if [[ $w =~ ^/root/workspaces/tools/bin/[A-Za-z0-9._-]+-test$ ]]; then
           allowed=1
         else
-          reason=tool-not-test
+          reason=bad-command
         fi
         ;;
     esac
@@ -77,7 +146,35 @@ for i in "${!nums[@]}"; do
   if [ -z "$reason" ]; then
     for arg in "${argv[@]}"; do
       case $arg in
-        --output*|--ext-diff|--textconv|--web) reason=write-arg; break ;;
+        --output*|--textconv) reason=write-arg; break ;;
+      esac
+    done
+  fi
+  if [ -z "$reason" ]; then
+    for arg in "${argv[@]}"; do
+      case $arg in
+        */root/.ssh*|*/etc/ssh*|*/etc/shadow*|*/root/workspaces/secrets*|*.env*|*auth.json*|*id_rsa*|*id_ed25519*|*.codex/*) reason=secret-arg; break ;;
+      esac
+      if [ "${argv[0]:-}" = jq ]; then
+        case $arg in
+          --slurpfile*|--from-file*|-f*|-[!-]*f*|*env*|*'$ENV'*|*input_filename*) reason=secret-arg; break ;;
+        esac
+      fi
+    done
+  fi
+  if [ -z "$reason" ]; then
+    fbad=0
+    flagscan
+    for ((k=1; k<${#argv[@]}; k++)); do
+      arg=${argv[k]}
+      [ -z "${sk[k]:-}" ] || continue
+      [ "${arg#-}" = "$arg" ] || continue
+      [[ $arg == */* ]] || [ -e "$arg" ] || continue
+      p=$(realpath -m -- "$arg")
+      case $p in
+        /root/workspaces/secrets|/root/workspaces/secrets/*|*/secrets|*/secrets/*|*/.ssh|*/.ssh/*|/etc/ssh|/etc/ssh/*|/etc/shadow*|*.env*|*auth.json*|*id_rsa*|*id_ed25519*|*id_ecdsa*|*authorized_keys*|*.credentials*|*.pem*|*.codex/*) reason=secret-arg; break ;;
+        /tmp|/tmp/*|/root/workspaces|/root/workspaces/*|/root/.claude|/root/.claude/*|/root/CLAUDE.md|/etc/claude-code|/etc/claude-code/*) ;;
+        *) reason=path-outside; break ;;
       esac
     done
   fi
@@ -85,13 +182,18 @@ for i in "${!nums[@]}"; do
     case ${argv[0]:-} in
       find)
         for arg in "${argv[@]:1}"; do
+          [ "$arg" = -delete ] && { reason=find-exec; break; }
+        done
+        ;;
+      grep)
+        for arg in "${argv[@]:1}"; do
           case $arg in
-            -exec|-execdir|-ok|-okdir|-delete|-fprint0|-fprint|-fprintf|-fls) reason=find-exec; break ;;
+            --rec*|-r*) reason=recursive; break ;;
           esac
         done
         ;;
       git)
-        case ${argv[1]:-} in log|show|diff|rev-parse|ls-files|status) ;; *) reason=git-subcmd ;; esac
+        case ${argv[1]:-} in log|show|diff|rev-parse|ls-files|status|branch) ;; *) reason=git-subcmd ;; esac
         ;;
       gh)
         case "${argv[1]:-} ${argv[2]:-}" in "pr view"|"pr list"|"pr checks") ;; *) reason=gh-subcmd ;; esac
@@ -101,6 +203,7 @@ for i in "${!nums[@]}"; do
         ;;
     esac
   fi
+  if [ -z "$reason" ] && [ "${fbad:-0}" -eq 1 ]; then reason=flag; fi
   reasons+=("$reason")
 done
 
@@ -120,12 +223,15 @@ for i in "${!nums[@]}"; do
   n=${nums[i]}; cmd=${cmds[i]}; exp=${exps[i]}
   # shortcut: no quoting, args split on spaces; upgrade if an AC needs a spaced pattern
   read -ra argv <<< "$cmd"
+  case "${argv[0]} ${argv[1]:-}" in
+    "git log"|"git show"|"git diff") argv=("${argv[0]}" "${argv[1]}" --no-textconv --no-ext-diff "${argv[@]:2}") ;;
+  esac
   out=$(timeout 60 "${argv[@]}" 2>&1); rc=$?
   firstline=${out%%$'\n'*}
   shown=${firstline:0:160}
   [ -n "$shown" ] || shown=empty
   pass=0
-  if [ "$rc" -ne 124 ] && [ "$rc" -ne 126 ] && [ "$rc" -ne 127 ]; then
+  if [ "$rc" -eq 0 ] || { [ "${argv[0]}" = grep ] && [ "$rc" -eq 1 ] && [ "$exp" != '<empty>' ]; }; then
     case $exp in
       '<empty>') [ -z "$out" ] && pass=1 ;;
       '>='*)
