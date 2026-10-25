@@ -120,6 +120,7 @@ for i in "${!nums[@]}"; do
   n=${nums[i]}; cmd=${cmds[i]}; exp=${exps[i]}
   # shortcut: no quoting, args split on spaces; upgrade if an AC needs a spaced pattern
   read -ra argv <<< "$cmd"
+  [[ ${argv[0]} =~ ^/root/workspaces/tools/bin/[A-Za-z0-9._-]+-test$ ]] && argv=("$(dirname -- "$0")/test-once" /root/workspaces/tools "${argv[@]}")
   out=$(timeout 60 "${argv[@]}" 2>&1); rc=$?
   firstline=${out%%$'\n'*}
   shown=${firstline:0:160}

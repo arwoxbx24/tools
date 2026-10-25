@@ -113,9 +113,38 @@ else
   case_fail multi-line-match "rc=$rc out=$out"
 fi
 
-if [ "$passed" -eq 9 ]; then
-  echo "PASS 9/9"
+# 10) repeat *-test AC is cached
+cat > "$d/10.txt" <<EOF
+AC1: /root/workspaces/tools/bin/where-test => PASS
+EOF
+cat > "$d/10b.txt" <<EOF
+AC1: /root/workspaces/tools/bin/where-test => cached rc=0
+EOF
+out1=$(TEST_ONCE_DIR=$d/to-state "$gc" --file "$d/10.txt"); rc1=$?
+out2=$(TEST_ONCE_DIR=$d/to-state "$gc" --file "$d/10b.txt"); rc2=$?
+if [ "$rc1" -eq 0 ] && [ "$rc2" -eq 0 ] && [[ $out1 == *GOAL=MET* ]] && [[ $out2 == *GOAL=MET* ]] && [[ $out1 != *cached* ]] && [[ $out2 == *"output=test-once: cached rc=0"* ]]; then
+  passed=$((passed+1)); echo "PASS repeat-test cached"
+else
+  case_fail repeat-test-cached "rc1=$rc1 rc2=$rc2 out1=$out1 out2=$out2"
+fi
+
+# 11) other AC always runs
+printf 'one\n' > "$d/live.txt"
+cat > "$d/11.txt" <<EOF
+AC1: cat $d/live.txt => two
+EOF
+out1=$(TEST_ONCE_DIR=$d/to-state "$gc" --file "$d/11.txt"); rc1=$?
+printf 'two\n' > "$d/live.txt"
+out2=$(TEST_ONCE_DIR=$d/to-state "$gc" --file "$d/11.txt"); rc2=$?
+if [ "$rc1" -eq 1 ] && [ "$rc2" -eq 0 ] && [[ $out1 == *GOAL=NOT_MET* ]] && [[ $out2 == *GOAL=MET* ]] && [[ $out2 != *cached* ]]; then
+  passed=$((passed+1)); echo "PASS other-ac-live"
+else
+  case_fail other-ac-live "rc1=$rc1 rc2=$rc2 out1=$out1 out2=$out2"
+fi
+
+if [ "$passed" -eq 11 ]; then
+  echo "PASS 11/11"
   exit 0
 fi
-echo "FAIL $passed/9"
+echo "FAIL $passed/11"
 exit 1
