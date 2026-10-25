@@ -7,6 +7,7 @@ readonly MODEL="claude-sonnet-5-5"
 readonly ENGINE="/root/workspaces/tools/claude-agent-sdk-venv/lib/python3.12/site-packages/claude_agent_sdk/_bundled/claude"
 readonly KEY_FILE="/root/workspaces/secrets/inbox/anthropic.env"
 readonly ENGINE_HOME="/root/workspaces/tools/sdk-agent/engine-home"
+readonly HELPER_SCOPE="$(cd -- "$(dirname -- "$0")" && pwd)/helper-scope"
 if [[ ${SDK_AGENT_TEST:-} == 1 ]]; then
   readonly RUNS_LOG="${SDK_AGENT_RUNS_LOG:-/root/workspaces/tools/sdk-agent/runs.jsonl}"
   readonly TEST_ENGINE="${SDK_AGENT_ENGINE:-}"
@@ -255,7 +256,7 @@ run_engine() {
   outf="$inflight.d/$run_id.out"
   flock -u "$lockfd"
 
-  (cd -- "$workdir" && if (( key_load )); then set -a && . "$KEY_FILE" && set +a; fi && env -u ANTHROPIC_AUTH_TOKEN -u CLAUDE_CODE_OAUTH_TOKEN -u CLAUDE_CODE_USE_BEDROCK -u CLAUDE_CODE_USE_VERTEX -u CLAUDE_CODE_USE_FOUNDRY -u ANTHROPIC_PROFILE "${no_key[@]}" CLAUDE_CONFIG_DIR="$ENGINE_HOME" "$engine" "${args[@]}" "Follow the task provided on stdin exactly." <<<"$prompt") > "$outf" || true
+  (cd -- "$workdir" && if (( key_load )); then set -a && . "$KEY_FILE" && set +a; fi && env -u ANTHROPIC_AUTH_TOKEN -u CLAUDE_CODE_OAUTH_TOKEN -u CLAUDE_CODE_USE_BEDROCK -u CLAUDE_CODE_USE_VERTEX -u CLAUDE_CODE_USE_FOUNDRY -u ANTHROPIC_PROFILE "${no_key[@]}" CLAUDE_CONFIG_DIR="$ENGINE_HOME" "$HELPER_SCOPE" "$engine" "${args[@]}" "Follow the task provided on stdin exactly." <<<"$prompt") > "$outf" || true
   RESULT=$(cat -- "$outf")
 
   jq -e 'type == "object"' <<<"$RESULT" >/dev/null 2>&1 || die "engine returned no JSON result" 4

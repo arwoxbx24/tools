@@ -9,6 +9,7 @@ root=$(cd -- "$(dirname -- "$0")/.." && pwd) || exit 3
 config=${CODE_CHANNEL_CONFIG:-"$root/config/code-channel.json"}
 sdk_agent=$root/bin/sdk-agent
 if [[ -n ${CODE_CHANNEL_TEST_LOG:-} ]]; then sdk_agent=${CODE_CHANNEL_SDK_AGENT:-$sdk_agent}; fi
+helper_scope=$root/bin/helper-scope
 # helpers must use the default node (/usr/local/bin/node), not a caller's old nvm entry
 strip_nvm_path() {
     local IFS=: p out=()
@@ -305,7 +306,7 @@ run_form() (
     db=${CODE_CHANNEL_OPENCODE_DB:-/root/.local/share/opencode/opencode.db}
     oc_args=() oc_prompt=
     if [[ $mode == audit ]]; then
-        timeout 1800 opencode run --agent audit --title "$id_run" -m "$model" "$prompt" < /dev/null; run=$?
+        "$helper_scope" timeout 1800 opencode run --agent audit --title "$id_run" -m "$model" "$prompt" < /dev/null; run=$?
     else
         oc_args=(--title "$id_run") oc_prompt=$prompt
         idle=0
@@ -317,7 +318,7 @@ run_form() (
         cc_pre=$(cc_status)
         id_sid_sql="select id from session where title='$id_run' order by time_created desc limit 1"
         while :; do
-            timeout 1800 opencode run "${oc_args[@]}" -m "$model" "$oc_prompt" < /dev/null 2>&1 | tee "$oc_out"; run=${PIPESTATUS[0]}
+            "$helper_scope" timeout 1800 opencode run "${oc_args[@]}" -m "$model" "$oc_prompt" < /dev/null 2>&1 | tee "$oc_out"; run=${PIPESTATUS[0]}
             [[ $run == 0 ]] && break
             fresh=1; [[ ${oc_args[0]:-} != --session ]] || fresh=0
             if [[ $fresh == 1 ]] && { [[ $run == 124 ]] || grep -q 'Upstream request failed:' "$oc_out"; }; then

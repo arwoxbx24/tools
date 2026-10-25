@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# helper-scope — one memory bulkhead per helper run (epic dcfg-h9073, AC3).
+set -u
+
+readonly name=helper-scope
+readonly slice=agents.slice
+mem=${HELPER_MEM_MAX:-1200M}
+sdrun=${HELPER_SCOPE_SYSTEMD_RUN:-systemd-run}
+
+usage() {
+  cat <<'EOF'
+usage: helper-scope <cmd> [args...]
+
+Run <cmd> in its own transient systemd scope under agents.slice with
+MemoryMax=$HELPER_MEM_MAX (default 1200M) and OOMPolicy=stop, so an OOM inside
+the run stops only that run, not the caller's window. Returns the command's
+exit code.
+  HELPER_MEM_MAX           memory cap for the run (default 1200M)
+  HELPER_SCOPE_SYSTEMD_RUN systemd-run binary (default: systemd-run)
+
+Fallback: if systemd-run is missing or cannot create the scope, prints one
+stderr line `helper-scope: no systemd scope, running unscoped` and runs the
+command directly.
+EOF
+}
+
+fallback() {
+  printf '%s: no systemd scope, running unscoped\n' "$name" >&2
+  exec "$@"
+}
+
+case ${1:-} in
+  -h|--help) usage; exit 0 ;;
+  '') usage >&2; exit 2 ;;
+esac
+
+command -v "$sdrun" >/dev/null 2>&1 || fallback "$@"
+
+# Probe: --scope creates the unit before it starts the command, so a failed
+# probe means the real run would never start. Never retry a command that ran.
+if ! "$sdrun" -q --scope --collect --slice="$slice" \
+  -p "MemoryMax=$mem" -p OOMPolicy=stop -- true >/dev/null 2>&1; then
+  fallback "$@"
+fi
+
+"$sdrun" -q --scope --collect --slice="$slice" \
+  -p "MemoryMax=$mem" -p OOMPolicy=stop -- "$@"

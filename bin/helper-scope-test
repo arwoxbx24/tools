@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# helper-scope-test — offline assertions for bin/helper-scope.
+set -u
+
+dir=$(cd -- "$(dirname -- "$0")" && pwd)
+hs="$dir/helper-scope"
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/helper-scope-test.XXXXXX") || exit 1
+trap 'rm -rf -- "$tmp"' EXIT
+pass=0
+total=0
+
+check() { # name CMD...
+  local name=$1
+  shift
+  total=$((total + 1))
+  if "$@"; then
+    echo "PASS $name"
+    pass=$((pass + 1))
+  else
+    echo "FAIL $name"
+  fi
+}
+
+# T1: scoped run lands in a fresh scope under agents.slice, differing from ours.
+own=$(</proc/self/cgroup)
+out=$(HELPER_MEM_MAX=64M "$hs" cat /proc/self/cgroup 2>"$tmp/t1.err"); rc=$?
+check 'T1 scoped cgroup' \
+  test "$rc" -eq 0 -a -n "$out" -a "$out" != "$own"
+check 'T1 cgroup under agents.slice' \
+  bash -c '[[ $1 == *"/agents.slice/"* ]]' _ "$out"
+check 'T1 cgroup differs from caller' \
+  bash -c '[[ $1 != "$2" ]]' _ "$out" "$own"
+
+# T2: an overrun dies inside its scope; the caller and its cgroup survive.
+have_py=0
+command -v python3 >/dev/null 2>&1 && have_py=1
+check 'T2 memory hog available (python3)' test "$have_py" -eq 1
+cg_before=$(</proc/self/cgroup)
+HELPER_MEM_MAX=64M "$hs" python3 -c 'b=bytearray(300 * 1024 * 1024)' >/dev/null 2>&1
+rc=$?
+cg_after=$(</proc/self/cgroup)
+check 'T2 overrun nonzero rc' \
+  bash -c '[[ $1 -ne 0 && $2 -eq 1 ]]' _ "$rc" "$have_py"
+check 'T2 caller alive' kill -0 "$$"
+check 'T2 caller cgroup unchanged' test "$cg_before" = "$cg_after"
+
+# T3: both engine starts are wired through helper-scope.
+check 'T3 code-channel wired' \
+  bash -c '(( $(grep -c "helper-scope" "$1") >= 1 ))' _ "$dir/code-channel"
+check 'T3 sdk-agent wired' \
+  bash -c '(( $(grep -c "helper-scope" "$1") >= 1 ))' _ "$dir/sdk-agent"
+
+# T4: no systemd-run -> unscoped run, one stderr line, rc 0.
+out=$(HELPER_SCOPE_SYSTEMD_RUN=/nonexistent "$hs" /bin/echo ran 2>"$tmp/t4.err"); rc=$?
+check 'T4 fallback rc 0' test "$rc" -eq 0
+check 'T4 fallback ran command' test "$out" = ran
+check 'T4 fallback stderr line' \
+  bash -c 'grep -q "no systemd scope" "$1"' _ "$tmp/t4.err"
+
+if (( pass == total )); then
+  echo "helper-scope-test: PASS"
+  exit 0
+fi
+echo "helper-scope-test: FAIL $((total - pass))"
+exit 1
