@@ -8,7 +8,7 @@ TMP=$(mktemp -d /tmp/sdk-agent-test.XXXXXX)
 trap 'rm -rf -- "$TMP"' EXIT
 
 export SDK_AGENT_TEST=1
-# the cases below were written for a 5.00 cap; the cap is 10.00 (owner 25.10), so tests override it (honoured only under SDK_AGENT_TEST)
+# the cases below were written for a 5.00 cap; the cap is 22.00 (owner 25.10), so tests override it (honoured only under SDK_AGENT_TEST)
 export SDK_AGENT_TEST_CAP=5.00
 # calls without their own ledger must not touch the live runs.jsonl (dcfg-a5bre)
 export SDK_AGENT_RUNS_LOG="$TMP/default-runs.jsonl"
@@ -323,10 +323,10 @@ cap_json_readonly() {
   printf 'PASS cap_json_readonly\n'
 }
 
-cap_default_seven() {  # no SDK_AGENT_TEST_CAP: the product cap is 10.00
+cap_default_seven() {  # no SDK_AGENT_TEST_CAP: the product cap is 22.00
   local out
   out=$(env -u SDK_AGENT_TEST_CAP SDK_AGENT_RUNS_LOG="$TMP/runs-default.jsonl" "$ag" cap --json) || return 1
-  [[ $(jq -r '.cap' <<<"$out") == 10 ]]
+  [[ $(jq -r '.cap' <<<"$out") == 22 ]]
 }
 
 ledger_records_tz() {
@@ -390,7 +390,7 @@ check "prompt of ~200 KB reaches the engine on stdin intact (no argv limit)" lar
 check "dead reservations folded once (legacy: upper-bound; lock-free .out: result), in-flight empty, reserved 0" dead_pid_reservation_not_counted
 check "orphan engine holds its .lock: reservation stays counted, no ledger line" orphan_engine_keeps_reservation
 check "cap --json is read-only: sha256 unchanged, rc 0, six keys" cap_json_readonly
-check "cap default daily cap is 10.00 (no test override)" cap_default_seven
+check "cap default daily cap is 22.00 (no test override)" cap_default_seven
 check "ledger entry records tz of the read run" ledger_records_tz
 check "ledger entry records per-model usage (modelUsage tokens; empty entry -> nulls)" ledger_records_model_usage
 
