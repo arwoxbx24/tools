@@ -4,6 +4,7 @@ set -o pipefail
 d=$(mktemp -d /tmp/goal-check-test.XXXXXX) || { echo "FAIL setup mktemp"; exit 1; }
 trap 'rm -rf "$d"' EXIT
 printf 'hello\n' > "$d/a.txt"
+printf 'alpha\nbeta\n' > "$d/multi.txt"
 gc="$(dirname "$0")/goal-check"
 passed=0
 
@@ -101,9 +102,20 @@ else
   case_fail textconv "rc=$rc out=$out"
 fi
 
-if [ "$passed" -eq 8 ]; then
-  echo "PASS 8/8"
+# 9) multi-line-match
+cat > "$d/9.txt" <<EOF
+AC1: cat $d/multi.txt => beta
+EOF
+out=$("$gc" --file "$d/9.txt"); rc=$?
+if [ "$rc" -eq 0 ] && [[ $out == *"AC1 PASS rc=0 output=beta"* ]] && [[ $out == *"GOAL=MET"* ]]; then
+  passed=$((passed+1)); echo "PASS multi-line-match output=beta"
+else
+  case_fail multi-line-match "rc=$rc out=$out"
+fi
+
+if [ "$passed" -eq 9 ]; then
+  echo "PASS 9/9"
   exit 0
 fi
-echo "FAIL $passed/8"
+echo "FAIL $passed/9"
 exit 1
