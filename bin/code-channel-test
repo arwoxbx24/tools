@@ -361,7 +361,7 @@ git -C "$project" clean -fdq
 CC_CONFIG=$go check 90 '[[ $rc == 0 ]] && grep -Fq -- "via /root/workspaces/tools/bin/test-once" "$log"' \
   env OPENCODE_RC=0 OPENCODE_TOUCH=tz-prompt.txt SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
 cg_ok=0
-cgrun() { env -u CODE_CHANNEL_ACTIVE -u CODE_CHANNEL_TEST_LOG "CODE_CHANNEL_CONFIG=$1" "$root/bin/code-channel" "${@:2}" 2>&1; }
+cgrun() { env -u CODE_CHANNEL_ACTIVE -u CODE_CHANNEL_TEST_LOG "CODE_CHANNEL_CONFIG=$1" "CODE_CHANNEL_STATE=$tmp/state" "$root/bin/code-channel" "${@:2}" 2>&1; }
 cg_blank=$tmp/cg-blank.json cg_mis=$tmp/cg-mis.json cg_good=$tmp/cg-good.json cg_sdk=$tmp/cg-sdk.json
 printf '%s\n' '{"switch":{"channel":"a","owner_word":"  "},"ladder":[{"id":"a","enabled":true,"model":"x/y","owner_word":"w"}]}' >"$cg_blank"
 printf '%s\n' '{"switch":{"channel":"go","owner_word":"x"},"ladder":[{"id":"sdk","enabled":true,"model":"x/y","owner_word":"x"}]}' >"$cg_mis"
@@ -414,7 +414,7 @@ echo "real-config-plan ok=$rp_ok failed=$((1-rp_ok))"
 ((rp_ok == 1)) || { echo 'FAIL real-config-plan'; gfail=1; }
 rs_ok=0
 rs_cfg=$(mktemp "$tmp/real-shape.XXXXXX")
-jq '.switch = {channel: "go", owner_word: "работаем через OpenCode Go"} | .ladder |= map(.enabled = (.id == "go") | if .id == "go" then del(.owner_word) else . end)' /root/workspaces/tools/config/code-channel.json >"$rs_cfg"
+jq '.switch = {channel: "go", owner_word: "работаем через OpenCode Go"} | .ladder |= map(.enabled = (.id == "go") | if .id == "go" then del(.owner_word) else . end)' "$root/config/code-channel.json" >"$rs_cfg"
 rs_out=$(env -u CODE_CHANNEL_ACTIVE -u CODE_CHANNEL_TEST_LOG "CODE_CHANNEL_CONFIG=$rs_cfg" "$root/bin/code-channel" --plan 2>/dev/null); rs_rc=$?
 [[ $rs_rc == 0 && $rs_out == go\ * ]] && ((rs_ok++))
 echo "real-shape-plan ok=$rs_ok failed=$((1-rs_ok))"
