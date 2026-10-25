@@ -22,18 +22,19 @@ mkdir -p "$tmp/bitrix-secrets/services" "$tmp/config/opencode" "$tmp/config-allo
 printf 'VIBECODE_API_KEY=x\n' >"$tmp/bitrix-secrets/services/vibecode.env"
 printf '%s\n' '{"provider":{"bitrixgpt":{"models":{"bitrix/bitrixgpt-5.6-agent":{}}},"openrouter":{"whitelist":["other/model"]}}}' >"$tmp/config/opencode/opencode.jsonc"
 printf '%s\n' '{"provider":{"bitrixgpt":{"models":{"bitrix/bitrixgpt-5.6-agent":{}}},"openrouter":{"whitelist":["deepseek/deepseek-v4-flash"]}}}' >"$tmp/config-allow/opencode/opencode.jsonc"
-printf '%s\n' '{"ladder":[{"id":"bitrixgpt","enabled":true,"model":"bitrixgpt/bitrix/bitrixgpt-5.6-agent","key":"VIBECODE_API_KEY","secret":"vibecode","base":"https://vibecode.bitrix24.tech/v1"},{"id":"openrouter","enabled":true,"model":"openrouter/deepseek/deepseek-v4-flash","key":"OPENROUTER_API_KEY","secret":"openrouter","base":"https://openrouter.ai/api/v1"},{"id":"codex","enabled":true,"model":"","effort":"high"}]}' >"$legacy"
-printf '%s\n' '{"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash"},{"id":"openrouter","enabled":false,"model":"openrouter/deepseek/deepseek-v4-flash","key":"OPENROUTER_API_KEY","secret":"openrouter","base":"https://openrouter.ai/api/v1"},{"id":"codex","enabled":true,"model":"","effort":"high"}]}' >"$disabled"
-printf '%s\n' '{"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash"}]}' >"$go"
-printf '%s\n' '{"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash","resume_model":"opencode-go/mimo-v2.6-resume"}]}' >"$resume"
-printf '%s\n' '{"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash"},{"id":"codex","enabled":true,"model":"","effort":"high"},{"id":"openrouter","enabled":true,"model":"openrouter/deepseek/deepseek-v4-flash","key":"OPENROUTER_API_KEY","secret":"openrouter","base":"https://openrouter.ai/api/v1"}]}' >"$ladder"
-printf '%s\n' '{"ladder":[{"id":"codex","enabled":true,"model":"","effort":"high"}]}' >"$codexone"
-printf '%s\n' '{"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash"},{"id":"codex","enabled":true,"model":"","effort":"high"}]}' >"$gocodex"
-printf '%s\n' '{"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash","audit_model":"opencode-go/mimo-v2.6-flash"}]}' >"$goaudit"
-printf '%s\n' '{"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash","alt_models":["opencode-go/deepseek-v4.1-flash"]}]}' >"$goalt"
-printf '%s\n' '{"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash"}],"opencode_config":"config/opencode-channel.json"}' >"$ocfg"
-printf '%s\n' '{"resume_idle_limit":3,"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash"}]}' >"$goidle"
-printf '%s\n' '{"ladder":[{"id":"sdk","enabled":true,"model":"claude-haiku-5-5"},{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash"}]}' >"$sdkgo"
+printf '%s\n' '{"switch":{"channel":"bitrixgpt","owner_word":"test"},"ladder":[{"id":"bitrixgpt","enabled":true,"model":"bitrixgpt/bitrix/bitrixgpt-5.6-agent","key":"VIBECODE_API_KEY","secret":"vibecode","base":"https://vibecode.bitrix24.tech/v1"},{"id":"openrouter","enabled":true,"model":"openrouter/deepseek/deepseek-v4-flash","key":"OPENROUTER_API_KEY","secret":"openrouter","base":"https://openrouter.ai/api/v1"},{"id":"codex","enabled":true,"model":"","effort":"high"}]}' >"$legacy"
+printf '%s\n' '{"switch":{"channel":"go","owner_word":"test"},"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash"},{"id":"openrouter","enabled":false,"model":"openrouter/deepseek/deepseek-v4-flash","key":"OPENROUTER_API_KEY","secret":"openrouter","base":"https://openrouter.ai/api/v1"},{"id":"codex","enabled":true,"model":"","effort":"high"}]}' >"$disabled"
+printf '%s\n' '{"switch":{"channel":"go","owner_word":"test"},"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash"}]}' >"$go"
+printf '%s\n' '{"switch":{"channel":"go","owner_word":"test"},"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash","resume_model":"opencode-go/mimo-v2.6-resume"}]}' >"$resume"
+printf '%s\n' '{"switch":{"channel":"go","owner_word":"test"},"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash"},{"id":"codex","enabled":true,"model":"","effort":"high"},{"id":"openrouter","enabled":true,"model":"openrouter/deepseek/deepseek-v4-flash","key":"OPENROUTER_API_KEY","secret":"openrouter","base":"https://openrouter.ai/api/v1"}]}' >"$ladder"
+printf '%s\n' '{"switch":{"channel":"codex","owner_word":"test"},"ladder":[{"id":"codex","enabled":true,"model":"","effort":"high"}]}' >"$codexone"
+printf '%s\n' '{"switch":{"channel":"go","owner_word":"test"},"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash"},{"id":"codex","enabled":true,"model":"","effort":"high"}]}' >"$gocodex"
+printf '%s\n' '{"switch":{"channel":"go","owner_word":"test"},"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash","audit_model":"opencode-go/mimo-v2.6-flash"}]}' >"$goaudit"
+printf '%s\n' '{"switch":{"channel":"go","owner_word":"test"},"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash","alt_models":["opencode-go/deepseek-v4.1-flash"]}]}' >"$goalt"
+printf '%s\n' '{"switch":{"channel":"go","owner_word":"test"},"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash"}],"opencode_config":"config/opencode-channel.json"}' >"$ocfg"
+printf '%s\n' '{"switch":{"channel":"go","owner_word":"test"},"resume_idle_limit":3,"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash"}]}' >"$goidle"
+printf '%s\n' '{"switch":{"channel":"sdk","owner_word":"test"},"ladder":[{"id":"sdk","enabled":true,"model":"claude-haiku-5-5"},{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash"}]}' >"$sdkgo"
+printf '%s\n' '{"switch":{"channel":"go","owner_word":"test"},"ladder":[{"id":"go","enabled":true,"model":"opencode-go/deepseek-v4.1-flash","resume_model":"opencode-go/deepseek-v4.1-flash","audit_model":"opencode-go/deepseek-v4.1-flash","fallback_model":"opencode-go/deepseek-v4-pro"}]}' >"$tmp/repogo.json"
 
 printf '%s\n' '#!/usr/bin/env bash' 'printf "curl %s\\n" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'out=' 'url=${!#}' 'while [[ $# -gt 0 ]]; do' '  [[ $1 == -o ]] && { out=$2; shift 2; continue; }' '  shift' 'done' 'if [[ $url == */key ]]; then' '  if [[ ${CURL_USAGE_DAILY:-0.4} == none ]]; then' '    body="{\"data\":{\"limit_remaining\":${CURL_LIMIT_REMAINING:-1}}}"' '  else' '    body="{\"data\":{\"limit_remaining\":${CURL_LIMIT_REMAINING:-1},\"usage_daily\":${CURL_USAGE_DAILY:-0.4}}}"' '  fi' '  printf "%s\n" "$body" >"$out"' '  printf "%s" "${CURL_KEY_CODE:-${CURL_CODE:-200}}"' 'elif [[ $url == */chat/completions ]]; then' '  printf "%s\n" "insecure api_key=secret token=x authorization=y cookie=z" >"$out"' '  printf "%s" "${CURL_CHAT_CODE:-200}"' 'else' '  printf "%s\n" "{\"data\":[{\"id\":\"bitrix/bitrixgpt-5.6-agent\"},{\"id\":\"deepseek/deepseek-v4-flash\"}]}" >"$out"' '  printf "%s" "${CURL_CODE:-200}"' 'fi' >"$bin/curl"
 printf '%s\n' '#!/usr/bin/env bash' 'printf "opencode active=%s %s\\n" "${CODE_CHANNEL_ACTIVE:-}" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "env OPENCODE_CONFIG=%s\\n" "${OPENCODE_CONFIG:-}" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "PATH=%s\\n" "$PATH" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "stdin=%s\\n" "$(readlink /proc/$$/fd/0)" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "REPORT\\n"' '[[ ${OPENCODE_ERR:-} ]] && printf "%s\n" "$OPENCODE_ERR" >&2' '[[ ${OPENCODE_TOUCH:-} ]] && mkdir -p -- "$(dirname -- "$CODE_CHANNEL_TEST_PROJECT/$OPENCODE_TOUCH")" && printf x >"$CODE_CHANNEL_TEST_PROJECT/$OPENCODE_TOUCH"' 'rc=${OPENCODE_RC:-0}' 'if [[ ${OPENCODE_SEQUENCE:-} ]]; then IFS=, read -ra seq <<<"$OPENCODE_SEQUENCE"; n=$(grep -c "^opencode " "$CODE_CHANNEL_TEST_LOG"); rc=${seq[$((n - 1))]:-$rc}; fi' 'exit "$rc"' >"$bin/opencode"
@@ -109,7 +110,7 @@ check 20 '[[ $rc == 0 ]] && grep -Fq -- /key "$log" && grep -Fq -- "opencode" "$
 check 21 '[[ $rc == 13 && $err == *"нет usage_daily"* ]]' \
   env CURL_USAGE_DAILY=none "$root/bin/code-channel" 3 "$project" "$root/AGENTS.md"
 
-CC_CONFIG='' check 22 '[[ $rc == 0 && $out == $'"'"'go opencode-go/deepseek-v4.1-flash - audit=opencode-go/deepseek-v4.1-flash'"'"' ]]' \
+CC_CONFIG=$tmp/repogo.json check 22 '[[ $rc == 0 && $out == $'"'"'go opencode-go/deepseek-v4.1-flash - audit=opencode-go/deepseek-v4.1-flash'"'"' ]]' \
   "$root/bin/code-channel" --plan
 CC_CONFIG=$disabled check 23 '[[ $rc == 16 ]] && ! grep -Fq -- /models "$log" && grep -Fq -- "codex " "$log"' \
   env OPENCODE_RC=1 bash -c 'plan=$("$1" --plan) || exit $?; [[ $plan != *openrouter* ]] || exit 90; "$1" auto "$2" "$3"' _ "$root/bin/code-channel" "$project" "$root/AGENTS.md"
@@ -275,17 +276,17 @@ CC_CONFIG=$go check 74 '[[ $rc == 0 ]] && ! grep -Fq -- "/root/.nvm/versions/nod
 CC_CONFIG=$go check 75 '[[ $rc == 0 ]] && ! grep -Fq -- "/root/.nvm/versions/node/" "$log" && grep -Fxq -- "PATH='"$bin"':/usr/local/bin:/usr/bin:/bin" "$log"' \
   env PATH="$bin:/usr/local/bin:/usr/bin:/bin" SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
 
-CC_CONFIG='' check 76 '[[ $rc == 0 && $(grep -c -- "-m opencode-go/deepseek-v4.1-flash" "$log") == 2 ]] && grep -Fq -- "--agent audit" "$log"' \
+CC_CONFIG=$tmp/repogo.json check 76 '[[ $rc == 0 && $(grep -c -- "-m opencode-go/deepseek-v4.1-flash" "$log") == 2 ]] && grep -Fq -- "--agent audit" "$log"' \
   env SQLITE_RESULT='opencode-go|deepseek-v4.1-flash' bash -c '"$1" go "$2" "$3" && "$1" audit "$2" "$3"' _ "$root/bin/code-channel" "$project" "$tz"
-CC_CONFIG='' check 77 '[[ $rc == 3 && $err == *"модель не в конфиге: opencode-go/deepseek-v4-pro"* && ! -s $log ]]' \
+CC_CONFIG=$tmp/repogo.json check 77 '[[ $rc == 3 && $err == *"модель не в конфиге: opencode-go/deepseek-v4-pro"* && ! -s $log ]]' \
   "$root/bin/code-channel" go "$project" "$tz" --model opencode-go/deepseek-v4-pro
-CC_CONFIG='' check 78 '[[ $rc == 23 && $err == *"сверка модели не прошла"* ]]' \
+CC_CONFIG=$tmp/repogo.json check 78 '[[ $rc == 23 && $err == *"сверка модели не прошла"* ]]' \
   env SQLITE_RESULT='opencode-go|glm-5.3-flash' "$root/bin/code-channel" go "$project" "$tz"
-CC_CONFIG='' check 79 '[[ $rc == 0 ]] && grep -Eq "model=opencode-go/deepseek-v4.1-flash retries=1" "$tmp/err" && grep -q "\"retries\":1" "$runs"' \
+CC_CONFIG=$tmp/repogo.json check 79 '[[ $rc == 0 ]] && grep -Eq "model=opencode-go/deepseek-v4.1-flash retries=1" "$tmp/err" && grep -q "\"retries\":1" "$runs"' \
   env OPENCODE_SEQUENCE=1,0 OPENCODE_ERR='Error: Upstream request failed: test' SQLITE_RESULT='opencode-go|deepseek-v4.1-flash' "$root/bin/code-channel" go "$project" "$tz"
-CC_CONFIG='' check 80 '[[ $rc == 0 ]] && grep -Fq -- "запасная модель opencode-go/deepseek-v4-pro" "$tmp/err" && grep -Eq "model=opencode-go/deepseek-v4-pro retries=2" "$tmp/err"' \
+CC_CONFIG=$tmp/repogo.json check 80 '[[ $rc == 0 ]] && grep -Fq -- "запасная модель opencode-go/deepseek-v4-pro" "$tmp/err" && grep -Eq "model=opencode-go/deepseek-v4-pro retries=2" "$tmp/err"' \
   env OPENCODE_SEQUENCE=1,1,1,0 OPENCODE_ERR='Error: Upstream request failed: test' SQLITE_RESULT='opencode-go|deepseek-v4-pro' "$root/bin/code-channel" go "$project" "$tz"
-CC_CONFIG='' check 81 '[[ $rc != 0 && $(grep -c "^opencode " "$log") == 4 ]] && grep -Fq -- "канал go недоступен" "$tmp/err"' \
+CC_CONFIG=$tmp/repogo.json check 81 '[[ $rc != 0 && $(grep -c "^opencode " "$log") == 4 ]] && grep -Fq -- "канал go недоступен" "$tmp/err"' \
   env OPENCODE_RC=1 OPENCODE_ERR='Error: Upstream request failed: test' SQLITE_RESULT='opencode-go|deepseek-v4-pro' "$root/bin/code-channel" go "$project" "$tz"
 
 [[ $ok == 81 ]] && echo 'PASS 81/81'

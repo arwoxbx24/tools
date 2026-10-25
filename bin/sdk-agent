@@ -11,11 +11,11 @@ readonly HELPER_SCOPE="$(cd -- "$(dirname -- "$0")" && pwd)/helper-scope"
 if [[ ${SDK_AGENT_TEST:-} == 1 ]]; then
   readonly RUNS_LOG="${SDK_AGENT_RUNS_LOG:-/root/workspaces/tools/sdk-agent/runs.jsonl}"
   readonly TEST_ENGINE="${SDK_AGENT_ENGINE:-}"
-  readonly DAILY_CAP="${SDK_AGENT_TEST_CAP:-7.00}"
+  readonly DAILY_CAP="${SDK_AGENT_TEST_CAP:-10.00}"
 else
   readonly RUNS_LOG="/root/workspaces/tools/sdk-agent/runs.jsonl"
   readonly TEST_ENGINE=""
-  readonly DAILY_CAP="7.00"
+  readonly DAILY_CAP="10.00"
 fi
 readonly DEFAULT_BUDGET="0.50"
 readonly MAX_BUDGET="2.00"
@@ -48,7 +48,7 @@ Runs the Claude Agent SDK engine with model claude-sonnet-5-5 and an API key (ne
 Engine config dir: tools/sdk-agent/engine-home (no login stored there).
 sdk-agent is a paid API program, not a Claude Code agent or subagent.
 Budget: default 0.50 USD per run, ceiling 2.00 USD. Every result is appended to tools/sdk-agent/runs.jsonl.
-Daily cap: 7.00 USD of runs (today, local time) across all modes.
+Daily cap: 10.00 USD of runs (today, local time) across all modes.
 EOF
 }
 
