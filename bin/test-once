@@ -22,7 +22,7 @@ key=$({
         git -C "$repo" diff --cached --binary
     fi
     top=$(git -C "$repo" rev-parse --show-toplevel)
-    git -C "$top" ls-files --others --exclude-standard -z | while IFS= read -r -d '' p; do printf '%s %s\n' "$p" "$(fp "$top/$p")"; done
+    git -C "$top" ls-files --others --exclude-standard -z | while IFS= read -r -d '' p; do printf '%s %s %s %s\n' "$p" "$(stat -c %f "$top/$p")" "$(if [ -L "$top/$p" ]; then readlink "$top/$p"; fi)" "$(fp "$top/$p")"; done
     p=$1; [[ $p = /* ]] || p=$repo/$p
     if [ -f "$p" ]; then printf 'cmd %s\n' "$(fp "$p")"; fi
     IFS=: read -ra deps <<< "${TEST_ONCE_DEPS:-}"
