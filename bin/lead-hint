@@ -6,9 +6,6 @@ if [[ ${1:-} == --help ]]; then
   echo "usage: bin/lead-hint [--help]"
   echo "PreToolUse/PostToolUse/UserPromptSubmit/Stop hook for the lead Claude Code session only."
   echo "Reads one hook JSON object from stdin. With a non-empty .agent_id prints nothing."
-  echo "PreToolUse: goal-lock (owner 25.10) allows only reads and read-only git/gh"
-  echo "  until a /goal is set in the transcript; then the lead-hint limit applies"
-  echo "  (LEAD_HINT_STRICT=0 disables)."
   echo "PreToolUse: at LEAD_HINT_MAX (default 8) or more own investigative calls since the"
   echo "owner message or last helper run denies the tool (LEAD_HINT_STRICT=0 disables)."
   echo "PostToolUse: at LEAD_HINT_MAX-1 (default 7) or more counted calls since the owner"
@@ -130,50 +127,6 @@ case $event in
     [[ ${LEAD_HINT_STRICT:-1} == 0 ]] && exit 0
     tool_name=$(jq -r '.tool_name // empty' <<<"$payload" 2>/dev/null) || exit 0
     tool_cmd=$(jq -r '.tool_input.command // empty' <<<"$payload" 2>/dev/null) || exit 0
-
-    # Goal-lock (owner 25.10): a main session without an active /goal may only
-    # read. The marker is the harness meta entry only — the agent's own tool
-    # calls/outputs also land in the transcript and must not unlock it.
-    # Missing/unreadable transcript fails open (never paralyses).
-    if [[ -f $transcript_path && -r $transcript_path ]]; then
-      # Raw-line prefilter keeps jq from parsing every (possibly huge) line;
-      # the decision is still made by the structured jq predicate below.
-      goal_marker=$(jq -R 'select(index("A session-scoped Stop hook is now active"))
-        | fromjson?
-        | select(.type == "user" and .isMeta == true
-                 and ((.message.content | type) == "string")
-                 and (.message.content | startswith("A session-scoped Stop hook is now active")))' \
-        -- "$transcript_path" 2>/dev/null)
-      goal_rc=$?
-      if [[ $goal_rc == 0 && -z $goal_marker ]] && jq -e '
-        def first_word:
-          [scan("\\S+")]
-          | until((.[0] // "") as $h
-                  | ((["command","builtin","exec","env","nohup"] | index($h)) == null);
-                  .[1:])
-          | ((.[0] // "") | split("/") | last);
-        def git_readonly:
-          test("^\\s*(([A-Za-z_][A-Za-z0-9_]*=[^\\s]*|command|builtin|exec|env|nohup)\\s+)*([^\\s=]*/)?git\\s+(status|log|diff|show|worktree|branch)(\\s|$)");
-        def gh_readonly:
-          test("^\\s*gh\\s+pr\\s+(view|list|checks)(\\s|$)");
-        ((.cwd // "") | (. == "/root" or startswith("/root/")))
-        and (
-          (.tool_name as $n | (["Edit","Write","NotebookEdit"] | index($n)) != null)
-          or (.tool_name == "Bash"
-              and ((.tool_input.command // "") as $cmd
-                | ($cmd | first_word) as $w
-                | ((["grep","ls","cat","head","tail","wc","jq","stat","find","bd"] | index($w)) != null
-                   or ($w == "git" and ($cmd | git_readonly))
-                   or ($w == "gh" and ($cmd | gh_readonly)))
-                | not))
-        )
-      ' >/dev/null 2>&1 <<<"$payload"; then
-        jq -cn --arg reason 'goal-lock (owner 25.10): no goal set in this session — form it with /goal_task, the owner sends the /goal line; reading, bd and skills stay allowed.' \
-          '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$reason}}' \
-          2>/dev/null || exit 0
-        exit 0
-      fi
-    fi
 
     # Session-scoped code lock (owner 24.10). Only the lead session (any cwd
     # under /root) is fenced, and only for code/config writes under
