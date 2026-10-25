@@ -155,7 +155,7 @@ run_sdk() {
 }
 run_form() (
     export CODE_CHANNEL_ACTIVE=1
-    id=$1; start=$SECONDS; pre=-; run=-; hdr=; tmpjson=; resphdr=; respbody=; codetmp=; oc_out=
+    id=$1; start=$SECONDS; pre=-; run=-; hdr=; tmpjson=; resphdr=; respbody=; codetmp=; oc_out=; pfile=
     retries=0 primary_model= used_fallback=0
     IFS=$'\034' read -r model resume_model audit_model fallback_model name secret base effort < <(entry_for "$id" | jq -r '[.model,.resume_model // "",.audit_model // "",.fallback_model // "",.key // "",.secret // "",.base // "",.effort // ""] | join("\u001c")') || exit 3
     if [[ -n $override && $override != "$model" ]]; then
@@ -214,6 +214,7 @@ run_form() (
         [[ -z $respbody ]] || unlink -- "$respbody"
         [[ -z $codetmp ]] || unlink -- "$codetmp"
         [[ -z $oc_out ]] || unlink -- "$oc_out"
+        [[ -z $pfile ]] || unlink -- "$pfile"
         printf 'code-channel: mode=%s form=%s provider=%s model=%s retries=%s precheck=%s run=%s t=%s\n' "$mode" "$id" "$provider" "$model" "$retries" "$pre" "$run" "$((SECONDS-start))" >&2
         trap - EXIT; exit "$rc"
     }
@@ -344,8 +345,10 @@ run_form() (
     run_start_ms=$(date +%s%3N)
     db=${CODE_CHANNEL_OPENCODE_DB:-/root/.local/share/opencode/opencode.db}
     oc_args=() oc_prompt=
+    pfile=$(mktemp "${TMPDIR:-/tmp}/code-channel-prompt-XXXXXX") || exit 3
     if [[ $mode == audit ]]; then
-        guarded "$helper_scope" timeout 1800 opencode run --agent audit --title "$id_run" -m "$model" "$prompt" < /dev/null; run=$?
+        printf '%s' "$prompt" >"$pfile"
+        guarded "$helper_scope" timeout 1800 opencode run --agent audit --title "$id_run" -m "$model" < "$pfile"; run=$?
     else
         oc_args=(--title "$id_run") oc_prompt=$prompt
         idle=0
@@ -357,7 +360,8 @@ run_form() (
         cc_pre=$(cc_status)
         id_sid_sql="select id from session where title='$id_run' order by time_created desc limit 1"
         while :; do
-            guarded "$helper_scope" timeout 1800 opencode run "${oc_args[@]}" -m "$model" "$oc_prompt" < /dev/null 3>&2 2>&1 | tee "$oc_out"; run=${PIPESTATUS[0]}
+            printf '%s' "$oc_prompt" >"$pfile"
+            guarded "$helper_scope" timeout 1800 opencode run "${oc_args[@]}" -m "$model" < "$pfile" 3>&2 2>&1 | tee "$oc_out"; run=${PIPESTATUS[0]}
             [[ $run != 27 ]] || exit 27
             [[ $run == 0 ]] && break
             fresh=1; [[ ${oc_args[0]:-} != --session ]] || fresh=0
