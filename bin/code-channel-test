@@ -37,7 +37,7 @@ printf '%s\n' '{"switch":{"channel":"sdk","owner_word":"test"},"ladder":[{"id":"
 printf '%s\n' '{"switch":{"channel":"go","owner_word":"test"},"ladder":[{"id":"go","enabled":true,"model":"opencode-go/deepseek-v4.1-flash","resume_model":"opencode-go/deepseek-v4.1-flash","audit_model":"opencode-go/deepseek-v4.1-flash","fallback_model":"opencode-go/deepseek-v4-pro"}]}' >"$tmp/repogo.json"
 
 printf '%s\n' '#!/usr/bin/env bash' 'printf "curl %s\\n" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'out=' 'url=${!#}' 'while [[ $# -gt 0 ]]; do' '  [[ $1 == -o ]] && { out=$2; shift 2; continue; }' '  shift' 'done' 'if [[ $url == */key ]]; then' '  if [[ ${CURL_USAGE_DAILY:-0.4} == none ]]; then' '    body="{\"data\":{\"limit_remaining\":${CURL_LIMIT_REMAINING:-1}}}"' '  else' '    body="{\"data\":{\"limit_remaining\":${CURL_LIMIT_REMAINING:-1},\"usage_daily\":${CURL_USAGE_DAILY:-0.4}}}"' '  fi' '  printf "%s\n" "$body" >"$out"' '  printf "%s" "${CURL_KEY_CODE:-${CURL_CODE:-200}}"' 'elif [[ $url == */chat/completions ]]; then' '  printf "%s\n" "insecure api_key=secret token=x authorization=y cookie=z" >"$out"' '  printf "%s" "${CURL_CHAT_CODE:-200}"' 'else' '  printf "%s\n" "{\"data\":[{\"id\":\"bitrix/bitrixgpt-5.6-agent\"},{\"id\":\"deepseek/deepseek-v4-flash\"}]}" >"$out"' '  printf "%s" "${CURL_CODE:-200}"' 'fi' >"$bin/curl"
-printf '%s\n' '#!/usr/bin/env bash' 'printf "opencode active=%s %s\\n" "${CODE_CHANNEL_ACTIVE:-}" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "env OPENCODE_CONFIG=%s\\n" "${OPENCODE_CONFIG:-}" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "PATH=%s\\n" "$PATH" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "stdin=%s\\n" "$(readlink /proc/$$/fd/0)" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "REPORT\\n"' '[[ ${OPENCODE_ERR:-} ]] && printf "%s\n" "$OPENCODE_ERR" >&2' '[[ ${OPENCODE_TOUCH:-} ]] && mkdir -p -- "$(dirname -- "$CODE_CHANNEL_TEST_PROJECT/$OPENCODE_TOUCH")" && printf x >"$CODE_CHANNEL_TEST_PROJECT/$OPENCODE_TOUCH"' 'rc=${OPENCODE_RC:-0}' 'if [[ ${OPENCODE_SEQUENCE:-} ]]; then IFS=, read -ra seq <<<"$OPENCODE_SEQUENCE"; n=$(grep -c "^opencode " "$CODE_CHANNEL_TEST_LOG"); rc=${seq[$((n - 1))]:-$rc}; fi' 'exit "$rc"' >"$bin/opencode"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "opencode active=%s %s\\n" "${CODE_CHANNEL_ACTIVE:-}" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "env OPENCODE_CONFIG=%s\\n" "${OPENCODE_CONFIG:-}" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "PATH=%s\\n" "$PATH" >>"$CODE_CHANNEL_TEST_LOG"' 'if [[ ${OPENCODE_STDIN_COPY:-} ]]; then cat >"$OPENCODE_STDIN_COPY"; else cat >>"$CODE_CHANNEL_TEST_LOG"; printf "\\n" >>"$CODE_CHANNEL_TEST_LOG"; fi' 'printf "stdin=%s\\n" "$(readlink /proc/$$/fd/0)" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "REPORT\\n"' '[[ ${OPENCODE_ERR:-} ]] && printf "%s\n" "$OPENCODE_ERR" >&2' '[[ ${OPENCODE_TOUCH:-} ]] && mkdir -p -- "$(dirname -- "$CODE_CHANNEL_TEST_PROJECT/$OPENCODE_TOUCH")" && printf x >"$CODE_CHANNEL_TEST_PROJECT/$OPENCODE_TOUCH"' 'rc=${OPENCODE_RC:-0}' 'if [[ ${OPENCODE_SEQUENCE:-} ]]; then IFS=, read -ra seq <<<"$OPENCODE_SEQUENCE"; n=$(grep -c "^opencode " "$CODE_CHANNEL_TEST_LOG"); rc=${seq[$((n - 1))]:-$rc}; fi' 'exit "$rc"' >"$bin/opencode"
 printf '%s\n' '#!/usr/bin/env bash' 'printf "codex active=%s %s\\n" "${CODE_CHANNEL_ACTIVE:-}" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "REPORT\\n"' '[[ ${CODEX_SWITCH_BRANCH:-} ]] && git -C "$CODE_CHANNEL_TEST_PROJECT" switch -c "codex/x-branch"' '[[ ${CODEX_TOUCH:-} ]] && printf x >"$CODE_CHANNEL_TEST_PROJECT/$CODEX_TOUCH"' '[[ ${CODEX_ERR:-} ]] && printf "%s\n" "$CODEX_ERR" >&2' 'exit "${CODEX_RC:-0}"' >"$bin/codex"
 printf '%s\n' '#!/usr/bin/env bash' 'if [[ $* == *"select id from session"* ]]; then printf "%s\n" "${SQLITE_SESSION_ID:-}"; else printf "%s\n" "${SQLITE_RESULT:-bitrixgpt|bitrix/bitrixgpt-5.6-agent}"; fi' >"$bin/sqlite3"
 printf '%s\n' '#!/usr/bin/env bash' 'printf "sdk-agent %s\\n" "$*" >>"$CODE_CHANNEL_TEST_LOG"' '[[ ${SDK_TOUCH:-} ]] && printf x >"$CODE_CHANNEL_TEST_PROJECT/$SDK_TOUCH"' 'exit "${SDK_RC:-0}"' >"$bin/sdk-agent-fake"
@@ -223,7 +223,7 @@ CC_CONFIG=$goalt check 61 '[[ $rc == 3 && $err == *"модель не в кон�
 CC_CONFIG=$goalt check 62 '[[ $rc == 3 && $err == *"модель не в конфиге: opencode-go/other"* && ! -s $log ]]' \
   "$root/bin/code-channel" go "$project" "$tz" --model opencode-go/other
 
-CC_CONFIG=$go check 54 '[[ $rc == 0 ]] && grep -Fq -- "stdin=/dev/null" "$log"' \
+CC_CONFIG=$go check 54 '[[ $rc == 0 ]] && grep -Eq -- "^stdin=.*code-channel-prompt-" "$log"' \
   env OPENCODE_RC=0 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
 
 [[ $ok == 54 ]] && echo 'PASS 54/54'
@@ -339,6 +339,13 @@ CC_ONE=codex CC_CONFIG=$disabled check 85 '[[ $rc != 0 && ! -e "$project/switch-
   env CODEX_RC=1 OPENCODE_TOUCH=switch-marker "$root/bin/code-channel" auto "$project" "$tz"
 git -C "$project" clean -fdq
 
+tzbig=$tmp/tz-big
+{ head -c 200000 /dev/zero | tr '\0' a; printf '\nTAIL-PT2510\n'; } >"$tzbig"
+stdin_go=$tmp/stdin-go stdin_audit=$tmp/stdin-audit
+CC_CONFIG=$go check 86 '[[ $rc == 0 && $(wc -c <"$stdin_go") -ge 200000 ]] && grep -Fq -- TAIL-PT2510 "$stdin_go" && [[ $(grep -m1 "^opencode " "$log" | wc -c) -lt 131072 ]]' \
+  env OPENCODE_RC=0 OPENCODE_STDIN_COPY="$stdin_go" SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tzbig"
+CC_CONFIG=$goaudit check 87 '[[ $rc == 0 && $(wc -c <"$stdin_audit") -ge 200000 ]] && grep -Fq -- TAIL-PT2510 "$stdin_audit" && [[ $(grep -m1 "^opencode " "$log" | wc -c) -lt 131072 ]]' \
+  env OPENCODE_STDIN_COPY="$stdin_audit" SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" audit "$project" "$tzbig"
 cg_ok=0
 cgrun() { env -u CODE_CHANNEL_ACTIVE -u CODE_CHANNEL_TEST_LOG "CODE_CHANNEL_CONFIG=$1" "$root/bin/code-channel" "${@:2}" 2>&1; }
 cg_blank=$tmp/cg-blank.json cg_mis=$tmp/cg-mis.json cg_good=$tmp/cg-good.json cg_sdk=$tmp/cg-sdk.json
@@ -398,7 +405,7 @@ rs_out=$(env -u CODE_CHANNEL_ACTIVE -u CODE_CHANNEL_TEST_LOG "CODE_CHANNEL_CONFI
 [[ $rs_rc == 0 && $rs_out == go\ * ]] && ((rs_ok++))
 echo "real-shape-plan ok=$rs_ok failed=$((1-rs_ok))"
 ((rs_ok == 1)) || { echo 'FAIL real-shape-plan'; gfail=1; }
-total=$((ok+cg_ok+sn_ok+rp_ok+rs_ok)) expected=105
+total=$((ok+cg_ok+sn_ok+rp_ok+rs_ok)) expected=107
 [[ $total == "$expected" ]] || { echo "FAIL total $total/$expected"; gfail=1; }
 ((gfail == 0)) || exit 1
 echo "PASS $total/$total"
