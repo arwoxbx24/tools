@@ -27,7 +27,7 @@ key=$({
     if [ -f "$p" ]; then printf 'cmd %s\n' "$(fp "$p")"; fi
     IFS=: read -ra deps <<< "${TEST_ONCE_DEPS:-}"
     for dep in "${deps[@]}"; do
-        if [ -n "$dep" ]; then printf '%s %s\n' "$dep" "$(fp "$dep")"; fi
+        if [ -n "$dep" ]; then p=$dep; [[ $p = /* ]] || p=$repo/$p; printf '%s %s\n' "$dep" "$(fp "$p")"; fi
     done
 } | sha256sum | cut -d' ' -f1)
 pair=$({ printf '%s\0' "$(realpath -- "$repo")" "$@"; } | sha256sum | cut -d' ' -f1)
