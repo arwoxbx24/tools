@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+# goal-check-test — самотест bin/goal-check (TZ T1).
+set -o pipefail
+d=$(mktemp -d /tmp/goal-check-test.XXXXXX) || { echo "FAIL setup mktemp"; exit 1; }
+trap 'rm -rf "$d"' EXIT
+printf 'hello\n' > "$d/a.txt"
+gc="$(dirname "$0")/goal-check"
+passed=0
+
+case_fail() { echo "FAIL $1 $2"; }
+
+# 1) all-met
+cat > "$d/1.txt" <<EOF
+AC1: cat $d/a.txt => hello
+AC2: grep -c hello $d/a.txt => >=1
+EOF
+out=$("$gc" --file "$d/1.txt"); rc=$?
+last=$(printf '%s\n' "$out" | tail -n1)
+if [ "$rc" -eq 0 ] && [ "$last" = "GOAL=MET" ]; then
+  passed=$((passed+1)); echo "PASS all-met GOAL=MET rc=0"
+else
+  case_fail all-met "rc=$rc last=$last out=$out"
+fi
+
+# 2) one-fail
+cat > "$d/2.txt" <<EOF
+AC1: cat $d/a.txt => hello
+AC2: cat $d/a.txt => absent-word
+EOF
+out=$("$gc" --file "$d/2.txt"); rc=$?
+last=$(printf '%s\n' "$out" | tail -n1)
+if [ "$rc" -eq 1 ] && [ "$last" = "GOAL=NOT_MET" ]; then
+  passed=$((passed+1)); echo "PASS one-fail GOAL=NOT_MET rc=1"
+else
+  case_fail one-fail "rc=$rc last=$last out=$out"
+fi
+
+# 3) empty-output
+cat > "$d/3.txt" <<EOF
+AC1: find $d -name nomatch => <empty>
+EOF
+out=$("$gc" --file "$d/3.txt"); rc=$?
+if [ "$rc" -eq 0 ] && [[ $out == *"AC1 PASS"* ]] && [[ $out == *"output=empty"* ]]; then
+  passed=$((passed+1)); echo "PASS empty-output output=empty AC=PASS"
+else
+  case_fail empty-output "rc=$rc out=$out"
+fi
+
+# 4) unsafe-cmd
+cat > "$d/4.txt" <<EOF
+AC1: cat $d/a.txt; touch $d/pwned => hello
+EOF
+out=$("$gc" --file "$d/4.txt"); rc=$?
+if [ "$rc" -eq 2 ] && [[ $out == *REFUSED* ]] && [ ! -e "$d/pwned" ]; then
+  passed=$((passed+1)); echo "PASS unsafe-cmd refused rc=2"
+else
+  case_fail unsafe-cmd "rc=$rc out=$out"
+fi
+
+# 5) find-delete
+cat > "$d/5.txt" <<EOF
+AC1: find $d -name a.txt -delete => <empty>
+EOF
+out=$("$gc" --file "$d/5.txt"); rc=$?
+if [ "$rc" -eq 2 ] && [ -e "$d/a.txt" ]; then
+  passed=$((passed+1)); echo "PASS find-delete refused rc=2"
+else
+  case_fail find-delete "rc=$rc out=$out"
+fi
+
+# 6) tool-not-test
+cat > "$d/6.txt" <<EOF
+AC1: /root/workspaces/tools/bin/safe-delete tmp $d/a.txt => removed
+EOF
+out=$("$gc" --file "$d/6.txt"); rc=$?
+if [ "$rc" -eq 2 ] && [[ $out == *REFUSED* ]] && [ -e "$d/a.txt" ]; then
+  passed=$((passed+1)); echo "PASS tool-not-test refused rc=2"
+else
+  case_fail tool-not-test "rc=$rc out=$out"
+fi
+
+# 7) write-arg
+cat > "$d/7.txt" <<EOF
+AC1: git log --output=$d/out.txt => x
+EOF
+out=$("$gc" --file "$d/7.txt"); rc=$?
+if [ "$rc" -eq 2 ] && [ ! -e "$d/out.txt" ]; then
+  passed=$((passed+1)); echo "PASS write-arg refused rc=2"
+else
+  case_fail write-arg "rc=$rc out=$out"
+fi
+
+# 8) textconv
+cat > "$d/8.txt" <<EOF
+AC1: git log --textconv => x
+EOF
+out=$("$gc" --file "$d/8.txt"); rc=$?
+if [ "$rc" -eq 2 ] && [[ $out == *REFUSED* ]]; then
+  passed=$((passed+1)); echo "PASS textconv refused rc=2"
+else
+  case_fail textconv "rc=$rc out=$out"
+fi
+
+if [ "$passed" -eq 8 ]; then
+  echo "PASS 8/8"
+  exit 0
+fi
+echo "FAIL $passed/8"
+exit 1
