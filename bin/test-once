@@ -6,7 +6,7 @@ if [ $# -lt 2 ] || [[ $1 != /* ]] || ! git -C "$1" rev-parse --show-toplevel >/d
 repo=$1; shift
 D=${TEST_ONCE_DIR:-/tmp/test-once}; T=${TEST_ONCE_TTL:-3600}
 mkdir -p "$D/res" "$D/fail"
-idx=$(mktemp); trap 'rm -f -- "$idx"' EXIT
+idx=$(mktemp); tdir=$(mktemp -d); trap 'rm -f -- "$idx"; rm -rf -- "$tdir"' EXIT
 fp() {
     if [ -d "$1" ]; then find "$1" -type f -print0 | sort -z | xargs -0 -r sha256sum | sha256sum
     elif [ -f "$1" ]; then sha256sum < "$1"
@@ -19,13 +19,13 @@ dp() {
 }
 key() {
     top=$(git -C "$repo" rev-parse --show-toplevel)
-    gi=$(git -C "$top" rev-parse --git-path index)
-    [[ $gi = /* ]] || gi=$top/$gi
-    if [ -f "$gi" ]; then cp -- "$gi" "$idx"; else rm -f -- "$idx"; fi
+    od=$(git -C "$top" rev-parse --git-path objects)
+    [[ $od = /* ]] || od=$top/$od
+    rm -f -- "$idx"
+    tree=$(GIT_INDEX_FILE=$idx GIT_OBJECT_DIRECTORY=$tdir GIT_ALTERNATE_OBJECT_DIRECTORIES=$od git -C "$top" add -A && GIT_INDEX_FILE=$idx GIT_OBJECT_DIRECTORY=$tdir GIT_ALTERNATE_OBJECT_DIRECTORIES=$od git -C "$top" write-tree) || return 1
     {
         printf '%s\0' "$@"
-        GIT_INDEX_FILE=$idx git -C "$top" add -A
-        GIT_INDEX_FILE=$idx git -C "$top" write-tree
+        printf '%s\n' "$tree"
         p=$1; [[ $p = /* ]] || p=$repo/$p
         if [ -f "$p" ]; then printf 'cmd %s\n' "$(fp "$p")"; fi
         IFS=: read -ra deps <<< "${TEST_ONCE_DEPS:-}"
@@ -34,7 +34,7 @@ key() {
         done
     } | sha256sum | cut -d' ' -f1
 }
-key=$(key "$@")
+key=$(key "$@") || { echo "test-once: snapshot failed" >&2; exit 2; }
 pair=$({ printf '%s\0' "$(realpath -- "$repo")" "$@"; } | sha256sum | cut -d' ' -f1)
 now=$(date +%s)
 res=$D/res/$key
@@ -48,13 +48,15 @@ pf=$D/fail/$pair; count=0; fe=0
 if [ -f "$pf" ]; then count=$(sed -n 1p "$pf"); fe=$(sed -n 2p "$pf"); fi
 if [ $((now - fe)) -ge "$T" ]; then count=0; fi
 if [ "$count" -ge 3 ]; then echo "test-once: STALLED $count failing runs of $* in $repo; fix the cause, do not re-run"; exit 29; fi
-out=$(mktemp); trap 'rm -f -- "$out" "$idx"' EXIT
+out=$(mktemp); trap 'rm -f -- "$out" "$idx"; rm -rf -- "$tdir"' EXIT
 (cd -- "$repo" && "$@") 2>&1 | tee "$out"
 rc=${PIPESTATUS[0]}
-after=$(key "$@")
+after=$(key "$@") || after=
 last=$(grep -v '^$' "$out" | tail -n 1)
 now=$(date +%s)
-if [ "$after" = "$key" ]; then
+if [ -z "$after" ]; then
+    echo "test-once: snapshot failed" >&2
+elif [ "$after" = "$key" ]; then
     tmp=$(mktemp "$D/res/.tmp.XXXXXX"); printf '%s\n%s\n%s\n' "$rc" "$now" "$last" > "$tmp" && mv -f -- "$tmp" "$res"
 else
     echo "test-once: tree changed during run, not cached" >&2

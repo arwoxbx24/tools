@@ -27,11 +27,16 @@ out=$(TEST_ONCE_DIR=$d/state1 "$t" "$r" ./t.sh); rc=$?
 if [ "$rc" = 0 ] && [[ $out == *"RESULT ok"* ]] && [ "$(runs)" = 1 ]; then pass 1; else bad 1 "rc=$rc runs=$(runs) out=$out"; fi
 
 : > "$d/count"
+ob=$(find "$r/.git/objects" -type f | wc -l)
 TEST_ONCE_DIR=$d/state2 "$t" "$r" ./t.sh >/dev/null
 out=$(TEST_ONCE_DIR=$d/state2 "$t" "$r" ./t.sh); rc=$?
-if [ "$rc" = 0 ] && [[ $out == *"test-once: cached rc=0"* && $out == *"RESULT ok"* ]] && [ "$(runs)" = 1 ]; then pass 2; else bad 2 "rc=$rc runs=$(runs) out=$out"; fi
+oa=$(find "$r/.git/objects" -type f | wc -l)
+nd=$(mktemp -d "$d/nongit.XXXXXX")
+nout=$(TEST_ONCE_DIR=$d/state2 "$t" "$nd" ./t.sh 2>&1); nrc=$?
+if [ "$rc" = 0 ] && [[ $out == *"test-once: cached rc=0"* && $out == *"RESULT ok"* ]] && [ "$(runs)" = 1 ] && [ "$ob" = "$oa" ] && [ "$nrc" = 2 ] && [[ $nout == *usage* ]]; then pass 2; else bad 2 "rc=$rc runs=$(runs) out=$out ob=$ob oa=$oa nrc=$nrc nout=$nout"; fi
 
 : > "$d/count"
+git -C "$r" update-index --assume-unchanged f.txt
 TEST_ONCE_DIR=$d/state3 "$t" "$r" ./t.sh >/dev/null
 echo b > "$r/f.txt"
 out=$(TEST_ONCE_DIR=$d/state3 "$t" "$r" ./t.sh); rc=$?
