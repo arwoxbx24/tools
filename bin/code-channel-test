@@ -43,6 +43,9 @@ printf '%s\n' '#!/usr/bin/env bash' 'if [[ $* == *"select id from session"* ]]; 
 printf '%s\n' '#!/usr/bin/env bash' 'printf "sdk-agent %s\\n" "$*" >>"$CODE_CHANNEL_TEST_LOG"' '[[ ${SDK_TOUCH:-} ]] && printf x >"$CODE_CHANNEL_TEST_PROJECT/$SDK_TOUCH"' 'exit "${SDK_RC:-0}"' >"$bin/sdk-agent-fake"
 for f in "$legacy" "$disabled" "$go" "$resume" "$ladder" "$codexone" "$gocodex" "$goaudit" "$goalt" "$ocfg" "$goidle" "$sdkgo" "$tmp/repogo.json"; do
   jq '.ladder |= map(if .enabled then .owner_word = "test" else . end)' "$f" >"$f.t" && mv -f -- "$f.t" "$f"
+  for fid in $(jq -r '.ladder[].id' "$f"); do
+    jq --arg one "$fid" '.ladder |= map(.enabled = (.id == $one) | if .enabled then .owner_word = "test" else . end) | .switch = {channel: $one, owner_word: "test"}' "$f" >"$f.$fid"
+  done
 done
 chmod +x "$bin/curl" "$bin/opencode" "$bin/codex" "$bin/sqlite3" "$bin/sdk-agent-fake"
 
@@ -51,10 +54,21 @@ check() {
   local n=$1 want=$2 out err rc ov
   local -a env_args=("TMPDIR=$tmp" "PATH=$bin:$PATH" "XDG_CONFIG_HOME=$tmp/config-allow" "CODE_CHANNEL_TEST_LOG=$log" "CODE_CHANNEL_TEST_PROJECT=$project" "CODE_CHANNEL_STATE=$tmp/state" "CODE_CHANNEL_RUNS_LOG=$runs" "CC_RETRY_SLEEP=0")
   shift 2
-  if [[ ${CC_CONFIG+x} ]]; then
-    [[ -z $CC_CONFIG ]] || env_args+=("CODE_CHANNEL_CONFIG=$CC_CONFIG")
-  else
-    env_args+=("CODE_CHANNEL_CONFIG=$legacy")
+  local cfg=$legacy one=${CC_ONE:-} a prev=
+  [[ ! ${CC_CONFIG+x} ]] || cfg=$CC_CONFIG
+  if [[ -z $one ]]; then
+    for a in "$@"; do
+      if [[ $prev == */code-channel ]]; then
+        case $a in 1) one=bitrixgpt;; 2) one=codex;; 3) one=openrouter;; auto|audit|delivery|--plan|--help) ;; *) one=$a;; esac
+        break
+      fi
+      prev=$a
+    done
+  fi
+  if [[ -n $cfg ]]; then
+    [[ -n $one ]] || one=$(jq -r '[.ladder[] | select(.enabled) | .id][0] // ""' "$cfg")
+    [[ ! -f $cfg.$one ]] || cfg=$cfg.$one
+    env_args+=("CODE_CHANNEL_CONFIG=$cfg")
   fi
   : >"$log"
   : >"$runs"
@@ -69,7 +83,7 @@ check() {
 check 1 '[[ $rc == 0 && $out == *REPORT* ]] && grep -Fq -- "--agent audit" "$log"' \
   "$root/bin/code-channel" audit "$project" "$root/AGENTS.md"
 check 2 '[[ $rc == 22 ]]' env OPENCODE_TOUCH=audit-change "$root/bin/code-channel" audit "$project" "$root/AGENTS.md"
-check 3 '[[ $rc == 0 && $(grep -c -- /models "$log") == 1 ]] && grep -Fq -- /key "$log" && grep -Fq -- "-s read-only" "$log"' \
+CC_ONE=codex check 3 '[[ $rc == 0 ]] && grep -Fq -- "-s read-only" "$log"' \
   env CURL_CODE=401 "$root/bin/code-channel" audit "$project" "$root/AGENTS.md"
 check 4 '[[ $rc == 0 ]] && ! grep -Fq -- "--agent" "$log"' \
   env OPENCODE_TOUCH=auto-change "$root/bin/code-channel" auto "$project" "$root/AGENTS.md"
@@ -77,7 +91,7 @@ check 5 '[[ $err == *mode=audit* ]]' "$root/bin/code-channel" audit "$project" "
 check 6 'bash -n "$root/bin/code-channel"' bash -c 'bash -n "$1"' _ "$root/bin/code-channel"
 CC_OVERRIDE='' CC_ROOT="$tmp/secrets" check 7 '[[ $rc == 0 && $out == *REPORT* ]] && ! grep -Fq -- "нет секрета" "$tmp/err" && grep -Fq -- /key "$log"' \
   env SQLITE_RESULT='openrouter|deepseek/deepseek-v4-flash' "$root/bin/code-channel" 3 "$project" "$root/AGENTS.md"
-CC_OVERRIDE='' CC_ROOT="$tmp/bitrix-secrets" check 8 '[[ $rc == 5 ]] && ! grep -q "^codex " "$log"' \
+CC_ONE=openrouter CC_OVERRIDE='' CC_ROOT="$tmp/bitrix-secrets" check 8 '[[ $rc == 5 ]] && ! grep -q "^codex " "$log"' \
   env CURL_CODE=401 "$root/bin/code-channel" auto "$project" "$root/AGENTS.md"
 CC_OVERRIDE='' CC_ROOT="$tmp/secrets" check 9 '[[ $rc == 11 ]] && grep -Fq -- /key "$log"' \
   env CURL_CODE=401 XDG_CONFIG_HOME="$tmp/config-allow" "$root/bin/code-channel" 3 "$project" "$root/AGENTS.md"
@@ -106,7 +120,7 @@ check 17 '[[ $rc == 24 ]] && grep -Fq -- "form=codex среда: read-only" "$tm
 git -C "$project" clean -fdq
 check 18 '[[ $rc == 13 && $err == *4.2* && $err == *4* ]] && ! grep -q "opencode" "$log"' \
   env CURL_USAGE_DAILY=4.2 "$root/bin/code-channel" 3 "$project" "$root/AGENTS.md"
-check 19 'grep -Fq -- "codex " "$log" && ! grep -q "^opencode " "$log" && [[ $err == *"форма openrouter пропущена"* ]]' \
+CC_ONE=openrouter check 19 '[[ $rc == 13 && $err == *"форма openrouter пропущена"* ]] && ! grep -q "^opencode " "$log"' \
   env CURL_CODE=401 CURL_KEY_CODE=200 CURL_USAGE_DAILY=4.2 "$root/bin/code-channel" auto "$project" "$root/AGENTS.md"
 check 20 '[[ $rc == 0 ]] && grep -Fq -- /key "$log" && grep -Fq -- "opencode" "$log"' \
   env SQLITE_RESULT='openrouter|deepseek/deepseek-v4-flash' CURL_USAGE_DAILY=0.4 "$root/bin/code-channel" 3 "$project" "$root/AGENTS.md"
@@ -115,13 +129,13 @@ check 21 '[[ $rc == 13 && $err == *"нет usage_daily"* ]]' \
 
 CC_CONFIG=$tmp/repogo.json check 22 '[[ $rc == 0 && $out == $'"'"'go opencode-go/deepseek-v4.1-flash - audit=opencode-go/deepseek-v4.1-flash'"'"' ]]' \
   "$root/bin/code-channel" --plan
-CC_CONFIG=$disabled check 23 '[[ $rc == 16 ]] && ! grep -Fq -- /models "$log" && grep -Fq -- "codex " "$log"' \
+CC_ONE=codex CC_CONFIG=$disabled check 23 '[[ $rc == 16 ]] && ! grep -Fq -- /models "$log" && grep -Fq -- "codex " "$log"' \
   env OPENCODE_RC=1 bash -c 'plan=$("$1" --plan) || exit $?; [[ $plan != *openrouter* ]] || exit 90; "$1" auto "$2" "$3"' _ "$root/bin/code-channel" "$project" "$root/AGENTS.md"
-CC_CONFIG=$disabled check 24 '[[ $rc == 3 ]] && [[ ! -s $log ]]' \
+CC_ONE=go CC_CONFIG=$disabled check 24 '[[ $rc == 3 ]] && [[ ! -s $log ]]' \
   "$root/bin/code-channel" openrouter "$project" "$root/AGENTS.md"
 CC_CONFIG=$go check 25 '[[ $rc == 0 ]] && [[ $err != *"сверка провайдера не прошла"* ]]' \
   env SQLITE_RESULT='opencode-go|mimo-v2.6-flash' OPENCODE_TOUCH=go-change "$root/bin/code-channel" go "$project" "$root/AGENTS.md"
-CC_CONFIG=$ladder check 26 '[[ $rc == 23 ]] && grep -Fq -- /key "$log"' \
+CC_CONFIG=$ladder check 26 '[[ $rc == 23 ]]' \
   env OPENCODE_RC=1 CODEX_RC=1 "$root/bin/code-channel" auto "$project" "$root/AGENTS.md"
 check 27 '[[ $rc == 3 ]] && [[ ! -s $log ]]' \
   "$root/bin/code-channel" auto "$project" "$root/AGENTS.md" --model x/y
@@ -132,14 +146,14 @@ check 29 '[[ $rc == 0 ]] && grep -Fq -- "-p quota-terra -c model_reasoning_effor
   env CODEX_RC=0 "$root/bin/code-channel" 2 "$project" "$tz"
 check 30 '[[ $rc == 0 ]] && ! grep -Eq -- "(^| )-m( |$)" "$log"' \
   env CODEX_RC=0 "$root/bin/code-channel" 2 "$project" "$tz"
-CC_CONFIG=$ladder check 31 '[[ $rc == 0 ]] && grep -Fq -- "opencode active=1" "$log" && grep -Fq -- "codex active=1" "$log"' \
+CC_ONE=codex CC_CONFIG=$ladder check 31 '[[ $rc == 0 ]] && grep -Fq -- "codex active=1" "$log"' \
   env OPENCODE_RC=1 CODEX_RC=0 CODEX_TOUCH=active-change "$root/bin/code-channel" auto "$project" "$tz"
 git -C "$project" clean -fdq
 check 32 '[[ $rc == 0 && $err == *"форма codex: git только для чтения, правки есть"* && $err != *"среда: read-only"* ]]' \
   env CODEX_ERR='Read-only file system' CODEX_RC=1 CODEX_TOUCH=codex-change "$root/bin/code-channel" 2 "$project" "$tz"
-CC_CONFIG=$disabled check 33 '[[ $rc == 0 ]]' \
+CC_ONE=codex CC_CONFIG=$disabled check 33 '[[ $rc == 0 ]]' \
   env OPENCODE_RC=1 CODEX_RC=0 "$root/bin/code-channel" auto "$nogit" "$tz"
-CC_CONFIG=$disabled check 34 '[[ $rc == 3 && $err == *"выключен в конфиге"* ]]' \
+CC_ONE=go CC_CONFIG=$disabled check 34 '[[ $rc == 3 && $err == *"выключен в конфиге"* ]]' \
   "$root/bin/code-channel" 3 "$project" "$tz"
 check 35 '[[ $rc == 3 && $err == *"модель не в конфиге: other/model"* && ! -s $log ]]' \
   "$root/bin/code-channel" 1 "$project" "$tz" --model other/model
@@ -186,7 +200,7 @@ printf 'orig\n' >"$project/.agent-work/untracked.txt"
 CC_CONFIG=$go check 47 '[[ $rc == 0 ]] && ! grep -Fq -- "без изменений" "$tmp/err"' \
   env OPENCODE_RC=0 OPENCODE_TOUCH=.agent-work/untracked.txt SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" auto "$project" "$tz"
 
-CC_CONFIG=$go check 48 '[[ $rc == 0 ]] && ! grep -Fq -- "already running" "$tmp/err"' \
+CC_ONE=go CC_CONFIG=$go check 48 '[[ $rc == 0 ]] && ! grep -Fq -- "already running" "$tmp/err"' \
   env OPENCODE_TOUCH=pipe-change.txt OPENCODE_RC=0 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' bash -c 'set -o pipefail; "$1" go "$2" "$3" | cat' _ "$root/bin/code-channel" "$project" "$tz"
 
 CC_CONFIG=$goaudit check 49 '[[ $rc == 0 ]] && grep -Fq -- "--agent audit" "$log" && grep -Fq -- "-m opencode-go/mimo-v2.6-flash" "$log"' \
@@ -201,7 +215,7 @@ CC_CONFIG=$go check 51 '[[ $rc == 124 ]] && grep -q '"'"'"session":"session-123"
 CC_CONFIG=$goaudit check 52 '[[ $rc == 0 ]] && grep -Fq -- "-m opencode-go/mimo-v2.6-flash" "$log"' \
   env OPENCODE_RC=0 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz" --model opencode-go/mimo-v2.6-flash
 
-CC_CONFIG=$gocodex check 53 '[[ $rc == 0 ]] && grep -q "^codex " "$log" && [[ $err == *switch\ go→codex\ rc=1* ]]' \
+CC_CONFIG=$gocodex check 53 '[[ $rc == 1 ]] && ! grep -q "^codex " "$log" && [[ $err != *switch* ]]' \
   env OPENCODE_RC=1 CODEX_TOUCH=codex-touch SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" auto "$project" "$tz"
 CC_CONFIG=$goalt check 61 '[[ $rc == 3 && $err == *"модель не в конфиге: opencode-go/deepseek-v4.1-flash"* && ! -s $log ]]' \
   "$root/bin/code-channel" go "$project" "$tz" --model opencode-go/deepseek-v4.1-flash
@@ -243,7 +257,7 @@ CC_CONFIG=$go check 60 '[[ $rc == 0 ]]' \
 CC_CONFIG=$sdkgo check 64 '[[ $rc == 0 ]] && grep -Fq -- "sdk-agent code" "$log" && ! grep -q "^opencode " "$log"' \
   env SDK_TOUCH=sdk-made CODE_CHANNEL_SDK_AGENT="$bin/sdk-agent-fake" "$root/bin/code-channel" auto "$project" "$tz"
 rm -f -- "$project/sdk-made"
-CC_CONFIG=$sdkgo check 65 'grep -Fq -- "sdk-agent code" "$log" && grep -q "^opencode " "$log" && [[ $err == *"switch sdk→go"* ]]' \
+CC_CONFIG=$sdkgo check 65 '[[ $rc == 17 ]] && grep -Fq -- "sdk-agent code" "$log" && ! grep -q "^opencode " "$log"' \
   env SDK_RC=6 OPENCODE_TOUCH=go-made CODE_CHANNEL_SDK_AGENT="$bin/sdk-agent-fake" "$root/bin/code-channel" auto "$project" "$tz"
 rm -f -- "$project/go-made"
 CC_CONFIG=$sdkgo check 66 '[[ $rc == 0 ]] && grep -Fq -- "sdk-agent read" "$log"' \
@@ -279,7 +293,7 @@ CC_CONFIG=$go check 74 '[[ $rc == 0 ]] && ! grep -Fq -- "/root/.nvm/versions/nod
 CC_CONFIG=$go check 75 '[[ $rc == 0 ]] && ! grep -Fq -- "/root/.nvm/versions/node/" "$log" && grep -Fxq -- "PATH='"$bin"':/usr/local/bin:/usr/bin:/bin" "$log"' \
   env PATH="$bin:/usr/local/bin:/usr/bin:/bin" SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
 
-CC_CONFIG=$tmp/repogo.json check 76 '[[ $rc == 0 && $(grep -c -- "-m opencode-go/deepseek-v4.1-flash" "$log") == 2 ]] && grep -Fq -- "--agent audit" "$log"' \
+CC_ONE=go CC_CONFIG=$tmp/repogo.json check 76 '[[ $rc == 0 && $(grep -c -- "-m opencode-go/deepseek-v4.1-flash" "$log") == 2 ]] && grep -Fq -- "--agent audit" "$log"' \
   env SQLITE_RESULT='opencode-go|deepseek-v4.1-flash' bash -c '"$1" go "$2" "$3" && "$1" audit "$2" "$3"' _ "$root/bin/code-channel" "$project" "$tz"
 CC_CONFIG=$tmp/repogo.json check 77 '[[ $rc == 3 && $err == *"модель не в конфиге: opencode-go/deepseek-v4-pro"* && ! -s $log ]]' \
   "$root/bin/code-channel" go "$project" "$tz" --model opencode-go/deepseek-v4-pro
@@ -296,7 +310,7 @@ loopbin=$tmp/loopbin
 mkdir -p "$loopbin"
 printf '%s\n' '#!/usr/bin/env bash' 'if [[ ${LOOP_SAME:-} ]]; then for i in 1 2 3 4 5 6 7 8 9 10; do echo same; done; echo tail-marker; elif [[ ${LOOP_PASS:-} ]]; then for i in 1 2 3 4 5 6 7 8 9 10; do echo "PASS $i"; done; else for w in a b c d e f g h i j; do echo "line $w"; done; fi' >"$loopbin/opencode"
 chmod +x "$loopbin/opencode"
-lg0=$ok
+lg0=$ok gfail=0
 CC_CONFIG=$go check 82 '[[ $rc == 27 && $err == *loop-guard* && $out != *tail-marker* ]]' \
   env LOOP_SAME=1 CODE_CHANNEL_LOOP_LIMIT=5 PATH="$loopbin:$bin:$PATH" SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
 CC_CONFIG=$go check 83 '[[ $rc == 0 && $err != *loop-guard* ]]' \
@@ -304,9 +318,10 @@ CC_CONFIG=$go check 83 '[[ $rc == 0 && $err != *loop-guard* ]]' \
 CC_CONFIG=$go check 84 '[[ $rc == 0 && $err != *loop-guard* ]]' \
   env LOOP_PASS=1 CODE_CHANNEL_LOOP_LIMIT=5 PATH="$loopbin:$bin:$PATH" SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
 echo "loop-guard ok=$((ok-lg0)) failed=$((3-(ok-lg0)))"
+((ok-lg0 == 3)) || { echo 'FAIL loop-guard'; gfail=1; }
 
 sl_ok=$tmp/sl-ok.json sl_two=$tmp/sl-two.json sl_none=$tmp/sl-none.json
-printf '%s\n' '{"ladder":[{"id":"a","enabled":true,"model":"x/y","owner_word":"w"},{"id":"b","enabled":false,"model":"x/z"}]}' >"$sl_ok"
+printf '%s\n' '{"switch":{"channel":"a","owner_word":"w"},"ladder":[{"id":"a","enabled":true,"model":"x/y","owner_word":"w"},{"id":"b","enabled":false,"model":"x/z"}]}' >"$sl_ok"
 printf '%s\n' '{"ladder":[{"id":"a","enabled":true,"model":"x/y","owner_word":"w"},{"id":"b","enabled":true,"model":"x/z","owner_word":"w"}]}' >"$sl_two"
 printf '%s\n' '{"ladder":[{"id":"a","enabled":true,"model":"x/y"},{"id":"b","enabled":false,"model":"x/z"}]}' >"$sl_none"
 slrun() { env -u CODE_CHANNEL_ACTIVE -u CODE_CHANNEL_TEST_LOG "CODE_CHANNEL_CONFIG=$1" "$root/bin/code-channel" --plan >/dev/null 2>"$tmp/sl-err"; }
@@ -315,7 +330,68 @@ slrun "$sl_ok"; slr0=$?
 [[ $slr0 == 0 ]] && ((ok++))
 slrun "$sl_two"; slr1=$?; sle1=$(<"$tmp/sl-err")
 slrun "$sl_none"; slr2=$?; sle2=$(<"$tmp/sl-err")
-[[ $slr1 != 0 && $sle1 == *switch-lock* && $slr2 != 0 && $sle2 == *switch-lock* ]] && ((ok++))
+[[ $slr1 != 0 && $sle1 == *'exactly one enabled entry'* && $slr2 != 0 && $sle2 == *switch-lock* ]] && ((ok++))
 echo "switch-lock ok=$((ok-sl0)) failed=$((2-(ok-sl0)))"
+((ok-sl0 == 2)) || { echo 'FAIL switch-lock'; gfail=1; }
 
-[[ $ok == 86 ]] && echo 'PASS 86/86'
+git -C "$project" clean -fdq
+CC_ONE=codex CC_CONFIG=$disabled check 85 '[[ $rc != 0 && ! -e "$project/switch-marker" && $(grep -c "^codex " "$log") == 1 ]]' \
+  env CODEX_RC=1 OPENCODE_TOUCH=switch-marker "$root/bin/code-channel" auto "$project" "$tz"
+git -C "$project" clean -fdq
+
+cg_ok=0
+cgrun() { env -u CODE_CHANNEL_ACTIVE -u CODE_CHANNEL_TEST_LOG "CODE_CHANNEL_CONFIG=$1" "$root/bin/code-channel" "${@:2}" 2>&1; }
+cg_blank=$tmp/cg-blank.json cg_mis=$tmp/cg-mis.json cg_good=$tmp/cg-good.json cg_sdk=$tmp/cg-sdk.json
+printf '%s\n' '{"switch":{"channel":"a","owner_word":"  "},"ladder":[{"id":"a","enabled":true,"model":"x/y","owner_word":"w"}]}' >"$cg_blank"
+printf '%s\n' '{"switch":{"channel":"go","owner_word":"x"},"ladder":[{"id":"sdk","enabled":true,"model":"x/y","owner_word":"x"}]}' >"$cg_mis"
+printf '%s\n' '{"switch":{"channel":"a","owner_word":"w"},"ladder":[{"id":"a","enabled":true,"model":"x/y","owner_word":"w"},{"id":"b","enabled":false,"model":"x/z"}]}' >"$cg_good"
+printf '%s\n' '{"switch":{"channel":"sdk","owner_word":"x"},"ladder":[{"id":"sdk","enabled":true,"model":"x/y","owner_word":"x"}]}' >"$cg_sdk"
+out=$(cgrun "$cg_blank" auto "$project" "$tz"); rc=$?
+[[ $rc == 28 && $out == *owner_word* ]] && ((cg_ok++))
+out=$(cgrun "$cg_mis" auto "$project" "$tz"); rc=$?
+[[ $rc == 28 && $out == *switch.channel* ]] && ((cg_ok++))
+out=$(cgrun "$cg_good" --plan); rc=$?
+[[ $rc == 0 && $(wc -l <<<"$out") == 1 && $out == a\ * ]] && ((cg_ok++))
+out=$(cgrun "$cg_sdk" delivery "$project" "$tz"); rc=$?
+[[ $rc == 3 && $out == *'no delivery channel'* ]] && ((cg_ok++))
+cg_zero=$tmp/cg-zero.json
+printf '%s\n' '{"ladder":[{"id":"a","enabled":false,"model":"x/y"}]}' >"$cg_zero"
+slrun "$cg_zero"; cgr0=$?; cge0=$(<"$tmp/sl-err")
+[[ $cgr0 != 0 && $cge0 == *'code-channel: ladder must have exactly one enabled entry, found 0'* ]] && ((cg_ok++))
+cg_three=$tmp/cg-three.json
+printf '%s\n' '{"ladder":[{"id":"a","enabled":true,"model":"x/y","owner_word":"w"},{"id":"b","enabled":true,"model":"x/z","owner_word":"w"},{"id":"c","enabled":true,"model":"x/z","owner_word":"w"}]}' >"$cg_three"
+env -u CODE_CHANNEL_ACTIVE "CODE_CHANNEL_TEST_LOG=$log" "CODE_CHANNEL_CONFIG=$cg_three" "$root/bin/code-channel" auto "$project" "$tz" >/dev/null 2>"$tmp/sl-err"; cgr1=$?; cge1=$(<"$tmp/sl-err")
+[[ $cgr1 == 28 && $cge1 == *'code-channel: ladder must have exactly one enabled entry, found 3'* ]] && ((cg_ok++))
+slrun "$sl_ok"; cgr2=$?
+[[ $cgr2 == 0 ]] && ((cg_ok++))
+git -C "$project" clean -fdq
+: >"$log"
+env -u CODE_CHANNEL_ACTIVE "TMPDIR=$tmp" "PATH=$bin:$PATH" "CODE_CHANNEL_TEST_LOG=$log" "CODE_CHANNEL_TEST_PROJECT=$project" "CODE_CHANNEL_STATE=$tmp/state" "CODE_CHANNEL_RUNS_LOG=$runs" CC_RETRY_SLEEP=0 "CODE_CHANNEL_CONFIG=$go" SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" auto "$project" "$tz" >/dev/null 2>"$tmp/cg-err"; cgr3=$?
+[[ $cgr3 != 0 && $(<"$tmp/cg-err") == *'empty run'* ]] && ((cg_ok++))
+echo "channel-guard ok=$cg_ok failed=$((8-cg_ok))"
+((cg_ok == 8)) || { echo 'FAIL channel-guard'; gfail=1; }
+sn_ok=0 sn_i=0
+for sw in '' '"switch":null,' '"switch":false,' '"switch":{"channel":"a"},' '"switch":{"channel":"a","owner_word":""},' '"switch":{"channel":"a","owner_word":"  "},' '"switch":{"channel":"b","owner_word":"w"},' '"switch":{"channel":"a","owner_word":"w"},'; do
+  ((sn_i++))
+  sn_cfg=$tmp/sn-$sn_i.json
+  if ((sn_i == 8)); then
+    printf '%s\n' "{${sw}\"ladder\":[{\"id\":\"a\",\"enabled\":true,\"model\":\"x/y\",\"owner_word\":\"w\"},{\"id\":\"b\",\"enabled\":true,\"model\":\"x/z\",\"owner_word\":\"w\"}]}" >"$sn_cfg"
+  else
+    printf '%s\n' "{${sw}\"ladder\":[{\"id\":\"a\",\"enabled\":true,\"model\":\"x/y\",\"owner_word\":\"w\"},{\"id\":\"b\",\"enabled\":false,\"model\":\"x/z\"}]}" >"$sn_cfg"
+  fi
+  out=$(cgrun "$sn_cfg" auto "$project" "$tz"); rc=$?
+  sn_want='switch-lock:'
+  ((sn_i == 8)) && sn_want='exactly one enabled entry'
+  [[ $rc == 28 && $out == *"$sn_want"* ]] && ((sn_ok++))
+done
+echo "switch-lock-neg ok=$sn_ok failed=$((8-sn_ok))"
+((sn_ok == 8)) || { echo 'FAIL switch-lock-neg'; gfail=1; }
+rp_ok=0
+rp_out=$(env -u CODE_CHANNEL_ACTIVE -u CODE_CHANNEL_CONFIG "$root/bin/code-channel" --plan 2>/dev/null); rp_rc=$?
+[[ $rp_rc == 0 && -n $rp_out && $(wc -l <<<"$rp_out") == 1 ]] && ((rp_ok++))
+echo "real-config-plan ok=$rp_ok failed=$((1-rp_ok))"
+((rp_ok == 1)) || { echo 'FAIL real-config-plan'; gfail=1; }
+total=$((ok+cg_ok+sn_ok+rp_ok)) expected=104
+[[ $total == "$expected" ]] || { echo "FAIL total $total/$expected"; gfail=1; }
+((gfail == 0)) || exit 1
+echo "PASS $total/$total"
