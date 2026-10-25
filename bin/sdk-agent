@@ -3,7 +3,7 @@
 # TZ: docs/tz/2026-10-16-dcfg-sktr5-sdk-agent.md
 set -uo pipefail
 
-readonly MODEL="claude-sonnet-5-5"
+readonly MODEL="claude-opus-5-5"
 readonly ENGINE="/root/workspaces/tools/claude-agent-sdk-venv/lib/python3.12/site-packages/claude_agent_sdk/_bundled/claude"
 readonly KEY_FILE="/root/workspaces/secrets/inbox/anthropic.env"
 readonly ENGINE_HOME="/root/workspaces/tools/sdk-agent/engine-home"
@@ -44,7 +44,7 @@ usage: sdk-agent ask [--budget USD] [--effort low|medium|high|xhigh|max] [--sche
        sdk-agent --help
 code: model may read the whole worktree and returns exact edits (path, old, new) to listed files; TZ line "Check: <executable inside worktree> [args]" is run after writing, no shell (rc 7 on failure); the Check executable must not be a listed file.
 --json (ask, read): print the whole engine result JSON instead of the text.
-Runs the Claude Agent SDK engine with model claude-sonnet-5-5 and an API key (never the subscription).
+Runs the Claude Agent SDK engine with model claude-opus-5-5 and an API key (never the subscription).
 Engine config dir: tools/sdk-agent/engine-home (no login stored there).
 sdk-agent is a paid API program, not a Claude Code agent or subagent.
 Budget: default 0.50 USD per run, ceiling 2.00 USD. Every result is appended to tools/sdk-agent/runs.jsonl.

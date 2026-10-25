@@ -23,8 +23,8 @@
 
 | id | состояние | модель / параметр |
 | --- | --- | --- |
-| `sdk` | выключен (owner 22.10: переключено на Go) | `bin/sdk-agent code` (audit: `sdk-agent read`), claude-sonnet-5-5; any failure (budget, daily cap 7 USD, error) → rc 17, вызов кончается |
-| `go` | включён (owner 22.10: «Open Code Go: усилить … выбирай лучший вариант»; требование: большой контекст без остановок, запас лимитов — bd memory `owner-go-model-requirement-2210`) | единая модель `opencode-go/deepseek-v4.1-flash` для code, audit и продолжения (хранение 0 дней по opencode.ai/docs/go; GPT Luna хранит логи до 30 дней — не для кода); при сбое провайдера — `opencode-go/deepseek-v4-pro`, затем `tools/bin/channel-canary`/`sdk-agent code` |
+| `sdk` | включён (owner 25.10: «работаем через SDK-агент… Opus 5.5») | `bin/sdk-agent code` (audit: `sdk-agent read`), claude-opus-5-5; any failure (budget, daily cap 7 USD, error) → rc 17, вызов кончается |
+| `go` | выключен (owner 25.10) | единая модель `opencode-go/deepseek-v4.1-flash` для code, audit и продолжения (хранение 0 дней по opencode.ai/docs/go; GPT Luna хранит логи до 30 дней — не для кода); при сбое провайдера — `opencode-go/deepseek-v4-pro`, затем `tools/bin/channel-canary`/`sdk-agent code` |
 | `codex` | выключен | модель профиля; `effort: high` |
 | `openrouter` | выключен; включается словом владельца | `openrouter/deepseek/deepseek-v4-flash` |
 | `bitrixgpt` | выключен | — |
@@ -32,7 +32,7 @@
 
 ## Переключение и лестница
 
-Включена ровно одна запись — активный канал; сейчас `sdk` (owner 19.10), `go` выключена. Переключение — только по слову владельца, назвавшего канал («работаем через OpenCode Go», «через OpenRouter», «через SDK-агент»): у этой записи `enabled: true`, у остальных `false`, PR в tools, затем `git-sync tools`; `bin/code-channel --plan` печатает только её id. Канал общий для всех агентов сервера и держится до нового слова владельца; закон — `/root/CLAUDE.md` «CODE CHANNELS». Codex, Kimi и Bitrix GPT — только по слову владельца.
+Включена ровно одна запись — активный канал; сейчас `sdk` (owner 25.10), `go` выключена. Переключение — только по слову владельца, назвавшего канал («работаем через OpenCode Go», «через OpenRouter», «через SDK-агент»): у этой записи `enabled: true`, у остальных `false`, PR в tools, затем `git-sync tools`; `bin/code-channel --plan` печатает только её id. Канал общий для всех агентов сервера и держится до нового слова владельца; закон — `/root/CLAUDE.md` «CODE CHANNELS». Codex, Kimi и Bitrix GPT — только по слову владельца. Переключение действует на новые прогоны; уже идущие прогоны завершаются на канале, с которым стартовали. Запись `switch` (channel, owner_word, date) хранит цитату слова владельца; без неё или при двух включённых записях `code-channel` отказывает (замок переключения, тест `switch-lock`).
 
 Сбой провайдера: 2 повтора на той же модели, затем один запуск `fallback_model`, затем остановка с подсказкой `channel-canary`/`sdk-agent code`. rc 0 без изменений переводит к следующему включённому. Сразу остановиться: 3, 5, 15, 22, 24. Последний провайдер возвращает свой rc либо 16.
 
