@@ -391,7 +391,14 @@ rp_out=$(env -u CODE_CHANNEL_ACTIVE -u CODE_CHANNEL_CONFIG "$root/bin/code-chann
 [[ $rp_rc == 0 && -n $rp_out && $(wc -l <<<"$rp_out") == 1 ]] && ((rp_ok++))
 echo "real-config-plan ok=$rp_ok failed=$((1-rp_ok))"
 ((rp_ok == 1)) || { echo 'FAIL real-config-plan'; gfail=1; }
-total=$((ok+cg_ok+sn_ok+rp_ok)) expected=104
+rs_ok=0
+rs_cfg=$(mktemp "$tmp/real-shape.XXXXXX")
+jq '.switch = {channel: "go", owner_word: "работаем через OpenCode Go"} | .ladder |= map(.enabled = (.id == "go") | if .id == "go" then del(.owner_word) else . end)' /root/workspaces/tools/config/code-channel.json >"$rs_cfg"
+rs_out=$(env -u CODE_CHANNEL_ACTIVE -u CODE_CHANNEL_TEST_LOG "CODE_CHANNEL_CONFIG=$rs_cfg" "$root/bin/code-channel" --plan 2>/dev/null); rs_rc=$?
+[[ $rs_rc == 0 && $rs_out == go\ * ]] && ((rs_ok++))
+echo "real-shape-plan ok=$rs_ok failed=$((1-rs_ok))"
+((rs_ok == 1)) || { echo 'FAIL real-shape-plan'; gfail=1; }
+total=$((ok+cg_ok+sn_ok+rp_ok+rs_ok)) expected=105
 [[ $total == "$expected" ]] || { echo "FAIL total $total/$expected"; gfail=1; }
 ((gfail == 0)) || exit 1
 echo "PASS $total/$total"
