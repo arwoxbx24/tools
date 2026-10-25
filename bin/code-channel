@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set +x
 set -uo pipefail
-usage() { printf '%s\n' 'usage: code-channel <form> <project> <tz> [--model provider/model]  (runs the selected code or audit provider)' '       code-channel delivery <worktree> <TZ>  (helper may test, git add FILE: lines, commit, push claude/*|codex/*, open and merge a PR)' 'конфиг: config/code-channel.json; справка: docs/code-channel.md'; }
+usage() { printf '%s\n' 'usage: code-channel <form> <project> <tz> [--model provider/model]  (runs the selected code or audit provider)' '       code-channel delivery <worktree> <TZ>  (helper may test, git add FILE: lines, commit, push claude/*|codex/*, open and merge a PR)' 'exit 27: loop-guard — одна строка вывода повторилась LOOP_REPEAT_LIMIT раз, запуск остановлен' 'env CODE_CHANNEL_LOOP_LIMIT: LOOP_REPEAT_LIMIT, порог повторов строки (по умолчанию 30)' 'конфиг: config/code-channel.json; справка: docs/code-channel.md'; }
 case ${1:-} in -h|--help) usage; exit 0;; delivery) [[ ${2:-} == -h || ${2:-} == --help ]] && { usage; exit 0; };; esac
 # spec:035: only this invocation's temporary files are cleaned; no stale-file sweep.
 fail() { printf 'code-channel: %s\n' "$*" >&2; }
@@ -97,11 +97,47 @@ cc_scope_check() {
     [[ ${#bads[@]} -eq 0 ]] || { printf 'out-of-scope: %s\n' "${bads[*]}" >&2; return 26; }
     return 0
 }
+LOOP_REPEAT_LIMIT=${CODE_CHANNEL_LOOP_LIMIT:-30}
+loop_filter() {
+    local pf=$1 hit=$2 line t key n pid
+    local -A seen=()
+    while IFS= read -r line || [[ -n $line ]]; do
+        printf '%s\n' "$line"
+        t=${line#"${line%%[![:space:]]*}"}
+        t=${t%"${t##*[![:space:]]}"}
+        [[ -n $t ]] || continue
+        key=${t//[0-9]/0}
+        while [[ $key == *00* ]]; do key=${key//00/0}; done
+        n=$(( ${seen["$key"]:-0} + 1 ))
+        seen["$key"]=$n
+        if (( n >= LOOP_REPEAT_LIMIT )) && [[ ! -s $hit ]]; then
+            printf 'code-channel: loop-guard: line repeated %s times: %s\n' "$n" "${t:0:120}" >"$hit"
+            pid=$(<"$pf")
+            [[ -z $pid ]] || kill -TERM -- "-$pid" 2>/dev/null
+            break
+        fi
+    done
+}
+guarded() {
+    local pf hit r
+    pf=$(mktemp "${TMPDIR:-/tmp}/code-channel-loop-XXXXXX") || exit 3
+    hit=$pf.hit
+    : >"$hit"
+    setsid bash -c 'echo $$ >"$1"; shift; exec "$@"' _ "$pf" "$@" | loop_filter "$pf" "$hit"
+    r=${PIPESTATUS[0]}
+    if [[ -s $hit ]]; then
+        cat -- "$hit" 2>/dev/null >&3 || cat -- "$hit" >&2
+        unlink -- "$pf"; unlink -- "$hit"
+        exit 27
+    fi
+    unlink -- "$pf"; unlink -- "$hit"
+    return "$r"
+}
 run_sdk() {
     local sub=code r
     [[ $mode == audit ]] && sub=read
     cc_pre=$(cc_status)
-    CODE_CHANNEL_ACTIVE=1 "$sdk_agent" "$sub" "$PWD" "$tz_abs"; r=$?
+    CODE_CHANNEL_ACTIVE=1 guarded "$sdk_agent" "$sub" "$PWD" "$tz_abs"; r=$?
     printf 'code-channel: mode=%s form=sdk rc=%s\n' "$mode" "$r" >&2
     if [[ $r == 0 ]]; then
         rc=0 run=0
@@ -199,14 +235,14 @@ run_form() (
         [[ -z $model ]] || codex_args+=(-m "$model")
         started=$SECONDS
         if [[ $mode == audit ]]; then
-            timeout 1800 codex exec -p quota-terra "${codex_args[@]}" -s read-only "$prompt"; run=$?
+            guarded timeout 1800 codex exec -p quota-terra "${codex_args[@]}" -s read-only "$prompt"; run=$?
         else
             gcd=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
             add_dir=()
             [[ -n $gcd ]] && add_dir+=(--add-dir "$gcd")
             codetmp=$(mktemp "${TMPDIR:-/tmp}/code-channel-codex-XXXXXX") || exit 3
             codex_before=$(form_snap)
-            timeout 1800 codex exec -p quota-terra "${codex_args[@]}" -s workspace-write "${add_dir[@]}" \
+            guarded timeout 1800 codex exec -p quota-terra "${codex_args[@]}" -s workspace-write "${add_dir[@]}" \
                 -c sandbox_workspace_write.network_access=true "$prompt" 2> >(tee -- "$codetmp" >&2); run=$?
             if [[ $run != 0 ]] && grep -q -- 'Read-only file system' "$codetmp"; then
                 if [[ $(form_snap) != "$codex_before" ]]; then
@@ -306,7 +342,7 @@ run_form() (
     db=${CODE_CHANNEL_OPENCODE_DB:-/root/.local/share/opencode/opencode.db}
     oc_args=() oc_prompt=
     if [[ $mode == audit ]]; then
-        "$helper_scope" timeout 1800 opencode run --agent audit --title "$id_run" -m "$model" "$prompt" < /dev/null; run=$?
+        guarded "$helper_scope" timeout 1800 opencode run --agent audit --title "$id_run" -m "$model" "$prompt" < /dev/null; run=$?
     else
         oc_args=(--title "$id_run") oc_prompt=$prompt
         idle=0
@@ -318,7 +354,8 @@ run_form() (
         cc_pre=$(cc_status)
         id_sid_sql="select id from session where title='$id_run' order by time_created desc limit 1"
         while :; do
-            "$helper_scope" timeout 1800 opencode run "${oc_args[@]}" -m "$model" "$oc_prompt" < /dev/null 2>&1 | tee "$oc_out"; run=${PIPESTATUS[0]}
+            guarded "$helper_scope" timeout 1800 opencode run "${oc_args[@]}" -m "$model" "$oc_prompt" < /dev/null 3>&2 2>&1 | tee "$oc_out"; run=${PIPESTATUS[0]}
+            [[ $run != 27 ]] || exit 27
             [[ $run == 0 ]] && break
             fresh=1; [[ ${oc_args[0]:-} != --session ]] || fresh=0
             if [[ $fresh == 1 ]] && { [[ $run == 124 ]] || grep -q 'Upstream request failed:' "$oc_out"; }; then
@@ -383,7 +420,7 @@ for i in "${!ladder[@]}"; do
     fi
     before=$(form_snap)
     if [[ $id == sdk ]]; then run_sdk; rc=$?; else run_form "$id"; rc=$?; fi
-    case $rc in 3|5|15|22|24|124) exit "$rc";; esac
+    case $rc in 3|5|15|22|24|27|124) exit "$rc";; esac
     if [[ $rc != 0 && $mode == audit && $(form_snap) != "$before" ]]; then
         printf 'code-channel: mode=audit form=%s изменено рабочее дерево — отчёт не принят\n' "$id" >&2
         exit 22
