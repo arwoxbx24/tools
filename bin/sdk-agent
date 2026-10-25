@@ -12,11 +12,14 @@ if [[ ${SDK_AGENT_TEST:-} == 1 ]]; then
   readonly RUNS_LOG="${SDK_AGENT_RUNS_LOG:-/root/workspaces/tools/sdk-agent/runs.jsonl}"
   readonly TEST_ENGINE="${SDK_AGENT_ENGINE:-}"
   readonly DAILY_CAP="${SDK_AGENT_TEST_CAP:-10.00}"
+  readonly MEMINFO="${SDK_AGENT_MEMINFO:-/proc/meminfo}"
 else
   readonly RUNS_LOG="/root/workspaces/tools/sdk-agent/runs.jsonl"
   readonly TEST_ENGINE=""
   readonly DAILY_CAP="10.00"
+  readonly MEMINFO="/proc/meminfo"
 fi
+readonly MIN_MEM_MB=550
 readonly DEFAULT_BUDGET="0.50"
 readonly MAX_BUDGET="2.00"
 readonly MAX_FILE_BYTES=204800
@@ -49,6 +52,7 @@ Engine config dir: tools/sdk-agent/engine-home (no login stored there).
 sdk-agent is a paid API program, not a Claude Code agent or subagent.
 Budget: default 0.50 USD per run, ceiling 2.00 USD. Every result is appended to tools/sdk-agent/runs.jsonl.
 Daily cap: 10.00 USD of runs (today, local time) across all modes.
+Exit 8: low memory, MemAvailable below 550 MB, run refused before any budget is reserved.
 EOF
 }
 
@@ -198,6 +202,29 @@ check_daily_cap() {
   fi
 }
 
+# mem_recent_alive — prints how many in-flight runs started within the last 120 s and are still alive.
+mem_recent_alive() {
+  local inflight="$RUNS_LOG.inflight" rows run_id n=0
+  if [[ -s $inflight ]]; then
+    rows=$(jq -r --argjson m "$(( $(date +%s) - 120 ))" \
+      'select((.ts | type) == "number" and .ts >= $m) | .run_id' "$inflight") || rows=""
+    while IFS= read -r run_id; do
+      [[ -n $run_id ]] || continue
+      reservation_dead "$run_id" || n=$((n + 1))
+    done <<<"$rows"
+  fi
+  printf '%s\n' "$n"
+}
+
+# mem_admit [RECENT] — refuses (exit 8) when MemAvailable is below MIN_MEM_MB * (RECENT + 1); RECENT defaults to 0.
+# Called before the ledger is touched, and again under the reservation lock with the recent alive runs counted.
+mem_admit() {
+  local mb need=$(( MIN_MEM_MB * (${1:-0} + 1) ))
+  mb=$(awk '/^MemAvailable:/ { print int($2 / 1024); exit }' "$MEMINFO" 2>/dev/null)
+  [[ $mb =~ ^[0-9]+$ ]] || die "cannot read MemAvailable: $MEMINFO" 8
+  (( mb >= need )) || die "low memory $mb MB < $need MB, run refused" 8
+}
+
 # run_engine MODE EFFORT BUDGET PROMPT [SCHEMA] [SYSTEM_FILE] [TOOLS] [WORKDIR]
 # TOOLS empty = no tools (--tools ""); otherwise comma-separated tool list with
 # permission restrictions, the repowise MCP server only and WORKDIR as the only added directory.
@@ -217,6 +244,7 @@ run_engine() {
   args+=(--no-session-persistence --output-format json --exclude-dynamic-system-prompt-sections)
   if [[ -n $schema ]]; then args+=(--json-schema "$schema"); fi
   if [[ -n $sysfile ]]; then args+=(--append-system-prompt-file "$sysfile"); fi
+  mem_admit
   if [[ ${SDK_AGENT_TEST:-} == 1 && ${SDK_AGENT_DRY_ARGS:-} == 1 ]]; then
     printf '%s\n' "${args[@]}"
     exit 0
@@ -246,6 +274,7 @@ run_engine() {
   flock "$lockfd" || die "cannot lock: $RUNS_LOG.lock" 6
   fold_dead_reservations
   check_daily_cap "$budget"
+  mem_admit "$(mem_recent_alive)"
   run_id="$$-$(date +%s%N)"
   jq -cn --arg id "$run_id" --argjson ts "$(date +%s)" --arg b "$budget" \
     '{run_id: $id, ts: $ts, budget: ($b | tonumber)}' >> "$inflight" \

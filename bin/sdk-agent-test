@@ -18,6 +18,9 @@ stub="$TMP/stub-engine"
 printf '%s\n' '#!/usr/bin/env bash' 'sleep "${STUB_SLEEP:-0}"' 'key=unset; [[ -n ${ANTHROPIC_API_KEY:-} ]] && key=set' 'printf '"'"'{"type":"result","subtype":"success","total_cost_usd":0,"modelUsage":{"claude-sonnet-5-5":{}},"result":"%s"}\n'"'"' "$key"' > "$stub"
 chmod +x "$stub"
 export SDK_AGENT_ENGINE="$stub"
+# existing cases must not depend on the host's free memory
+printf 'MemAvailable: 8000000 kB\n' > "$TMP/meminfo-default"
+export SDK_AGENT_MEMINFO="$TMP/meminfo-default"
 
 pass=0
 total=0
@@ -390,6 +393,46 @@ check "cap --json is read-only: sha256 unchanged, rc 0, six keys" cap_json_reado
 check "cap default daily cap is 10.00 (no test override)" cap_default_seven
 check "ledger entry records tz of the read run" ledger_records_tz
 check "ledger entry records per-model usage (modelUsage tokens; empty entry -> nulls)" ledger_records_model_usage
+
+mem_low_refused() {
+  local f="$TMP/meminfo-low" log="$TMP/runs-mem.jsonl" err rc
+  printf 'MemAvailable: 100000 kB\n' > "$f"
+  err=$(env SDK_AGENT_MEMINFO="$f" SDK_AGENT_RUNS_LOG="$log" "$ag" ask hi 2>&1 >/dev/null)
+  rc=$?
+  [[ $rc -eq 8 && $err == *"sdk-agent: low memory 97 MB < 550 MB, run refused"* && ! -e $log ]]
+}
+
+mem_high_passes() {
+  local f="$TMP/meminfo-high" out rc
+  printf 'MemAvailable: 8000000 kB\n' > "$f"
+  out=$(env SDK_AGENT_MEMINFO="$f" SDK_AGENT_DRY_ARGS=1 SDK_AGENT_RUNS_LOG="$TMP/runs-mem2.jsonl" "$ag" ask hi 2>/dev/null)
+  rc=$?
+  [[ $rc -eq 0 && -n $out ]]
+}
+
+mem_recent_alive_refused() {  # 1000 MB free + one recent alive reservation -> need 1100
+  local f="$TMP/meminfo-1000" log="$TMP/runs-memrec.jsonl" err rc
+  printf 'MemAvailable: 1024000 kB\n' > "$f"
+  printf '{"run_id":"%s-1","ts":%s,"budget":0.50}\n' "$$" "$(date +%s)" > "$log.inflight"
+  err=$(env SDK_AGENT_MEMINFO="$f" SDK_AGENT_RUNS_LOG="$log" "$ag" ask hi 2>&1 >/dev/null)
+  rc=$?
+  [[ $rc -eq 8 && $err == *"sdk-agent: low memory 1000 MB < 1100 MB, run refused"* && $(wc -l < "$log.inflight") -eq 1 ]]
+}
+
+mem_no_recent_passes() {  # 1000 MB free + no recent reservation -> passes the memory check
+  local f="$TMP/meminfo-1000b" log="$TMP/runs-memnone.jsonl" err rc
+  printf 'MemAvailable: 1024000 kB\n' > "$f"
+  err=$(env SDK_AGENT_MEMINFO="$f" SDK_AGENT_RUNS_LOG="$log" "$ag" ask hi 2>&1 >/dev/null)
+  rc=$?
+  [[ $rc -eq 0 && $err != *"low memory"* ]]
+}
+
+mem0=$pass
+check "low MemAvailable -> rc 8, message, no ledger" mem_low_refused
+check "enough MemAvailable passes the memory check" mem_high_passes
+check "1000 MB + one recent alive reservation -> rc 8, need 1100 MB" mem_recent_alive_refused
+check "1000 MB + no recent reservation passes the memory check" mem_no_recent_passes
+echo "sdk-mem ok=$((pass - mem0)) failed=$((4 - (pass - mem0)))"
 
 echo "ok $pass/$total"
 [[ $pass -eq $total ]]
