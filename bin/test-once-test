@@ -58,7 +58,13 @@ chmod +x "$d/edit.sh"
 out4=$(TEST_ONCE_DIR=$d/state3 "$t" "$r" "$d/edit.sh" 2>&1); rc4=$?
 echo b > "$r/f.txt"
 out5=$(TEST_ONCE_DIR=$d/state3 "$t" "$r" "$d/edit.sh" 2>&1); rc5=$?
-if [ "$rc" = 0 ] && [[ $out != *cached* ]] && [ "$n" = 2 ] && [ "$rc2" = 0 ] && [[ $out2 != *cached* ]] && [ "$n3" = 3 ] && [ "$rc3" = 0 ] && [[ $out3 != *cached* ]] && [ "$rc4" = 0 ] && [[ $out4 == *"tree changed during run, not cached"* ]] && [ "$rc5" = 0 ] && [[ $out5 != *"test-once: cached"* ]] && [ "$(runs)" = 6 ]; then pass 3; else bad 3 "rc=$rc runs=$n out=$out rc2=$rc2 n3=$n3 rc3=$rc3 runs=$(runs) out2=$out2 out3=$out3 rc4=$rc4 out4=$out4 rc5=$rc5 out5=$out5"; fi
+echo one > "$r/ign.txt"; echo ign.txt > "$r/.gitignore"
+git -C "$r" add -f ign.txt .gitignore
+git -C "$r" commit -qm ign
+TEST_ONCE_DIR=$d/state3 "$t" "$r" ./t.sh >/dev/null
+echo two > "$r/ign.txt"
+out6=$(TEST_ONCE_DIR=$d/state3 "$t" "$r" ./t.sh 2>&1); rc6=$?
+if [ "$rc" = 0 ] && [[ $out != *cached* ]] && [ "$n" = 2 ] && [ "$rc2" = 0 ] && [[ $out2 != *cached* ]] && [ "$n3" = 3 ] && [ "$rc3" = 0 ] && [[ $out3 != *cached* ]] && [ "$rc4" = 0 ] && [[ $out4 == *"tree changed during run, not cached"* ]] && [ "$rc5" = 0 ] && [[ $out5 != *"test-once: cached"* ]] && [ "$(runs)" = 8 ] && [ "$rc6" = 0 ] && [[ $out6 != *"test-once: cached"* ]]; then pass 3; else bad 3 "rc=$rc runs=$n out=$out rc2=$rc2 n3=$n3 rc3=$rc3 runs=$(runs) out2=$out2 out3=$out3 rc4=$rc4 out4=$out4 rc5=$rc5 out5=$out5"; fi
 
 : > "$d/count"; echo x > "$d/dep.txt"; echo x > "$r/rel.txt"; echo rel.txt >> "$r/.git/info/exclude"
 TEST_ONCE_DIR=$d/state4 TEST_ONCE_DEPS=$d/dep.txt "$t" "$r" ./t.sh >/dev/null

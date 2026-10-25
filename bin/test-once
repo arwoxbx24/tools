@@ -22,7 +22,7 @@ key() {
     od=$(git -C "$top" rev-parse --git-path objects)
     [[ $od = /* ]] || od=$top/$od
     rm -f -- "$idx"
-    tree=$(GIT_INDEX_FILE=$idx GIT_OBJECT_DIRECTORY=$tdir GIT_ALTERNATE_OBJECT_DIRECTORIES=$od git -C "$top" add -A && GIT_INDEX_FILE=$idx GIT_OBJECT_DIRECTORY=$tdir GIT_ALTERNATE_OBJECT_DIRECTORIES=$od git -C "$top" write-tree) || return 1
+    tree=$(set -o pipefail; git -C "$top" ls-files -z | GIT_INDEX_FILE=$idx GIT_OBJECT_DIRECTORY=$tdir GIT_ALTERNATE_OBJECT_DIRECTORIES=$od git -C "$top" update-index --add --remove -z --stdin && GIT_INDEX_FILE=$idx GIT_OBJECT_DIRECTORY=$tdir GIT_ALTERNATE_OBJECT_DIRECTORIES=$od git -C "$top" add -A && GIT_INDEX_FILE=$idx GIT_OBJECT_DIRECTORY=$tdir GIT_ALTERNATE_OBJECT_DIRECTORIES=$od git -C "$top" write-tree) || return 1
     {
         printf '%s\0' "$@"
         printf '%s\n' "$tree"
