@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+set -u
+d=$(mktemp -d /tmp/test-once-test.XXXXXX)
+trap 'rm -rf -- "$d"' EXIT
+t=$(cd -- "$(dirname -- "$0")" && pwd)/test-once
+r=$d/r
+git init -q "$r"
+git -C "$r" config user.email t@t
+git -C "$r" config user.name t
+echo a > "$r/f.txt"
+cat > "$r/t.sh" <<EOF
+#!/usr/bin/env bash
+echo x >> "$d/count"
+echo "RESULT ok"
+exit \${FAKE_RC:-0}
+EOF
+chmod +x "$r/t.sh"
+git -C "$r" add f.txt t.sh
+git -C "$r" commit -qm init
+runs() { wc -l < "$d/count" | tr -d ' '; }
+ok=0
+pass() { ok=$((ok + 1)); echo "PASS $1"; }
+bad() { echo "FAIL $1: $2"; }
+
+: > "$d/count"
+out=$(TEST_ONCE_DIR=$d/state1 "$t" "$r" ./t.sh); rc=$?
+if [ "$rc" = 0 ] && [[ $out == *"RESULT ok"* ]] && [ "$(runs)" = 1 ]; then pass 1; else bad 1 "rc=$rc runs=$(runs) out=$out"; fi
+
+: > "$d/count"
+TEST_ONCE_DIR=$d/state2 "$t" "$r" ./t.sh >/dev/null
+out=$(TEST_ONCE_DIR=$d/state2 "$t" "$r" ./t.sh); rc=$?
+if [ "$rc" = 0 ] && [[ $out == *"test-once: cached rc=0"* && $out == *"RESULT ok"* ]] && [ "$(runs)" = 1 ]; then pass 2; else bad 2 "rc=$rc runs=$(runs) out=$out"; fi
+
+: > "$d/count"
+TEST_ONCE_DIR=$d/state3 "$t" "$r" ./t.sh >/dev/null
+echo b > "$r/f.txt"
+out=$(TEST_ONCE_DIR=$d/state3 "$t" "$r" ./t.sh); rc=$?
+n=$(runs)
+TEST_ONCE_DIR=$d/state3 "$t" "$r" ./t.sh >/dev/null
+echo new > "$r/new.txt"
+out2=$(TEST_ONCE_DIR=$d/state3 "$t" "$r" ./t.sh); rc2=$?
+if [ "$rc" = 0 ] && [[ $out != *cached* ]] && [ "$n" = 2 ] && [ "$rc2" = 0 ] && [[ $out2 != *cached* ]] && [ "$(runs)" = 3 ]; then pass 3; else bad 3 "rc=$rc runs=$n out=$out rc2=$rc2 runs=$(runs) out2=$out2"; fi
+
+: > "$d/count"; echo x > "$d/dep.txt"
+TEST_ONCE_DIR=$d/state4 TEST_ONCE_DEPS=$d/dep.txt "$t" "$r" ./t.sh >/dev/null
+echo y > "$d/dep.txt"
+TEST_ONCE_DIR=$d/state4 TEST_ONCE_DEPS=$d/dep.txt "$t" "$r" ./t.sh >/dev/null
+if [ "$(runs)" = 2 ]; then pass 4; else bad 4 "runs=$(runs)"; fi
+
+: > "$d/count"
+TEST_ONCE_DIR=$d/state5 TEST_ONCE_TTL=0 "$t" "$r" ./t.sh >/dev/null
+TEST_ONCE_DIR=$d/state5 TEST_ONCE_TTL=0 "$t" "$r" ./t.sh >/dev/null
+if [ "$(runs)" = 2 ]; then pass 5; else bad 5 "runs=$(runs)"; fi
+
+: > "$d/count"; s=$d/state6; ok6=1
+for i in 1 2 3; do
+    echo "v$i" > "$r/f.txt"
+    FAKE_RC=1 TEST_ONCE_DIR=$s "$t" "$r" ./t.sh >/dev/null; [ $? = 1 ] || ok6=0
+done
+echo v4 > "$r/f.txt"
+out=$(FAKE_RC=1 TEST_ONCE_DIR=$s "$t" "$r" ./t.sh); rc=$?
+if [ "$ok6" = 1 ] && [ "$rc" = 29 ] && [[ $out == *"STALLED 3 failing runs"* ]] && [ "$(runs)" = 3 ]; then pass 6; else bad 6 "ok6=$ok6 rc=$rc runs=$(runs) out=$out"; fi
+
+if [ "$ok" = 6 ]; then echo "PASS 6/6"; else echo "FAIL $ok/6"; exit 1; fi

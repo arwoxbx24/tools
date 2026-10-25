@@ -35,3 +35,14 @@ etc/tools-env
 .beads-credential-key
 .beads/proxieddb/
 sdk-agent/runs.jsonl
+.agent-work/
+.pip-cache/
+.beads.gate.lock
+*-venv/
+pnpm/
+pm2-v7/
+inshellisense/
+vibecode-mcp/
+sdk-agent/engine-home/
+sdk-agent/runs.jsonl*
+scripts/.compound-engineering/

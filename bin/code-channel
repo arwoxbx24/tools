@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set +x
 set -uo pipefail
-usage() { printf '%s\n' 'usage: code-channel <form> <project> <tz> [--model provider/model]  (runs the selected code or audit provider)' '       code-channel delivery <worktree> <TZ>  (helper may test, git add FILE: lines, commit, push claude/*|codex/*, open and merge a PR)' 'exit 27: loop-guard — одна строка вывода повторилась LOOP_REPEAT_LIMIT раз, запуск остановлен' 'exit 28: switch-lock — включён не ровно один канал или у него нет owner_word' 'env CODE_CHANNEL_LOOP_LIMIT: LOOP_REPEAT_LIMIT, порог повторов строки (по умолчанию 30)' 'конфиг: config/code-channel.json; справка: docs/code-channel.md'; }
+usage() { printf '%s\n' 'usage: code-channel <form> <project> <tz> [--model provider/model]  (runs the selected code or audit provider)' '       code-channel delivery <worktree> <TZ>  (helper may test, git add FILE: lines, commit, push claude/*|codex/*, open and merge a PR)' 'exit 27: loop-guard — одна строка вывода повторилась LOOP_REPEAT_LIMIT раз, запуск остановлен' 'exit 28: switch-lock — включён не ровно один канал или у него нет owner_word' 'exit 29: TZ Test: line STALLED in test-once; exit 31: TZ Test: line failed after the helper' 'env CODE_CHANNEL_LOOP_LIMIT: LOOP_REPEAT_LIMIT, порог повторов строки (по умолчанию 30)' 'конфиг: config/code-channel.json; справка: docs/code-channel.md'; }
 case ${1:-} in -h|--help) usage; exit 0;; delivery) [[ ${2:-} == -h || ${2:-} == --help ]] && { usage; exit 0; };; esac
 # spec:035: only this invocation's temporary files are cleaned; no stale-file sweep.
 fail() { printf 'code-channel: %s\n' "$*" >&2; }
@@ -136,6 +136,16 @@ guarded() {
     unlink -- "$pf"; unlink -- "$hit"
     return "$r"
 }
+tz_test() {
+    local line r
+    local -a words
+    [[ $mode == audit ]] && return 0
+    line=$(grep -m1 '^Test: ' -- "$tz_abs") || return 0
+    read -ra words <<<"${line#Test: }"
+    "$root/bin/test-once" "$project" "${words[@]}"; r=$?
+    printf 'code-channel: test rc=%s\n' "$r" >&2
+    case $r in 0) return 0;; 29) exit 29;; *) exit 31;; esac
+}
 run_sdk() {
     local sub=code r
     [[ $mode == audit ]] && sub=read
@@ -230,6 +240,7 @@ run_form() (
     prompt=$(printf 'Разведка кода — только через индекс: repowise (repowise context|symbol|risk <путь> --path <корень репо>) и codebase-memory; файл кода читай только перед его правкой\n\n%s' "$prompt")
     prompt=$(printf 'Не вызывай bd: трекер ведёт оркестратор\n\n%s' "$prompt")
     prompt=$(printf 'Scratch and temporary files go to /tmp only, never inside the worktree\n\n%s' "$prompt")
+    prompt=$(printf 'Tests: code-channel runs the TZ Test: line once after you finish via /root/workspaces/tools/bin/test-once; do not re-run tests in a loop\n\n%s' "$prompt")
     prompt=$(printf 'Parallelize: when the task has 2 or more independent file sets, dispatch them at once to general subagents via the Task tool in one message, one file set per subagent, never the same file to two subagents; then check the combined result yourself\n\n%s' "$prompt")
     if [[ $id == codex ]]; then
         provider=codex
@@ -403,15 +414,16 @@ run_form() (
     exit "$run"
 )
 if [[ $form != auto && $form != audit ]]; then
-    if [[ $form == sdk ]]; then run_sdk; exit $?; fi
+    if [[ $form == sdk ]]; then run_sdk; rc=$?; [[ $rc == 0 ]] && tz_test; exit $rc; fi
     if [[ $form == delivery ]]; then
         delivery=1
         id=$(jq -r '[.ladder[] | select(.enabled) | .id] | map(select(. != "sdk")) | .[0] // empty' "$config") || exit 3
         [[ -n $id ]] || { fail 'no delivery channel (only sdk enabled)'; exit 3; }
-        run_form "$id"; exit $?
+        run_form "$id"; rc=$?; [[ $rc == 0 ]] && tz_test; exit $rc
     fi
-    run_form "$form"
-    exit $?
+    run_form "$form"; rc=$?
+    [[ $rc == 0 ]] && tz_test
+    exit $rc
 fi
 mapfile -t ladder < <(jq -r '.ladder[] | select(.enabled) | .id' "$config")
 [[ ${#ladder[@]} -gt 0 ]] || exit 3
@@ -448,7 +460,7 @@ for i in "${!ladder[@]}"; do
             (( i + 1 == ${#ladder[@]} )) && exit 16
             rc=1
         else
-            exit 0
+            tz_test; exit 0
         fi
     fi
     (( i + 1 == ${#ladder[@]} )) && exit "$rc"

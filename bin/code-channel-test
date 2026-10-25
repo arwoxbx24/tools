@@ -346,8 +346,22 @@ CC_CONFIG=$go check 86 '[[ $rc == 0 && $(wc -c <"$stdin_go") -ge 200000 ]] && gr
   env OPENCODE_RC=0 OPENCODE_STDIN_COPY="$stdin_go" SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tzbig"
 CC_CONFIG=$goaudit check 87 '[[ $rc == 0 && $(wc -c <"$stdin_audit") -ge 200000 ]] && grep -Fq -- TAIL-PT2510 "$stdin_audit" && [[ $(grep -m1 "^opencode " "$log" | wc -c) -lt 131072 ]]' \
   env OPENCODE_STDIN_COPY="$stdin_audit" SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" audit "$project" "$tzbig"
+git -C "$project" clean -fdq
+tztest=$tmp/tz-test.sh tztestfile=$tmp/tz-test-file tzcount=$tmp/tz-count
+printf '%s\n' '#!/usr/bin/env bash' 'echo TZTEST-RAN' "echo ran >>$tzcount" >"$tztest"
+chmod +x "$tztest"
+printf '%s\n' 'test' "Test: $tztest" >"$tztestfile"
+CC_CONFIG=$go check 88 '[[ $rc == 0 && $(wc -l <"$tzcount") == 1 ]] && grep -Fq -- TZTEST-RAN <<<"$out" && grep -Fq -- "code-channel: test rc=0" "$tmp/err"' \
+  env TEST_ONCE_DIR="$tmp/to-state" OPENCODE_RC=0 OPENCODE_TOUCH=tz-touched.txt SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tztestfile"
+git -C "$project" clean -fdq
+rm -f -- "$tzcount"
+CC_CONFIG=$go check 89 '[[ $rc == 0 && ! -s "$tzcount" ]] && ! grep -Fq -- "code-channel: test rc=" "$tmp/err"' \
+  env OPENCODE_RC=0 OPENCODE_TOUCH=tz-none.txt SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
+git -C "$project" clean -fdq
+CC_CONFIG=$go check 90 '[[ $rc == 0 ]] && grep -Fq -- "via /root/workspaces/tools/bin/test-once" "$log"' \
+  env OPENCODE_RC=0 OPENCODE_TOUCH=tz-prompt.txt SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
 cg_ok=0
-cgrun() { env -u CODE_CHANNEL_ACTIVE -u CODE_CHANNEL_TEST_LOG "CODE_CHANNEL_CONFIG=$1" "$root/bin/code-channel" "${@:2}" 2>&1; }
+cgrun() { env -u CODE_CHANNEL_ACTIVE -u CODE_CHANNEL_TEST_LOG "CODE_CHANNEL_CONFIG=$1" "CODE_CHANNEL_STATE=$tmp/state" "$root/bin/code-channel" "${@:2}" 2>&1; }
 cg_blank=$tmp/cg-blank.json cg_mis=$tmp/cg-mis.json cg_good=$tmp/cg-good.json cg_sdk=$tmp/cg-sdk.json
 printf '%s\n' '{"switch":{"channel":"a","owner_word":"  "},"ladder":[{"id":"a","enabled":true,"model":"x/y","owner_word":"w"}]}' >"$cg_blank"
 printf '%s\n' '{"switch":{"channel":"go","owner_word":"x"},"ladder":[{"id":"sdk","enabled":true,"model":"x/y","owner_word":"x"}]}' >"$cg_mis"
@@ -400,12 +414,12 @@ echo "real-config-plan ok=$rp_ok failed=$((1-rp_ok))"
 ((rp_ok == 1)) || { echo 'FAIL real-config-plan'; gfail=1; }
 rs_ok=0
 rs_cfg=$(mktemp "$tmp/real-shape.XXXXXX")
-jq '.switch = {channel: "go", owner_word: "работаем через OpenCode Go"} | .ladder |= map(.enabled = (.id == "go") | if .id == "go" then del(.owner_word) else . end)' /root/workspaces/tools/config/code-channel.json >"$rs_cfg"
+jq '.switch = {channel: "go", owner_word: "работаем через OpenCode Go"} | .ladder |= map(.enabled = (.id == "go") | if .id == "go" then del(.owner_word) else . end)' "$root/config/code-channel.json" >"$rs_cfg"
 rs_out=$(env -u CODE_CHANNEL_ACTIVE -u CODE_CHANNEL_TEST_LOG "CODE_CHANNEL_CONFIG=$rs_cfg" "$root/bin/code-channel" --plan 2>/dev/null); rs_rc=$?
 [[ $rs_rc == 0 && $rs_out == go\ * ]] && ((rs_ok++))
 echo "real-shape-plan ok=$rs_ok failed=$((1-rs_ok))"
 ((rs_ok == 1)) || { echo 'FAIL real-shape-plan'; gfail=1; }
-total=$((ok+cg_ok+sn_ok+rp_ok+rs_ok)) expected=107
+total=$((ok+cg_ok+sn_ok+rp_ok+rs_ok)) expected=110
 [[ $total == "$expected" ]] || { echo "FAIL total $total/$expected"; gfail=1; }
 ((gfail == 0)) || exit 1
 echo "PASS $total/$total"
