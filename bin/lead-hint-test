@@ -5,7 +5,7 @@ dir=$(cd -- "$(dirname -- "$0")" && pwd)
 d=$(mktemp -d /tmp/lead-hint-test.XXXXXX)
 trap 'rm -rf "$d"' EXIT
 ok=0
-total=90
+total=104
 crdir=/tmp/lead-hint-stop
 srun="lh-$$-$RANDOM"
 clean_sid() { rm -f "$crdir/$1"; }
@@ -24,6 +24,11 @@ cat > "$d/helper-share" <<'STUB'
 echo 'helper-share: 50% helpers=1 lead=1'
 STUB
 chmod 755 "$d/helper-share"
+
+mkdir "$d/stubbin"
+printf '#!/usr/bin/env bash\necho "[]"\n' >"$d/stubbin/bd"
+chmod 755 "$d/stubbin/bd"
+PATH="$d/stubbin:$PATH"
 
 mk_read() {
   jq -cn '{type:"assistant",isSidechain:false,message:{content:[{type:"tool_use",name:"Read",input:{file_path:"/tmp/x"}}]}}'
@@ -727,7 +732,7 @@ t_codelock_allow_write_md() {
     /root/workspaces/projects Write '{"file_path":"TZ.md"}'
 }
 t_codelock_allow_write_sh_agent() {
-  codelock_case 66 'codelock allow Write x.sh with agent_id' allow \
+  codelock_case 66 'codelock deny Write x.sh with agent_id' deny \
     /root/workspaces/projects Write '{"file_path":"x.sh"}' sub
 }
 t_codelock_deny_write_sh_subdir() {
@@ -772,7 +777,7 @@ codelock_case 77 'codelock deny Edit foo.py in /root/workspaces/projects/inciden
   /root/workspaces/projects/incidents Edit '{"file_path":"foo.py"}'
 codelock_case 78 'codelock deny Write x.json in /root/workspaces/tools' deny \
   /root/workspaces/tools Write '{"file_path":"x.json"}'
-codelock_case 79 'codelock allow Edit foo.py with agent_id in /root/workspaces/projects/incidents' allow \
+codelock_case 79 'codelock deny Edit foo.py with agent_id in /root/workspaces/projects/incidents' deny \
   /root/workspaces/projects/incidents Edit '{"file_path":"foo.py"}' sub
 codelock_case 80 'codelock allow Edit notes.md in /root/workspaces/projects/incidents' allow \
   /root/workspaces/projects/incidents Edit '{"file_path":"notes.md"}'
@@ -789,6 +794,37 @@ codelock_case 85 't_runlock_deny_pytest: Bash pytest -q in /root/workspaces/proj
   /root/workspaces/projects/incidents Bash '{"command":"pytest -q"}' '' "$reason_runlock"
 codelock_case 86 't_runlock_allow_safe_delete: Bash /root/workspaces/tools/bin/safe-delete tmp /tmp/x -> allow' allow \
   /root/workspaces/projects/incidents Bash '{"command":"/root/workspaces/tools/bin/safe-delete tmp /tmp/x"}'
+
+codelock_case 91 'codelock deny Write /root/workspaces/tools/x.py with cwd=/tmp' deny \
+  /tmp Write '{"file_path":"/root/workspaces/tools/x.py"}'
+codelock_case 92 'codelock allow Write /tmp/x.py with cwd=/tmp' allow \
+  /tmp Write '{"file_path":"/tmp/x.py"}'
+codelock_case 93 'codelock deny non-string file_path' deny \
+  /tmp Write '{"file_path":42}'
+codelock_case 94 'codelock allow Write x.md under /root/workspaces' allow \
+  /root/workspaces/tools Write '{"file_path":"x.md"}'
+
+notp_case() {
+  local num=$1 label=$2 want=$3 path=$4 agent=${5:-} out rc dec reason
+  out=$(jq -cn --arg cwd /root/workspaces/tools --arg p "$path" \
+    '{hook_event_name:"PreToolUse",cwd:$cwd,tool_name:"Write",tool_input:{file_path:$p}}' \
+    | jq -c --arg a "$agent" 'if $a == "" then . else .agent_id = $a end' | run_hook); rc=$?
+  dec=$(jq -r '.hookSpecificOutput.permissionDecision // empty' <<<"$out" 2>/dev/null)
+  reason=$(jq -r '.hookSpecificOutput.permissionDecisionReason // empty' <<<"$out" 2>/dev/null)
+  if [[ $want == deny ]]; then
+    if [[ $rc == 0 && $dec == deny && $reason == "$reason_lock" ]]; then
+      echo "PASS $num: $label"; ok=$((ok+1)); return
+    fi
+  elif [[ $rc == 0 && -z $out ]]; then
+    echo "PASS $num: $label"; ok=$((ok+1)); return
+  fi
+  echo "FAIL $num: rc=$rc out=$out"
+}
+notp_case 95 'codelock deny Write x.py without transcript_path' deny /root/workspaces/tools/x.py
+notp_case 96 'codelock allow Write x.md without transcript_path' allow /root/workspaces/tools/x.md
+codelock_case 97 'codelock deny non-object tool_input' deny \
+  /root/workspaces/tools Write '"x"'
+notp_case 98 'codelock deny agent Write x.py without transcript_path, bd []' deny /root/workspaces/tools/x.py sub
 
 tx87=$d/tx87.jsonl
 { mk_user; for _ in $(seq 8); do mk_bash 'tail /tmp/x/code-channel.out'; done; } >"$tx87"
@@ -857,6 +893,52 @@ if [[ $rc == 0 && $dec == deny ]]; then
 else
   echo "FAIL 76: rc=$rc out=$out"
 fi
+
+ca_ok=0; ca_fail=0
+for ca in 'x.sh deny' 'x.md allow'; do
+  set -- $ca
+  out=$(mk_pre_cwd "$tx_lock" /root/workspaces/projects Edit "{\"file_path\":\"$1\"}" \
+    | jq -c '.agent_id="a1" | .agent_type="general-purpose"' | run_hook)
+  dec=$(jq -r '.hookSpecificOutput.permissionDecision // empty' <<<"$out" 2>/dev/null)
+  reason=$(jq -r '.hookSpecificOutput.permissionDecisionReason // empty' <<<"$out" 2>/dev/null)
+  if [[ $2 == deny && $dec == deny && $reason == "$reason_lock" ]] || [[ $2 == allow && -z $out ]]; then
+    ca_ok=$((ca_ok+1))
+  else
+    ca_fail=$((ca_fail+1))
+  fi
+done
+ok=$((ok+ca_ok))
+echo "code-lock-agent ok=$ca_ok failed=$ca_fail"
+
+fb_ok=0; fb_fail=0
+fbdir=$(mktemp -d /tmp/lead-hint-bd.XXXXXX)
+for fb in '[{"id":"x"}] allow' '[] deny'; do
+  set -- $fb
+  printf '#!/usr/bin/env bash\necho %q\n' "$1" >"$fbdir/bd"
+  chmod 755 "$fbdir/bd"
+  out=$(mk_pre_cwd "$tx_lock" /root/workspaces/projects Edit '{"file_path":"x.sh"}' \
+    | jq -c '.agent_id="a1"' | PATH="$fbdir:$PATH" run_hook)
+  dec=$(jq -r '.hookSpecificOutput.permissionDecision // empty' <<<"$out" 2>/dev/null)
+  if [[ $2 == deny && $dec == deny ]] || [[ $2 == allow && -z $out ]]; then
+    fb_ok=$((fb_ok+1))
+  else
+    fb_fail=$((fb_fail+1))
+  fi
+done
+rm -f "$fbdir/bd"; rmdir "$fbdir"
+ok=$((ok+fb_ok))
+echo "code-lock-fallback ok=$fb_ok failed=$fb_fail"
+
+pt_ok=0; pt_fail=0
+out=$(mk_pre_cwd "$tx_lock" /root/workspaces/projects Write '{"file_path":"/tmp/../root/workspaces/projects/x.sh"}' | run_hook)
+dec=$(jq -r '.hookSpecificOutput.permissionDecision // empty' <<<"$out" 2>/dev/null)
+if [[ $dec == deny ]]; then pt_ok=$((pt_ok+1)); else pt_fail=$((pt_fail+1)); fi
+out=$(mk_pre_cwd "$tx_lock" /root/workspaces/projects Edit '{"file_path":"/root/x/../workspaces/tools/a.py"}' \
+  | jq -c '.agent_id="a1"' | run_hook)
+dec=$(jq -r '.hookSpecificOutput.permissionDecision // empty' <<<"$out" 2>/dev/null)
+if [[ $dec == deny ]]; then pt_ok=$((pt_ok+1)); else pt_fail=$((pt_fail+1)); fi
+ok=$((ok+pt_ok))
+echo "code-lock-path ok=$pt_ok failed=$pt_fail"
 
 if [[ $ok == $total ]]; then
   echo "lead-hint-test: PASS $ok/$total"
