@@ -21,11 +21,11 @@ payload=$(cat 2>/dev/null) || exit 0
 jq -e 'type == "object"' >/dev/null 2>&1 <<<"$payload" || exit 0
 
 agent_id=$(jq -r '.agent_id // empty' <<<"$payload" 2>/dev/null) || exit 0
-[[ -n $agent_id ]] && exit 0
-
 event=$(jq -r '.hook_event_name // empty' <<<"$payload" 2>/dev/null) || exit 0
+# Subagent/Workflow calls get only the PreToolUse code-lock (see below).
+[[ -n $agent_id && $event != PreToolUse ]] && exit 0
 transcript_path=$(jq -r '.transcript_path // empty' <<<"$payload" 2>/dev/null) || exit 0
-[[ -n $transcript_path ]] || exit 0
+[[ -n $transcript_path || $event == PreToolUse ]] || exit 0
 
 # Backwards transcript scan shared by Pre/PostToolUse: stops at the first record
 # matching the jq predicate $2 and sums the per-record `calls` def $1. Prints
@@ -126,27 +126,45 @@ case $event in
   PreToolUse)
     [[ ${LEAD_HINT_STRICT:-1} == 0 ]] && exit 0
     tool_name=$(jq -r '.tool_name // empty' <<<"$payload" 2>/dev/null) || exit 0
-    tool_cmd=$(jq -r '.tool_input.command // empty' <<<"$payload" 2>/dev/null) || exit 0
+    tool_cmd=$(jq -r '(.tool_input | if type == "object" then .command // empty else empty end)' <<<"$payload" 2>/dev/null) || exit 0
 
-    # Session-scoped code lock (owner 24.10). Only the lead session (any cwd
-    # under /root) is fenced, and only for code/config writes under
-    # /root/workspaces (a helper worktree can hold those); agent_id already
-    # exits at the top. No Bash heuristics.
+    # Code lock (owner 24.10). Decided by the normalised absolute target path
+    # only (session cwd does not matter): code/config writes under
+    # /root/workspaces are denied. A non-string path or a relative path with no
+    # cwd cannot be resolved and is denied (fail closed). No Bash heuristics.
     if jq -e '
-      ((.cwd // "") | (. == "/root" or startswith("/root/")))
-      and (.tool_name as $n
+      (.cwd // "") as $cwd
+      | (.tool_name as $n
         | (["Edit","Write","MultiEdit","NotebookEdit"] | index($n)) != null)
-      and ((.tool_input.file_path // .tool_input.notebook_path // "") as $p
-        | ($p | test("\\.(md|txt)$"; "i") | not)
-          and (if ($p | startswith("/")) then ($p | startswith("/root/workspaces/"))
-               else ((.cwd // "") | (. == "/root/workspaces" or startswith("/root/workspaces/")))
-               end))
+      and ((try (if (.tool_input | type) == "object" then (.tool_input.file_path // .tool_input.notebook_path // "") else null end) catch null) as $p
+        | if ($p | type) != "string" then true
+          else
+            ($p | test("\\.(md|txt)$"; "i") | not)
+            and ((if ($p | startswith("/")) then $p
+                  elif ($cwd | type) != "string" or $cwd == "" then null
+                  else ($cwd + "/" + $p) end) as $abs
+                | if $abs == null then true
+                  else ($abs
+                    | split("/")
+                    | reduce .[] as $s ([];
+                        if $s == "" or $s == "." then .
+                        elif $s == ".." then .[:-1]
+                        else . + [$s] end)
+                    | "/" + join("/") + "/"
+                    | startswith("/root/workspaces/")) end)
+          end)
     ' >/dev/null 2>&1 <<<"$payload"; then
+      if [[ -n $agent_id ]] && jq -e 'type == "array" and length > 0' >/dev/null 2>&1 \
+        < <(timeout 3 bd -C /root/workspaces/projects list -l channel-down --status open --json 2>/dev/null); then
+        exit 0
+      fi
       jq -cn --arg reason 'lead-hint code-lock (owner 24.10): the lead session (any cwd under /root) edits only .md/.txt; send code and config to /root/workspaces/tools/bin/code-channel auto <worktree> <TZ>' \
         '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$reason}}' \
         2>/dev/null || exit 0
       exit 0
     fi
+
+    [[ -n $agent_id ]] && exit 0
 
     # Session-scoped run lock (owner 24.10, F3): the lead session (any cwd under
     # /root) does not run script files under /root/workspaces; tools/bin
