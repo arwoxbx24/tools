@@ -31,7 +31,7 @@ transcript_path=$(jq -r '.transcript_path // empty' <<<"$payload" 2>/dev/null) |
 # matching the jq predicate $2 and sums the per-record `calls` def $1. Prints
 # the count (empty on failure).
 scan_calls() {
-  tac -- "$transcript_path" 2>/dev/null | jq -R -n '
+  tac -- "$transcript_path" 2>/dev/null | jq -R -n --arg helper_re "$helper_re" '
     def is_owner:
       (.type == "user"
        and ((.message.content | type) == "string")
@@ -41,7 +41,7 @@ scan_calls() {
       .type == "assistant" and (.isSidechain != true)
       and any(.message.content[]?;
               .type == "tool_use" and .name == "Bash"
-              and ((.input.command // "") | test("code-channel|sdk-agent")));
+              and ((.input.command // "") | test($helper_re)));
     def user_text:
       (.message.content // "")
       | if type == "string" then .
@@ -62,15 +62,17 @@ scan_calls() {
       | ((.[0] // "") | split("/") | last);
     def gh_readonly:
       test("^\\s*gh\\s+(pr\\s+(view|list|checks)|run\\s+(view|list))(\\s|$)");
+    def git_readonly:
+      test("^\\s*(([A-Za-z_][A-Za-z0-9_]*=[^\\s]*|command|builtin|exec|env|nohup)\\s+)*([^\\s=]*/)?git\\s+(grep|show|log|diff|blame)(\\s|$)");
     def has_shell_op:
       test("[;&|$()<>`\\n]");
     def investigative_bash:
       (.input.command // "") as $cmd
       | ($cmd | first_word) as $word
-      | if ($cmd | test("code-channel|sdk-agent")) then false
+      | if ($cmd | test($helper_re)) then false
         elif (($cmd | gh_readonly) and (($cmd | has_shell_op) | not)) then false
-        elif ((["grep","rg","find","ls","cat","head","tail","sed","wc","gh"] | index($word)) != null) then
-          (($cmd | test("(^|[^A-Za-z0-9])(code-channel|sdk-agent)([^A-Za-z0-9]|$)")) | not)
+        elif ((["grep","rg","find","ls","cat","head","tail","sed","wc","gh","awk","jq","sort","uniq","diff","tree","xargs","less","more","stat","du","file","strings"] | index($word)) != null) then true
+        elif $word == "git" then ($cmd | git_readonly)
         else
           ($cmd | test("(^|[^A-Za-z0-9])(pytest|jest|vitest|mocha|bats|tests?)([^A-Za-z0-9]|$)"))
         end;
@@ -116,7 +118,9 @@ calls_count='
 count_window='is_owner or is_helper_run or is_task_notification'
 
 # Helper launch: first word after optional env assignments and shell prefixes.
-helper_re='^[[:space:]]*(([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*|command|builtin|exec|env|nohup)[[:space:]]+)*(code-channel|sdk-agent|[^[:space:]=]*/bin/(code-channel|sdk-agent))([[:space:]]|$)'
+helper_re='^[[:space:]]*(([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*|command|builtin|exec|env|nohup)[[:space:]]+)*(code-channel|sdk-agent|([^[:space:]=]*/)?bin/(code-channel|sdk-agent))([[:space:]]|$)'
+# Read-only git subcommands that count as investigation (owner 25.10, F3).
+git_read_re='^[[:space:]]*(([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*|command|builtin|exec|env|nohup)[[:space:]]+)*([^[:space:]=]*/)?git[[:space:]]+(grep|show|log|diff|blame)([[:space:]]|$)'
 
 case $event in
   PreToolUse)
@@ -124,30 +128,55 @@ case $event in
     tool_name=$(jq -r '.tool_name // empty' <<<"$payload" 2>/dev/null) || exit 0
     tool_cmd=$(jq -r '.tool_input.command // empty' <<<"$payload" 2>/dev/null) || exit 0
 
-    # Session-scoped code lock (owner 24.10). Only the lead session whose cwd is
-    # exactly /root/workspaces/projects is fenced, and only for code/config writes
-    # there; agent_id already exits at the top. No Bash heuristics.
+    # Session-scoped code lock (owner 24.10). Only the lead session (any cwd
+    # under /root) is fenced, and only for code/config writes under
+    # /root/workspaces (a helper worktree can hold those); agent_id already
+    # exits at the top. No Bash heuristics.
     if jq -e '
-      .cwd == "/root/workspaces/projects"
+      ((.cwd // "") | (. == "/root" or startswith("/root/")))
       and (.tool_name as $n
         | (["Edit","Write","MultiEdit","NotebookEdit"] | index($n)) != null)
-      and ((.tool_input.file_path // .tool_input.notebook_path // "")
-        | test("\\.(md|txt)$"; "i") | not)
+      and ((.tool_input.file_path // .tool_input.notebook_path // "") as $p
+        | ($p | test("\\.(md|txt)$"; "i") | not)
+          and (if ($p | startswith("/")) then ($p | startswith("/root/workspaces/"))
+               else ((.cwd // "") | (. == "/root/workspaces" or startswith("/root/workspaces/")))
+               end))
     ' >/dev/null 2>&1 <<<"$payload"; then
-      jq -cn --arg reason 'lead-hint code-lock (owner 24.10): the lead session in /root/workspaces/projects edits only .md/.txt; send code and config to /root/workspaces/tools/bin/code-channel auto <worktree> <TZ>' \
+      jq -cn --arg reason 'lead-hint code-lock (owner 24.10): the lead session (any cwd under /root) edits only .md/.txt; send code and config to /root/workspaces/tools/bin/code-channel auto <worktree> <TZ>' \
         '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$reason}}' \
         2>/dev/null || exit 0
       exit 0
     fi
 
-    # Session-scoped run lock (owner 24.10): the same lead session does not run script files.
+    # Session-scoped run lock (owner 24.10, F3): the lead session (any cwd under
+    # /root) does not run script files under /root/workspaces; tools/bin
+    # wrappers stay allowed.
     if jq -e '
-      .cwd == "/root/workspaces/projects"
-      and .tool_name == "Bash"
-      and (([ (.tool_input.command // "") | scan("\\S+") ]) as $w
-        | (($w | length) >= 2)
-          and ((["sh","bash","python3","python","node"] | index($w[0])) != null)
-          and (($w[1] | startswith("-")) | not))
+      def under_ws:
+        . == "/root/workspaces" or startswith("/root/workspaces/");
+      def under_ws_path($p; $cwd):
+        if ($p | startswith("/")) then ($p | under_ws) else ($cwd | under_ws) end;
+      def sanctioned:
+        startswith("/root/workspaces/tools/bin/");
+      .cwd as $cwd
+      | (($cwd // "") | (. == "/root" or startswith("/root/")))
+        and .tool_name == "Bash"
+        and (([ (.tool_input.command // "") | scan("\\S+") ]) as $w
+          | (($w | length) >= 1)
+            and (($w[0] | sanctioned) | not)
+            and (($w | length) < 2 or (($w[1] | sanctioned) | not))
+            and (($w[0] | split("/") | last) as $f
+              | ((["sh","bash","python3","python","node"] | index($f)) != null
+                 and ($w | length) >= 2
+                 and (($w[1] | startswith("-")) | not)
+                 and under_ws_path($w[1]; $cwd))
+                or ((["pytest","make","cargo"] | index($f)) != null
+                    and ($cwd | under_ws))
+                or ($f == "go" and (($w[1] // "") == "test") and ($cwd | under_ws))
+                or (($w[0] | startswith("./")) and ($cwd | under_ws))
+                or ((["npm","pnpm","yarn"] | index($f)) != null
+                    and ((["test","run"] | index($w[1] // "")) != null)
+                    and ($cwd | under_ws))))
     ' >/dev/null 2>&1 <<<"$payload"; then
       jq -cn --arg reason 'lead-run-lock (owner 24.10): the lead does not run scripts; route: /root/workspaces/tools/bin/code-channel auto|audit <worktree> <TZ>' \
         '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$reason}}' \
@@ -194,12 +223,10 @@ case $event in
         first=${cmd_words[wi]:-}
         first=${first##*/}
         case $first in
-          grep|rg|find|ls|cat|head|tail|sed|wc|gh) investigative=1 ;;
+          grep|rg|find|ls|cat|head|tail|sed|wc|gh|awk|jq|sort|uniq|diff|tree|xargs|less|more|stat|du|file|strings) investigative=1 ;;
+          git) [[ $tool_cmd =~ $git_read_re ]] && investigative=1 ;;
         esac
         [[ $tool_cmd =~ (^|[^A-Za-z0-9])(pytest|jest|vitest|mocha|bats|tests?)([^A-Za-z0-9]|$) ]] && investigative=1
-        if (( investigative )) && [[ $tool_cmd =~ (^|[^A-Za-z0-9])(code-channel|sdk-agent)([^A-Za-z0-9]|$) ]]; then
-          investigative=0
-        fi
         shell_op_re='[;&|$()<>`]'
         if (( investigative )) && [[ $tool_cmd =~ ^[[:space:]]*gh[[:space:]]+(pr[[:space:]]+(view|list|checks)|run[[:space:]]+(view|list))([[:space:]]|$) ]] \
           && ! [[ $tool_cmd =~ $shell_op_re ]] && [[ $tool_cmd != *$'\n'* ]]; then
