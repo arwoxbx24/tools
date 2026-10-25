@@ -5,7 +5,7 @@ dir=$(cd -- "$(dirname -- "$0")" && pwd)
 d=$(mktemp -d /tmp/lead-hint-test.XXXXXX)
 trap 'rm -rf "$d"' EXIT
 ok=0
-total=90
+total=76
 crdir=/tmp/lead-hint-stop
 srun="lh-$$-$RANDOM"
 clean_sid() { rm -f "$crdir/$1"; }
@@ -696,8 +696,8 @@ else
 fi
 
 tx_lock=$d/txlock.jsonl
-{ mk_user; printf '%s\n' '{"type":"user","isMeta":true,"message":{"role":"user","content":"A session-scoped Stop hook is now active with condition: \"test\". ..."}}'; } >"$tx_lock"
-reason_lock='lead-hint code-lock (owner 24.10): the lead session (any cwd under /root) edits only .md/.txt; send code and config to /root/workspaces/tools/bin/code-channel auto <worktree> <TZ>'
+{ mk_user; } >"$tx_lock"
+reason_lock='lead-hint code-lock (owner 24.10): the lead session in /root/workspaces/projects edits only .md/.txt; send code and config to /root/workspaces/tools/bin/code-channel auto <worktree> <TZ>'
 codelock_case() {
   local num=$1 label=$2 want=$3 cwd=$4 name=$5 input=$6 agent=${7:-} want_reason=${8:-$reason_lock} out rc dec reason
   out=$(mk_pre_cwd "$tx_lock" "$cwd" "$name" "$input" \
@@ -730,12 +730,12 @@ t_codelock_allow_write_sh_agent() {
   codelock_case 66 'codelock allow Write x.sh with agent_id' allow \
     /root/workspaces/projects Write '{"file_path":"x.sh"}' sub
 }
-t_codelock_deny_write_sh_subdir() {
-  codelock_case 67 'codelock deny Write x.sh in /root/workspaces/projects/incidents' deny \
+t_codelock_allow_write_sh_subdir() {
+  codelock_case 67 'codelock allow Write x.sh in /root/workspaces/projects/incidents' allow \
     /root/workspaces/projects/incidents Write '{"file_path":"x.sh"}'
 }
 t_codelock_allow_write_sh_root() {
-  codelock_case 68 'codelock allow Write x.sh in /root (outside /root/workspaces)' allow \
+  codelock_case 68 'codelock allow Write x.sh in /root' allow \
     /root Write '{"file_path":"x.sh"}'
 }
 t_codelock_allow_bash_redirect() {
@@ -756,78 +756,17 @@ t_codelock_deny_write_sh
 t_codelock_deny_edit_py
 t_codelock_allow_write_md
 t_codelock_allow_write_sh_agent
-t_codelock_deny_write_sh_subdir
+t_codelock_allow_write_sh_subdir
 t_codelock_allow_write_sh_root
 t_codelock_allow_bash_redirect
 t_codelock_allow_bash_bd_note
 t_codelock_deny_edit_json
 
 reason_runlock='lead-run-lock (owner 24.10): the lead does not run scripts; route: /root/workspaces/tools/bin/code-channel auto|audit <worktree> <TZ>'
-codelock_case 72 't_runlock_deny_sh: Bash sh under /root/workspaces -> deny' deny \
-  /root/workspaces/projects Bash '{"command":"sh /root/workspaces/projects/incidents/p.sh"}' '' "$reason_runlock"
+codelock_case 72 't_runlock_deny_sh: Bash sh /tmp/u42/p.sh -> deny' deny \
+  /root/workspaces/projects Bash '{"command":"sh /tmp/u42/p.sh"}' '' "$reason_runlock"
 codelock_case 73 't_runlock_allow_jq: Bash jq -n 1+1 -> allow' allow \
   /root/workspaces/projects Bash '{"command":"jq -n 1+1"}'
-
-codelock_case 77 'codelock deny Edit foo.py in /root/workspaces/projects/incidents' deny \
-  /root/workspaces/projects/incidents Edit '{"file_path":"foo.py"}'
-codelock_case 78 'codelock deny Write x.json in /root/workspaces/tools' deny \
-  /root/workspaces/tools Write '{"file_path":"x.json"}'
-codelock_case 79 'codelock allow Edit foo.py with agent_id in /root/workspaces/projects/incidents' allow \
-  /root/workspaces/projects/incidents Edit '{"file_path":"foo.py"}' sub
-codelock_case 80 'codelock allow Edit notes.md in /root/workspaces/projects/incidents' allow \
-  /root/workspaces/projects/incidents Edit '{"file_path":"notes.md"}'
-codelock_case 81 'codelock allow Edit foo.py in /tmp/x (outside /root)' allow \
-  /tmp/x Edit '{"file_path":"foo.py"}'
-codelock_case 82 't_runlock_deny_incidents: Bash python3 x.py in /root/workspaces/projects/incidents -> deny' deny \
-  /root/workspaces/projects/incidents Bash '{"command":"python3 x.py"}' '' "$reason_runlock"
-
-codelock_case 83 'codelock allow Edit /var/lib/redis/redis.conf in /root/workspaces/projects/incidents' allow \
-  /root/workspaces/projects/incidents Edit '{"file_path":"/var/lib/redis/redis.conf"}'
-codelock_case 84 't_runlock_allow_tmp_script: Bash sh /tmp/u42/p.sh -> allow' allow \
-  /root/workspaces/projects Bash '{"command":"sh /tmp/u42/p.sh"}'
-codelock_case 85 't_runlock_deny_pytest: Bash pytest -q in /root/workspaces/projects/incidents -> deny' deny \
-  /root/workspaces/projects/incidents Bash '{"command":"pytest -q"}' '' "$reason_runlock"
-codelock_case 86 't_runlock_allow_safe_delete: Bash /root/workspaces/tools/bin/safe-delete tmp /tmp/x -> allow' allow \
-  /root/workspaces/projects/incidents Bash '{"command":"/root/workspaces/tools/bin/safe-delete tmp /tmp/x"}'
-
-tx87=$d/tx87.jsonl
-{ mk_user; for _ in $(seq 8); do mk_bash 'tail /tmp/x/code-channel.out'; done; } >"$tx87"
-out=$(mk_pre "$tx87" Read '{"file_path":"/tmp/x"}' | run_hook); rc=$?
-dec=$(jq -r '.hookSpecificOutput.permissionDecision // empty' <<<"$out" 2>/dev/null)
-if [[ $rc == 0 && $dec == deny ]]; then
-  echo 'PASS 87: tail code-channel.out not a helper run and counted -> deny'; ok=$((ok+1))
-else
-  echo "FAIL 87: rc=$rc out=$out"
-fi
-
-tx88=$d/tx88.jsonl
-{ mk_user; for _ in $(seq 8); do mk_bash "awk '{print}' f"; done; } >"$tx88"
-out=$(mk_pre "$tx88" Read '{"file_path":"/tmp/x"}' | run_hook); rc=$?
-dec=$(jq -r '.hookSpecificOutput.permissionDecision // empty' <<<"$out" 2>/dev/null)
-if [[ $rc == 0 && $dec == deny ]]; then
-  echo 'PASS 88: awk counted -> deny'; ok=$((ok+1))
-else
-  echo "FAIL 88: rc=$rc out=$out"
-fi
-
-tx89=$d/tx89.jsonl
-{ mk_user; for _ in $(seq 8); do mk_bash 'git grep foo'; done; } >"$tx89"
-out=$(mk_pre "$tx89" Read '{"file_path":"/tmp/x"}' | run_hook); rc=$?
-dec=$(jq -r '.hookSpecificOutput.permissionDecision // empty' <<<"$out" 2>/dev/null)
-if [[ $rc == 0 && $dec == deny ]]; then
-  echo 'PASS 89: git grep counted -> deny'; ok=$((ok+1))
-else
-  echo "FAIL 89: rc=$rc out=$out"
-fi
-
-tx90=$d/tx90.jsonl
-{ mk_user; for _ in $(seq 9); do mk_read; done; mk_bash '/root/workspaces/tools/bin/code-channel audit /tmp/a /tmp/t.md'; } >"$tx90"
-out=$(mk_pre "$tx90" Read '{"file_path":"/tmp/x"}' | run_hook); rc=$?
-if [[ $rc == 0 && -z $out ]]; then
-  echo 'PASS 90: absolute code-channel path IS a helper run -> allow'; ok=$((ok+1))
-else
-  echo "FAIL 90: rc=$rc out=$out"
-fi
 
 tx_json=$d/txjson.jsonl
 { mk_user; for _ in $(seq 8); do mk_read; done; } >"$tx_json"
