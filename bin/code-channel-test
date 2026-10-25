@@ -288,4 +288,18 @@ CC_CONFIG='' check 80 '[[ $rc == 0 ]] && grep -Fq -- "запасная моде�
 CC_CONFIG='' check 81 '[[ $rc != 0 && $(grep -c "^opencode " "$log") == 4 ]] && grep -Fq -- "канал go недоступен" "$tmp/err"' \
   env OPENCODE_RC=1 OPENCODE_ERR='Error: Upstream request failed: test' SQLITE_RESULT='opencode-go|deepseek-v4-pro' "$root/bin/code-channel" go "$project" "$tz"
 
+sl_ok=0 sl_failed=0
+sl_run() {
+  local want=$1 cfg=$2 rc
+  env -u CODE_CHANNEL_ACTIVE CODE_CHANNEL_CONFIG="$cfg" "$root/bin/code-channel" --plan >/dev/null 2>&1; rc=$?
+  if { [[ $want == 0 && $rc == 0 ]] || [[ $want != 0 && $rc != 0 ]]; }; then ((sl_ok++)); else ((sl_failed++)); fi
+}
+printf '%s\n' '{"switch":{"channel":"go","owner_word":"B"},"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash"}]}' >"$tmp/sl-good.json"
+printf '%s\n' '{"switch":{"channel":"go","owner_word":"B"},"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash"},{"id":"codex","enabled":true,"model":"","effort":"high"}]}' >"$tmp/sl-two.json"
+printf '%s\n' '{"switch":{"channel":"go"},"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash"}]}' >"$tmp/sl-noword.json"
+sl_run 0 "$tmp/sl-good.json"
+sl_run 1 "$tmp/sl-two.json"
+sl_run 1 "$tmp/sl-noword.json"
+echo "switch-lock ok=$sl_ok failed=$sl_failed"
+
 [[ $ok == 81 ]] && echo 'PASS 81/81'

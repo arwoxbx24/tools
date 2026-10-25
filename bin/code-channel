@@ -20,6 +20,7 @@ strip_nvm_path() {
 }
 export PATH=$(strip_nvm_path "${PATH:-}")
 jq -e '(.ladder | type == "array") and ([.ladder[].id] | length == (unique | length)) and all(.ladder[]; (.id | type == "string") and (.enabled | type == "boolean") and (.model | type == "string") and ((.resume_model? // "") | type == "string") and ((.key? // "") | type == "string") and ((.secret? // "") | type == "string") and ((.base? // "") | type == "string") and ((.effort? // "") | type == "string") and ((.audit_model? // "") | type == "string") and ((.fallback_model? // "") | type == "string"))' "$config" >/dev/null 2>&1 || { fail "конфиг $config не читается"; exit 3; }
+jq -e '([.ladder[] | select(.enabled)] | length == 1) and (.switch.channel == ([.ladder[] | select(.enabled)][0].id)) and ((.switch.owner_word // "") | type == "string" and length > 0)' "$config" >/dev/null 2>&1 || { fail 'switch-lock: нужен ровно один enabled, switch.channel равный его id и непустой switch.owner_word'; exit 3; }
 opencfg_rel=$(jq -er '.opencode_config // ""' "$config") || exit 3
 if [[ -n $opencfg_rel ]]; then
     [[ $opencfg_rel == /* ]] && opencfg=$opencfg_rel || opencfg=$root/$opencfg_rel
