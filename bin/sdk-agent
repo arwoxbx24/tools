@@ -395,6 +395,9 @@ open_worktree() {
 load_listed() {
   local f
   mapfile -t FILES < <({ sed -n -E 's/^FILE: (.+)$/\1/p' "$TZ"; grep -m1 '^Files:' "$TZ" | tr '\140' '\n' | sed -n '2~2p'; } | awk '!seen[$0]++')
+  for f in "${FILES[@]}"; do
+    [[ $f != *[[:space:]]* ]] || die "FILE path must be one token: use the form FILE: <path> with nothing after the path (got: $f)"
+  done
   (( ${#FILES[@]} >= 1 && ${#FILES[@]} <= 20 )) || die "TZ must list 1..20 paths ('FILE: <path>' lines or a 'Files:' line) (found ${#FILES[@]})"
 
   for f in "${FILES[@]}"; do

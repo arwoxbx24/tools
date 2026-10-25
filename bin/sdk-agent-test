@@ -347,6 +347,59 @@ ledger_records_model_usage() {
   [[ $(tail -1 "$log0" | jq -c '.model_usage') == '{"claude-haiku-5-5":{"inputTokens":null,"outputTokens":null,"cacheReadInputTokens":null,"cacheCreationInputTokens":null,"costUSD":null}}' ]]
 }
 
+code_mode_150k_on_stdin() {
+  local wt="$TMP/wt-code150" tz="$TMP/tz-code150.md" copy="$TMP/stdin-code150" log="$TMP/runs-code150.jsonl" stub_code="$TMP/stub-code150" rc
+  cat > "$stub_code" <<'STUB'
+#!/usr/bin/env bash
+cat > "$STUB_STDIN_COPY"
+printf '{"type":"result","subtype":"success","total_cost_usd":0,"modelUsage":{"claude-haiku-5-5":{}},"structured_output":{"edits":[{"path":"a.md","old":"TAIL-A-PT2510","new":"TAIL-A-DONE"}]},"result":""}\n'
+STUB
+  chmod +x "$stub_code"
+  mkdir -p "$wt"
+  git -C "$wt" init -q
+  { head -c 80000 /dev/zero | tr '\0' 'a'; printf '\nTAIL-A-PT2510\n'; } > "$wt/a.md"
+  { head -c 80000 /dev/zero | tr '\0' 'b'; printf '\nTAIL-B-PT2510\n'; } > "$wt/b.md"
+  git -C "$wt" add -A
+  printf 'FILE: a.md\nFILE: b.md\n' > "$tz"
+  env SDK_AGENT_ENGINE="$stub_code" STUB_STDIN_COPY="$copy" SDK_AGENT_RUNS_LOG="$log" "$ag" code "$wt" "$tz" >/dev/null 2>&1
+  rc=$?
+  [[ $rc -eq 0 ]] && (( $(wc -c < "$copy") >= 150000 )) && grep -q TAIL-A-PT2510 "$copy" && grep -q TAIL-B-PT2510 "$copy"
+}
+
+file_line_trailing_text_refused() {
+  local wt="$TMP/wt-trail" tz="$TMP/tz-trail.md" log="$TMP/runs-trail.jsonl" mark="$TMP/mark-trail" stub_mark="$TMP/stub-trail" err rc before
+  cat > "$stub_mark" <<'STUB'
+#!/usr/bin/env bash
+touch "$STUB_MARK"
+printf '{"type":"result","subtype":"success","total_cost_usd":0,"modelUsage":{"claude-haiku-5-5":{}},"structured_output":{"edits":[{"path":"new.md","old":"","new":"x"}]},"result":""}\n'
+STUB
+  chmod +x "$stub_mark"
+  mkdir -p "$wt"
+  git -C "$wt" init -q
+  printf 'FILE: new.md (new file)\n' > "$tz"
+  printf '{}\n' > "$log"
+  before=$(wc -l < "$log")
+  err=$(env SDK_AGENT_ENGINE="$stub_mark" STUB_MARK="$mark" SDK_AGENT_RUNS_LOG="$log" "$ag" code "$wt" "$tz" 2>&1 >/dev/null)
+  rc=$?
+  [[ $rc -eq 2 && $err == *"FILE: <path>"* && ! -e $mark && $(wc -l < "$log") -eq $before ]]
+}
+
+plain_new_file_passes() {
+  local wt="$TMP/wt-plain" tz="$TMP/tz-plain.md" log="$TMP/runs-plain.jsonl" mark="$TMP/mark-plain" stub_mark="$TMP/stub-plain" rc
+  cat > "$stub_mark" <<'STUB'
+#!/usr/bin/env bash
+touch "$STUB_MARK"
+printf '{"type":"result","subtype":"success","total_cost_usd":0,"modelUsage":{"claude-haiku-5-5":{}},"structured_output":{"edits":[{"path":"new.md","old":"","new":"x"}]},"result":""}\n'
+STUB
+  chmod +x "$stub_mark"
+  mkdir -p "$wt"
+  git -C "$wt" init -q
+  printf 'FILE: new.md\n' > "$tz"
+  env SDK_AGENT_ENGINE="$stub_mark" STUB_MARK="$mark" SDK_AGENT_RUNS_LOG="$log" "$ag" code "$wt" "$tz" >/dev/null 2>&1
+  rc=$?
+  [[ $rc -eq 0 && -e $mark ]]
+}
+
 mkdir -p "$TMP/wt"
 git -C "$TMP/wt" init -q
 
@@ -393,6 +446,9 @@ check "cap --json is read-only: sha256 unchanged, rc 0, six keys" cap_json_reado
 check "cap default daily cap is 22.00 (no test override)" cap_default_seven
 check "ledger entry records tz of the read run" ledger_records_tz
 check "ledger entry records per-model usage (modelUsage tokens; empty entry -> nulls)" ledger_records_model_usage
+check "code mode sends >=150 KB of file bodies to the engine on stdin, both markers present" code_mode_150k_on_stdin
+check "FILE line with trailing text (new.md (new file)) refused before the engine (rc 2)" file_line_trailing_text_refused
+check "plain FILE: new.md still reaches the engine and creates the file (rc 0)" plain_new_file_passes
 
 mem_low_refused() {
   local f="$TMP/meminfo-low" log="$TMP/runs-mem.jsonl" err rc
