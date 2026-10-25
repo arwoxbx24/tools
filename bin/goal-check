@@ -1,0 +1,153 @@
+#!/usr/bin/env bash
+# goal-check — доказать цель по acceptance-строкам эпика bd (TZ T1).
+set -o pipefail
+
+usage() {
+  echo "usage: goal-check <epic-id> | goal-check --file <path>"
+  echo "goal-check <epic-id> — acceptance_criteria эпика через bd show --json."
+  echo "goal-check --file <path> — acceptance-текст из файла (для теста)."
+  echo "AC-строка: AC<n>: <команда> => <ожидание>; ожидание — текст, >=N или <empty>."
+  echo "Вердикт: GOAL=MET (rc 0) / GOAL=NOT_MET (rc 1) / GOAL=REFUSED (rc 2)."
+}
+
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+  usage
+  exit 0
+fi
+
+if [ "${1:-}" = "--file" ]; then
+  [ $# -eq 2 ] || { usage >&2; exit 2; }
+  acc=$(cat -- "$2") || { echo "goal-check: не прочитать $2" >&2; exit 1; }
+elif [ $# -eq 1 ] && [ -n "$1" ] && [ "${1#-}" = "$1" ]; then
+  command -v bd >/dev/null || { echo "goal-check: bd не найден" >&2; exit 1; }
+  command -v jq >/dev/null || { echo "goal-check: jq не найден" >&2; exit 1; }
+  acc=$(bd show "$1" --json | jq -r 'if type=="array" then .[0] else . end | .acceptance_criteria // .acceptance // empty') || { echo "goal-check: bd show $1 не удался" >&2; exit 1; }
+else
+  usage >&2
+  exit 2
+fi
+
+nums=(); cmds=(); exps=()
+while IFS= read -r line; do
+  [[ $line =~ AC([0-9]+):[[:space:]]*(.*)$ ]] || continue
+  n=${BASH_REMATCH[1]}
+  rest=${BASH_REMATCH[2]}
+  [[ $rest == *" => "* ]] || continue
+  cmd=${rest%' => '*}
+  exp=${rest##*' => '}
+  cmd=${cmd%"${cmd##*[![:space:]]}"}
+  cmd=${cmd#"${cmd%%[![:space:]]*}"}
+  exp=${exp%"${exp##*[![:space:]]}"}
+  exp=${exp#"${exp%%[![:space:]]*}"}
+  nums+=("$n"); cmds+=("$cmd"); exps+=("$exp")
+done <<< "$acc"
+
+if [ ${#nums[@]} -eq 0 ]; then
+  echo "GOAL=NOT_MET reason=no-ac-lines"
+  exit 1
+fi
+
+bad=';|&$`<>(){}'"'"'\'
+reasons=()
+for i in "${!nums[@]}"; do
+  cmd=${cmds[i]}
+  reason=""
+  for ((j=0; j<${#cmd}; j++)); do
+    c=${cmd:j:1}
+    if [[ $bad == *"$c"* ]]; then reason=unsafe-char; break; fi
+  done
+  if [ -z "$reason" ]; then
+    read -ra argv <<< "$cmd"
+    w=${argv[0]:-}
+    allowed=0
+    case $w in
+      grep|ls|test|wc|stat|cat|head|tail|find|jq|git|gh|bd) allowed=1 ;;
+      /*)
+        if [[ $w =~ ^/root/workspaces/tools/bin/[A-Za-z0-9._-]+-test$ ]]; then
+          allowed=1
+        else
+          reason=tool-not-test
+        fi
+        ;;
+    esac
+    if [ -z "$reason" ]; then
+      [ "$allowed" -eq 1 ] || reason=bad-command
+    fi
+  fi
+  if [ -z "$reason" ]; then
+    for arg in "${argv[@]}"; do
+      case $arg in
+        --output*|--ext-diff|--textconv|--web) reason=write-arg; break ;;
+      esac
+    done
+  fi
+  if [ -z "$reason" ]; then
+    case ${argv[0]:-} in
+      find)
+        for arg in "${argv[@]:1}"; do
+          case $arg in
+            -exec|-execdir|-ok|-okdir|-delete|-fprint0|-fprint|-fprintf|-fls) reason=find-exec; break ;;
+          esac
+        done
+        ;;
+      git)
+        case ${argv[1]:-} in log|show|diff|rev-parse|ls-files|status) ;; *) reason=git-subcmd ;; esac
+        ;;
+      gh)
+        case "${argv[1]:-} ${argv[2]:-}" in "pr view"|"pr list"|"pr checks") ;; *) reason=gh-subcmd ;; esac
+        ;;
+      bd)
+        case ${argv[1]:-} in show|list|search) ;; *) reason=bd-subcmd ;; esac
+        ;;
+    esac
+  fi
+  reasons+=("$reason")
+done
+
+refused=0
+for i in "${!nums[@]}"; do
+  [ -z "${reasons[i]}" ] && continue
+  refused=1
+  echo "REFUSED AC${nums[i]} reason=${reasons[i]}"
+done
+if [ "$refused" -eq 1 ]; then
+  echo "GOAL=REFUSED"
+  exit 2
+fi
+
+allpass=1
+for i in "${!nums[@]}"; do
+  n=${nums[i]}; cmd=${cmds[i]}; exp=${exps[i]}
+  # shortcut: no quoting, args split on spaces; upgrade if an AC needs a spaced pattern
+  read -ra argv <<< "$cmd"
+  out=$(timeout 60 "${argv[@]}" 2>&1); rc=$?
+  firstline=${out%%$'\n'*}
+  shown=${firstline:0:160}
+  [ -n "$shown" ] || shown=empty
+  pass=0
+  if [ "$rc" -ne 124 ] && [ "$rc" -ne 126 ] && [ "$rc" -ne 127 ]; then
+    case $exp in
+      '<empty>') [ -z "$out" ] && pass=1 ;;
+      '>='*)
+        v=${exp#>=}
+        if [[ $v =~ ^[0-9]+$ ]] && [[ $firstline =~ ^[0-9]+$ ]] && (( 10#$firstline >= 10#$v )); then
+          pass=1
+        fi
+        ;;
+      *) [[ $out == *"$exp"* ]] && pass=1 ;;
+    esac
+  fi
+  if [ "$pass" -eq 1 ]; then
+    echo "AC$n PASS rc=$rc output=$shown"
+  else
+    allpass=0
+    echo "AC$n FAIL rc=$rc expected=$exp output=$shown"
+  fi
+done
+
+if [ "$allpass" -eq 1 ]; then
+  echo "GOAL=MET"
+  exit 0
+fi
+echo "GOAL=NOT_MET"
+exit 1
