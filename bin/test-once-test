@@ -39,7 +39,11 @@ n=$(runs)
 TEST_ONCE_DIR=$d/state3 "$t" "$r" ./t.sh >/dev/null
 echo new > "$r/new.txt"
 out2=$(TEST_ONCE_DIR=$d/state3 "$t" "$r" ./t.sh); rc2=$?
-if [ "$rc" = 0 ] && [[ $out != *cached* ]] && [ "$n" = 2 ] && [ "$rc2" = 0 ] && [[ $out2 != *cached* ]] && [ "$(runs)" = 3 ]; then pass 3; else bad 3 "rc=$rc runs=$n out=$out rc2=$rc2 runs=$(runs) out2=$out2"; fi
+TEST_ONCE_DIR=$d/state3 "$t" "$r" ./t.sh >/dev/null
+n3=$(runs)
+chmod +x "$r/new.txt"
+out3=$(TEST_ONCE_DIR=$d/state3 "$t" "$r" ./t.sh); rc3=$?
+if [ "$rc" = 0 ] && [[ $out != *cached* ]] && [ "$n" = 2 ] && [ "$rc2" = 0 ] && [[ $out2 != *cached* ]] && [ "$n3" = 3 ] && [ "$rc3" = 0 ] && [[ $out3 != *cached* ]] && [ "$(runs)" = 4 ]; then pass 3; else bad 3 "rc=$rc runs=$n out=$out rc2=$rc2 n3=$n3 rc3=$rc3 runs=$(runs) out2=$out2 out3=$out3"; fi
 
 : > "$d/count"; echo x > "$d/dep.txt"
 TEST_ONCE_DIR=$d/state4 TEST_ONCE_DEPS=$d/dep.txt "$t" "$r" ./t.sh >/dev/null
