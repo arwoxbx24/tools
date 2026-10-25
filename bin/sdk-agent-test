@@ -8,14 +8,14 @@ TMP=$(mktemp -d /tmp/sdk-agent-test.XXXXXX)
 trap 'rm -rf -- "$TMP"' EXIT
 
 export SDK_AGENT_TEST=1
-# the cases below were written for a 5.00 cap; the cap is 7.00 (owner, dcfg-aw1i7.3), so tests override it (honoured only under SDK_AGENT_TEST)
+# the cases below were written for a 5.00 cap; the cap is 10.00 (owner 25.10), so tests override it (honoured only under SDK_AGENT_TEST)
 export SDK_AGENT_TEST_CAP=5.00
 # calls without their own ledger must not touch the live runs.jsonl (dcfg-a5bre)
 export SDK_AGENT_RUNS_LOG="$TMP/default-runs.jsonl"
 
 # stub engine: stands in for the paid engine; prints a success result that says whether it got the API key
 stub="$TMP/stub-engine"
-printf '%s\n' '#!/usr/bin/env bash' 'sleep "${STUB_SLEEP:-0}"' 'key=unset; [[ -n ${ANTHROPIC_API_KEY:-} ]] && key=set' 'printf '"'"'{"type":"result","subtype":"success","total_cost_usd":0,"modelUsage":{"claude-opus-5-5":{}},"result":"%s"}\n'"'"' "$key"' > "$stub"
+printf '%s\n' '#!/usr/bin/env bash' 'sleep "${STUB_SLEEP:-0}"' 'key=unset; [[ -n ${ANTHROPIC_API_KEY:-} ]] && key=set' 'printf '"'"'{"type":"result","subtype":"success","total_cost_usd":0,"modelUsage":{"claude-sonnet-5-5":{}},"result":"%s"}\n'"'"' "$key"' > "$stub"
 chmod +x "$stub"
 export SDK_AGENT_ENGINE="$stub"
 
@@ -261,7 +261,7 @@ large_prompt_on_stdin() {  # ~200 KB prompt reaches the engine on stdin intact; 
   cat > "$stub_stdin" <<'STUB'
 #!/usr/bin/env bash
 cat > "$STUB_STDIN_COPY"
-printf '{"type":"result","subtype":"success","total_cost_usd":0,"modelUsage":{"claude-opus-5-5":{}},"result":"ok"}\n'
+printf '{"type":"result","subtype":"success","total_cost_usd":0,"modelUsage":{"claude-sonnet-5-5":{}},"result":"ok"}\n'
 STUB
   chmod +x "$stub_stdin"
   head -c 200000 /dev/zero | tr '\0' 'a' > "$tz"
@@ -320,10 +320,10 @@ cap_json_readonly() {
   printf 'PASS cap_json_readonly\n'
 }
 
-cap_default_seven() {  # no SDK_AGENT_TEST_CAP: the product cap is 7.00
+cap_default_seven() {  # no SDK_AGENT_TEST_CAP: the product cap is 10.00
   local out
   out=$(env -u SDK_AGENT_TEST_CAP SDK_AGENT_RUNS_LOG="$TMP/runs-default.jsonl" "$ag" cap --json) || return 1
-  [[ $(jq -r '.cap' <<<"$out") == 7 ]]
+  [[ $(jq -r '.cap' <<<"$out") == 10 ]]
 }
 
 ledger_records_tz() {
@@ -335,13 +335,13 @@ ledger_records_tz() {
 
 ledger_records_model_usage() {
   local stub_usage="$TMP/stub-usage" log="$TMP/runs-mu.jsonl" log0="$TMP/runs-mu0.jsonl"
-  printf '%s\n' '#!/usr/bin/env bash' "cat <<'EOF'" '{"type":"result","subtype":"success","total_cost_usd":0.01,"usage":{"input_tokens":3,"output_tokens":5,"cache_read_input_tokens":100,"cache_creation_input_tokens":40},"modelUsage":{"claude-opus-5-5":{"inputTokens":7,"outputTokens":9,"cacheReadInputTokens":1200,"cacheCreationInputTokens":300,"costUSD":0.01,"contextWindow":200000}},"result":"ok"}' 'EOF' > "$stub_usage"
+  printf '%s\n' '#!/usr/bin/env bash' "cat <<'EOF'" '{"type":"result","subtype":"success","total_cost_usd":0.01,"usage":{"input_tokens":3,"output_tokens":5,"cache_read_input_tokens":100,"cache_creation_input_tokens":40},"modelUsage":{"claude-sonnet-5-5":{"inputTokens":7,"outputTokens":9,"cacheReadInputTokens":1200,"cacheCreationInputTokens":300,"costUSD":0.01,"contextWindow":200000}},"result":"ok"}' 'EOF' > "$stub_usage"
   chmod +x "$stub_usage"
   env SDK_AGENT_ENGINE="$stub_usage" SDK_AGENT_RUNS_LOG="$log" "$ag" ask --budget 0.5 hi >/dev/null 2>&1
-  [[ $(tail -1 "$log" | jq -c '.model_usage') == '{"claude-opus-5-5":{"inputTokens":7,"outputTokens":9,"cacheReadInputTokens":1200,"cacheCreationInputTokens":300,"costUSD":0.01}}' ]] || return 1
+  [[ $(tail -1 "$log" | jq -c '.model_usage') == '{"claude-sonnet-5-5":{"inputTokens":7,"outputTokens":9,"cacheReadInputTokens":1200,"cacheCreationInputTokens":300,"costUSD":0.01}}' ]] || return 1
   env SDK_AGENT_ENGINE="$stub" SDK_AGENT_RUNS_LOG="$log0" "$ag" ask --budget 0.5 hi >/dev/null 2>&1
   [[ $(wc -l < "$log0") -eq 1 ]] || return 1
-  [[ $(tail -1 "$log0" | jq -c '.model_usage') == '{"claude-opus-5-5":{"inputTokens":null,"outputTokens":null,"cacheReadInputTokens":null,"cacheCreationInputTokens":null,"costUSD":null}}' ]]
+  [[ $(tail -1 "$log0" | jq -c '.model_usage') == '{"claude-sonnet-5-5":{"inputTokens":null,"outputTokens":null,"cacheReadInputTokens":null,"cacheCreationInputTokens":null,"costUSD":null}}' ]]
 }
 
 mkdir -p "$TMP/wt"
@@ -358,8 +358,8 @@ check "FILE: ../x refused" code_refuses_path "../x"
 check "FILE: .env refused" code_refuses_path ".env"
 check "FILE: /etc/passwd refused" code_refuses_path "/etc/passwd"
 check "FILE: secrets/a refused" code_refuses_path "secrets/a"
-check "model is claude-opus-5-5" bash -c '[[ $(grep -c claude-opus-5-5 "$1") -ge 1 ]]' _ "$ag"
-check "no other claude model names" bash -c '[[ $(grep -cE "claude-(haiku|sonnet|fable)" "$1") -eq 0 ]]' _ "$ag"
+check "model is claude-sonnet-5-5" bash -c '[[ $(grep -c claude-sonnet-5-5 "$1") -ge 1 ]]' _ "$ag"
+check "no other claude model names" bash -c '[[ $(grep -cE "claude-(haiku|opus|fable)" "$1") -eq 0 ]]' _ "$ag"
 check "daily cap refuses ask (rc 6)" daily_cap_refuses
 check "Files: line ../outside.txt refused" code_files_line_refuses_path
 check "Check: names a listed file -> refused check (rc 7)" check_listed_refused
@@ -387,7 +387,7 @@ check "prompt of ~200 KB reaches the engine on stdin intact (no argv limit)" lar
 check "dead reservations folded once (legacy: upper-bound; lock-free .out: result), in-flight empty, reserved 0" dead_pid_reservation_not_counted
 check "orphan engine holds its .lock: reservation stays counted, no ledger line" orphan_engine_keeps_reservation
 check "cap --json is read-only: sha256 unchanged, rc 0, six keys" cap_json_readonly
-check "cap default daily cap is 7.00 (no test override)" cap_default_seven
+check "cap default daily cap is 10.00 (no test override)" cap_default_seven
 check "ledger entry records tz of the read run" ledger_records_tz
 check "ledger entry records per-model usage (modelUsage tokens; empty entry -> nulls)" ledger_records_model_usage
 

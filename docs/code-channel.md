@@ -23,7 +23,7 @@
 
 | id | состояние | модель / параметр |
 | --- | --- | --- |
-| `sdk` | включён (owner 25.10: «работаем через SDK-агент… Opus 5.5») | `bin/sdk-agent code` (audit: `sdk-agent read`), claude-opus-5-5; any failure (budget, daily cap 7 USD, error) → rc 17, вызов кончается |
+| `sdk` | включён (owner 25.10: «работаем через SDK-агент… Sonnet 5.5») | `bin/sdk-agent code` (audit: `sdk-agent read`), claude-sonnet-5-5; any failure (budget, daily cap 7 USD, error) → rc 17, вызов кончается |
 | `go` | выключен (owner 25.10) | единая модель `opencode-go/deepseek-v4.1-flash` для code, audit и продолжения (хранение 0 дней по opencode.ai/docs/go; GPT Luna хранит логи до 30 дней — не для кода); при сбое провайдера — `opencode-go/deepseek-v4-pro`, затем `tools/bin/channel-canary`/`sdk-agent code` |
 | `codex` | выключен | модель профиля; `effort: high` |
 | `openrouter` | выключен; включается словом владельца | `openrouter/deepseek/deepseek-v4-flash` |
