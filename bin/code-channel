@@ -106,8 +106,7 @@ loop_filter() {
         t=${line#"${line%%[![:space:]]*}"}
         t=${t%"${t##*[![:space:]]}"}
         [[ -n $t ]] || continue
-        key=${t//[0-9]/0}
-        while [[ $key == *00* ]]; do key=${key//00/0}; done
+        key=$t
         n=$(( ${seen["$key"]:-0} + 1 ))
         seen["$key"]=$n
         if (( n >= LOOP_REPEAT_LIMIT )) && [[ ! -s $hit ]]; then

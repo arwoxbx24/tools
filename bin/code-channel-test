@@ -291,13 +291,15 @@ CC_CONFIG=$tmp/repogo.json check 81 '[[ $rc != 0 && $(grep -c "^opencode " "$log
 
 loopbin=$tmp/loopbin
 mkdir -p "$loopbin"
-printf '%s\n' '#!/usr/bin/env bash' 'if [[ ${LOOP_SAME:-} ]]; then for i in 1 2 3 4 5 6 7 8 9 10; do echo "same $i"; done; else for w in a b c d e f g h i j; do echo "line $w"; done; fi' >"$loopbin/opencode"
+printf '%s\n' '#!/usr/bin/env bash' 'if [[ ${LOOP_SAME:-} ]]; then for i in 1 2 3 4 5 6 7 8 9 10; do echo same; done; echo tail-marker; elif [[ ${LOOP_PASS:-} ]]; then for i in 1 2 3 4 5 6 7 8 9 10; do echo "PASS $i"; done; else for w in a b c d e f g h i j; do echo "line $w"; done; fi' >"$loopbin/opencode"
 chmod +x "$loopbin/opencode"
 lg0=$ok
-CC_CONFIG=$go check 82 '[[ $rc == 27 && $err == *loop-guard* && $out != *"same 6"* ]]' \
+CC_CONFIG=$go check 82 '[[ $rc == 27 && $err == *loop-guard* && $out != *tail-marker* ]]' \
   env LOOP_SAME=1 CODE_CHANNEL_LOOP_LIMIT=5 PATH="$loopbin:$bin:$PATH" SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
 CC_CONFIG=$go check 83 '[[ $rc == 0 && $err != *loop-guard* ]]' \
   env CODE_CHANNEL_LOOP_LIMIT=5 PATH="$loopbin:$bin:$PATH" SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
-echo "loop-guard ok=$((ok-lg0)) failed=$((2-(ok-lg0)))"
+CC_CONFIG=$go check 84 '[[ $rc == 0 && $err != *loop-guard* ]]' \
+  env LOOP_PASS=1 CODE_CHANNEL_LOOP_LIMIT=5 PATH="$loopbin:$bin:$PATH" SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
+echo "loop-guard ok=$((ok-lg0)) failed=$((3-(ok-lg0)))"
 
-[[ $ok == 83 ]] && echo 'PASS 83/83'
+[[ $ok == 84 ]] && echo 'PASS 84/84'
