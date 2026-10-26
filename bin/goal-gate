@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# goal-gate — Stop/PreToolUse-хук Claude Code: блокирует ложный «✅ DONE», запрещённую формулировку завершения цели,
+# /goal без МЕТОД:, отчёт без «Контроль задач:» и инструмент Agent (dcfg-86c43).
+exec 2>/dev/null
+case ${1-} in --help|-h) printf '%s\n' 'usage: goal-gate  (Claude Code hook: one hook JSON on stdin; PreToolUse Agent -> deny; Stop -> goal checks)'; exit 0;; esac
+command -v jq >/dev/null || exit 0
+json=$(cat) || exit 0
+[ -n "$json" ] || exit 0
+ev=$(jq -er '.hook_event_name | select(type == "string")' <<<"$json") || exit 0
+
+if [ "$ev" = "PreToolUse" ]; then
+  tool=$(jq -er '.tool_name // "" | select(type == "string")' <<<"$json") || exit 0
+  [ "$tool" = "Agent" ] || exit 0
+  jq -nc '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:"Claude Code helpers are not workers (owner 26.10): use /root/workspaces/tools/bin/code-channel auto|audit <worktree> <TZ>"}}'
+  exit 0
+fi
+[ "$ev" = "Stop" ] || exit 0
+
+msg=$(jq -er '(.last_assistant_message // "") | if type == "string" then . else error("m") end' <<<"$json") || exit 0
+sid=$(jq -er '.session_id | select(type == "string" and length > 0)' <<<"$json") || exit 0
+[[ $sid != *[/$'\n\r']* ]] || exit 0
+
+reason=''
+goal_re='^[[:space:]]*`?/goal[[:space:]]'
+ctrl_re='^[[:space:]]*[*-]?[[:space:]]*Контроль задач:'
+BANNED='/goal[[:space:]]+clear|сним(и|ите|у|ем)[[:space:]]+(цел|/goal)|сняти[ея][[:space:]]+цел|очист(и|ите|ка|ить)[[:space:]]+(цел|/goal)|убер(и|ите)[[:space:]]+цел'
+lmsg=${msg,,}
+
+while IFS= read -r l; do
+  [[ $l =~ $goal_re ]] || continue
+  [[ $l == *"МЕТОД:"* ]] || { reason="The /goal line needs МЕТОД: <method from the methodology catalog> (goal_task METHOD GATE)"; break; }
+done <<<"$msg"
+
+if [ -z "$reason" ] && [[ $lmsg =~ $BANNED ]]; then
+  reason="Banned wording (owner 26.10): never offer to end or remove the goal; finish it or report PARTIAL"
+fi
+
+if [ -z "$reason" ]; then
+  ctrl=0
+  while IFS= read -r l; do [[ $l =~ $ctrl_re ]] && { ctrl=1; break; }; done <<<"$msg"
+  if [[ $msg =~ ✅[[:space:]]DONE|PARTIAL|STALLED|BLOCKED ]] && [ "$ctrl" -eq 0 ]; then
+    reason="Goal report needs the line «Контроль задач: выполнено <n> · в процессе <n> · открыто <n>» from the session task list (goal_task OWNER REPORT)"
+  fi
+fi
+
+if [ -z "$reason" ] && [[ $msg == *"✅ DONE"* ]]; then
+  while IFS= read -r l; do
+    case $l in
+      *GOAL=NOT_MET*|*GOAL=REFUSED*|*"Не сделано"*) reason="✅ DONE contradicts: $l"; break ;;
+    esac
+  done <<<"$msg"
+  if [ -z "$reason" ]; then
+    hit=$(grep -oE 'goal-check[[:space:]]+[A-Za-z0-9._-]+' <<<"$msg" | head -n1)
+    if [ -z "$hit" ]; then
+      reason="✅ DONE needs a goal-check <epic> run with GOAL=MET in the same turn"
+    else
+      read -r _ id <<<"$hit"
+      last=$(timeout 300 "${GOAL_GATE_CHECK:-/root/workspaces/tools/bin/goal-check}" "$id" 2>/dev/null | tail -n1)
+      [ "$last" = "GOAL=MET" ] || reason="goal-check $id: $last"
+    fi
+  fi
+fi
+
+file=/tmp/goal-gate-$sid
+count=0
+[ -e "$file" ] && { count=$(cat -- "$file" 2>/dev/null) || count=0; }
+[[ $count =~ ^[0-9]+$ ]] || count=0
+max=${GOAL_GATE_MAX:-2}
+[[ $max =~ ^[0-9]+$ ]] || max=2
+
+if [ -z "$reason" ]; then
+  printf '0\n' >"$file" 2>/dev/null
+  exit 0
+fi
+if (( 10#$count >= 10#$max )); then
+  printf '0\n' >"$file" 2>/dev/null
+  jq -nc --arg m "⛔ ✅ DONE НЕ ПОДТВЕРЖДЁН (goal-gate): $reason. Итог этого ответа = PARTIAL." '{systemMessage:$m}'
+  exit 0
+fi
+printf '%s\n' "$((10#$count + 1))" >"$file" 2>/dev/null
+jq -nc --arg r "$reason" '{decision:"block",reason:$r}'
+exit 0
