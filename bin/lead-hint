@@ -122,6 +122,558 @@ helper_re='^[[:space:]]*(([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*|command|builtin|e
 # Read-only git subcommands that count as investigation (owner 25.10, F3).
 git_read_re='^[[:space:]]*(([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*|command|builtin|exec|env|nohup)[[:space:]]+)*([^[:space:]=]*/)?git[[:space:]]+(grep|show|log|diff|blame)([[:space:]]|$)'
 
+lead_norm_path() {
+  local p=$1 part out=''
+  local -a parts=() kept=()
+  IFS='/' read -ra parts <<<"$p"
+  for part in "${parts[@]}"; do
+    case $part in
+      ''|.) ;;
+      ..) (( ${#kept[@]} > 0 )) && unset 'kept[-1]' ;;
+      *) kept+=("$part") ;;
+    esac
+  done
+  for part in "${kept[@]}"; do out+="/$part"; done
+  [[ -n $out ]] || out=/
+  printf '%s' "$out"
+}
+
+out_ok() {
+  local target=$1 norm
+  [[ -n $target ]] || return 1
+  [[ $target == /dev/null ]] && return 0
+  [[ $target == /* ]] || return 1
+  norm=$(lead_norm_path "$target")
+  [[ $norm == /tmp || $norm == /tmp/* ]]
+}
+
+lead_allowlist() {
+  local cmd=$1 bg=$2
+  local i len c nxt prev seg quote=''
+  local -a segs=()
+  seg=''
+  prev=''
+  len=${#cmd}
+  for (( i=0; i<len; i++ )); do
+    c=${cmd:i:1}
+    nxt=${cmd:i+1:1}
+    if [[ $quote == "'" ]]; then
+      [[ $c == "'" ]] && quote=''
+      seg+=$c
+      prev=$c
+      continue
+    fi
+    if [[ $c == \\ ]]; then
+      # bash: a backslash outside single quotes escapes the next char.
+      seg+=$c
+      if [[ -n $nxt ]]; then seg+=$nxt; prev=$nxt; i=$((i+1)); else prev=$c; fi
+      continue
+    fi
+    if [[ $quote == '"' ]]; then
+      if [[ $c == '`' ]]; then
+        printf '%s' 'lead allowlist (owner 26.10): command substitution and backticks are not allowed outside single quotes; move the work to code-channel'
+        return 0
+      fi
+      if [[ $c == '$' || $c == '<' || $c == '>' ]] && [[ $nxt == '(' ]]; then
+        printf '%s' 'lead allowlist (owner 26.10): process substitution is not allowed; move the work to code-channel'
+        return 0
+      fi
+      [[ $c == '"' ]] && quote=''
+      seg+=$c
+      prev=$c
+      continue
+    fi
+    case $c in
+      "'"|'"') quote=$c; seg+=$c ;;
+      '`')
+        printf '%s' 'lead allowlist (owner 26.10): command substitution and backticks are not allowed outside single quotes; move the work to code-channel'
+        return 0 ;;
+      '$'|'<'|'>')
+        if [[ $nxt == '(' ]]; then
+          printf '%s' 'lead allowlist (owner 26.10): process substitution is not allowed; move the work to code-channel'
+          return 0
+        fi
+        seg+=$c ;;
+      ';'|$'\n') segs+=("$seg"); seg='' ;;
+      '&')
+        if [[ $nxt == '&' ]]; then
+          segs+=("$seg"); seg=''; i=$((i+1))
+        elif [[ $nxt == '>' || $prev == '>' || $prev == '<' ]]; then
+          seg+=$c
+        else
+          segs+=("$seg"); seg=''
+        fi ;;
+      '|')
+        segs+=("$seg"); seg=''
+        [[ $nxt == '|' || $nxt == '&' ]] && i=$((i+1)) ;;
+      *) seg+=$c ;;
+    esac
+    prev=$c
+  done
+  segs+=("$seg")
+
+  local s nt k ch nx cur inw q op target base first idx found tset flag archive cdir norm git_out positionals
+  local -a tok typ
+  for s in "${segs[@]}"; do
+    [[ -n ${s//[[:space:]]/} ]] || continue
+    tok=(); typ=()
+    cur=''; inw=0; q=''
+    len=${#s}
+    for (( k=0; k<len; k++ )); do
+      ch=${s:k:1}; nx=${s:k+1:1}
+      if [[ $q == "'" ]]; then
+        if [[ $ch == "'" ]]; then q=''; else cur+=$ch; fi
+        continue
+      fi
+      if [[ $ch == \\ ]]; then
+        # bash: a backslash outside single quotes escapes the next char.
+        if [[ -n $nx ]]; then cur+=$nx; k=$((k+1)); else cur+=$ch; fi
+        inw=1
+        continue
+      fi
+      if [[ $q == '"' ]]; then
+        if [[ $ch == '"' ]]; then q=''; else cur+=$ch; fi
+        continue
+      fi
+      case $ch in
+        ' '|$'\t')
+          if (( inw )); then tok+=("$cur"); typ+=(word); cur=''; inw=0; fi ;;
+        "'"|'"') q=$ch; inw=1 ;;
+        '>')
+          if (( inw )) && [[ $cur =~ ^[0-9]+$ ]]; then
+            op="${cur}>"; [[ $nx == '>' ]] && { op="${cur}>>"; k=$((k+1)); }
+            tok+=("$op"); typ+=(redir); cur=''; inw=0
+          else
+            if (( inw )); then tok+=("$cur"); typ+=(word); cur=''; inw=0; fi
+            op='>'; [[ $nx == '>' ]] && { op='>>'; k=$((k+1)); }
+            tok+=("$op"); typ+=(redir)
+          fi ;;
+        '<')
+          if (( inw )); then tok+=("$cur"); typ+=(word); cur=''; inw=0; fi
+          op='<'; [[ $nx == '<' ]] && { op='<<'; k=$((k+1)); }
+          tok+=("$op"); typ+=(redir) ;;
+        '&')
+          if [[ $nx == '>' ]]; then
+            if (( inw )); then tok+=("$cur"); typ+=(word); cur=''; inw=0; fi
+            op='&>'; k=$((k+1)); [[ ${s:k+1:1} == '>' ]] && { op='&>>'; k=$((k+1)); }
+            tok+=("$op"); typ+=(redir)
+          else
+            cur+=$ch; inw=1
+          fi ;;
+        *) cur+=$ch; inw=1 ;;
+      esac
+    done
+    if (( inw )); then tok+=("$cur"); typ+=(word); fi
+    nt=${#tok[@]}
+    (( nt > 0 )) || continue
+
+    for (( k=0; k<nt; k++ )); do
+      [[ ${typ[k]} == redir ]] || continue
+      op=${tok[k]}; target=${tok[k+1]:-}
+      case $op in
+        '>'|'>>'|'&>'|'&>>'|[0-9]*'>')
+          [[ $target =~ ^\&[0-9]+$ ]] && continue
+          out_ok "$target" && continue ;;
+      esac
+      printf '%s' 'lead allowlist (owner 26.10): the lead redirects only to /dev/null or /tmp (normalised); everything else goes to code-channel'
+      return 0
+    done
+
+    idx=0; found=''
+    while (( idx < nt )); do
+      if [[ ${typ[idx]} == redir ]]; then idx=$((idx+2)); continue; fi
+      first=${tok[idx]}
+      if [[ $first =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then idx=$((idx+1)); continue; fi
+      case $first in
+        command|builtin|exec|env|nohup) idx=$((idx+1)); continue ;;
+        time)
+          idx=$((idx+1))
+          while (( idx < nt )) && [[ ${tok[idx]} == -* ]]; do idx=$((idx+1)); done
+          continue ;;
+        timeout)
+          idx=$((idx+1))
+          while (( idx < nt )); do
+            case ${tok[idx]} in
+              -s|--signal|-k|--kill-after) idx=$((idx+2)) ;;
+              -*) idx=$((idx+1)) ;;
+              *) idx=$((idx+1)); break ;;
+            esac
+          done
+          continue ;;
+      esac
+      found=$first; break
+    done
+    [[ -n $found ]] || continue
+    base=${found##*/}
+    if [[ $found == */* && $found != /root/workspaces/tools/bin/* ]]; then
+      printf '%s' 'lead allowlist (owner 26.10): the lead runs allowlisted tools bare or as /root/workspaces/tools/bin/<name>; send other paths to code-channel'
+      return 0
+    fi
+
+    # Write lock, not an ops ban (owner 26.10, T2): interpreters, shells and
+    # editors can write anything, so they stay denied whatever else is listed.
+    case $base in
+      python|python*|node|nodejs|perl|ruby|php|php*|bash|sh|zsh|dash|deno|bun|pwsh|npx|opencode|codex|claude|gemini|kimi|patch|ed|vi|vim|nano|tee|uv|pre-commit|systemd-run)
+        printf '%s' 'lead allowlist (owner 26.10): interpreters, shells, editors, patch, tee, code runners and agent CLIs stay denied; move the work to code-channel'
+        return 0 ;;
+    esac
+
+    if [[ $base == code-channel || $base == sdk-agent ]]; then
+      if [[ $bg != true ]]; then
+        printf '%s' 'lead allowlist (owner 26.10): the lead starts code-channel/sdk-agent only in background; run it in background (tool_input.run_in_background=true)'
+        return 0
+      fi
+      continue
+    fi
+
+    # 2a: every executable in tools/bin is a sanctioned wrapper (bare name or
+    # /root/workspaces/tools/bin/<name>).
+    if [[ -x /root/workspaces/tools/bin/$base ]]; then
+      continue
+    fi
+
+    case $base in
+      sort)
+        for (( k=idx+1; k<nt; k++ )); do
+          case ${tok[k]} in
+            -o|--output)
+              out_ok "${tok[k+1]:-}" || {
+                printf '%s' 'lead allowlist (owner 26.10): sort -o writes only into /tmp'
+                return 0; }
+              k=$((k+1)) ;;
+            -o?*)
+              out_ok "${tok[k]#-o}" || {
+                printf '%s' 'lead allowlist (owner 26.10): sort -o writes only into /tmp'
+                return 0; } ;;
+            --output=*)
+              out_ok "${tok[k]#*=}" || {
+                printf '%s' 'lead allowlist (owner 26.10): sort -o writes only into /tmp'
+                return 0; } ;;
+          esac
+        done ;;
+      uniq)
+        positionals=0
+        for (( k=idx+1; k<nt; k++ )); do
+          case ${tok[k]} in
+            -f|--skip-fields|-s|--skip-chars|-w|--check-chars) k=$((k+1)) ;;
+            --skip-fields=*|--skip-chars=*|--check-chars=*|-f?*|-s?*|-w?*) ;;
+            -*) ;;
+            *)
+              positionals=$((positionals+1))
+              if (( positionals == 2 )); then
+                out_ok "${tok[k]}" || {
+                  printf '%s' 'lead allowlist (owner 26.10): uniq IN OUT writes only into /tmp'
+                  return 0; }
+              fi ;;
+          esac
+        done ;;
+      bd|goal-check|test-once|git-sync|safe-delete|tmux-send|channel-canary|where|ls|cat|grep|wc|jq|head|tail|cut|sort|uniq|tr|pgrep|date|echo|printf|pwd|cd|stat|test|true) ;;
+      find)
+        for (( k=idx+1; k<nt; k++ )); do
+          case ${tok[k]} in
+            -exec*|-execdir*|-delete|-ok*)
+              printf '%s' 'lead allowlist (owner 26.10): find with -exec/-delete/-ok is not allowed for the lead'
+              return 0 ;;
+            -fls|-fprint*)
+              out_ok "${tok[k+1]:-}" || {
+                printf '%s' 'lead allowlist (owner 26.10): find -fls/-fprint writes only into /tmp'
+                return 0; }
+              k=$((k+1)) ;;
+          esac
+        done ;;
+      git)
+        op=${tok[idx+1]:-}
+        case $op in
+          status|log|diff|show|ls-files|rev-parse|fetch|format-patch|archive) ;;
+          worktree)
+            case ${tok[idx+2]:-} in
+              list) ;;
+              add)
+                target=${tok[idx+3]:-}
+                if [[ $target == /* ]]; then
+                  norm=$(lead_norm_path "$target")
+                  if [[ $norm == /tmp || $norm == /tmp/* || $norm =~ ^/root/workspaces/[^/]+/\.worktrees(/|$) ]]; then :
+                  else
+                    printf '%s' 'lead allowlist (owner 26.10): git worktree add writes only under /root/workspaces/*/.worktrees or /tmp'
+                    return 0
+                  fi
+                fi ;;
+              *) printf '%s' 'lead allowlist (owner 26.10): git worktree allows only list|add'
+                 return 0 ;;
+            esac ;;
+          branch)
+            for (( k=idx+2; k<nt; k++ )); do
+              case ${tok[k]} in
+                -d|-D|-m|-M|-d*|-D*|-m*|-M*)
+                  printf '%s' 'lead allowlist (owner 26.10): git branch -d/-D/-m/-M is not allowed for the lead'
+                  return 0 ;;
+              esac
+            done ;;
+          *)
+            printf '%s' 'lead allowlist (owner 26.10): git subcommand is not allowlisted (status, log, diff, show, ls-files, rev-parse, fetch, worktree list|add, branch, format-patch|archive to /tmp); send delivery to code-channel'
+            return 0 ;;
+        esac
+        case $op in
+          diff|log|show|format-patch|archive)
+            git_out=0
+            for (( k=idx+2; k<nt; k++ )); do
+              case ${tok[k]} in
+                --output=*|--output-directory=*)
+                  git_out=1
+                  out_ok "${tok[k]#*=}" || {
+                    printf '%s' 'lead allowlist (owner 26.10): git output files write only into /tmp'
+                    return 0; } ;;
+                --output|--output-directory|-o)
+                  git_out=1
+                  out_ok "${tok[k+1]:-}" || {
+                    printf '%s' 'lead allowlist (owner 26.10): git output files write only into /tmp'
+                    return 0; }
+                  k=$((k+1)) ;;
+                -o?*)
+                  git_out=1
+                  out_ok "${tok[k]#-o}" || {
+                    printf '%s' 'lead allowlist (owner 26.10): git output files write only into /tmp'
+                    return 0; } ;;
+              esac
+            done
+            if [[ $op == format-patch ]] && (( ! git_out )); then
+              printf '%s' 'lead allowlist (owner 26.10): git format-patch needs -o under /tmp'
+              return 0
+            fi ;;
+        esac ;;
+      gh)
+        if [[ ${tok[idx+1]:-} != pr ]]; then
+          printf '%s' 'lead allowlist (owner 26.10): gh allows only pr view|checks|list|diff|create|merge'
+          return 0
+        fi
+        case ${tok[idx+2]:-} in
+          view|checks|list|diff|create|merge) ;;
+          *) printf '%s' 'lead allowlist (owner 26.10): gh allows only pr view|checks|list|diff|create|merge'
+             return 0 ;;
+        esac ;;
+      # Operations and reads stay allowed (owner 26.10, T2).
+      pm2|systemctl|journalctl|uptime|du|df|free|ps|ss|lsof|file|diff|md5sum|sha256sum|basename|dirname|realpath|readlink|transcribe|gitleaks) ;;
+      # Ops/read tools used by the lead in the last 7 days with count >= 3
+      # (T2 fix 2, step 2c), none of them a DENY class.
+      b24|mc|yc|railway|snap|apt|apt-get|apt-mark|apt-cache|dpkg|dpkg-query|crontab|sqlite3|trivy|nc|ffmpeg|ffprobe|cmp|paste|getent|pstree|prlimit|man|whois|repowise|pdfinfo|pdftoppm|pdftotext|seq|hostname|ufw|sysctl|kill|iconv|zgrep|chmod|chrome|which) ;;
+      # Filesystem writes (T2 fix 2): allowed only into /dev/null or /tmp.
+      mkdir|rm|touch|truncate)
+        for (( k=idx+1; k<nt; k++ )); do
+          case ${tok[k]} in
+            -*) ;;
+            *) out_ok "${tok[k]}" || {
+                 printf '%s' 'lead allowlist (owner 26.10): filesystem writes go only into /tmp; send repo edits to code-channel'
+                 return 0; } ;;
+          esac
+        done ;;
+      mktemp)
+        for (( k=idx+1; k<nt; k++ )); do
+          case ${tok[k]} in
+            -p|--tmpdir) target=${tok[k+1]:-}; k=$((k+1)) ;;
+            -p?*) target=${tok[k]#-p} ;;
+            --tmpdir=*) target=${tok[k]#*=} ;;
+            -*) continue ;;
+            *) target=${tok[k]} ;;
+          esac
+          [[ $target == /* ]] || continue
+          out_ok "$target" || {
+            printf '%s' 'lead allowlist (owner 26.10): mktemp writes only into /tmp; send repo edits to code-channel'
+            return 0; }
+        done ;;
+      mv)
+        for (( k=idx+1; k<nt; k++ )); do
+          case ${tok[k]} in
+            -t|--target-directory) target=${tok[k+1]:-}; k=$((k+1)) ;;
+            --target-directory=*) target=${tok[k]#*=} ;;
+            -*) continue ;;
+            *) target=${tok[k]} ;;
+          esac
+          out_ok "$target" || {
+            printf '%s' 'lead allowlist (owner 26.10): mv writes/removes only inside /tmp; send repo edits to code-channel'
+            return 0; }
+        done ;;
+      install|ln)
+        target=''; tset=0
+        for (( k=idx+1; k<nt; k++ )); do
+          case ${tok[k]} in
+            -t) target=${tok[k+1]:-}; tset=1; k=$((k+1)) ;;
+            -t?*) target=${tok[k]#-t}; tset=1 ;;
+            --target-directory) target=${tok[k+1]:-}; tset=1; k=$((k+1)) ;;
+            --target-directory=*) target=${tok[k]#*=}; tset=1 ;;
+            -*) ;;
+            *) (( tset )) || target=${tok[k]} ;;
+          esac
+        done
+        out_ok "$target" || {
+          printf '%s' 'lead allowlist (owner 26.10): install/ln write only into /tmp; send repo edits to code-channel'
+          return 0; } ;;
+      dd)
+        target=''; tset=0
+        for (( k=idx+1; k<nt; k++ )); do
+          case ${tok[k]} in
+            of=*) target=${tok[k]#of=}; tset=1 ;;
+          esac
+        done
+        if (( tset )); then
+          out_ok "$target" || {
+            printf '%s' 'lead allowlist (owner 26.10): dd writes only into /tmp; send repo edits to code-channel'
+            return 0; }
+        fi ;;
+      tar)
+        target=''; cdir=''; archive=''; tset=0
+        for (( k=idx+1; k<nt; k++ )); do
+          case ${tok[k]} in
+            -C|--directory) cdir=${tok[k+1]:-}; k=$((k+1)) ;;
+            --directory=*) cdir=${tok[k]#*=} ;;
+            --extract|--get) tset+=x ;;
+            --create) tset+=c ;;
+            --append) tset+=r ;;
+            --update) tset+=u ;;
+            --list) tset+=t ;;
+            --*) ;;
+            -*)
+              target=${tok[k]#-}
+              case $target in *t*) tset+=t ;; esac
+              case $target in *x*) tset+=x ;; esac
+              case $target in *c*) tset+=c ;; esac
+              case $target in *r*) tset+=r ;; esac
+              case $target in *u*) tset+=u ;; esac ;;
+            *) [[ -n $archive ]] || archive=${tok[k]} ;;
+          esac
+        done
+        if [[ $tset == *t* && $tset != *x* && $tset != *c* && $tset != *r* && $tset != *u* ]]; then :
+        else
+          out_ok "$archive" || {
+            printf '%s' 'lead allowlist (owner 26.10): tar writes only archives inside /tmp; send repo edits to code-channel'
+            return 0; }
+          if [[ $tset == *x* || $tset == *r* || $tset == *u* ]]; then
+            out_ok "$cdir" || {
+              printf '%s' 'lead allowlist (owner 26.10): tar extraction writes only into /tmp (-C /tmp)'
+              return 0; }
+          fi
+        fi ;;
+      ssh) ;;
+      docker)
+        case ${tok[idx+1]:-} in
+          ps|logs|inspect|images) ;;
+          compose)
+            case ${tok[idx+2]:-} in
+              ps|logs) ;;
+              *) printf '%s' 'lead allowlist (owner 26.10): docker compose allows only ps|logs'
+                 return 0 ;;
+            esac ;;
+          *) printf '%s' 'lead allowlist (owner 26.10): docker allows only ps|logs|inspect|compose ps|compose logs|images'
+             return 0 ;;
+        esac ;;
+      curl)
+        for (( k=idx+1; k<nt; k++ )); do
+          case ${tok[k]} in
+            -T|--upload-file|-T?*|--upload-file=*|-[A-Za-z]*T*|-O|--remote-name|--remote-name-all|-[A-Za-z]*O*)
+              printf '%s' 'lead allowlist (owner 26.10): curl upload (-T) and remote-name (-O) writes are not allowed'
+              return 0 ;;
+            -o|--output|--output-dir)
+              out_ok "${tok[k+1]:-}" || {
+                printf '%s' 'lead allowlist (owner 26.10): curl -o writes only into /tmp'
+                return 0; }
+              k=$((k+1)) ;;
+            -o?*)
+              out_ok "${tok[k]#-o}" || {
+                printf '%s' 'lead allowlist (owner 26.10): curl -o writes only into /tmp'
+                return 0; } ;;
+            -[A-Za-z]*o*)
+              flag=${tok[k]#-}
+              target=${flag#*o}
+              if [[ -z $target ]]; then target=${tok[k+1]:-}; k=$((k+1)); fi
+              out_ok "$target" || {
+                printf '%s' 'lead allowlist (owner 26.10): curl -o writes only into /tmp'
+                return 0; } ;;
+            --output=*|--output-dir=*)
+              out_ok "${tok[k]#*=}" || {
+                printf '%s' 'lead allowlist (owner 26.10): curl -o writes only into /tmp'
+                return 0; } ;;
+          esac
+        done ;;
+      wget)
+        target=''
+        for (( k=idx+1; k<nt; k++ )); do
+          case ${tok[k]} in
+            -O|--output-document) target=${tok[k+1]:-}; k=$((k+1)) ;;
+            -O?*) target=${tok[k]#-O} ;;
+            --output-document=*) target=${tok[k]#*=} ;;
+          esac
+        done
+        if [[ -z $target ]]; then
+          printf '%s' 'lead allowlist (owner 26.10): wget needs -O /tmp/... or -q -O -'
+          return 0
+        fi
+        if [[ $target != - ]] && ! out_ok "$target"; then
+          printf '%s' 'lead allowlist (owner 26.10): wget -O writes only into /tmp (or -)'
+          return 0
+        fi ;;
+      xargs)
+        target=''
+        for (( k=idx+1; k<nt; k++ )); do
+          case ${tok[k]} in
+            -I|-n|-P|-L|-s|-d|-a|-E|--max-args|--max-procs|--delimiter|--arg-file|--replace) k=$((k+1)) ;;
+            -*) ;;
+            *) target=${tok[k]}; break ;;
+          esac
+        done
+        base=${target##*/}
+        case $base in
+          bd|ls|cat|grep|jq|head|tail|wc|sort|uniq|cut|du|file|stat|diff|md5sum|sha256sum|basename|dirname|realpath|readlink|tr|date|echo|printf|pgrep|ps) ;;
+          *)
+            if [[ -x /root/workspaces/tools/bin/$base && $base != code-channel && $base != sdk-agent ]]; then :
+            else
+              printf '%s' 'lead allowlist (owner 26.10): xargs runs only an allowlisted non-interpreter command'
+              return 0
+            fi ;;
+        esac ;;
+      tmux)
+        case ${tok[idx+1]:-} in
+          list-*|display-message|capture-pane) ;;
+          *) printf '%s' 'lead allowlist (owner 26.10): tmux allows only list-*, display-message, capture-pane'
+             return 0 ;;
+        esac ;;
+      npm|pnpm)
+        case ${tok[idx+1]:-} in
+          run|test|ls|ci|install|view|outdated) ;;
+          *) printf '%s' 'lead allowlist (owner 26.10): npm/pnpm allows only run,test,ls,ci,install,view,outdated (never exec/x/dlx)'
+             return 0 ;;
+        esac ;;
+      sed)
+        for (( k=idx+1; k<nt; k++ )); do
+          case ${tok[k]} in
+            -i*|--in-place*)
+              printf '%s' 'lead allowlist (owner 26.10): sed -i is not allowed; send file edits to code-channel'
+              return 0 ;;
+          esac
+        done ;;
+      cp)
+        target=''; tset=0
+        for (( k=idx+1; k<nt; k++ )); do
+          case ${tok[k]} in
+            -t) target=${tok[k+1]:-}; tset=1; k=$((k+1)) ;;
+            -t?*) target=${tok[k]#-t}; tset=1 ;;
+            --target-directory) target=${tok[k+1]:-}; tset=1; k=$((k+1)) ;;
+            --target-directory=*) target=${tok[k]#*=}; tset=1 ;;
+            -*) ;;
+            *) (( tset )) || target=${tok[k]} ;;
+          esac
+        done
+        if [[ -z $target ]] || ! out_ok "$target"; then
+          printf '%s' 'lead allowlist (owner 26.10): cp writes only into /tmp; send code edits to code-channel'
+          return 0
+        fi ;;
+      *)
+        printf '%s' 'lead runs only the allowlist; send work to code-channel in background'
+        return 0 ;;
+    esac
+  done
+  return 0
+}
+
+
 case $event in
   PreToolUse)
     [[ ${LEAD_HINT_STRICT:-1} == 0 ]] && exit 0
@@ -139,19 +691,21 @@ case $event in
       and ((try (if (.tool_input | type) == "object" then (.tool_input.file_path // .tool_input.notebook_path // "") else null end) catch null) as $p
         | if ($p | type) != "string" then true
           else
-            ($p | test("\\.(md|txt)$"; "i") | not)
-            and ((if ($p | startswith("/")) then $p
-                  elif ($cwd | type) != "string" or $cwd == "" then null
-                  else ($cwd + "/" + $p) end) as $abs
-                | if $abs == null then true
-                  else ($abs
-                    | split("/")
-                    | reduce .[] as $s ([];
-                        if $s == "" or $s == "." then .
-                        elif $s == ".." then .[:-1]
-                        else . + [$s] end)
-                    | "/" + join("/") + "/"
-                    | startswith("/root/workspaces/")) end)
+            ((if ($p | startswith("/")) then $p
+              elif ($cwd | type) != "string" or $cwd == "" then null
+              else ($cwd + "/" + $p) end) as $abs
+            | if $abs == null then true
+              else ($abs
+                | split("/")
+                | reduce .[] as $s ([];
+                    if $s == "" or $s == "." then .
+                    elif $s == ".." then .[:-1]
+                    else . + [$s] end)
+                | "/" + join("/") + "/") as $norm
+                | (($norm | startswith("/root/workspaces/tools/state/")))
+                  or (($p | test("\\.(md|txt)$"; "i") | not)
+                      and ($norm | startswith("/root/workspaces/")))
+              end)
           end)
     ' >/dev/null 2>&1 <<<"$payload"; then
       if [[ -n $agent_id ]] && jq -e 'type == "array" and length > 0' >/dev/null 2>&1 \
@@ -200,6 +754,17 @@ case $event in
         '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$reason}}' \
         2>/dev/null || exit 0
       exit 0
+    fi
+
+    if [[ -z $agent_id && $tool_name == Bash ]]; then
+      hard_bg=$(jq -r '(.tool_input | if type == "object" then .run_in_background else false end) | if . == true then "true" else "false" end' <<<"$payload" 2>/dev/null) || hard_bg=false
+      hard_reason=$(lead_allowlist "$tool_cmd" "$hard_bg")
+      if [[ -n $hard_reason ]]; then
+        jq -cn --arg reason "$hard_reason" \
+          '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$reason}}' \
+          2>/dev/null || exit 0
+        exit 0
+      fi
     fi
 
     case $tool_name in
