@@ -2,6 +2,7 @@
 # goal-gate — Stop/PreToolUse-хук Claude Code: блокирует ложный «✅ DONE», запрещённую формулировку завершения цели,
 # /goal без МЕТОД:, отчёт без «Контроль задач:» и инструмент Agent (dcfg-86c43).
 exec 2>/dev/null
+case ${1-} in --help|-h) printf '%s\n' 'usage: goal-gate  (Claude Code hook: one hook JSON on stdin; PreToolUse Agent -> deny; Stop -> goal checks)'; exit 0;; esac
 command -v jq >/dev/null || exit 0
 json=$(cat) || exit 0
 [ -n "$json" ] || exit 0
