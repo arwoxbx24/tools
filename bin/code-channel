@@ -246,7 +246,7 @@ run_form() (
         id_sid_sql="select id from session where title='$id_run' order by time_created desc limit 1"
         while :; do
             printf '%s' "$oc_prompt" >"$pfile"
-            guarded "$helper_scope" timeout 1800 opencode run "${oc_args[@]}" --agent developer -m "$model" < "$pfile" 2>"$oc_err" | tee "$oc_out"; run=${PIPESTATUS[0]}
+            guarded "$helper_scope" timeout 1800 env OPENCODE_DISABLE_MODELS_FETCH=1 OPENCODE_DISABLE_AUTOUPDATE=1 opencode --pure run "${oc_args[@]}" --agent developer -m "$model" < "$pfile" 2>"$oc_err" | tee "$oc_out"; run=${PIPESTATUS[0]}
             cat -- "$oc_err" >&2
             [[ $run != 27 ]] || exit 27
             [[ $run == 0 ]] && break
