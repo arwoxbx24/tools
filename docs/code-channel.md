@@ -38,6 +38,19 @@ Permit: `state/code-channel/permit.json`, путь переопределяет�
 
 `config/code-channel.json` хранит массив с полями `id`, `enabled`, `model`, `resume_model`/`audit_model` (равны `model`), `fallback_model` (один запуск внутри go при сбое провайдера); порядок массива — порядок лестницы. `config/opencode-channel.json` добавляет агента `developer` (mode `primary`, TDD, правки только в `FILE:` ТЗ) и `audit`; go-код запускается с `--agent developer`, аудит — с `--agent audit`.
 
+Промпты `developer` и `audit` не копируют запреты, а ссылаются на единственный источник `sdk-agent/system-prompt.md`:
+
+```json
+"prompt": "{file:../sdk-agent/system-prompt.md}"
+```
+
+Документация OpenCode:
+
+- «Specify a custom system prompt file for this agent with the `prompt` config. The prompt file should contain instructions specific to the agent’s purpose.» — <https://opencode.ai/docs/agents/#prompt>.
+- «This path is relative to where the config file is located. So this works for both the global OpenCode config and the project specific config.» — <https://opencode.ai/docs/agents/#prompt>.
+
+Путь `../sdk-agent/system-prompt.md` считается от `config/opencode-channel.json`, поэтому Go-воркер в коде и аудите получает те же System bans, Secrets и Deletion (`rm -rf`, `safe-delete`), что и SDK-воркер. Верхнеуровневый `instructions` (<https://opencode.ai/docs/rules/#using-opencodejson>; «The recommended approach is to use the `instructions` field in `opencode.json`») добавляет файл всем агентам и считается от другого каталога, а `prompt` — только агентам Go-воркера и от каталога конфига, поэтому выбран `prompt`.
+
 ## MCP
 
 Go-воркеру MCP не нужны: код он читает обычными `grep`/`read`. Глобальный конфиг OpenCode (`~/.config/opencode/opencode.jsonc`) определяет серверы `vibecode`, `context7`, `repowise`, `codebase-memory-mcp`; каждый стартует отдельный процесс (~0.2–0.3 GB на воркер). В `config/opencode-channel.json` все четыре выключены через `"enabled": false`.
@@ -61,7 +74,7 @@ Go-запуск не тратит время на то, что воркеру н
 - `config/opencode-channel.json` выключает `snapshot`, `lsp` и `autoupdate` (`false`). Snapshots — undo для TUI; воркер коммитит обычным git. LSP и проверка обновлений в неинтерактивном прогоне не нужны.
 - Вызов идёт как `opencode --pure run …` — без внешних плагинов.
 - Только для процесса opencode заданы `OPENCODE_DISABLE_MODELS_FETCH=1` и `OPENCODE_DISABLE_AUTOUPDATE=1`, поэтому список моделей и обновления не тянутся из сети.
-- `OPENCODE_DISABLE_CLAUDE_CODE` не ставится: бриф, который собирает `bin/code-channel`, не содержит запретов `/root/CLAUDE.md` (System bans, Secrets, Deletion), значит чтение `.claude` отключать нельзя.
+- `OPENCODE_DISABLE_CLAUDE_CODE` не ставится: запреты `/root/CLAUDE.md` (System bans, Secrets, Deletion) уже приходят в промпт `developer` из `sdk-agent/system-prompt.md`, а `.claude` оставлен ради глобальных правил и навыков.
 
 ## Коды выхода
 

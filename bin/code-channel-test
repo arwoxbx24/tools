@@ -344,6 +344,21 @@ lean_jq='(.snapshot == false) and (.lsp == false) and (.autoupdate == false)'
 CC_CONFIG=$go check go_lean_start '[[ $rc == 0 ]] && grep -Fq -- "--pure run" "$log" && grep -Fxq -- "env OPENCODE_DISABLE_MODELS_FETCH=1" "$log" && grep -Fxq -- "env OPENCODE_DISABLE_AUTOUPDATE=1" "$log" && ! grep -Fq -- "env OPENCODE_DISABLE_CLAUDE_CODE=1" "$log" && jq -e "$lean_jq" "$root/config/opencode-channel.json" >/dev/null' \
   env OPENCODE_RC=0 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
 
+bans_cfg=$root/config/opencode-channel.json
+bans_prompt=$(jq -r '.agent.developer.prompt // ""' "$bans_cfg")
+if [[ $bans_prompt =~ ^\{file:(.*)\}$ ]]; then
+  bans_src=${BASH_REMATCH[1]}
+  [[ $bans_src == /* ]] || bans_src=$(cd -- "$(dirname -- "$bans_cfg")" && pwd)/$bans_src
+  bans_text=$(cat -- "$bans_src" 2>/dev/null) || bans_text=
+else
+  bans_text=$bans_prompt
+fi
+if [[ $bans_text == *"rm -rf"* && $bans_text == *"safe-delete"* ]]; then
+  echo 'PASS go_bans_in_prompt'; ((ok++))
+else
+  echo "FAIL go_bans_in_prompt: prompt=$bans_prompt"; ((fails++))
+fi
+
 CC_CONFIG=$gosdk check failover_go_to_sdk_once '[[ $rc == 0 && $(grep -c "^opencode " "$log") == 3 && $(grep -c "^sdk-agent code" "$log") == 1 ]] && grep -Fq -- "evidence go rc=124" "$tmp/err"' \
   env OPENCODE_RC=124 CC_CANARY_RC=1 CC_CANARY_OUT='channel-canary: down (go)' SDK_TOUCH=sdk-failover CODE_CHANNEL_SDK_AGENT="$bin/sdk-agent-fake" SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" auto "$project" "$tz"
 rm -f -- "$project/sdk-failover"
