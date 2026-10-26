@@ -100,7 +100,9 @@ elif cmd == "backup":
         files.append({"path": path, "size": stat.st_size,
                       "mtime": datetime.datetime.fromtimestamp(stat.st_mtime, datetime.timezone.utc).isoformat(),
                       "saved": str(n)})
-    items.append({"id": snapshot_id, "short_id": snapshot_id, "tags": [option("--tag") or ""], "files": files})
+    items.append({"id": snapshot_id, "short_id": snapshot_id,
+                  "tags": [tag for tag in (option("--tag") or "").split(",") if tag],
+                  "files": files})
     save_index(items)
     print(json.dumps({"message_type": "summary", "snapshot_id": snapshot_id}))
 elif cmd == "snapshots":
@@ -680,17 +682,32 @@ scenario_25() { # current и самый новый релизы остаются
   fi
 }
 
-scenario_26() { # старая сессия Codex не фиксируется и не удаляется (владелец 10.10)
+scenario_26() { # владелец 26.10: старые сессии/tmp отгружаются и удаляются, свежие остаются
   fixture scen26
-  local session="$S/codex/sessions/old/session.jsonl"
-  mkdir -p "${session%/*}"
-  printf 'old session\n' >"$session"; touch -d '15 days ago' "$session"
-  run_rotate GATE_MODE=enforce DR_USAGE_PCT=85 DR_CODEX_HOME="$S/codex" -- >/dev/null 2>&1
-  if [ -f "$session" ] && ! grep -qF "$session" "$STATE" 2>/dev/null \
-     && ! grep -q 'codex-sessions' "$JOURNAL" 2>/dev/null; then
-    report 26 "codex sessions untouched" PASS
+  local base="$S/codex"
+  local old_s="$base/sessions/old/a.jsonl" fresh_s="$base/sessions/new/b.jsonl"
+  local old_a="$base/archived_sessions/c.jsonl"
+  local old_t="$base/.tmp/old.bin" fresh_t="$base/.tmp/new.bin"
+  mkdir -p "${old_s%/*}" "${fresh_s%/*}" "$base/archived_sessions" "$base/.tmp"
+  printf 'old session\n' >"$old_s"; touch -d '15 days ago' "$old_s"
+  printf 'fresh session\n' >"$fresh_s"
+  printf 'archived session\n' >"$old_a"; touch -d '15 days ago' "$old_a"
+  printf 'old tmp\n' >"$old_t"; touch -d '15 days ago' "$old_t"
+  printf 'fresh tmp\n' >"$fresh_t"
+  # Гейт двухфазный: прогон 1 фиксирует в restic, прогон 2 удаляет.
+  run_rotate GATE_MODE=enforce DR_USAGE_PCT=85 DR_CODEX_HOME="$base" -- >/dev/null 2>&1
+  run_rotate GATE_MODE=enforce DR_USAGE_PCT=85 DR_CODEX_HOME="$base" -- >/dev/null 2>&1
+  local out rc
+  out=$(run_rotate DR_DRILL_TAG=codex DR_CODEX_HOME="$base" -- --restore-drill 2>&1)
+  rc=$?
+  if [ ! -e "$old_s" ] && [ ! -e "$old_a" ] && [ ! -e "$old_t" ] \
+     && [ -f "$fresh_s" ] && [ -f "$fresh_t" ] \
+     && grep -q 'codex-sessions' "$JOURNAL" 2>/dev/null \
+     && grep -q 'codex-tmp' "$JOURNAL" 2>/dev/null \
+     && [ "$rc" -eq 0 ] && printf '%s' "$out" | grep -q 'RESTORE_OK'; then
+    report 26 "codex_offload_keeps_fresh" PASS
   else
-    report 26 "codex sessions untouched" FAIL
+    report 26 "codex_offload_keeps_fresh" FAIL
   fi
 }
 
