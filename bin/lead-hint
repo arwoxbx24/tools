@@ -7,7 +7,7 @@ if [[ ${1:-} == --help ]]; then
   echo "PreToolUse/PostToolUse/UserPromptSubmit/Stop hook for the lead Claude Code session only."
   echo "Reads one hook JSON object from stdin. With a non-empty .agent_id prints nothing."
   echo "PreToolUse: at LEAD_HINT_MAX (default 8) or more own investigative calls since the"
-  echo "owner message or last helper run denies the tool (LEAD_HINT_STRICT=0 disables)."
+  echo "owner message or last helper run denies the tool (strict: LEAD_HINT_STRICT=1)."
   echo "PostToolUse: at LEAD_HINT_MAX-1 (default 7) or more counted calls since the owner"
   echo "message or last helper run prints a hint naming 'code-channel audit'. UserPromptSubmit: prints the"
   echo "helper-share line for .transcript_path (last 2000 lines)."
@@ -676,7 +676,7 @@ lead_allowlist() {
 
 case $event in
   PreToolUse)
-    [[ ${LEAD_HINT_STRICT:-1} == 0 ]] && exit 0
+    [[ ${LEAD_HINT_STRICT:-0} == 0 ]] && exit 0
     tool_name=$(jq -r '.tool_name // empty' <<<"$payload" 2>/dev/null) || exit 0
     tool_cmd=$(jq -r '(.tool_input | if type == "object" then .command // empty else empty end)' <<<"$payload" 2>/dev/null) || exit 0
 
@@ -889,7 +889,7 @@ case $event in
     ;;
 
   Stop)
-    [[ ${LEAD_HINT_STRICT:-1} == 0 ]] && exit 0
+    [[ ${LEAD_HINT_STRICT:-0} == 0 ]] && exit 0
     [[ -f $transcript_path && -r $transcript_path ]] || exit 0
 
     # Text of the last main-session assistant line (backwards scan, stops at once).
