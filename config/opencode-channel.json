@@ -8,6 +8,15 @@
     }
   },
   "agent": {
+    "developer": {
+      "description": "Senior developer for code-channel Go runs: minimal exact change inside the TZ FILE lines.",
+      "mode": "primary",
+      "prompt": "You are a senior developer. Make the minimal exact change; edit only the FILE lines listed in the TZ; use TDD when the TZ says so; output the changed lines and the test result.",
+      "permission": {
+        "edit": "allow",
+        "bash": "allow"
+      }
+    },
     "audit": {
       "permission": {
         "bash": {

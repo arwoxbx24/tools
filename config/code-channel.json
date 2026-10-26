@@ -4,11 +4,7 @@
   "resume_idle_limit": 3,
   "switch": {"channel": "go", "owner_word": "все последующие запуски должны происходить через Go Worker Go (владелец 26.10)", "date": "2026-10-26"},
   "ladder": [
-    {"id": "sdk", "enabled": true, "model": "claude-haiku-5-5", "owner_word": "25.10 владелец: «Мы переключаемся на SDK-агента»"},
     {"id": "go", "enabled": true, "model": "opencode-go/deepseek-v4.1-flash", "resume_model": "opencode-go/deepseek-v4.1-flash", "audit_model": "opencode-go/deepseek-v4.1-flash", "fallback_model": "opencode-go/deepseek-v4-pro"},
-    {"id": "codex", "enabled": false, "model": "", "effort": "high"},
-    {"id": "openrouter", "enabled": false, "model": "openrouter/deepseek/deepseek-v4-flash", "key": "OPENROUTER_API_KEY", "secret": "openrouter", "base": "https://openrouter.ai/api/v1"},
-    {"id": "bitrixgpt", "enabled": false, "model": "bitrixgpt/bitrix/bitrixgpt-5.6-agent", "key": "VIBECODE_API_KEY", "secret": "vibecode", "base": "https://vibecode.bitrix24.tech/v1"},
-    {"id": "kimi", "enabled": false, "model": "kimi-for-coding/kimi-for-coding"}
+    {"id": "sdk", "enabled": true, "model": "claude-haiku-5-5", "owner_word": "25.10 владелец: «Мы переключаемся на SDK-агента»"}
   ]
 }

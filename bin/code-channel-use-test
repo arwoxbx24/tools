@@ -28,7 +28,7 @@ plan=$(run --plan 2>/dev/null); prc=$?
 if [[ $rc != 0 && $prc == 0 && $plan == "$before" ]]; then pass 3
 else echo "FAIL 3: rc=$rc out=$out plan=$plan before=$before"; fi
 
-out=$(run use codex "q" 2>&1); rc=$?
+out=$(run use nope "q" 2>&1); rc=$?
 plan=$(run --plan 2>/dev/null)
 if [[ $rc != 0 && $plan == "$before" ]]; then pass 4
 else echo "FAIL 4: rc=$rc out=$out plan=$plan"; fi
