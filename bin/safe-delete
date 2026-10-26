@@ -24,7 +24,7 @@ repo_of(){ local u=$1; u=${u%.git}; [[ $u =~ ([^/:]+)/([^/]+)$ ]] && echo "${BAS
 proc_state(){ local s; s=$(<"$1") || return 1; s=${s##*) }; s=${s%% *}; printf %s "$s"; }
 self_contained(){
   local dir=$1 gd url gp rp found=0 repo_dir
-  [[ ! -e $dir/.git ]] || return 1
+  [[ ! -e $dir/.git ]] || [[ -d $dir/.git ]] || return 1
   git -C "$(dirname -- "$dir")" ls-files --error-unmatch -- "$(basename -- "$dir")" >/dev/null 2>&1 && return 1
   while IFS= read -r gd; do
     found=1
@@ -288,7 +288,8 @@ case "$cmd" in
         if [[ -e $dir/.git && -e $dir/$s && -n $(git -C "$dir" ls-files -- "$s") && -z $(git -C "$dir" status --porcelain --ignored -- "$s") ]]; then allow_tracked_segs+=" $s"; allow_tracked_under=$dir; fi
         if [[ -d $dir/$s && -z $(find "$dir/$s" ! -type d -print -quit) ]]; then allow_tracked_segs+=" $s"; allow_tracked_under=$dir; fi
       done
-    elif self_contained "$dir"; then allow_git_under=$dir; else allow_git_under=; fi
+    elif [[ $dir == "$sandbox"/* && ${dir#"$sandbox"/} != */* && -d $dir/.git ]] && self_contained "$dir"; then allow_git_under=$dir; force_copy=1
+    elif [[ ! -d $dir/.git ]] && self_contained "$dir"; then allow_git_under=$dir; else allow_git_under=; fi
     mapfile -d '' entries < <(find "$dir" -depth -print0); nl=(); for entry in "${entries[@]}"; do [[ -L $entry ]] || nl+=("$entry"); done
     resolve_all "${nl[@]}"; files=()
     for f in "${rs[@]}"; do check_resolved "$f"; [[ -f $f ]] && files+=("$f"); done

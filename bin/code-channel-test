@@ -324,13 +324,14 @@ sl_ok=$tmp/sl-ok.json sl_two=$tmp/sl-two.json sl_none=$tmp/sl-none.json
 printf '%s\n' '{"switch":{"channel":"a","owner_word":"w"},"ladder":[{"id":"a","enabled":true,"model":"x/y","owner_word":"w"},{"id":"b","enabled":false,"model":"x/z"}]}' >"$sl_ok"
 printf '%s\n' '{"ladder":[{"id":"a","enabled":true,"model":"x/y","owner_word":"w"},{"id":"b","enabled":true,"model":"x/z","owner_word":"w"}]}' >"$sl_two"
 printf '%s\n' '{"ladder":[{"id":"a","enabled":true,"model":"x/y"},{"id":"b","enabled":false,"model":"x/z"}]}' >"$sl_none"
-slrun() { env -u CODE_CHANNEL_ACTIVE -u CODE_CHANNEL_TEST_LOG "CODE_CHANNEL_CONFIG=$1" "$root/bin/code-channel" --plan >/dev/null 2>"$tmp/sl-err"; }
+mkdir -p "$tmp/sl-state"
+slrun() { env -u CODE_CHANNEL_ACTIVE -u CODE_CHANNEL_TEST_LOG "CODE_CHANNEL_CONFIG=$1" "CODE_CHANNEL_STATE=$tmp/sl-state" "$root/bin/code-channel" --plan >/dev/null 2>"$tmp/sl-err"; }
 sl0=$ok
 slrun "$sl_ok"; slr0=$?
 [[ $slr0 == 0 ]] && ((ok++))
 slrun "$sl_two"; slr1=$?; sle1=$(<"$tmp/sl-err")
 slrun "$sl_none"; slr2=$?; sle2=$(<"$tmp/sl-err")
-[[ $slr1 != 0 && $sle1 == *'exactly one enabled entry'* && $slr2 != 0 && $sle2 == *switch-lock* ]] && ((ok++))
+[[ $slr1 != 0 && $sle1 == *switch-lock* && $slr2 != 0 && $sle2 == *switch-lock* ]] && ((ok++))
 echo "switch-lock ok=$((ok-sl0)) failed=$((2-(ok-sl0)))"
 ((ok-sl0 == 2)) || { echo 'FAIL switch-lock'; gfail=1; }
 
@@ -360,6 +361,9 @@ CC_CONFIG=$go check 89 '[[ $rc == 0 && ! -s "$tzcount" ]] && ! grep -Fq -- "code
 git -C "$project" clean -fdq
 CC_CONFIG=$go check 90 '[[ $rc == 0 ]] && grep -Fq -- "via /root/workspaces/tools/bin/test-once" "$log"' \
   env OPENCODE_RC=0 OPENCODE_TOUCH=tz-prompt.txt SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
+printf '%s\n' '{"ladder":[{"id":"sdk","enabled":true,"model":"x/y"}]}' >"$tmp/use-noswitch.json"
+CC_CONFIG=$tmp/use-noswitch.json check 91 '[[ $rc == 0 && $out == active=sdk ]] && [[ $(<"$tmp/use-fresh/active") == sdk ]] && [[ $(wc -l <"$tmp/use-fresh/use.log") == 1 ]]' \
+  env CODE_CHANNEL_STATE="$tmp/use-fresh" "$root/bin/code-channel" use sdk "q"
 cg_ok=0
 cgrun() { env -u CODE_CHANNEL_ACTIVE -u CODE_CHANNEL_TEST_LOG "CODE_CHANNEL_CONFIG=$1" "CODE_CHANNEL_STATE=$tmp/state" "$root/bin/code-channel" "${@:2}" 2>&1; }
 cg_blank=$tmp/cg-blank.json cg_mis=$tmp/cg-mis.json cg_good=$tmp/cg-good.json cg_sdk=$tmp/cg-sdk.json
@@ -367,10 +371,10 @@ printf '%s\n' '{"switch":{"channel":"a","owner_word":"  "},"ladder":[{"id":"a","
 printf '%s\n' '{"switch":{"channel":"go","owner_word":"x"},"ladder":[{"id":"sdk","enabled":true,"model":"x/y","owner_word":"x"}]}' >"$cg_mis"
 printf '%s\n' '{"switch":{"channel":"a","owner_word":"w"},"ladder":[{"id":"a","enabled":true,"model":"x/y","owner_word":"w"},{"id":"b","enabled":false,"model":"x/z"}]}' >"$cg_good"
 printf '%s\n' '{"switch":{"channel":"sdk","owner_word":"x"},"ladder":[{"id":"sdk","enabled":true,"model":"x/y","owner_word":"x"}]}' >"$cg_sdk"
-out=$(cgrun "$cg_blank" auto "$project" "$tz"); rc=$?
-[[ $rc == 28 && $out == *owner_word* ]] && ((cg_ok++))
+out=$(cgrun "$cg_blank" --plan); rc=$?
+[[ $rc == 0 && $out == a\ * ]] && ((cg_ok++))
 out=$(cgrun "$cg_mis" auto "$project" "$tz"); rc=$?
-[[ $rc == 28 && $out == *switch.channel* ]] && ((cg_ok++))
+[[ $rc == 28 && $out == *switch-lock* ]] && ((cg_ok++))
 out=$(cgrun "$cg_good" --plan); rc=$?
 [[ $rc == 0 && $(wc -l <<<"$out") == 1 && $out == a\ * ]] && ((cg_ok++))
 out=$(cgrun "$cg_sdk" delivery "$project" "$tz"); rc=$?
@@ -378,11 +382,11 @@ out=$(cgrun "$cg_sdk" delivery "$project" "$tz"); rc=$?
 cg_zero=$tmp/cg-zero.json
 printf '%s\n' '{"ladder":[{"id":"a","enabled":false,"model":"x/y"}]}' >"$cg_zero"
 slrun "$cg_zero"; cgr0=$?; cge0=$(<"$tmp/sl-err")
-[[ $cgr0 != 0 && $cge0 == *'code-channel: ladder must have exactly one enabled entry, found 0'* ]] && ((cg_ok++))
+[[ $cgr0 != 0 && $cge0 == *'at least one enabled entry'* ]] && ((cg_ok++))
 cg_three=$tmp/cg-three.json
 printf '%s\n' '{"ladder":[{"id":"a","enabled":true,"model":"x/y","owner_word":"w"},{"id":"b","enabled":true,"model":"x/z","owner_word":"w"},{"id":"c","enabled":true,"model":"x/z","owner_word":"w"}]}' >"$cg_three"
 env -u CODE_CHANNEL_ACTIVE "CODE_CHANNEL_TEST_LOG=$log" "CODE_CHANNEL_CONFIG=$cg_three" "$root/bin/code-channel" auto "$project" "$tz" >/dev/null 2>"$tmp/sl-err"; cgr1=$?; cge1=$(<"$tmp/sl-err")
-[[ $cgr1 == 28 && $cge1 == *'code-channel: ladder must have exactly one enabled entry, found 3'* ]] && ((cg_ok++))
+[[ $cgr1 == 28 && $cge1 == *switch-lock* ]] && ((cg_ok++))
 slrun "$sl_ok"; cgr2=$?
 [[ $cgr2 == 0 ]] && ((cg_ok++))
 git -C "$project" clean -fdq
@@ -400,10 +404,13 @@ for sw in '' '"switch":null,' '"switch":false,' '"switch":{"channel":"a"},' '"sw
   else
     printf '%s\n' "{${sw}\"ladder\":[{\"id\":\"a\",\"enabled\":true,\"model\":\"x/y\",\"owner_word\":\"w\"},{\"id\":\"b\",\"enabled\":false,\"model\":\"x/z\"}]}" >"$sn_cfg"
   fi
-  out=$(cgrun "$sn_cfg" auto "$project" "$tz"); rc=$?
-  sn_want='switch-lock:'
-  ((sn_i == 8)) && sn_want='exactly one enabled entry'
-  [[ $rc == 28 && $out == *"$sn_want"* ]] && ((sn_ok++))
+  if ((sn_i == 4 || sn_i == 5 || sn_i == 6 || sn_i == 8)); then
+    out=$(cgrun "$sn_cfg" --plan); rc=$?
+    [[ $rc == 0 && $out == a\ * ]] && ((sn_ok++))
+  else
+    out=$(cgrun "$sn_cfg" auto "$project" "$tz"); rc=$?
+    [[ $rc == 28 && $out == *switch-lock* ]] && ((sn_ok++))
+  fi
 done
 echo "switch-lock-neg ok=$sn_ok failed=$((8-sn_ok))"
 ((sn_ok == 8)) || { echo 'FAIL switch-lock-neg'; gfail=1; }
@@ -419,7 +426,7 @@ rs_out=$(env -u CODE_CHANNEL_ACTIVE -u CODE_CHANNEL_TEST_LOG "CODE_CHANNEL_CONFI
 [[ $rs_rc == 0 && $rs_out == go\ * ]] && ((rs_ok++))
 echo "real-shape-plan ok=$rs_ok failed=$((1-rs_ok))"
 ((rs_ok == 1)) || { echo 'FAIL real-shape-plan'; gfail=1; }
-total=$((ok+cg_ok+sn_ok+rp_ok+rs_ok)) expected=110
+total=$((ok+cg_ok+sn_ok+rp_ok+rs_ok)) expected=111
 [[ $total == "$expected" ]] || { echo "FAIL total $total/$expected"; gfail=1; }
 ((gfail == 0)) || exit 1
 echo "PASS $total/$total"

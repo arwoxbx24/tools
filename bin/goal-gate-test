@@ -40,7 +40,8 @@ if isblock "$o1" && isblock "$o2" && jq -e '.systemMessage | contains("НЕ ПО
 else echo "FAIL 4 bound_warns_third: o1=$o1 o2=$o2 o3=$o3"; fi
 
 out=$(stop "g5-$$" 'Можно написать /goal clear')
-isblock "$out" && { echo 'PASS 5 banned_wording_blocks'; ok=$((ok+1)); } || echo "FAIL 5 banned_wording_blocks: $out"
+out5b=$(stop "g5b-$$" 'Можно снять цель')
+isblock "$out" && isblock "$out5b" && { echo 'PASS 5 banned_wording_blocks'; ok=$((ok+1)); } || echo "FAIL 5 banned_wording_blocks: $out $out5b"
 
 out=$(stop "g6-$$" '/goal AC1: ls => x')
 isblock "$out" && { echo 'PASS 6 goal_without_method_blocks'; ok=$((ok+1)); } || echo "FAIL 6 goal_without_method_blocks: $out"

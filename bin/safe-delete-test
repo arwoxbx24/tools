@@ -521,13 +521,14 @@ n67=$(grep -c '^удалено: ' <<< "$out67")
 g67=$(grep -c 'основание: git' <<< "$out67")
 if [[ $r67 == 0 && ! -e "$d/sb/test-x" && $n67 -ge 1 && $g67 == 0 ]]; then echo 'PASS T67 sandbox_test_repo'; ok=$((ok+1)); else echo "FAIL T67: rc=$r67 n=$n67 git=$g67 out=$out67"; fi
 
-git init -q "$d/sb/keep-x"
-git -C "$d/sb/keep-x" config user.email t@t
-git -C "$d/sb/keep-x" config user.name t
-printf 'a\n' > "$d/sb/keep-x/a.txt"
-git -C "$d/sb/keep-x" add a.txt && git -C "$d/sb/keep-x" commit -q -m a
-out68=$(SAFE_DELETE_SANDBOX="$d/sb" "$bin/safe-delete" --bk "$bk" dir "$d/sb/keep-x" 2>&1); r68=$?
-if [[ $r68 == 2 && $out68 == *'запрещённый сегмент'* && -d "$d/sb/keep-x" ]]; then echo 'PASS T68 non_test_repo_refused'; ok=$((ok+1)); else echo "FAIL T68: rc=$r68 out=$out68"; fi
+# T68: a repo nested deeper than one level under the sandbox is still refused
+git init -q "$d/sb/keep-x/sub"
+git -C "$d/sb/keep-x/sub" config user.email t@t
+git -C "$d/sb/keep-x/sub" config user.name t
+printf 'a\n' > "$d/sb/keep-x/sub/a.txt"
+git -C "$d/sb/keep-x/sub" add a.txt && git -C "$d/sb/keep-x/sub" commit -q -m a
+out68=$(SAFE_DELETE_SANDBOX="$d/sb" "$bin/safe-delete" --bk "$bk" dir "$d/sb/keep-x/sub" 2>&1); r68=$?
+if [[ $r68 == 2 && $out68 == *'запрещённый сегмент'* && -d "$d/sb/keep-x/sub" ]]; then echo 'PASS T68 nested_repo_refused'; ok=$((ok+1)); else echo "FAIL T68: rc=$r68 out=$out68"; fi
 
 mkdir -p "$d/sb/test-y/.beads"; printf 'f\n' > "$d/sb/test-y/.beads/f"
 out69=$(SAFE_DELETE_SANDBOX="$d/sb" "$bin/safe-delete" --bk "$bk" dir "$d/sb/test-y" 2>&1); r69=$?
@@ -872,5 +873,44 @@ git -C "$d/dorig" bundle create "$aw/.repowise/d$$.bundle" --all >/dev/null 2>&1
 if [[ $r116 == 2 && -f "$aw/.repowise/d$$.bundle" ]]; then echo 'PASS T116 dup_repowise_segment'; ok=$((ok+1)); else echo "FAIL T116: rc=$r116"; fi
 unset SAFE_DELETE_DUP_ROOT
 
-[[ $ok == 115 ]] || exit 1
+# T118: any direct child of the sandbox with a .git clone is deleted by copy and its file restores
+git init -q "$d/sb/arwox-clone-$$"
+git -C "$d/sb/arwox-clone-$$" config user.email t@t
+git -C "$d/sb/arwox-clone-$$" config user.name t
+printf 'c\n' > "$d/sb/arwox-clone-$$/a.txt"
+git -C "$d/sb/arwox-clone-$$" add a.txt && git -C "$d/sb/arwox-clone-$$" commit -q -m c
+out118=$(SAFE_DELETE_SANDBOX="$d/sb" "$bin/safe-delete" --bk "$bk" dir "$d/sb/arwox-clone-$$" 2>&1); r118=$?
+gone118=0; [[ ! -e "$d/sb/arwox-clone-$$" ]] && gone118=1
+g118=$(grep -c 'основание: git' <<< "$out118")
+l118=$(awk -F '\t' -v p="$d/sb/arwox-clone-$$/a.txt" '$2 == "file" && $3 == p && $8 == "deleted" { n=NR } END { print n }' "$bk/ledger.tsv")
+r118b=1
+if [[ -n $l118 ]]; then "$bin/safe-delete" --bk "$bk" restore "$l118" >/dev/null 2>&1; r118b=$?; fi
+c118=$(cat "$d/sb/arwox-clone-$$/a.txt" 2>/dev/null)
+if [[ $r118 == 0 && $gone118 == 1 && $g118 == 0 && $r118b == 0 && $c118 == c ]]; then echo 'PASS T118 sandbox_any_name_clone'; ok=$((ok+1)); else echo "FAIL T118: rc=$r118 gone=$gone118 line=$l118 git=$g118 restore=$r118b c=$c118"; fi
+
+# T119: a .git gitfile pointing outside is not newly allowed for a non-test sandbox dir
+mkdir -p "$d/sb/gitfile-out-$$" "$d/outside-git-$$"
+printf 'g\n' > "$d/sb/gitfile-out-$$/f"
+printf 'gitdir: %s\n' "$d/outside-git-$$" > "$d/sb/gitfile-out-$$/.git"
+out119=$(SAFE_DELETE_SANDBOX="$d/sb" "$bin/safe-delete" --bk "$bk" dir "$d/sb/gitfile-out-$$" 2>&1); r119=$?
+if [[ $r119 == 2 && $out119 == *'запрещённый сегмент'* && -f "$d/sb/gitfile-out-$$/.git" && -f "$d/sb/gitfile-out-$$/f" ]]; then echo 'PASS T119 gitfile_outside_refused'; ok=$((ok+1)); else echo "FAIL T119: rc=$r119 out=$out119"; fi
+
+# T120: a directory outside the sandbox with a .git is still refused
+git init -q "$d/out-git-$$"
+printf 'o\n' > "$d/out-git-$$/f"
+out120=$(SAFE_DELETE_SANDBOX="$d/sb" "$bin/safe-delete" --bk "$bk" dir "$d/out-git-$$" 2>&1); r120=$?
+if [[ $r120 == 2 && $out120 == *'запрещённый сегмент'* && -d "$d/out-git-$$/.git" && -f "$d/out-git-$$/f" ]]; then echo 'PASS T120 outside_sandbox_git_refused'; ok=$((ok+1)); else echo "FAIL T120: rc=$r120 out=$out120"; fi
+
+# T121: a sandbox clone with a nested .git gitfile pointing outside is refused
+git init -q "$d/sb/nested-out-$$"
+git -C "$d/sb/nested-out-$$" config user.email t@t
+git -C "$d/sb/nested-out-$$" config user.name t
+printf 'n\n' > "$d/sb/nested-out-$$/f"
+git -C "$d/sb/nested-out-$$" add f && git -C "$d/sb/nested-out-$$" commit -q -m n
+mkdir -p "$d/sb/nested-out-$$/sub" "$d/nested-out-git-$$"
+printf 'gitdir: %s\n' "$d/nested-out-git-$$" > "$d/sb/nested-out-$$/sub/.git"
+out121=$(SAFE_DELETE_SANDBOX="$d/sb" "$bin/safe-delete" --bk "$bk" dir "$d/sb/nested-out-$$" 2>&1); r121=$?
+if [[ $r121 == 2 && -d "$d/sb/nested-out-$$" && -f "$d/sb/nested-out-$$/f" ]]; then echo 'PASS T121 nested_gitfile_outside_refused'; ok=$((ok+1)); else echo "FAIL T121: rc=$r121 out=$out121"; fi
+
+[[ $ok == 119 ]] || exit 1
 echo "итог: PASS $ok, FAIL 0"
