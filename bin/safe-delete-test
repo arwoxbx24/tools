@@ -944,5 +944,29 @@ out123=$("$bin/safe-delete" --bk "$bk" worktree "$wt123" 2>&1); r123=$?
 gone123=0; [[ ! -e "$wt123" ]] && gone123=1
 if [[ $r123 == 0 && $gone123 == 1 && $out123 == *'восстановить: safe-delete restore'* && $out123 != *'Argument list too long'* ]]; then echo 'PASS T123 huge_worktree_argmax'; ok=$((ok+1)); else echo "FAIL T123: rc=$r123 gone=$gone123 nf=$nf123 out=${out123:0:200}"; fi
 
-[[ $ok == 121 ]] || exit 1
+# T124: a *token* code file with no secret is deleted by dir
+mkdir -p "$d/t124-$$/lib"
+printf 'x = 1\n' > "$d/t124-$$/lib/hub_token.py"
+out124=$("$bin/safe-delete" --bk "$bk" dir "$d/t124-$$" 2>&1); r124=$?
+gone124=0; [[ ! -e "$d/t124-$$/lib/hub_token.py" ]] && gone124=1
+if [[ $r124 == 0 && $gone124 == 1 ]]; then echo 'PASS T124 token_code_clean'; ok=$((ok+1)); else echo "FAIL T124: rc=$r124 gone=$gone124 out=$out124"; fi
+
+# T125: a *token* code file holding a secret is refused
+s125=$(printf '%s%s%s' 'Zq7xY9' 'mN8pR4' 'tW6vB2')
+sgd125="$d/sg125-$$"; sgc125="$d/sgc125-$$"
+mkdir -p "$sgd125" "$sgc125"
+printf 'DUMMY=%s\n' "$s125" > "$sgd125/fake.env"
+SECRET_GATE_CONF="$sgc125" SECRET_GATE_DIR="$sgd125" "$bin/secret-gate" build >/dev/null 2>&1
+mkdir -p "$d/t125-$$/lib"
+printf 'key = "%s"\n' "$s125" > "$d/t125-$$/lib/hub_token.py"
+out125=$(SECRET_GATE_CONF="$sgc125" SECRET_GATE_DIR="$sgd125" "$bin/safe-delete" --bk "$bk" dir "$d/t125-$$" 2>&1); r125=$?
+if [[ $r125 == 2 && -f "$d/t125-$$/lib/hub_token.py" ]]; then echo 'PASS T125 token_code_secret_refused'; ok=$((ok+1)); else echo "FAIL T125: rc=$r125 out=$out125"; fi
+
+# T126: a *token* file with a non-code extension is refused
+mkdir -p "$d/t126-$$"
+printf 'plain\n' > "$d/t126-$$/api_token.txt"
+out126=$("$bin/safe-delete" --bk "$bk" dir "$d/t126-$$" 2>&1); r126=$?
+if [[ $r126 == 2 && -f "$d/t126-$$/api_token.txt" ]]; then echo 'PASS T126 token_other_ext_refused'; ok=$((ok+1)); else echo "FAIL T126: rc=$r126 out=$out126"; fi
+
+[[ $ok == 124 ]] || exit 1
 echo "итог: PASS $ok, FAIL 0"
