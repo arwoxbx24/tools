@@ -129,7 +129,7 @@ resolve_all(){
   rs=()
   (($#)) || return 0
   local r
-  while IFS= read -r -d '' r; do rs+=("$r"); done < <(realpath -e -z -- "$@")
+  while IFS= read -r -d '' r; do rs+=("$r"); done < <(printf '%s\0' "$@" | xargs -0 -r realpath -e -z --)
   (( ${#rs[@]} == $# )) || refuse "нет пути"
 }
 batch_delete(){

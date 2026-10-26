@@ -35,6 +35,7 @@ DR_TMP_MAX=${DR_TMP_MAX:-500}
 # чтобы тестовый режим без DR_CODEX_HOME не трогал боевой /root/.codex.
 CODEX_HOME_EXPLICIT=${DR_CODEX_HOME:+1}
 DR_CODEX_HOME=${DR_CODEX_HOME:-/root/.codex}
+DR_CODEX_OFFLOAD_DAYS=${DR_CODEX_OFFLOAD_DAYS:-14}
 RUNNER_EXPLICIT=${DR_RUNNER_ROOTS:+1}
 DR_RUNNER_ROOTS=${DR_RUNNER_ROOTS:-/opt/actions-runner /root/actions-runner-2}
 NOTIFY_ENV=${NOTIFY_ENV:-/root/workspaces/secrets/services/pm2-notify.env}
@@ -91,11 +92,15 @@ PROJECTS_ALLOW=(
   '/root/workspaces/projects/.worktrees/codex/*'
   '/root/workspaces/projects/.worktrees/claude/*'
 )
-# Две узкие базы Codex, которые чистит cleanup_codex; под ними DENY_LIST не действует,
+# Узкие базы Codex, которые чистит cleanup_codex; под ними DENY_LIST не действует,
 # остальной /root/.codex/** остаётся под запретом.
 CODEX_ALLOW=(
   "$DR_CODEX_HOME/plugins/data/auto-review-just-every/turns"
   "$DR_CODEX_HOME/packages/standalone/releases"
+  "$DR_CODEX_HOME/sessions"
+  "$DR_CODEX_HOME/archived_sessions"
+  "$DR_CODEX_HOME/.tmp"
+  "$DR_CODEX_HOME/tmp"
 )
 # Класс backups (spec:054 CR FR-027/029, владелец 10.10): N|маска; N новейших остаются локально,
 # остальные — только через гейт restic. Новый вид бэкапа = одна строка.
@@ -573,19 +578,25 @@ irrep_candidates() { # -> незаменимые кандидаты (не в sta
 # --restore-drill (spec:055): репетиция восстановления; без уборки и без ledger.
 if [ "$MODE" = drill ]; then
   restic_env
-  drill_id=$("$RESTIC" snapshots --tag predelete --latest 1 --json 2>/dev/null \
+  drill_tag=${DR_DRILL_TAG:-predelete}
+  drill_id=$("$RESTIC" snapshots --tag "$drill_tag" --latest 1 --json 2>/dev/null \
     | jq -r '.[0].short_id' 2>/dev/null)
   if [ -z "$drill_id" ] || [ "$drill_id" = null ]; then
     echo "drill: 0 files"
     exit 1
   fi
   drill_d=$(mktemp -d /tmp/restore-drill-XXXX) || exit 1
-  "$RESTIC" restore "$drill_id" --target "$drill_d" >/dev/null 2>&1
-  drill_n=0; drill_m=0; drill_k=0
+  "$RESTIC" restore "$drill_id" --target "$drill_d" --verify >/dev/null 2>&1
+  drill_rc=$?
+  drill_n=0; drill_m=0; drill_k=0; drill_v=0
   while IFS= read -r f; do
     [ -n "$f" ] || continue
     real="${f#"$drill_d"}"
-    [ -f "$real" ] || continue
+    if [ ! -f "$real" ]; then
+      # оригинала уже нет: содержимое проверил сам restic (--verify)
+      drill_v=$((drill_v + 1))
+      continue
+    fi
     drill_n=$((drill_n + 1))
     if cmp -s -- "$f" "$real"; then
       drill_m=$((drill_m + 1))
@@ -594,8 +605,9 @@ if [ "$MODE" = drill ]; then
     fi
   done < <(find "$drill_d" -type f 2>/dev/null)
   rm -rf -- "$drill_d"
-  echo "drill: $drill_n files, $drill_m match, $drill_k mismatch"
-  if [ "$drill_k" -eq 0 ] && [ "$drill_n" -gt 0 ]; then
+  echo "drill: $drill_n files, $drill_m match, $drill_k mismatch, $drill_v verified"
+  if [ "$drill_rc" -eq 0 ] && [ "$drill_k" -eq 0 ] && [ $((drill_n + drill_v)) -gt 0 ]; then
+    echo "RESTORE_OK $drill_id $((drill_n + drill_v)) files"
     exit 0
   fi
   exit 1
@@ -635,7 +647,11 @@ fix_candidates() { # class listfile -> 0/1; фиксирует незамени�
   printf '%s\n' "${fix_paths[@]}" >"$fix_list"
   local tags=predelete
   # backups: копия — единственная после удаления, forget её не трогает (владелец 10.10)
-  [ "$class" = backups ] && tags=predelete,keep-archive
+  # codex-*: отгруженные данные хранятся бессрочно и находятся по тегу codex (владелец 26.10)
+  case "$class" in
+    backups) tags=predelete,keep-archive ;;
+    codex-sessions|codex-tmp) tags=predelete,keep-archive,codex ;;
+  esac
   dump=$("$RESTIC" backup --files-from-verbatim "$fix_list" --tag "$tags" --host "$(hostname)" --json)
   rc=$?
   if [ "$rc" -ne 0 ]; then
@@ -680,6 +696,8 @@ verify_and_delete() { # class -> удаление по гейту: провер�
       projects) for p in "${PROJECTS_ALLOW[@]}"; do [[ "$path" == $p ]] && { own=1; break; }; done ;;
       runner) for p in $DR_RUNNER_ROOTS; do [[ "$path" == "$p/"* ]] && { own=1; break; }; done ;;
       backups) backup_rule_match "$path" && own=1 ;;
+      codex-sessions) for p in "$DR_CODEX_HOME/sessions" "$DR_CODEX_HOME/archived_sessions"; do [[ "$path" == "$p/"* ]] && { own=1; break; }; done ;;
+      codex-tmp) for p in "$DR_CODEX_HOME/.tmp" "$DR_CODEX_HOME/tmp"; do [[ "$path" == "$p/"* ]] && { own=1; break; }; done ;;
       test-irreplaceable) [ -n "${DR_TEST_IRREPLACEABLE_DIR:-}" ] && [[ "$path" == "$DR_TEST_IRREPLACEABLE_DIR/"* ]] && own=1 ;;
     esac
     if [ "$own" -eq 0 ] || [ "${#rec[@]}" -ne 6 ]; then
@@ -885,14 +903,37 @@ cleanup_always() { # только существующая vendor log rotation, 
   fi
 }
 
-# Две узкие базы Codex (владелец 10.10, spec dcfg-demsy.10): review-файлы и релизы
-# заменимые, сессии Codex не трогаются (владелец 10.10). Базы перечислены в CODEX_ALLOW,
-# DENY_LIST на них не действует.
+# codex-sessions / codex-tmp: старые файлы отгружаются в restic и удаляются гейтом,
+# свежие остаются (владелец 26.10). Список — как у cleanup_backups.
+cleanup_codex_offload() { # class base age_min
+  local cls=$1 base=$2 age_min=$3 list
+  [ -d "$base" ] && [ ! -L "$base" ] || return 0
+  [ "$(realpath -e -- "$base" 2>/dev/null)" = "$base" ] || return 0
+  if [ "$MODE" = run ]; then
+    list=$(mktemp) || return 1
+    find -P "$base" -type f -mmin +"$age_min" 2>/dev/null >>"$list"
+    if [ -s "$list" ]; then
+      REFIX_PATHS=()
+      gate_process "$cls" "$list" || true
+    fi
+    rm -f -- "$list"
+  else
+    handle "$cls" < <(find -P "$base" -type f -mmin +"$age_min" -print0 2>/dev/null)
+  fi
+}
+
+# Codex (владелец 26.10): старые сессии и tmp отгружаются в restic (S3) и удаляются, свежие остаются.
 cleanup_codex() {
   local turns="$DR_CODEX_HOME/plugins/data/auto-review-just-every/turns"
   local standalone="$DR_CODEX_HOME/packages/standalone"
   local releases="$standalone/releases"
-  local current d mt newest newest_mt
+  local sessions="$DR_CODEX_HOME/sessions"
+  local archived="$DR_CODEX_HOME/archived_sessions"
+  local dot_tmp="$DR_CODEX_HOME/.tmp"
+  local tmp="$DR_CODEX_HOME/tmp"
+  local current d mt newest newest_mt b
+  local offload_min=$(( ${DR_CODEX_OFFLOAD_DAYS:-14} * 1440 ))
+  local tmp_min=$(( 14 * 1440 ))
 
   # codex-review: заменимые turn-файлы старше 24 ч
   if [ -d "$turns" ]; then
@@ -921,6 +962,20 @@ cleanup_codex() {
     if [ "$MODE" = run ]; then
       find "$releases" -mindepth 1 -type d -empty -delete 2>/dev/null
     fi
+  fi
+
+  # codex-sessions: регулярные файлы старше DR_CODEX_OFFLOAD_DAYS дней (0 = все)
+  for b in "$sessions" "$archived"; do
+    cleanup_codex_offload codex-sessions "$b" "$offload_min"
+  done
+  # codex-tmp: старше 14 дней; свежие файлы могут держать живые процессы Codex
+  for b in "$dot_tmp" "$tmp"; do
+    cleanup_codex_offload codex-tmp "$b" "$tmp_min"
+  done
+  if [ "$MODE" = run ]; then
+    for b in "$sessions" "$archived" "$dot_tmp" "$tmp"; do
+      [ -d "$b" ] && find "$b" -mindepth 1 -type d -empty -delete 2>/dev/null
+    done
   fi
 }
 

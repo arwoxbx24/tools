@@ -912,5 +912,22 @@ printf 'gitdir: %s\n' "$d/nested-out-git-$$" > "$d/sb/nested-out-$$/sub/.git"
 out121=$(SAFE_DELETE_SANDBOX="$d/sb" "$bin/safe-delete" --bk "$bk" dir "$d/sb/nested-out-$$" 2>&1); r121=$?
 if [[ $r121 == 2 && -d "$d/sb/nested-out-$$" && -f "$d/sb/nested-out-$$/f" ]]; then echo 'PASS T121 nested_gitfile_outside_refused'; ok=$((ok+1)); else echo "FAIL T121: rc=$r121 out=$out121"; fi
 
-[[ $ok == 119 ]] || exit 1
+# T122: a dir whose entries total more path bytes than ARG_MAX is resolved in batches
+argmax122=$(getconf ARG_MAX)
+prefix122=$(printf 'x%.0s' {1..240})
+huge122="$d/huge-$$"
+deep122=$huge122
+mkdir -p "$deep122"
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do deep122="$deep122/$prefix122"; mkdir -- "$deep122"; done
+per122=$(( ${#deep122} + 1 + 240 + 6 + 1 ))
+nf122=$(( argmax122 / per122 * 45 / 100 ))
+need122=$(( argmax122 * 115 / 100 - nf122 * per122 ))
+nd122=$(( need122 / (${#deep122} + 1 + 240 + 6) + 1 ))
+seq -f "$deep122/${prefix122}%06g" "$nf122" | xargs -d '\n' -n 200 -r touch --
+seq -f "$deep122/${prefix122}d%05g" "$nd122" | xargs -d '\n' -n 200 -r mkdir -p --
+out122=$("$bin/safe-delete" --bk "$bk" dir "$huge122" 2>&1); r122=$?
+gone122=0; [[ ! -e "$huge122" ]] && gone122=1
+if [[ $r122 == 0 && $gone122 == 1 && $out122 != *'Argument list too long'* ]]; then echo 'PASS T122 huge_dir_argmax'; ok=$((ok+1)); else echo "FAIL T122: rc=$r122 gone=$gone122 out=${out122:0:200}"; fi
+
+[[ $ok == 120 ]] || exit 1
 echo "итог: PASS $ok, FAIL 0"

@@ -97,4 +97,17 @@ echo v4 > "$r/f.txt"
 out=$(FAKE_RC=1 TEST_ONCE_DIR=$s "$t" "$r" ./t.sh); rc=$?
 if [ "$ok6" = 1 ] && [ "$rc" = 29 ] && [[ $out == *"STALLED 3 failing runs"* ]] && [ "$(runs)" = 3 ]; then pass 6; else bad 6 "ok6=$ok6 rc=$rc runs=$(runs) out=$out"; fi
 
-if [ "$ok" = 6 ]; then echo "PASS 6/6"; else echo "FAIL $ok/6"; exit 1; fi
+g=$d/g; git init -q "$g"
+git -C "$g" config user.email t@t
+git -C "$g" config user.name t
+echo a > "$g/f.txt"
+git -C "$g" add f.txt
+git -C "$g" update-index --add --cacheinfo 160000,0123456789abcdef0123456789abcdef01234567,sub
+git -C "$g" commit -qm gitlink
+mkdir "$g/sub"
+out=$(TEST_ONCE_DIR=$d/state8 "$t" "$g" true 2>&1); rc=$?
+echo b > "$g/f.txt"
+out2=$(TEST_ONCE_DIR=$d/state8 "$t" "$g" true 2>&1); rc2=$?
+if [ "$rc" = 0 ] && [[ $out != *"snapshot failed"* ]] && [ "$rc2" = 0 ] && [[ $out2 != *"snapshot failed"* ]] && [[ $out2 != *"test-once: cached"* ]]; then pass "7 gitlink_snapshot"; else bad 7 "rc=$rc out=$out rc2=$rc2 out2=$out2"; fi
+
+if [ "$ok" = 7 ]; then echo "PASS 7/7"; else echo "FAIL $ok/7"; exit 1; fi
