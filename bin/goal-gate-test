@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+set -u
+
+dir=$(cd -- "$(dirname -- "$0")" && pwd)
+d=$(mktemp -d)
+trap 'rm -rf "$d"' EXIT
+ok=0
+total=10
+
+cat >"$d/goal-check" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "${GOAL_CHECK_RESULT:-GOAL=MET}"
+STUB
+chmod 755 "$d/goal-check"
+export GOAL_GATE_CHECK="$d/goal-check"
+
+stop() { # sid msg
+  jq -nc --arg s "$1" --arg m "$2" '{hook_event_name:"Stop",session_id:$s,last_assistant_message:$m}' | "$dir/goal-gate"
+}
+isblock() { jq -e '.decision == "block"' <<<"$1" >/dev/null 2>&1; }
+ctrl='Контроль задач: выполнено 1 · в процессе 0 · открыто 0'
+
+out=$(stop "g1-$$" $'Работа идёт.\nGOAL=NOT_MET\n'"$ctrl"$'\n✅ DONE')
+isblock "$out" && { echo 'PASS 1 notmet_line_blocks'; ok=$((ok+1)); } || echo "FAIL 1 notmet_line_blocks: $out"
+
+out=$(stop "g2-$$" $'Не сделано: x\n'"$ctrl"$'\n✅ DONE')
+isblock "$out" && { echo 'PASS 2 nesdelano_blocks'; ok=$((ok+1)); } || echo "FAIL 2 nesdelano_blocks: $out"
+
+export GOAL_CHECK_RESULT=GOAL=MET
+out=$(stop "g3-$$" $'goal-check dcfg-x\n'"$ctrl"$'\n✅ DONE'); rc=$?
+if [[ $rc == 0 && -z $out ]]; then echo 'PASS 3 met_passes'; ok=$((ok+1)); else echo "FAIL 3 met_passes: rc=$rc out=$out"; fi
+
+export GOAL_CHECK_RESULT=GOAL=NOT_MET
+sid="g4-$$"
+m=$'goal-check dcfg-x\n'"$ctrl"$'\n✅ DONE'
+o1=$(stop "$sid" "$m"); o2=$(stop "$sid" "$m"); o3=$(stop "$sid" "$m")
+if isblock "$o1" && isblock "$o2" && jq -e '.systemMessage | contains("НЕ ПОДТВЕРЖДЁН")' <<<"$o3" >/dev/null 2>&1 &&
+  [[ $(jq -r 'has("decision")' <<<"$o3" 2>/dev/null) == false ]]; then
+  echo 'PASS 4 bound_warns_third'; ok=$((ok+1))
+else echo "FAIL 4 bound_warns_third: o1=$o1 o2=$o2 o3=$o3"; fi
+
+out=$(stop "g5-$$" 'Можно написать /goal clear')
+isblock "$out" && { echo 'PASS 5 banned_wording_blocks'; ok=$((ok+1)); } || echo "FAIL 5 banned_wording_blocks: $out"
+
+out=$(stop "g6-$$" '/goal AC1: ls => x')
+isblock "$out" && { echo 'PASS 6 goal_without_method_blocks'; ok=$((ok+1)); } || echo "FAIL 6 goal_without_method_blocks: $out"
+
+out=$(stop "g7-$$" '/goal МЕТОД: TDD; AC1: ls => x'); rc=$?
+if [[ $rc == 0 && -z $out ]]; then echo 'PASS 7 goal_with_method_passes'; ok=$((ok+1)); else echo "FAIL 7 goal_with_method_passes: rc=$rc out=$out"; fi
+
+o1=$(stop "g8a-$$" 'Работаю дальше.')
+o2=$(stop "g8b-$$" 'Статус PARTIAL.')
+o3=$(stop "g8c-$$" $'Статус PARTIAL.\nКонтроль задач: выполнено 1 · в процессе 1 · открыто 2')
+if [[ -z $o1 ]] && isblock "$o2" && [[ -z $o3 ]]; then
+  echo 'PASS 8 task_control_line'; ok=$((ok+1))
+else echo "FAIL 8 task_control_line: o1=$o1 o2=$o2 o3=$o3"; fi
+
+in=$(jq -nc '{hook_event_name:"PreToolUse",tool_name:"Agent",tool_input:{}}')
+out=$(printf '%s' "$in" | "$dir/goal-gate")
+if jq -e '.hookSpecificOutput.permissionDecision == "deny"' <<<"$out" >/dev/null 2>&1; then
+  echo 'PASS 9 agent_denied'; ok=$((ok+1))
+else echo "FAIL 9 agent_denied: $out"; fi
+
+in=$(jq -nc '{hook_event_name:"PreToolUse",tool_name:"Bash",tool_input:{command:"/root/workspaces/tools/bin/code-channel auto /x /y"}}')
+out=$(printf '%s' "$in" | "$dir/goal-gate"); rc=$?
+if [[ $rc == 0 && -z $out ]]; then echo 'PASS 10 bash_passes'; ok=$((ok+1)); else echo "FAIL 10 bash_passes: rc=$rc out=$out"; fi
+
+if [ "$ok" -eq "$total" ]; then echo "PASS $ok/$total"; else echo "FAIL $ok/$total"; exit 1; fi
