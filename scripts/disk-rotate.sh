@@ -35,6 +35,8 @@ DR_TMP_MAX=${DR_TMP_MAX:-500}
 # чтобы тестовый режим без DR_CODEX_HOME не трогал боевой /root/.codex.
 CODEX_HOME_EXPLICIT=${DR_CODEX_HOME:+1}
 DR_CODEX_HOME=${DR_CODEX_HOME:-/root/.codex}
+RUNNER_EXPLICIT=${DR_RUNNER_ROOTS:+1}
+DR_RUNNER_ROOTS=${DR_RUNNER_ROOTS:-/opt/actions-runner /root/actions-runner-2}
 NOTIFY_ENV=${NOTIFY_ENV:-/root/workspaces/secrets/services/pm2-notify.env}
 ECOSYSTEM="${0%/*}/../ecosystem.config.js"
 RUN_ID=$(date +%Y%m%d-%H%M%S)
@@ -81,6 +83,8 @@ DENY_LIST=(
   '**/hh-scoring*/**'
   '/root/.local/share/uv/**'
   '/home/gitmirror/**'
+  '/var/lib/docker'
+  '/var/lib/docker/**'
 )
 PROJECTS_ALLOW=(
   '/root/workspaces/projects/.agent-work/*'
@@ -674,6 +678,7 @@ verify_and_delete() { # class -> удаление по гейту: провер�
     # ponytail: six-column state uses path ownership; add class metadata if classes share paths.
     case "$class" in
       projects) for p in "${PROJECTS_ALLOW[@]}"; do [[ "$path" == $p ]] && { own=1; break; }; done ;;
+      runner) for p in $DR_RUNNER_ROOTS; do [[ "$path" == "$p/"* ]] && { own=1; break; }; done ;;
       backups) backup_rule_match "$path" && own=1 ;;
       test-irreplaceable) [ -n "${DR_TEST_IRREPLACEABLE_DIR:-}" ] && [[ "$path" == "$DR_TEST_IRREPLACEABLE_DIR/"* ]] && own=1 ;;
     esac
@@ -1021,6 +1026,57 @@ projects_gate() {
   rm -f -- "$list"
 }
 
+runner_old_dirs() { # root -> старые версии bin.* и externals.* (каталоги); текущие цели bin и externals не входят
+  local root=$1 cur_bin cur_ext d real
+  cur_bin=$(readlink -f "$root/bin"); cur_ext=$(readlink -f "$root/externals")
+  for d in "$root"/bin.* "$root"/externals.*; do
+    [ -d "$d" ] && [ ! -L "$d" ] || continue
+    real=$(readlink -f "$d")
+    { [ "$real" = "$cur_bin" ] || [ "$real" = "$cur_ext" ]; } && continue
+    printf '%s\n' "$d"
+  done
+}
+
+runner_candidates() { # -> файлы класса runner на stdout; корни из DR_RUNNER_ROOTS
+  local root cur_bin cur_ext d e pid exe busy p
+  for root in $DR_RUNNER_ROOTS; do
+    if denied "$root"; then echo "runner denied: $root" >>"$DR_LOG"; continue; fi
+    [ -d "$root" ] && [ ! -L "$root" ] || continue
+    cur_bin=$(readlink -f "$root/bin"); cur_ext=$(readlink -f "$root/externals")
+    if [ -z "$cur_bin" ] || [ -z "$cur_ext" ]; then echo "runner skipped: $root no current version" >>"$DR_LOG"; continue; fi
+    while IFS= read -r d; do find -P "$d" -type f 2>/dev/null; done < <(runner_old_dirs "$root")
+    busy=0
+    for pid in /proc/[0-9]*; do
+      exe=$(readlink "$pid/exe" 2>/dev/null) || continue
+      [[ "$exe" == "$cur_bin/"*Runner.Worker ]] && { busy=1; break; }
+    done
+    if [ "$busy" -eq 1 ]; then echo "runner busy: $root" >>"$DR_LOG"; continue; fi
+    for e in "$root/_work"/*; do
+      [ -e "$e" ] || continue
+      [ "${e##*/}" = _tool ] && continue
+      [ -z "$(find -P "$e" -newermt "-${DR_RUNNER_WORK_DAYS:-7} days" -print -quit 2>/dev/null)" ] || continue
+      find -P "$e" -type f 2>/dev/null
+    done
+  done | while IFS= read -r p; do
+    denied "$p" || { [ -f "$p" ] && [ ! -L "$p" ] && [ "$(realpath -e -- "$p" 2>/dev/null)" = "$p" ] && printf '%s\n' "$p"; }
+  done
+}
+
+runner_gate() {
+  local list p root d
+  list=$(mktemp) || return; runner_candidates >"$list"
+  if [ "$MODE" = dry-run ]; then while IFS= read -r p; do handle runner < <(printf '%s\0' "$p"); done <"$list"
+  else
+    REFIX_PATHS=(); gate_process runner "$list" || true
+    if [ "$GATE_MODE" = enforce ]; then for root in $DR_RUNNER_ROOTS; do
+      [ -d "$root" ] && [ ! -L "$root" ] && ! denied "$root" || continue
+      while IFS= read -r d; do find -P "$d" -mindepth 1 -depth -type d -empty -delete 2>/dev/null; done < <(runner_old_dirs "$root")
+      find -P "$root/_work" -mindepth 2 -depth -type d -empty -delete 2>/dev/null
+    done; fi
+  fi
+  rm -f -- "$list"
+}
+
 s3_line() {
   local stats used max pct line
   if stats=$("${DR_YC:-yc}" storage bucket stats --name arwox-server-backup --format json 2>/dev/null) && used=$(jq -r '.used_size' <<<"$stats" 2>/dev/null) && max=$(jq -r '.max_size' <<<"$stats" 2>/dev/null) && [[ "$used" =~ ^[0-9]+$ && "$max" =~ ^[0-9]+$ ]] && [ "$max" -gt 0 ]; then pct=$((used * 100 / max)); line="s3: $used/$max ${pct}%"; else line='s3: unavailable'; fi
@@ -1055,6 +1111,7 @@ if [ "$DR_TEST_ONLY" = 1 ]; then
   if [ -n "$CODEX_HOME_EXPLICIT" ]; then
     cleanup_codex
   fi
+  [ -n "$RUNNER_EXPLICIT" ] && runner_gate
 elif [ "$MODE" != report ]; then
   if [ "$MODE" = run ]; then
     restic_env
@@ -1070,6 +1127,7 @@ elif [ "$MODE" != report ]; then
     cleanup_backups
     cleanup_cache
     projects_gate
+    runner_gate
   fi
 fi
 
