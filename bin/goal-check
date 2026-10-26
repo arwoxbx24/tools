@@ -91,13 +91,14 @@ for i in "${!nums[@]}"; do
         done
         ;;
       git)
-        case ${argv[1]:-} in log|show|diff|rev-parse|ls-files|status) ;; *) reason=git-subcmd ;; esac
+        g=1; case ${argv[1]:-} in --git-dir=*) g=2 ;; esac
+        case ${argv[g]:-} in log|show|diff|rev-parse|ls-files|status) ;; branch) [ "${argv[g+1]:-}" = --list ] || reason=git-subcmd ;; *) reason=git-subcmd ;; esac
         ;;
       gh)
         case "${argv[1]:-} ${argv[2]:-}" in "pr view"|"pr list"|"pr checks") ;; *) reason=gh-subcmd ;; esac
         ;;
       bd)
-        case ${argv[1]:-} in show|list|search) ;; *) reason=bd-subcmd ;; esac
+        case ${argv[1]:-} in show|list|search) ;; comments) [ ${#argv[@]} -eq 3 ] && [ "${argv[2]}" != add ] || reason=bd-subcmd ;; *) reason=bd-subcmd ;; esac
         ;;
     esac
   fi
@@ -120,13 +121,14 @@ for i in "${!nums[@]}"; do
   n=${nums[i]}; cmd=${cmds[i]}; exp=${exps[i]}
   # shortcut: no quoting, args split on spaces; upgrade if an AC needs a spaced pattern
   read -ra argv <<< "$cmd"
+  first=${argv[0]}
   [[ ${argv[0]} =~ ^/root/workspaces/tools/bin/[A-Za-z0-9._-]+-test$ ]] && argv=("$(dirname -- "$0")/test-once" /root/workspaces/tools "${argv[@]}")
   out=$(timeout 60 "${argv[@]}" 2>&1); rc=$?
   firstline=${out%%$'\n'*}
   shown=${firstline:0:160}
   [ -n "$shown" ] || shown=empty
   pass=0
-  if [ "$rc" -ne 124 ] && [ "$rc" -ne 126 ] && [ "$rc" -ne 127 ]; then
+  if [ "$rc" -eq 0 ] || { [ "$rc" -eq 1 ] && [ "$first" = grep ]; }; then
     case $exp in
       '<empty>') [ -z "$out" ] && pass=1 ;;
       '>='*)
