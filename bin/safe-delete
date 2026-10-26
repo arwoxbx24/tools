@@ -121,7 +121,12 @@ $p
   [[ $p == "$BK" || $p == "$BK"/* ]] && refuse "файл под $BK: $p"
   [[ $p == "$self" ]] && refuse "запрещённый файл: $p"
   [[ ${p##*/} == .env* || ${p##*/} == *.pem || ${p##*/} == *.key ]] && refuse "запрещённый файл: $p"
-  case ${p##*/} in auth.json|hosts.yml|credentials*|*token*) refuse "запрещённый файл: $p";; esac
+  case ${p##*/} in
+    auth.json|hosts.yml|credentials*) refuse "запрещённый файл: $p";;
+    *token*)
+      local sg=${self%/*}/secret-gate
+      if [[ -f $p && ! -L $p && ${p##*.} =~ ^(js|mjs|cjs|ts|tsx|jsx|py|sh|md|map)$ && -x $sg ]] && "$sg" text - <"$p" >/dev/null 2>&1; then :; else refuse "запрещённый файл: $p"; fi;;
+  esac
   case $p in "$HOME"/.config/gh|"$HOME"/.config/gh/*|"$HOME"/.config/yandex-cloud|"$HOME"/.config/yandex-cloud/*|"$HOME"/.config/gcloud|"$HOME"/.config/gcloud/*) refuse "запрещённый сегмент: $p";; esac
 }
 client_pinned(){ local p; for p in "${client_pins[@]}"; do [[ -d $p || -n ${gblob[$p]:-} ]] || refuse "запрещённый сегмент: $p"; done; }
