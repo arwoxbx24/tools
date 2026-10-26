@@ -1,5 +1,8 @@
 {
   "$schema": "https://opencode.ai/config.json",
+  "snapshot": false,
+  "lsp": false,
+  "autoupdate": false,
   "provider": {
     "opencode-go": {
       "options": {

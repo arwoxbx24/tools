@@ -54,6 +54,15 @@ Go-воркеру MCP не нужны: код он читает обычными
 OPENCODE_CONFIG=config/opencode-channel.json opencode mcp list
 ```
 
+## Ленивый старт Go-воркера
+
+Go-запуск не тратит время на то, что воркеру не нужно:
+
+- `config/opencode-channel.json` выключает `snapshot`, `lsp` и `autoupdate` (`false`). Snapshots — undo для TUI; воркер коммитит обычным git. LSP и проверка обновлений в неинтерактивном прогоне не нужны.
+- Вызов идёт как `opencode --pure run …` — без внешних плагинов.
+- Только для процесса opencode заданы `OPENCODE_DISABLE_MODELS_FETCH=1` и `OPENCODE_DISABLE_AUTOUPDATE=1`, поэтому список моделей и обновления не тянутся из сети.
+- `OPENCODE_DISABLE_CLAUDE_CODE` не ставится: бриф, который собирает `bin/code-channel`, не содержит запретов `/root/CLAUDE.md` (System bans, Secrets, Deletion), значит чтение `.claude` отключать нельзя.
+
 ## Коды выхода
 
 | код | значение |
