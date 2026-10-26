@@ -7,6 +7,12 @@
       }
     }
   },
+  "mcp": {
+    "vibecode": { "enabled": false },
+    "context7": { "enabled": false },
+    "repowise": { "enabled": false },
+    "codebase-memory-mcp": { "enabled": false }
+  },
   "agent": {
     "developer": {
       "description": "Senior developer for code-channel Go runs: minimal exact change inside the TZ FILE lines.",

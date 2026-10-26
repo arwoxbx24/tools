@@ -337,6 +337,9 @@ CC_CONFIG=$tmp/use-noswitch.json check use_instant_switch '[[ $rc == 0 && $out =
 ladder_jq='([.ladder[].id] == ["go","sdk"]) and all(.ladder[]; .enabled == true) and .switch.channel == "go"'
 check ladder_two_only '[[ $rc == 0 ]] && jq -e "$ladder_jq" "$root/config/code-channel.json" >/dev/null' \
   jq -e . "$root/config/code-channel.json"
+mcp_jq='(.mcp // {}) as $m | ((["codebase-memory-mcp","context7","repowise","vibecode"] - ($m | keys)) | length == 0) and ($m | all(.[]; .enabled == false))'
+check go_no_mcp '[[ $rc == 0 ]] && jq -e "$mcp_jq" "$root/config/opencode-channel.json" >/dev/null' \
+  jq -e . "$root/config/opencode-channel.json"
 
 CC_CONFIG=$gosdk check failover_go_to_sdk_once '[[ $rc == 0 && $(grep -c "^opencode " "$log") == 3 && $(grep -c "^sdk-agent code" "$log") == 1 ]] && grep -Fq -- "evidence go rc=124" "$tmp/err"' \
   env OPENCODE_RC=124 CC_CANARY_RC=1 CC_CANARY_OUT='channel-canary: down (go)' SDK_TOUCH=sdk-failover CODE_CHANNEL_SDK_AGENT="$bin/sdk-agent-fake" SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" auto "$project" "$tz"
