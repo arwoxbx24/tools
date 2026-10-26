@@ -5,7 +5,7 @@ d=$(mktemp -d /tmp/goal-check-test.XXXXXX) || { echo "FAIL setup mktemp"; exit 1
 trap 'rm -rf "$d"' EXIT
 printf 'hello\n' > "$d/a.txt"
 printf 'alpha\nbeta\n' > "$d/multi.txt"
-gc="$(dirname "$0")/goal-check"
+gc="$(cd "$(dirname "$0")" && pwd)/goal-check"
 passed=0
 
 case_fail() { echo "FAIL $1 $2"; }
@@ -165,9 +165,25 @@ else
   case_fail grep-zero-pass "rc=$rc out=$out"
 fi
 
-if [ "$passed" -eq 13 ]; then
-  echo "PASS 13/13"
+# 14) shared-tracker
+mkdir -p "$d/bin"
+cat >"$d/bin/bd" <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >"$d/bd-args"
+printf '%s\n' '[{"acceptance_criteria":"AC1: cat $d/a.txt => hello"}]'
+STUB
+chmod 755 "$d/bin/bd"
+out=$(cd /tmp && PATH="$d/bin:$PATH" "$gc" dcfg-zz1); rc=$?
+last=$(printf '%s\n' "$out" | tail -n1)
+if [ "$rc" -eq 0 ] && [ "$last" = "GOAL=MET" ] && grep -Fq -- '-C /root/workspaces/projects show dcfg-zz1' "$d/bd-args"; then
+  passed=$((passed+1)); echo "PASS shared-tracker"
+else
+  case_fail shared-tracker "rc=$rc last=$last out=$out args=$(cat "$d/bd-args" 2>/dev/null)"
+fi
+
+if [ "$passed" -eq 14 ]; then
+  echo "PASS 14/14"
   exit 0
 fi
-echo "FAIL $passed/13"
+echo "FAIL $passed/14"
 exit 1

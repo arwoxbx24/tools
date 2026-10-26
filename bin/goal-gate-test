@@ -5,17 +5,22 @@ dir=$(cd -- "$(dirname -- "$0")" && pwd)
 d=$(mktemp -d)
 trap 'rm -rf "$d"' EXIT
 ok=0
-total=10
+total=14
 
-cat >"$d/goal-check" <<'STUB'
+printf '%s\n' '{"message":"<command-name>/goal_task</command-name>"}' >"$d/goal.jsonl"
+printf '%s\n' '{"message":"hello"}' >"$d/plain.jsonl"
+
+cat >"$d/goal-check" <<STUB
 #!/usr/bin/env bash
-printf '%s\n' "${GOAL_CHECK_RESULT:-GOAL=MET}"
+printf '%s\n' "\${GOAL_CHECK_RESULT:-GOAL=MET}"
+printf '%s\n' "\$1" >>"$d/ids"
 STUB
 chmod 755 "$d/goal-check"
 export GOAL_GATE_CHECK="$d/goal-check"
 
-stop() { # sid msg
-  jq -nc --arg s "$1" --arg m "$2" '{hook_event_name:"Stop",session_id:$s,last_assistant_message:$m}' | "$dir/goal-gate"
+stop() { # sid msg [transcript]
+  local t=${3:-$d/goal.jsonl}
+  jq -nc --arg s "$1" --arg m "$2" --arg t "$t" '{hook_event_name:"Stop",session_id:$s,last_assistant_message:$m,transcript_path:$t}' | "$dir/goal-gate"
 }
 isblock() { jq -e '.decision == "block"' <<<"$1" >/dev/null 2>&1; }
 ctrl='Контроль задач: выполнено 1 · в процессе 0 · открыто 0'
@@ -65,5 +70,34 @@ else echo "FAIL 9 agent_denied: $out"; fi
 in=$(jq -nc '{hook_event_name:"PreToolUse",tool_name:"Bash",tool_input:{command:"/root/workspaces/tools/bin/code-channel auto /x /y"}}')
 out=$(printf '%s' "$in" | "$dir/goal-gate"); rc=$?
 if [[ $rc == 0 && -z $out ]]; then echo 'PASS 10 bash_passes'; ok=$((ok+1)); else echo "FAIL 10 bash_passes: rc=$rc out=$out"; fi
+
+export GOAL_CHECK_RESULT=GOAL=MET
+out=$(stop "g11-$$" $'goal-check GOAL=MET\ngoal-check dcfg-x1\n'"$ctrl"$'\n✅ DONE'); rc=$?
+if [[ $rc == 0 && -z $out ]] && [[ $(tail -n1 "$d/ids") == dcfg-x1 ]]; then
+  echo 'PASS 11 epic_id_with_dash'; ok=$((ok+1))
+else echo "FAIL 11 epic_id_with_dash: rc=$rc out=$out ids=$(cat "$d/ids" 2>/dev/null)"; fi
+
+o1=$(stop "g12a-$$" 'Статус PARTIAL.' "$d/plain.jsonl")
+o2=$(stop "g12b-$$" '✅ DONE' "$d/plain.jsonl")
+o3=$(stop "g12c-$$" 'Статус PARTIAL.' "$d/goal.jsonl")
+if [[ -z $o1 ]] && [[ -z $o2 ]] && isblock "$o3"; then
+  echo 'PASS 12 non_goal_session'; ok=$((ok+1))
+else echo "FAIL 12 non_goal_session: o1=$o1 o2=$o2 o3=$o3"; fi
+
+o1=$(stop "g13a-$$" $'Code: `✅ DONE`\n```\n✅ DONE\nPARTIAL\n```')
+o2=$(stop "g13b-$$" $'✅ DONE\n'"$ctrl")
+if [[ -z $o1 ]] && isblock "$o2"; then
+  echo 'PASS 13 code_not_status'; ok=$((ok+1))
+else echo "FAIL 13 code_not_status: o1=$o1 o2=$o2"; fi
+
+sid="g14-$$"
+m='Статус PARTIAL.'
+o1=$(stop "$sid" "$m"); o2=$(stop "$sid" "$m"); o3=$(stop "$sid" "$m")
+if isblock "$o1" && isblock "$o2" &&
+  [[ $(jq -r 'has("decision")' <<<"$o3" 2>/dev/null) == false ]] &&
+  jq -e '.systemMessage | contains("Контроль задач")' <<<"$o3" >/dev/null 2>&1 &&
+  ! jq -e '.systemMessage | contains("НЕ ПОДТВЕРЖДЁН")' <<<"$o3" >/dev/null 2>&1; then
+  echo 'PASS 14 limit_names_reason'; ok=$((ok+1))
+else echo "FAIL 14 limit_names_reason: o1=$o1 o2=$o2 o3=$o3"; fi
 
 if [ "$ok" -eq "$total" ]; then echo "PASS $ok/$total"; else echo "FAIL $ok/$total"; exit 1; fi

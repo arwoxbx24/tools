@@ -21,7 +21,7 @@ if [ "${1:-}" = "--file" ]; then
 elif [ $# -eq 1 ] && [ -n "$1" ] && [ "${1#-}" = "$1" ]; then
   command -v bd >/dev/null || { echo "goal-check: bd не найден" >&2; exit 1; }
   command -v jq >/dev/null || { echo "goal-check: jq не найден" >&2; exit 1; }
-  acc=$(bd show "$1" --json | jq -r 'if type=="array" then .[0] else . end | .acceptance_criteria // .acceptance // empty') || { echo "goal-check: bd show $1 не удался" >&2; exit 1; }
+  acc=$(bd -C /root/workspaces/projects show "$1" --json | jq -r 'if type=="array" then .[0] else . end | .acceptance_criteria // .acceptance // empty') || { echo "goal-check: bd show $1 не удался" >&2; exit 1; }
 else
   usage >&2
   exit 2
