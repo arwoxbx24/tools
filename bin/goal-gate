@@ -23,7 +23,7 @@ sid=$(jq -er '.session_id | select(type == "string" and length > 0)' <<<"$json")
 reason=''
 goal_re='^[[:space:]]*`?/goal[[:space:]]'
 ctrl_re='^[[:space:]]*[*-]?[[:space:]]*Контроль задач:'
-BANNED='/goal[[:space:]]+clear|сним(и|ите|у|ем)[[:space:]]+(цел|/goal)|сняти[ея][[:space:]]+цел|очист(и|ите|ка|ить)[[:space:]]+(цел|/goal)|убер(и|ите)[[:space:]]+цел'
+BANNED='/goal[[:space:]]+clear|сним(и|ите|у|ем)[[:space:]]+(цел|/goal)|сняти[ея][[:space:]]+цел|снять[[:space:]]+(цел|/goal)|очист(и|ите|ка|ить)[[:space:]]+(цел|/goal)|убер(и|ите)[[:space:]]+цел|убрать[[:space:]]+(цел|/goal)'
 lmsg=${msg,,}
 
 while IFS= read -r l; do

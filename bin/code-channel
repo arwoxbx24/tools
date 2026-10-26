@@ -23,6 +23,16 @@ jq -e '(.ladder | type == "array") and ([.ladder[].id] | length == (unique | len
 en=$(jq -r '[.ladder[] | select(.enabled)] | length' "$config") || exit 3
 [[ $en -gt 0 ]] || { fail "ladder must have at least one enabled entry, found 0"; exit 28; }
 S=${CODE_CHANNEL_STATE:-/root/workspaces/tools/state/code-channel}
+if [[ ${1:-} == use ]]; then
+    uid=${2:-} uquote=${3:-}
+    [[ $# == 3 && -n $uid && -n $uquote ]] || { fail 'usage: code-channel use <sdk|go> "<owner quote>"'; exit 2; }
+    jq -e --arg id "$uid" 'any(.ladder[]; .id == $id and .enabled)' "$config" >/dev/null 2>&1 || { fail "канал $uid не включён в лестнице"; exit 2; }
+    mkdir -p "$S" || exit 3
+    printf '%s\n' "$uid" > "$S/active" || exit 3
+    printf '%s %s %s\n' "$(date +%F)" "$uid" "$uquote" >> "$S/use.log" || exit 3
+    printf 'active=%s\n' "$uid"
+    exit 0
+fi
 active=
 [[ -r $S/active ]] && active=$(<"$S/active")
 if [[ -z $active ]] || ! jq -e --arg id "$active" 'any(.ladder[]; .id == $id and .enabled)' "$config" >/dev/null 2>&1; then
@@ -34,16 +44,6 @@ if [[ -n $opencfg_rel ]]; then
     [[ $opencfg_rel == /* ]] && opencfg=$opencfg_rel || opencfg=$root/$opencfg_rel
     [[ -r $opencfg ]] || { fail "нет файла opencode_config: $opencfg"; exit 3; }
     export OPENCODE_CONFIG=$opencfg
-fi
-if [[ ${1:-} == use ]]; then
-    uid=${2:-} uquote=${3:-}
-    [[ $# == 3 && -n $uid && -n $uquote ]] || { fail 'usage: code-channel use <sdk|go> "<owner quote>"'; exit 2; }
-    jq -e --arg id "$uid" 'any(.ladder[]; .id == $id and .enabled)' "$config" >/dev/null 2>&1 || { fail "канал $uid не включён в лестнице"; exit 2; }
-    mkdir -p "$S" || exit 3
-    printf '%s\n' "$uid" > "$S/active" || exit 3
-    printf '%s %s %s\n' "$(date +%F)" "$uid" "$uquote" >> "$S/use.log" || exit 3
-    printf 'active=%s\n' "$uid"
-    exit 0
 fi
 if [[ $# == 1 && $1 == --plan ]]; then
     jq -r --arg id "$active" '.ladder[] | select(.id == $id) | ([.id, (.model | if . == "" then "-" else . end), ((.effort // "") | if . == "" then "-" else . end)] + (if ((.audit_model // "") != "") then ["audit=" + .audit_model] else [] end)) | join(" ")' "$config"

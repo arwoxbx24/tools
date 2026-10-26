@@ -324,7 +324,8 @@ sl_ok=$tmp/sl-ok.json sl_two=$tmp/sl-two.json sl_none=$tmp/sl-none.json
 printf '%s\n' '{"switch":{"channel":"a","owner_word":"w"},"ladder":[{"id":"a","enabled":true,"model":"x/y","owner_word":"w"},{"id":"b","enabled":false,"model":"x/z"}]}' >"$sl_ok"
 printf '%s\n' '{"ladder":[{"id":"a","enabled":true,"model":"x/y","owner_word":"w"},{"id":"b","enabled":true,"model":"x/z","owner_word":"w"}]}' >"$sl_two"
 printf '%s\n' '{"ladder":[{"id":"a","enabled":true,"model":"x/y"},{"id":"b","enabled":false,"model":"x/z"}]}' >"$sl_none"
-slrun() { env -u CODE_CHANNEL_ACTIVE -u CODE_CHANNEL_TEST_LOG "CODE_CHANNEL_CONFIG=$1" "$root/bin/code-channel" --plan >/dev/null 2>"$tmp/sl-err"; }
+mkdir -p "$tmp/sl-state"
+slrun() { env -u CODE_CHANNEL_ACTIVE -u CODE_CHANNEL_TEST_LOG "CODE_CHANNEL_CONFIG=$1" "CODE_CHANNEL_STATE=$tmp/sl-state" "$root/bin/code-channel" --plan >/dev/null 2>"$tmp/sl-err"; }
 sl0=$ok
 slrun "$sl_ok"; slr0=$?
 [[ $slr0 == 0 ]] && ((ok++))
@@ -360,6 +361,9 @@ CC_CONFIG=$go check 89 '[[ $rc == 0 && ! -s "$tzcount" ]] && ! grep -Fq -- "code
 git -C "$project" clean -fdq
 CC_CONFIG=$go check 90 '[[ $rc == 0 ]] && grep -Fq -- "via /root/workspaces/tools/bin/test-once" "$log"' \
   env OPENCODE_RC=0 OPENCODE_TOUCH=tz-prompt.txt SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
+printf '%s\n' '{"ladder":[{"id":"sdk","enabled":true,"model":"x/y"}]}' >"$tmp/use-noswitch.json"
+CC_CONFIG=$tmp/use-noswitch.json check 91 '[[ $rc == 0 && $out == active=sdk ]] && [[ $(<"$tmp/use-fresh/active") == sdk ]] && [[ $(wc -l <"$tmp/use-fresh/use.log") == 1 ]]' \
+  env CODE_CHANNEL_STATE="$tmp/use-fresh" "$root/bin/code-channel" use sdk "q"
 cg_ok=0
 cgrun() { env -u CODE_CHANNEL_ACTIVE -u CODE_CHANNEL_TEST_LOG "CODE_CHANNEL_CONFIG=$1" "CODE_CHANNEL_STATE=$tmp/state" "$root/bin/code-channel" "${@:2}" 2>&1; }
 cg_blank=$tmp/cg-blank.json cg_mis=$tmp/cg-mis.json cg_good=$tmp/cg-good.json cg_sdk=$tmp/cg-sdk.json
@@ -422,7 +426,7 @@ rs_out=$(env -u CODE_CHANNEL_ACTIVE -u CODE_CHANNEL_TEST_LOG "CODE_CHANNEL_CONFI
 [[ $rs_rc == 0 && $rs_out == go\ * ]] && ((rs_ok++))
 echo "real-shape-plan ok=$rs_ok failed=$((1-rs_ok))"
 ((rs_ok == 1)) || { echo 'FAIL real-shape-plan'; gfail=1; }
-total=$((ok+cg_ok+sn_ok+rp_ok+rs_ok)) expected=110
+total=$((ok+cg_ok+sn_ok+rp_ok+rs_ok)) expected=111
 [[ $total == "$expected" ]] || { echo "FAIL total $total/$expected"; gfail=1; }
 ((gfail == 0)) || exit 1
 echo "PASS $total/$total"

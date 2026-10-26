@@ -901,5 +901,16 @@ printf 'o\n' > "$d/out-git-$$/f"
 out120=$(SAFE_DELETE_SANDBOX="$d/sb" "$bin/safe-delete" --bk "$bk" dir "$d/out-git-$$" 2>&1); r120=$?
 if [[ $r120 == 2 && $out120 == *'запрещённый сегмент'* && -d "$d/out-git-$$/.git" && -f "$d/out-git-$$/f" ]]; then echo 'PASS T120 outside_sandbox_git_refused'; ok=$((ok+1)); else echo "FAIL T120: rc=$r120 out=$out120"; fi
 
-[[ $ok == 118 ]] || exit 1
+# T121: a sandbox clone with a nested .git gitfile pointing outside is refused
+git init -q "$d/sb/nested-out-$$"
+git -C "$d/sb/nested-out-$$" config user.email t@t
+git -C "$d/sb/nested-out-$$" config user.name t
+printf 'n\n' > "$d/sb/nested-out-$$/f"
+git -C "$d/sb/nested-out-$$" add f && git -C "$d/sb/nested-out-$$" commit -q -m n
+mkdir -p "$d/sb/nested-out-$$/sub" "$d/nested-out-git-$$"
+printf 'gitdir: %s\n' "$d/nested-out-git-$$" > "$d/sb/nested-out-$$/sub/.git"
+out121=$(SAFE_DELETE_SANDBOX="$d/sb" "$bin/safe-delete" --bk "$bk" dir "$d/sb/nested-out-$$" 2>&1); r121=$?
+if [[ $r121 == 2 && -d "$d/sb/nested-out-$$" && -f "$d/sb/nested-out-$$/f" ]]; then echo 'PASS T121 nested_gitfile_outside_refused'; ok=$((ok+1)); else echo "FAIL T121: rc=$r121 out=$out121"; fi
+
+[[ $ok == 119 ]] || exit 1
 echo "итог: PASS $ok, FAIL 0"
