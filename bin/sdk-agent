@@ -7,7 +7,9 @@ readonly MODEL="claude-haiku-5-5"
 readonly ENGINE="/root/workspaces/tools/claude-agent-sdk-venv/lib/python3.12/site-packages/claude_agent_sdk/_bundled/claude"
 readonly KEY_FILE="/root/workspaces/secrets/inbox/anthropic.env"
 readonly ENGINE_HOME="/root/workspaces/tools/sdk-agent/engine-home"
-readonly HELPER_SCOPE="$(cd -- "$(dirname -- "$0")" && pwd)/helper-scope"
+readonly REPO_ROOT="$(cd -- "$(dirname -- "$0")/.." && pwd)"
+readonly HELPER_SCOPE="$REPO_ROOT/bin/helper-scope"
+readonly SYSTEM_PROMPT="$REPO_ROOT/sdk-agent/system-prompt.md"
 if [[ ${SDK_AGENT_TEST:-} == 1 ]]; then
   readonly RUNS_LOG="${SDK_AGENT_RUNS_LOG:-/root/workspaces/tools/sdk-agent/runs.jsonl}"
   readonly TEST_ENGINE="${SDK_AGENT_ENGINE:-}"
@@ -33,6 +35,7 @@ BUDGET=""
 EFFORT=""
 SCHEMA=""
 SYSFILE=""
+TAG="${SDK_AGENT_TAG:-}"
 JSONOUT=0
 POS=()
 FILES=()
@@ -40,13 +43,18 @@ KEY_VARS=()
 
 usage() {
 cat <<'EOF'
-usage: sdk-agent ask [--budget USD] [--effort low|medium|high|xhigh|max] [--schema JSON] [--system-file FILE] [--json] PROMPT
-       sdk-agent code [--budget USD] [--effort low|medium|high|xhigh|max] WORKTREE TZ_FILE
-       sdk-agent read [--budget USD] [--effort low|medium|high|xhigh|max] [--json] WORKTREE TZ_FILE
+usage: sdk-agent ask [--budget USD] [--effort low|medium|high|xhigh|max] [--schema JSON] [--system-file FILE] [--tag NAME] [--json] PROMPT
+       sdk-agent code [--budget USD] [--effort low|medium|high|xhigh|max] [--tag NAME] WORKTREE TZ_FILE
+       sdk-agent read [--budget USD] [--effort low|medium|high|xhigh|max] [--tag NAME] [--json] WORKTREE TZ_FILE
+       sdk-agent bench WORKTREE TZ1 TZ2 TZ3
+       sdk-agent bench-check [--tag NAME]
        sdk-agent cap --json
        sdk-agent --help
 code: model may read the whole worktree and returns exact edits (path, old, new) to listed files; TZ line "Check: <executable inside worktree> [args]" is run after writing, no shell (rc 7 on failure); the Check executable must not be a listed file.
 --json (ask, read): print the whole engine result JSON instead of the text.
+--tag NAME: record NAME as "tag" in the runs log (default: SDK_AGENT_TAG or empty).
+bench: 3 sequential read runs in one worktree, --budget 0.05, tag cache_bench.
+bench-check: rc 0 only when the last 3 records with tag NAME and numeric cache usage are success, and runs 2-3 have cache_read > 0 and (cache_write 0 or cache_read/cache_write >= 10).
 Runs the Claude Agent SDK engine with model claude-haiku-5-5 and an API key (never the subscription).
 Engine config dir: tools/sdk-agent/engine-home (no login stored there).
 sdk-agent is a paid API program, not a Claude Code agent or subagent.
@@ -97,7 +105,7 @@ parse_args() {
         JSONOUT=1
         shift
         ;;
-      --budget|--effort|--schema|--system-file)
+      --budget|--effort|--schema|--system-file|--tag)
         (( $# >= 2 )) || die "$1 needs a value"
         if [[ $mode != ask && ( $1 == --schema || $1 == --system-file ) ]]; then
           die "unknown option for $mode: $1"
@@ -107,6 +115,7 @@ parse_args() {
           --effort) EFFORT=$2 ;;
           --schema) SCHEMA=$2 ;;
           --system-file) SYSFILE=$2 ;;
+          --tag) TAG=$2 ;;
         esac
         shift 2
         ;;
@@ -285,13 +294,13 @@ run_engine() {
   outf="$inflight.d/$run_id.out"
   flock -u "$lockfd"
 
-  (cd -- "$workdir" && if (( key_load )); then set -a && . "$KEY_FILE" && set +a; fi && env -u ANTHROPIC_AUTH_TOKEN -u CLAUDE_CODE_OAUTH_TOKEN -u CLAUDE_CODE_USE_BEDROCK -u CLAUDE_CODE_USE_VERTEX -u CLAUDE_CODE_USE_FOUNDRY -u ANTHROPIC_PROFILE "${no_key[@]}" CLAUDE_CONFIG_DIR="$ENGINE_HOME" "$HELPER_SCOPE" "$engine" "${args[@]}" "Follow the task provided on stdin exactly." <<<"$prompt") > "$outf" || true
+  (cd -- "$workdir" && if (( key_load )); then set -a && . "$KEY_FILE" && set +a; fi && env -u ANTHROPIC_AUTH_TOKEN -u CLAUDE_CODE_OAUTH_TOKEN -u CLAUDE_CODE_USE_BEDROCK -u CLAUDE_CODE_USE_VERTEX -u CLAUDE_CODE_USE_FOUNDRY -u ANTHROPIC_PROFILE "${no_key[@]}" CLAUDE_CONFIG_DIR="$ENGINE_HOME" CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS=1 CLAUDE_CODE_DISABLE_CLAUDE_MDS=1 "$HELPER_SCOPE" "$engine" "${args[@]}" "Follow the task provided on stdin exactly." <<<"$prompt") > "$outf" || true
   RESULT=$(cat -- "$outf")
 
   jq -e 'type == "object"' <<<"$RESULT" >/dev/null 2>&1 || die "engine returned no JSON result" 4
   flock "$lockfd" || die "cannot lock: $RUNS_LOG.lock" 6
-  jq -c --argjson ts "$(date +%s)" --arg mode "$mode" --arg workdir "$workdir" --arg tz "${TZ:-}" \
-    '{subtype, total_cost_usd, ts: $ts, mode: $mode, models: ((.modelUsage // {}) | keys), workdir: $workdir, tz: $tz, usage: ((.usage // {}) | {input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens}), model_usage: ((.modelUsage // {}) | map_values({inputTokens, outputTokens, cacheReadInputTokens, cacheCreationInputTokens, costUSD}))}' <<<"$RESULT" >> "$RUNS_LOG" \
+  jq -c --argjson ts "$(date +%s)" --arg mode "$mode" --arg workdir "$workdir" --arg tz "${TZ:-}" --arg tag "${TAG:-}" \
+    '{subtype, total_cost_usd, ts: $ts, mode: $mode, models: ((.modelUsage // {}) | keys), workdir: $workdir, tz: $tz, tag: $tag, usage: ((.usage // {}) | {input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens}), model_usage: ((.modelUsage // {}) | map_values({inputTokens, outputTokens, cacheReadInputTokens, cacheCreationInputTokens, costUSD}))}' <<<"$RESULT" >> "$RUNS_LOG" \
     || die "cannot append runs log: $RUNS_LOG" 6
   if [[ -e $inflight ]]; then
     tmp=$(mktemp -- "$inflight.tmp.XXXXXX") || die "cannot write in-flight file: $inflight" 6
@@ -326,6 +335,7 @@ cmd_ask() {
   (( ${#POS[@]} == 1 )) || die "ask needs exactly one PROMPT (see --help)"
   [[ -n ${POS[0]} ]] || die "PROMPT is empty"
   if [[ -n $SYSFILE && ! -r $SYSFILE ]]; then die "system file not readable: $SYSFILE"; fi
+  SYSFILE=${SYSFILE:-$SYSTEM_PROMPT}
 
   run_engine ask "$EFFORT" "$BUDGET" "${POS[0]}" "$SCHEMA" "$SYSFILE"
   if [[ $JSONOUT == 1 ]]; then
@@ -545,8 +555,7 @@ cmd_code() {
   fi
 
   local prompt body
-  prompt="You are a careful senior engineer making a minimal, exact change in this repository.
-<files>
+  prompt="<files>
 "
   for f in "${FILES[@]}"; do
     if [[ -f $WT_REAL/$f ]]; then body=$(cat -- "$WT_REAL/$f"); else body="(new file)"; fi
@@ -558,16 +567,9 @@ $body
   prompt+="</files>
 <task>
 $(cat -- "$TZ")
-</task>
-<instructions>
-- Before editing, open the code the task touches with Read, Grep, Glob or the repowise MCP tools, so every edit is based on what the files really contain.
-- Change only what the task asks for or what it clearly needs; keep the existing structure, names and style, and add no extra features, refactors or comments.
-- Write a general solution that is correct for all valid inputs; never special-case or hard-code values just to make a test or check pass.
-- Edit only the paths listed inside <files>.
-- Return only exact edits as JSON {\"edits\":[{\"path\":...,\"old\":...,\"new\":...}]}. A wrapper applies them mechanically, so \`old\` must be an exact, unique fragment of the current file (include enough surrounding lines to be unique) or the whole run fails; \`new\` replaces it. To create a new file use old \"\" (only when the file does not exist).
-</instructions>"
+</task>"
 
-  run_engine code "$EFFORT" "$BUDGET" "$prompt" "$CODE_SCHEMA" "" "$TOOLS_CODE" "$WT_REAL"
+  run_engine code "$EFFORT" "$BUDGET" "$prompt" "$CODE_SCHEMA" "$SYSTEM_PROMPT" "$TOOLS_CODE" "$WT_REAL"
   finish
   apply_edits
 
@@ -603,23 +605,77 @@ cmd_read() {
   open_worktree
 
   local prompt
-  prompt="$(cat -- "$TZ")
+  prompt="$(cat -- "$TZ")"
 
-<instructions>
-- Answer from the repository files and, where the task needs it, from official web pages; you may use Read, Grep, Glob, Skill, WebSearch, WebFetch and the repowise MCP tools.
-- Open every file you rely on before answering, so the answer describes what the code really does.
-- Back each factual claim with its source: path:line for repository files, the URL for web pages; for long documents quote the relevant line first.
-- When the sources do not contain the answer to a point, write \"unknown\" for that point.
-- Reply with the answer text only.
-</instructions>"
-
-  run_engine read "$EFFORT" "$BUDGET" "$prompt" "" "" "$TOOLS_READ" "$WT_REAL"
+  run_engine read "$EFFORT" "$BUDGET" "$prompt" "" "$SYSTEM_PROMPT" "$TOOLS_READ" "$WT_REAL"
   if [[ $JSONOUT == 1 ]]; then
     printf '%s\n' "$RESULT"
   else
     jq -r '.result // ""' <<<"$RESULT"
   fi
   finish
+}
+
+# cmd_bench WORKTREE TZ1 TZ2 TZ3 — 3 sequential read runs in the same worktree, fixed budget and tag.
+cmd_bench() {
+  parse_args bench "$@"
+  (( ${#POS[@]} == 4 )) || die "bench needs WORKTREE and exactly 3 TZ files (see --help)"
+  BUDGET=0.05
+  EFFORT=medium
+  TAG=cache_bench
+  local wt=${POS[0]} tz prompt
+  for tz in "${POS[@]:1}"; do
+    POS=("$wt" "$tz")
+    open_worktree
+    prompt=$(cat -- "$TZ") || die "cannot read TZ file: $tz"
+    run_engine read "$EFFORT" "$BUDGET" "$prompt" "" "$SYSTEM_PROMPT" "$TOOLS_READ" "$WT_REAL"
+    finish
+  done
+}
+
+# cmd_bench_check [--tag NAME] — last 3 tagged records: all success, runs 2-3 have numeric usage, cache_read > 0 and (write 0 or read/write >= 10).
+cmd_bench_check() {
+  local tag=cache_bench reason
+  while (( $# > 0 )); do
+    case "$1" in
+      --tag)
+        (( $# >= 2 )) || { usage >&2; die "--tag needs a value"; }
+        tag=$2
+        shift 2
+        ;;
+      -h|--help) usage; exit 0 ;;
+      *) die "unknown option for bench-check: $1" ;;
+    esac
+  done
+  [[ -n $tag ]] || { usage >&2; die "bench-check: --tag must not be empty"; }
+  [[ -r $RUNS_LOG ]] || { printf 'bench-check: no runs log: %s\n' "$RUNS_LOG" >&2; exit 1; }
+  reason=$(jq -sr --arg tag "$tag" '
+    [ .[]
+      | select(.tag == $tag)
+      | select((.usage.cache_read_input_tokens | type) == "number")
+      | select((.usage.cache_creation_input_tokens | type) == "number")
+    ] as $t
+    | ($t | length) as $n
+    | if $n < 3 then
+        "need 3 tagged records with numeric cache usage for tag \($tag) (found \($n))"
+      elif ([ $t[-3:][] | .subtype ] | all(. == "success")) | not then
+        "not all of the last 3 tagged records are success for tag \($tag)"
+      else
+        ( [ range(1; 3) as $i
+            | $t[-3:][$i] as $u
+            | ($u.usage.cache_read_input_tokens) as $r
+            | ($u.usage.cache_creation_input_tokens) as $w
+            | ( if $r <= 0 then
+                  "cache_read \($r) is not > 0 in tagged run \($i + 1) for tag \($tag)"
+                elif ($w != 0 and ($r / $w) < 10) then
+                  "ratio \($r)/\($w) < 10 in tagged run \($i + 1) for tag \($tag)"
+                else empty end )
+          ] | first ) // "OK"
+      end
+  ' "$RUNS_LOG") || die "cannot read runs log: $RUNS_LOG" 6
+  if [[ $reason == OK ]]; then exit 0; fi
+  printf 'bench-check: %s\n' "$reason" >&2
+  exit 1
 }
 
 # cmd_cap --json — prints cap_state; reads only, no engine, no key load.
@@ -634,6 +690,8 @@ main() {
     ask) shift; cmd_ask "$@" ;;
     code) shift; cmd_code "$@" ;;
     read) shift; cmd_read "$@" ;;
+    bench) shift; cmd_bench "$@" ;;
+    bench-check) shift; cmd_bench_check "$@" ;;
     cap) shift; cmd_cap "$@" ;;
     --apply-edits)
       shift
