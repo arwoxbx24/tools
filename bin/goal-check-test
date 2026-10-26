@@ -181,9 +181,58 @@ else
   case_fail shared-tracker "rc=$rc last=$last out=$out args=$(cat "$d/bd-args" 2>/dev/null)"
 fi
 
-if [ "$passed" -eq 14 ]; then
-  echo "PASS 14/14"
+# 15) suffix-labels
+cat > "$d/15.txt" <<EOF
+AC1a: cat $d/a.txt => hello
+AC7b: cat $d/a.txt => hello
+EOF
+out=$("$gc" --file "$d/15.txt"); rc=$?
+if [ "$rc" -eq 0 ] && [[ $out == *"AC1a PASS"* ]] && [[ $out == *"AC7b PASS"* ]] && [[ $out == *GOAL=MET* ]]; then
+  passed=$((passed+1)); echo "PASS suffix-labels AC1a AC7b"
+else
+  case_fail suffix-labels "rc=$rc out=$out"
+fi
+
+# 16) unparsable AC line refused
+cat > "$d/16.txt" <<EOF
+AC1: cat $d/a.txt => hello
+AC9b: cat $d/a.txt
+EOF
+out=$("$gc" --file "$d/16.txt"); rc=$?
+if [ "$rc" -eq 2 ] && [[ $out == *"REFUSED AC9b reason=parse"* ]] && [[ $out == *GOAL=REFUSED* ]] && [[ $out != *"AC1 PASS"* ]]; then
+  passed=$((passed+1)); echo "PASS unparsable-refused rc=2"
+else
+  case_fail unparsable-refused "rc=$rc out=$out"
+fi
+
+# 17) two ACs on the same *-test with different PASS names pass on cached run
+cat > "$d/17.txt" <<EOF
+AC1a: /root/workspaces/tools/bin/where-test => PASS 1
+AC1b: /root/workspaces/tools/bin/where-test => PASS 5
+EOF
+out=$(TEST_ONCE_DIR=$d/to-replay "$gc" --file "$d/17.txt"); rc=$?
+if [ "$rc" -eq 0 ] && [[ $out == *"AC1a PASS"* ]] && [[ $out == *"AC1b PASS"* ]] && [[ $out == *GOAL=MET* ]]; then
+  passed=$((passed+1)); echo "PASS cached-test-output AC1a AC1b"
+else
+  case_fail cached-test-output "rc=$rc out=$out"
+fi
+
+# 18) numbered/colon PASS labels satisfy PASS <name>
+printf 'PASS 1 other\nPASS 15 haiku_fallback_allowed\nPASS 100: lead_patch_denied\n' > "$d/pass.txt"
+cat > "$d/18.txt" <<EOF
+AC1a: cat $d/pass.txt => PASS haiku_fallback_allowed
+AC1b: cat $d/pass.txt => PASS lead_patch_denied
+EOF
+out=$("$gc" --file "$d/18.txt"); rc=$?
+if [ "$rc" -eq 0 ] && [[ $out == *"AC1a PASS"* ]] && [[ $out == *"AC1b PASS"* ]] && [[ $out == *GOAL=MET* ]]; then
+  passed=$((passed+1)); echo "PASS numbered-pass-labels AC1a AC1b"
+else
+  case_fail numbered-pass-labels "rc=$rc out=$out"
+fi
+
+if [ "$passed" -eq 18 ]; then
+  echo "PASS 18/18"
   exit 0
 fi
-echo "FAIL $passed/14"
+echo "FAIL $passed/18"
 exit 1
