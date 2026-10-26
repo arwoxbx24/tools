@@ -27,20 +27,33 @@ else
   exit 2
 fi
 
-nums=(); cmds=(); exps=()
+nums=(); cmds=(); exps=(); parse_refs=()
 while IFS= read -r line; do
-  [[ $line =~ AC([0-9]+):[[:space:]]*(.*)$ ]] || continue
-  n=${BASH_REMATCH[1]}
-  rest=${BASH_REMATCH[2]}
-  [[ $rest == *" => "* ]] || continue
-  cmd=${rest%' => '*}
-  exp=${rest##*' => '}
-  cmd=${cmd%"${cmd##*[![:space:]]}"}
-  cmd=${cmd#"${cmd%%[![:space:]]*}"}
-  exp=${exp%"${exp##*[![:space:]]}"}
-  exp=${exp#"${exp%%[![:space:]]*}"}
-  nums+=("$n"); cmds+=("$cmd"); exps+=("$exp")
+  line=${line#"${line%%[![:space:]]*}"}
+  [[ $line == AC* ]] || continue
+  if [[ $line =~ ^AC([0-9]+[A-Za-z]?):[[:space:]]*(.*)$ ]]; then
+    n=${BASH_REMATCH[1]}
+    rest=${BASH_REMATCH[2]}
+    if [[ $rest == *" => "* ]]; then
+      cmd=${rest%' => '*}
+      exp=${rest##*' => '}
+      cmd=${cmd%"${cmd##*[![:space:]]}"}
+      cmd=${cmd#"${cmd%%[![:space:]]*}"}
+      exp=${exp%"${exp##*[![:space:]]}"}
+      exp=${exp#"${exp%%[![:space:]]*}"}
+      nums+=("$n"); cmds+=("$cmd"); exps+=("$exp")
+      continue
+    fi
+  fi
+  ref=${line%%[[:space:]]*}; ref=${ref%:}
+  parse_refs+=("$ref")
 done <<< "$acc"
+
+if [ ${#parse_refs[@]} -gt 0 ]; then
+  for ref in "${parse_refs[@]}"; do echo "REFUSED $ref reason=parse"; done
+  echo "GOAL=REFUSED"
+  exit 2
+fi
 
 if [ ${#nums[@]} -eq 0 ]; then
   echo "GOAL=NOT_MET reason=no-ac-lines"
@@ -141,6 +154,12 @@ for i in "${!nums[@]}"; do
            pass=1
            shown=$(printf '%s\n' "$out" | grep -F -m1 -- "$exp")
            shown=${shown:0:160}
+         elif [[ $exp == "PASS "* ]]; then
+           name=${exp#PASS }
+           if [ -n "$name" ]; then
+             shown=$(printf '%s\n' "$out" | grep -E -m1 -- "^PASS([[:space:]]+[0-9]+:?)?[[:space:]]+$name([[:space:]]|$)")
+             if [ -n "$shown" ]; then pass=1; shown=${shown:0:160}; fi
+           fi
          fi
          ;;
     esac

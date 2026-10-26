@@ -38,10 +38,12 @@ key=$(key "$@") || { echo "test-once: snapshot failed" >&2; exit 2; }
 pair=$({ printf '%s\0' "$(realpath -- "$repo")" "$@"; } | sha256sum | cut -d' ' -f1)
 now=$(date +%s)
 res=$D/res/$key
-if [ -f "$res" ]; then
-    rc=$(sed -n 1p "$res"); ep=$(sed -n 2p "$res")
+if [ -f "$res" ] && [ "$(sed -n 1p "$res")" = v2 ]; then
+    rc=$(sed -n 2p "$res"); ep=$(sed -n 3p "$res")
     if [ $((now - ep)) -lt "$T" ]; then
-        echo "test-once: cached rc=$rc age=$((now - ep))s"; sed -n 3p "$res"; exit "$rc"
+        echo "test-once: cached rc=$rc age=$((now - ep))s" >&2
+        sed -n '4,$p' "$res"
+        exit "$rc"
     fi
 fi
 pf=$D/fail/$pair; count=0; fe=0
@@ -52,12 +54,11 @@ out=$(mktemp); trap 'rm -f -- "$out" "$idx"; rm -rf -- "$tdir"' EXIT
 (cd -- "$repo" && "$@") 2>&1 | tee "$out"
 rc=${PIPESTATUS[0]}
 after=$(key "$@") || after=
-last=$(grep -v '^$' "$out" | tail -n 1)
 now=$(date +%s)
 if [ -z "$after" ]; then
     echo "test-once: snapshot failed" >&2
 elif [ "$after" = "$key" ]; then
-    tmp=$(mktemp "$D/res/.tmp.XXXXXX"); printf '%s\n%s\n%s\n' "$rc" "$now" "$last" > "$tmp" && mv -f -- "$tmp" "$res"
+    tmp=$(mktemp "$D/res/.tmp.XXXXXX"); { printf 'v2\n%s\n%s\n' "$rc" "$now"; cat -- "$out"; } > "$tmp" && mv -f -- "$tmp" "$res"
 else
     echo "test-once: tree changed during run, not cached" >&2
 fi

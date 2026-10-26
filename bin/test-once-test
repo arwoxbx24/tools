@@ -29,7 +29,7 @@ if [ "$rc" = 0 ] && [[ $out == *"RESULT ok"* ]] && [ "$(runs)" = 1 ]; then pass 
 : > "$d/count"
 ob=$(find "$r/.git/objects" -type f | wc -l)
 TEST_ONCE_DIR=$d/state2 "$t" "$r" ./t.sh >/dev/null
-out=$(TEST_ONCE_DIR=$d/state2 "$t" "$r" ./t.sh); rc=$?
+out=$(TEST_ONCE_DIR=$d/state2 "$t" "$r" ./t.sh 2>&1); rc=$?
 oa=$(find "$r/.git/objects" -type f | wc -l)
 nd=$(mktemp -d "$d/nongit.XXXXXX")
 nout=$(TEST_ONCE_DIR=$d/state2 "$t" "$nd" ./t.sh 2>&1); nrc=$?
@@ -110,4 +110,16 @@ echo b > "$g/f.txt"
 out2=$(TEST_ONCE_DIR=$d/state8 "$t" "$g" true 2>&1); rc2=$?
 if [ "$rc" = 0 ] && [[ $out != *"snapshot failed"* ]] && [ "$rc2" = 0 ] && [[ $out2 != *"snapshot failed"* ]] && [[ $out2 != *"test-once: cached"* ]]; then pass "7 gitlink_snapshot"; else bad 7 "rc=$rc out=$out rc2=$rc2 out2=$out2"; fi
 
-if [ "$ok" = 7 ]; then echo "PASS 7/7"; else echo "FAIL $ok/7"; exit 1; fi
+cat > "$d/multi.sh" <<EOF
+#!/usr/bin/env bash
+echo first-line
+echo second-line
+echo err-line >&2
+exit 4
+EOF
+chmod +x "$d/multi.sh"
+TEST_ONCE_DIR=$d/state9 "$t" "$r" "$d/multi.sh" >/dev/null 2>&1
+out=$(TEST_ONCE_DIR=$d/state9 "$t" "$r" "$d/multi.sh" 2>"$d/e9"); rc=$?
+if [ "$rc" = 4 ] && [[ $out == *first-line* && $out == *second-line* && $out == *err-line* ]] && grep -Fq 'test-once: cached rc=4' "$d/e9"; then pass "8 cached_replay"; else bad 8 "rc=$rc out=$out err=$(cat "$d/e9")"; fi
+
+if [ "$ok" = 8 ]; then echo "PASS 8/8"; else echo "FAIL $ok/8"; exit 1; fi
