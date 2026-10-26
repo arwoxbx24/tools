@@ -929,5 +929,20 @@ out122=$("$bin/safe-delete" --bk "$bk" dir "$huge122" 2>&1); r122=$?
 gone122=0; [[ ! -e "$huge122" ]] && gone122=1
 if [[ $r122 == 0 && $gone122 == 1 && $out122 != *'Argument list too long'* ]]; then echo 'PASS T122 huge_dir_argmax'; ok=$((ok+1)); else echo "FAIL T122: rc=$r122 gone=$gone122 out=${out122:0:200}"; fi
 
-[[ $ok == 120 ]] || exit 1
+# T123: a linked worktree whose untracked file list exceeds ARG_MAX is deleted and backed up
+argmax123=$(getconf ARG_MAX)
+prefix123=$(printf 'h%.0s' {1..220})
+wt123="$d/wt-argmax-$$"
+git -C "$d/w" worktree add -q -b "wt-argmax-$$" "$wt123" main
+deep123=$wt123
+for _ in 1 2 3 4 5 6; do deep123="$deep123/$prefix123"; mkdir -- "$deep123"; done
+per123=$(( ${#deep123} + 1 + ${#prefix123} + 6 + 1 ))
+nf123=$(( argmax123 / per123 * 160 / 100 ))
+(( nf123 < 1500 )) && nf123=1500
+seq -f "$deep123/${prefix123}%06g" "$nf123" | xargs -d '\n' -n 200 -r touch --
+out123=$("$bin/safe-delete" --bk "$bk" worktree "$wt123" 2>&1); r123=$?
+gone123=0; [[ ! -e "$wt123" ]] && gone123=1
+if [[ $r123 == 0 && $gone123 == 1 && $out123 == *'восстановить: safe-delete restore'* && $out123 != *'Argument list too long'* ]]; then echo 'PASS T123 huge_worktree_argmax'; ok=$((ok+1)); else echo "FAIL T123: rc=$r123 gone=$gone123 nf=$nf123 out=${out123:0:200}"; fi
+
+[[ $ok == 121 ]] || exit 1
 echo "итог: PASS $ok, FAIL 0"

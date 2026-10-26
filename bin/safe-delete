@@ -64,7 +64,7 @@ git_batch(){
     while IFS= read -r -d '' rec; do
       rel=${rec#*$'\t'}; rest=${rec:2}
       lm[$rel]=${rest%% *}; lt[$rel]=${rec:0:1}
-    done < <(git -C "$root" ls-files -s -v -z -- "${rl[@]}")
+    done < <(printf '%s\0' "${rl[@]}" | xargs -0 -r -n 200 git -C "$root" ls-files -s -v -z --)
     while IFS= read -r -d '' rel && IFS= read -r -d '' _ && IFS= read -r -d '' val; do
       [[ $val == lfs ]] && lf[$rel]=1
     done < <(printf '%s\0' "${rl[@]}" | git -C "$root" check-attr -z filter --stdin)
@@ -72,7 +72,7 @@ git_batch(){
     ((${#hs[@]} == ${#rl[@]})) || return 1
     while IFS= read -r -d '' rec; do
       rel=${rec#*$'\t'}; read -r _ _ hh <<< "${rec%%$'\t'*}"; hd[$rel]=$hh
-    done < <(git -C "$root" ls-tree -z HEAD -- "${rl[@]}")
+    done < <(printf '%s\0' "${rl[@]}" | xargs -0 -r -n 200 git -C "$root" ls-tree -z HEAD --)
     for i in "${!rl[@]}"; do
       rel=${rl[i]}; hh=${hd[$rel]:-}
       [[ ${lm[$rel]:-} == 100644 || ${lm[$rel]:-} == 100755 ]] && [[ ${lt[$rel]:-} == H && -z ${lf[$rel]:-} && -n $hh && ${hs[i]} == "$hh" ]] || continue
@@ -159,13 +159,13 @@ batch_delete(){
       copy[$p]=$c; ss+=("$p"); ds+=("$c")
     done
     if ((${#fresh[@]})); then
-      mapfile -t devs < <(stat -c %d -- "$cdir" "${fresh[@]}")
+      mapfile -t devs < <(printf '%s\0' "$cdir" "${fresh[@]}" | xargs -0 -r -n 200 stat -c %d --)
       same=1; for d in "${devs[@]}"; do [[ $d == "${devs[0]}" ]] || same=; done
-      if [[ $same ]] && cp -p -l --parents -t "$cdir" -- "${fresh[@]}"; then :; else cp -p --parents -t "$cdir" -- "${fresh[@]}" || return 1; fi
+      if [[ $same ]] && printf '%s\0' "${fresh[@]}" | xargs -0 -r -n 200 cp -p -l --parents -t "$cdir" --; then :; else printf '%s\0' "${fresh[@]}" | xargs -0 -r -n 200 cp -p --parents -t "$cdir" -- || return 1; fi
     fi
-    touch -- "${ds[@]}" || return 1
-    mapfile -d '' hs < <(sha256sum -z -- "${ss[@]}")
-    mapfile -d '' hd < <(sha256sum -z -- "${ds[@]}")
+    printf '%s\0' "${ds[@]}" | xargs -0 -r -n 200 touch -- || return 1
+    mapfile -d '' hs < <(printf '%s\0' "${ss[@]}" | xargs -0 -r -n 200 sha256sum -z --)
+    mapfile -d '' hd < <(printf '%s\0' "${ds[@]}" | xargs -0 -r -n 200 sha256sum -z --)
     for k in "${!ss[@]}"; do
       a=${hs[k]:-}; b=${hd[k]:-}
       [[ -n $b && ${a:0:64} == "${b:0:64}" ]] || fail "копия не совпала: ${ss[k]}"
