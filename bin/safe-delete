@@ -288,6 +288,7 @@ case "$cmd" in
         if [[ -e $dir/.git && -e $dir/$s && -n $(git -C "$dir" ls-files -- "$s") && -z $(git -C "$dir" status --porcelain --ignored -- "$s") ]]; then allow_tracked_segs+=" $s"; allow_tracked_under=$dir; fi
         if [[ -d $dir/$s && -z $(find "$dir/$s" ! -type d -print -quit) ]]; then allow_tracked_segs+=" $s"; allow_tracked_under=$dir; fi
       done
+    elif [[ $dir == "$sandbox"/* && ${dir#"$sandbox"/} != */* && -d $dir/.git ]]; then allow_git_under=$dir; force_copy=1
     elif self_contained "$dir"; then allow_git_under=$dir; else allow_git_under=; fi
     mapfile -d '' entries < <(find "$dir" -depth -print0); nl=(); for entry in "${entries[@]}"; do [[ -L $entry ]] || nl+=("$entry"); done
     resolve_all "${nl[@]}"; files=()
