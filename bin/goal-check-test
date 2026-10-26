@@ -142,9 +142,32 @@ else
   case_fail other-ac-live "rc1=$rc1 rc2=$rc2 out1=$out1 out2=$out2"
 fi
 
-if [ "$passed" -eq 11 ]; then
-  echo "PASS 11/11"
+# 12) rc-error-fail
+cat > "$d/12.txt" <<EOF
+AC1: ls $d/missing/tasks.md => tasks.md
+EOF
+out=$("$gc" --file "$d/12.txt"); rc=$?
+if [ "$rc" -eq 1 ] && [[ $out == *"AC1 FAIL rc=2"* ]] && [[ $out == *GOAL=NOT_MET* ]]; then
+  passed=$((passed+1)); echo "PASS rc-error-fail FAIL rc=2"
+else
+  case_fail rc-error-fail "rc=$rc out=$out"
+fi
+
+# 13) grep-zero-pass
+printf 'alpha\n' > "$d/grep.txt"
+cat > "$d/13.txt" <<EOF
+AC1: grep -c zzz $d/grep.txt => 0
+EOF
+out=$("$gc" --file "$d/13.txt"); rc=$?
+if [ "$rc" -eq 0 ] && [[ $out == *"AC1 PASS rc=1"* ]] && [[ $out == *GOAL=MET* ]]; then
+  passed=$((passed+1)); echo "PASS grep-zero-pass PASS rc=1"
+else
+  case_fail grep-zero-pass "rc=$rc out=$out"
+fi
+
+if [ "$passed" -eq 13 ]; then
+  echo "PASS 13/13"
   exit 0
 fi
-echo "FAIL $passed/11"
+echo "FAIL $passed/13"
 exit 1
