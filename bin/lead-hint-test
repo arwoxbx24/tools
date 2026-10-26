@@ -5,7 +5,7 @@ dir=$(cd -- "$(dirname -- "$0")" && pwd)
 d=$(mktemp -d /tmp/lead-hint-test.XXXXXX)
 trap 'rm -rf "$d"' EXIT
 ok=0
-total=243
+total=245
 crdir=/tmp/lead-hint-stop
 srun="lh-$$-$RANDOM"
 clean_sid() { rm -f "$crdir/$1"; }
@@ -1152,6 +1152,22 @@ if [[ $rc == 0 && $dec == deny && $reason == "$reason_deny" ]]; then
   echo 'PASS 238: strict_opt_in_denied 9 calls -> deny'; ok=$((ok+1))
 else
   echo "FAIL 238: rc=$rc out=$out"
+fi
+
+out=$(mk_pre "$tx_strict" Bash '{"command":"patch -p1 < /tmp/x.diff"}' | env -u LEAD_HINT_STRICT CODE_CHANNEL="$d/code-channel" HELPER_SHARE="$d/helper-share" "$dir/lead-hint"); rc=$?
+dec=$(jq -r '.hookSpecificOutput.permissionDecision // empty' <<<"$out" 2>/dev/null)
+if [[ $rc == 0 && $dec == deny ]]; then
+  echo 'PASS 239: code_lock_default_on patch -> deny'; ok=$((ok+1))
+else
+  echo "FAIL 239: rc=$rc out=$out"
+fi
+
+out=$(mk_pre "$tx_strict" Bash '{"command":"git commit -m x"}' | env -u LEAD_HINT_STRICT CODE_CHANNEL="$d/code-channel" HELPER_SHARE="$d/helper-share" "$dir/lead-hint"); rc=$?
+dec=$(jq -r '.hookSpecificOutput.permissionDecision // empty' <<<"$out" 2>/dev/null)
+if [[ $rc == 0 && $dec == deny ]]; then
+  echo 'PASS 240: commit_lock_default_on git commit -> deny'; ok=$((ok+1))
+else
+  echo "FAIL 240: rc=$rc out=$out"
 fi
 
 if [[ $ok == $total ]]; then
