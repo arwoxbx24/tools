@@ -38,6 +38,22 @@ Permit: `state/code-channel/permit.json`, путь переопределяет�
 
 `config/code-channel.json` хранит массив с полями `id`, `enabled`, `model`, `resume_model`/`audit_model` (равны `model`), `fallback_model` (один запуск внутри go при сбое провайдера); порядок массива — порядок лестницы. `config/opencode-channel.json` добавляет агента `developer` (mode `primary`, TDD, правки только в `FILE:` ТЗ) и `audit`; go-код запускается с `--agent developer`, аудит — с `--agent audit`.
 
+## MCP
+
+Go-воркеру MCP не нужны: код он читает обычными `grep`/`read`. Глобальный конфиг OpenCode (`~/.config/opencode/opencode.jsonc`) определяет серверы `vibecode`, `context7`, `repowise`, `codebase-memory-mcp`; каждый стартует отдельный процесс (~0.2–0.3 GB на воркер). В `config/opencode-channel.json` все четыре выключены через `"enabled": false`.
+
+Документация OpenCode:
+
+- «You can also disable a server by setting `enabled` to `false`. This is useful if you want to temporarily disable a server without removing it from your config.» — <https://opencode.ai/docs/mcp-servers/#enable>.
+- «Configuration files are **merged together**, not replaced. Settings from the following config locations are combined. Later configs override earlier ones only for conflicting keys. Non-conflicting settings from all configs are preserved.» — <https://opencode.ai/docs/config/#locations>.
+- «Custom config is loaded between global and project configs in the precedence order.» — <https://opencode.ai/docs/config/#custom-path>. Поэтому `OPENCODE_CONFIG=config/opencode-channel.json` накладывается на глобальный конфиг и выключает его MCP; проектный `opencode.json` загружается позже и может включить сервер обратно.
+
+Проверка без вызова модели:
+
+```bash
+OPENCODE_CONFIG=config/opencode-channel.json opencode mcp list
+```
+
 ## Коды выхода
 
 | код | значение |
