@@ -5,7 +5,7 @@ dir=$(cd -- "$(dirname -- "$0")" && pwd)
 d=$(mktemp -d /tmp/lead-hint-test.XXXXXX)
 trap 'rm -rf "$d"' EXIT
 ok=0
-total=104
+total=241
 crdir=/tmp/lead-hint-stop
 srun="lh-$$-$RANDOM"
 clean_sid() { rm -f "$crdir/$1"; }
@@ -579,7 +579,7 @@ fi
 
 tx51=$d/tx51.jsonl
 { mk_user; for _ in $(seq 9); do mk_read; done; } >"$tx51"
-out=$(mk_pre "$tx51" Bash '{"command":"code-channel audit /x /x/tz.md"}' | run_hook); rc=$?
+out=$(mk_pre "$tx51" Bash '{"command":"code-channel audit /x /x/tz.md","run_in_background":true}' | run_hook); rc=$?
 if [[ $rc == 0 && -z $out ]]; then
   echo 'PASS 51: 9 counted then code-channel launch -> allowed'; ok=$((ok+1))
 else
@@ -744,8 +744,8 @@ t_codelock_allow_write_sh_root() {
     /root Write '{"file_path":"x.sh"}'
 }
 t_codelock_allow_bash_redirect() {
-  codelock_case 69 'codelock allow Bash bash -i < /tmp/p.txt in /root/workspaces/projects' allow \
-    /root/workspaces/projects Bash '{"command":"bash -i < /tmp/p.txt"}'
+  codelock_case 69 'lead_allow_redirect_tmp: Bash echo x > /tmp/a.md' allow \
+    /root/workspaces/projects Bash '{"command":"echo x > /tmp/a.md"}'
 }
 t_codelock_allow_bash_bd_note() {
   codelock_case 70 'codelock allow Bash bd note quoting a redirect in /root/workspaces/projects' allow \
@@ -788,8 +788,8 @@ codelock_case 82 't_runlock_deny_incidents: Bash python3 x.py in /root/workspace
 
 codelock_case 83 'codelock allow Edit /var/lib/redis/redis.conf in /root/workspaces/projects/incidents' allow \
   /root/workspaces/projects/incidents Edit '{"file_path":"/var/lib/redis/redis.conf"}'
-codelock_case 84 't_runlock_allow_tmp_script: Bash sh /tmp/u42/p.sh -> allow' allow \
-  /root/workspaces/projects Bash '{"command":"sh /tmp/u42/p.sh"}'
+codelock_case 84 'lead_allow_pipe_2>&1: Bash grep x /tmp/f 2>&1 | head' allow \
+  /root/workspaces/projects Bash '{"command":"grep x /tmp/f 2>&1 | head"}'
 codelock_case 85 't_runlock_deny_pytest: Bash pytest -q in /root/workspaces/projects/incidents -> deny' deny \
   /root/workspaces/projects/incidents Bash '{"command":"pytest -q"}' '' "$reason_runlock"
 codelock_case 86 't_runlock_allow_safe_delete: Bash /root/workspaces/tools/bin/safe-delete tmp /tmp/x -> allow' allow \
@@ -822,6 +822,8 @@ notp_case() {
 }
 notp_case 95 'codelock deny Write x.py without transcript_path' deny /root/workspaces/tools/x.py
 notp_case 96 'codelock allow Write x.md without transcript_path' allow /root/workspaces/tools/x.md
+codelock_case 236 'lead_write_state_denied: Write x.md under state -> deny' deny \
+  /tmp Write '{"file_path":"/root/workspaces/tools/state/x.md"}'
 codelock_case 97 'codelock deny non-object tool_input' deny \
   /root/workspaces/tools Write '"x"'
 notp_case 98 'codelock deny agent Write x.py without transcript_path, bd []' deny /root/workspaces/tools/x.py sub
@@ -893,6 +895,200 @@ if [[ $rc == 0 && $dec == deny ]]; then
 else
   echo "FAIL 76: rc=$rc out=$out"
 fi
+
+hard_case() {
+  local num=$1 label=$2 want=$3 cmd=$4 bg=${5:-false} cwd=${6:-/root/workspaces/projects}
+  local out rc dec
+  out=$(jq -cn --arg cwd "$cwd" --arg cmd "$cmd" --arg bg "$bg" \
+    '{hook_event_name:"PreToolUse",cwd:$cwd,tool_name:"Bash",tool_input:{command:$cmd,run_in_background:($bg=="true")}}' \
+    | run_hook); rc=$?
+  dec=$(jq -r '.hookSpecificOutput.permissionDecision // empty' <<<"$out" 2>/dev/null)
+  if [[ $want == deny ]]; then
+    if [[ $rc == 0 && $dec == deny ]]; then
+      echo "PASS $num: $label"; ok=$((ok+1)); return
+    fi
+  elif [[ $rc == 0 && -z $out ]]; then
+    echo "PASS $num: $label"; ok=$((ok+1)); return
+  fi
+  echo "FAIL $num: rc=$rc out=$out"
+}
+
+hard_case 100 lead_patch_denied deny 'patch -p1 < /tmp/x.diff'
+hard_case 101 lead_git_commit_denied deny 'git commit -m x'
+hard_case 102 lead_git_push_denied deny 'git push -u origin claude/x'
+hard_case 103 lead_git_apply_denied deny 'git apply /tmp/x.diff'
+hard_case 104 lead_cp_into_ws_denied deny 'cp /tmp/x /root/workspaces/projects/x.py' false /tmp
+hard_case 105 lead_mv_into_ws_denied deny 'mv /tmp/x /root/workspaces/projects/x.py' false /tmp
+hard_case 106 lead_sed_inplace_denied deny 'sed -i s/a/b/ /root/workspaces/projects/x.py' false /tmp
+hard_case 107 lead_perl_inplace_denied deny 'perl -i -pe s/a/b/ /root/workspaces/projects/x.py' false /tmp
+hard_case 108 lead_redirect_into_ws_denied deny 'echo x > /root/workspaces/projects/x.py' false /tmp
+hard_case 109 lead_script_python_denied deny 'python3 /root/workspaces/projects/x.py' false /tmp
+hard_case 110 lead_script_bash_denied deny 'bash /root/workspaces/projects/x.sh' false /tmp
+hard_case 111 lead_tar_extract_denied deny 'tar -xzf /tmp/a.tar -C /root/workspaces/projects' false /tmp
+hard_case 112 lead_ln_into_ws_denied deny 'ln -s /tmp/x /root/workspaces/projects/x' false /tmp
+hard_case 113 lead_rsync_into_ws_denied deny 'rsync -a /tmp/x /root/workspaces/projects/' false /tmp
+hard_case 114 lead_install_into_ws_denied deny 'install -m 755 /tmp/x /root/workspaces/projects/x' false /tmp
+
+hard_case 115 lead_env_git_commit_denied deny 'env FOO=1 git commit -m x' false /tmp
+hard_case 116 lead_var_git_commit_denied deny 'FOO=1 git commit -m x' false /tmp
+hard_case 117 lead_cd_and_git_commit_denied deny 'cd /root/workspaces/projects && git commit -m x' false /tmp
+hard_case 118 lead_env_python_denied deny 'env FOO=1 python3 /root/workspaces/projects/x.py' false /tmp
+hard_case 119 lead_var_bash_denied deny 'FOO=1 bash /root/workspaces/projects/x.sh' false /tmp
+hard_case 120 lead_cd_bash_denied deny 'cd /root/workspaces/projects && python3 x.py' false /tmp
+
+out=$(jq -cn --arg cwd /tmp \
+  '{hook_event_name:"PreToolUse",cwd:$cwd,tool_name:"Bash",tool_input:{command:"code-channel audit /x /y",run_in_background:false}}' | run_hook); rc=$?
+dec=$(jq -r '.hookSpecificOutput.permissionDecision // empty' <<<"$out" 2>/dev/null)
+reason=$(jq -r '.hookSpecificOutput.permissionDecisionReason // empty' <<<"$out" 2>/dev/null)
+if [[ $rc == 0 && $dec == deny && $reason == *"run it in background"* ]]; then
+  echo 'PASS 121: channel_foreground_denied'; ok=$((ok+1))
+else
+  echo "FAIL 121: rc=$rc out=$out"
+fi
+hard_case 122 channel_background_allowed allow 'code-channel audit /x /y' true /tmp
+
+hard_case 123 allow_bd allow 'bd show x' false /tmp
+hard_case 124 allow_goal_check allow '/root/workspaces/tools/bin/goal-check dcfg-x' false /tmp
+hard_case 125 allow_test_once allow '/root/workspaces/tools/bin/test-once bin/lead-hint-test' false /tmp
+hard_case 126 allow_git_status allow 'git status' false /tmp
+hard_case 127 allow_git_log allow 'git log --oneline -1' false /tmp
+hard_case 128 allow_git_diff allow 'git diff HEAD' false /tmp
+hard_case 129 allow_git_show allow 'git show HEAD' false /tmp
+hard_case 130 allow_git_ls_files allow 'git ls-files' false /tmp
+hard_case 131 allow_git_worktree_add allow 'git worktree add /tmp/wt x' false /tmp
+hard_case 132 allow_tmux_send allow '/root/workspaces/tools/bin/tmux-send code hi' false /tmp
+hard_case 133 allow_safe_delete allow '/root/workspaces/tools/bin/safe-delete tmp /tmp/x' false /tmp
+hard_case 134 allow_git_sync allow 'git-sync status' false /tmp
+hard_case 135 allow_gh_pr_view allow 'gh pr view 1' false /tmp
+hard_case 136 allow_gh_pr_checks allow 'gh pr checks 1' false /tmp
+hard_case 137 allow_gh_pr_create allow 'gh pr create --fill' false /tmp
+hard_case 138 allow_gh_pr_merge allow 'gh pr merge 1 --merge' false /tmp
+hard_case 139 allow_ls allow 'ls /tmp' false /tmp
+hard_case 140 allow_cat allow 'cat /tmp/x' false /tmp
+hard_case 141 allow_grep allow 'grep x /tmp/f' false /tmp
+hard_case 142 allow_wc allow 'wc -l /tmp/f' false /tmp
+hard_case 143 allow_jq allow 'jq -n 1+1' false /tmp
+hard_case 144 allow_head allow 'head -n1 /tmp/f' false /tmp
+hard_case 145 allow_tail allow 'tail -n1 /tmp/f' false /tmp
+
+hard_case 146 lead_bypass_dollar_paren deny 'echo $(git commit -m x)' false /tmp
+hard_case 147 lead_bypass_backtick deny 'echo `git commit -m x`' false /tmp
+hard_case 148 lead_bypass_bash_c deny "bash -c 'git commit -m x'" false /tmp
+hard_case 149 lead_bypass_xargs deny 'xargs git commit' false /tmp
+hard_case 150 lead_bypass_git_c deny 'git -c alias.c=commit c' false /tmp
+hard_case 151 lead_bypass_env_i deny 'env -i git commit' false /tmp
+hard_case 152 lead_bypass_sudo deny 'sudo git commit -m x' false /tmp
+hard_case 153 lead_bypass_time deny 'time git commit -m x' false /tmp
+hard_case 154 lead_bypass_nice deny 'nice git commit -m x' false /tmp
+hard_case 155 lead_bypass_quoted_redirect deny 'echo x >"/root/workspaces/projects/x.py"' false /tmp
+hard_case 156 lead_bypass_dotdot_redirect deny 'echo x > /tmp/../root/workspaces/a' false /tmp
+hard_case 157 lead_bypass_cp_t deny 'cp -t /root/workspaces/projects /tmp/x' false /tmp
+hard_case 158 lead_bypass_tar_C deny 'tar -C/root/workspaces/projects -xf /tmp/a.tar' false /tmp
+hard_case 159 lead_bypass_python_write deny 'python3 -c "open(\"/root/workspaces/projects/x.py\",\"w\")"' false /tmp
+hard_case 160 lead_bypass_perl_e deny "perl -e 'print 1'" false /tmp
+hard_case 161 lead_bypass_dd_of deny 'dd of=/root/workspaces/projects/x.py' false /tmp
+hard_case 162 lead_bypass_find_exec deny 'find /tmp -exec rm {} +' false /tmp
+hard_case 163 lead_bypass_git_branch_delete deny 'git branch -D x' false /tmp
+hard_case 164 lead_bypass_gh_run deny 'gh run view 1' false /tmp
+
+hard_case 165 lead_allow_bd_note_semicolon allow 'bd update x --append-notes "a; git commit b"' false /tmp
+hard_case 166 lead_allow_git_worktree_list allow 'git worktree list' false /tmp
+hard_case 167 lead_allow_cd allow 'cd /x' false /tmp
+hard_case 168 lead_allow_git_rev_parse allow 'git rev-parse HEAD' false /tmp
+hard_case 169 lead_allow_git_fetch allow 'git fetch origin' false /tmp
+hard_case 170 lead_allow_git_branch allow 'git branch --list' false /tmp
+hard_case 171 lead_allow_gh_pr_list allow 'gh pr list' false /tmp
+hard_case 172 lead_allow_gh_pr_diff allow 'gh pr diff 1' false /tmp
+hard_case 173 lead_allow_channel_canary allow 'channel-canary' false /tmp
+hard_case 174 lead_allow_where allow 'where code-channel' false /tmp
+hard_case 175 lead_allow_sdk_agent_background allow 'sdk-agent audit /x /y' true /tmp
+hard_case 176 lead_allow_cut allow 'cut -d: -f1 /tmp/f' false /tmp
+hard_case 177 lead_allow_sort allow 'sort /tmp/f' false /tmp
+hard_case 178 lead_allow_uniq allow 'uniq /tmp/f' false /tmp
+hard_case 179 lead_allow_tr allow 'tr a b' false /tmp
+hard_case 180 lead_allow_pgrep allow 'pgrep bash' false /tmp
+hard_case 181 lead_allow_date allow 'date +%s' false /tmp
+hard_case 182 lead_allow_echo allow 'echo hi' false /tmp
+hard_case 183 lead_allow_printf allow 'printf hi' false /tmp
+hard_case 184 lead_allow_pwd allow 'pwd' false /tmp
+hard_case 185 lead_allow_stat allow 'stat /tmp/f' false /tmp
+hard_case 186 lead_allow_test allow 'test -f /tmp/f' false /tmp
+hard_case 187 lead_allow_true allow 'true' false /tmp
+hard_case 188 lead_allow_find allow 'find /tmp -name x' false /tmp
+hard_case 189 lead_allow_redirect_devnull allow 'echo x > /dev/null' false /tmp
+hard_case 190 lead_allow_redirect_tmp_abs allow 'echo x > /tmp/dir/../a.md' false /tmp
+hard_case 191 lead_allow_tools_bare_path allow '/root/workspaces/tools/bin/channel-canary' false /tmp
+hard_case 192 lead_allow_redirect_devnull_2 allow 'echo x >> /dev/null 2>&1' false /tmp
+
+hard_case 193 lead_pm2_ls_allowed allow 'pm2 ls --no-color' false /tmp
+hard_case 194 lead_pm2_logs_allowed allow 'pm2 logs app --nostream --lines 50' false /tmp
+hard_case 195 lead_pm2_restart_allowed allow 'pm2 restart app' false /tmp
+hard_case 196 lead_systemctl_status_allowed allow 'systemctl status nginx --no-pager' false /tmp
+hard_case 197 lead_curl_get_allowed allow 'curl -s https://example.com' false /tmp
+hard_case 198 lead_curl_output_outside_tmp_denied deny 'curl -o /root/workspaces/projects/x https://example.com' false /tmp
+
+tb_ok=0
+out=$(jq -cn --arg cwd /tmp \
+  '{hook_event_name:"PreToolUse",cwd:$cwd,tool_name:"Bash",tool_input:{command:"/root/workspaces/tools/bin/transcribe --help"}}' | run_hook)
+[[ -z $out ]] && tb_ok=$((tb_ok+1))
+out=$(jq -cn --arg cwd /tmp \
+  '{hook_event_name:"PreToolUse",cwd:$cwd,tool_name:"Bash",tool_input:{command:"git-sync status"}}' | run_hook)
+[[ -z $out ]] && tb_ok=$((tb_ok+1))
+if [[ $tb_ok == 2 ]]; then
+  echo 'PASS 199: lead_tools_bin_allowed'; ok=$((ok+1))
+else
+  echo "FAIL 199: tools/bin allow $tb_ok/2"
+fi
+
+hard_case 200 lead_npx_denied deny 'npx some-tool' false /tmp
+hard_case 201 lead_npm_exec_denied deny 'npm exec x' false /tmp
+hard_case 202 lead_npm_run_allowed allow 'npm run build' false /tmp
+hard_case 203 lead_xargs_python_denied deny 'xargs python3 -c pass' false /tmp
+hard_case 204 lead_cp_to_code_denied deny 'cp /tmp/x /root/workspaces/projects/x.py' false /tmp
+hard_case 205 lead_tmux_send_keys_denied deny 'tmux send-keys -t x hi' false /tmp
+
+hard_case 206 lead_curl_output_combined_outside_tmp_denied deny 'curl -so /root/workspaces/projects/x https://example.com' false /tmp
+hard_case 207 lead_curl_output_combined_tmp_allowed allow 'curl -so /tmp/x https://example.com' false /tmp
+hard_case 208 lead_python_dotted_denied deny 'python3.12 -c pass' false /tmp
+hard_case 209 lead_php_dotted_denied deny 'php8.3 -r pass' false /tmp
+hard_case 210 lead_tmux_list_commands_allowed allow 'tmux list-commands' false /tmp
+hard_case 211 lead_mkdir_tmp_allowed allow 'mkdir -p /tmp/a/b' false /tmp
+hard_case 212 lead_mkdir_outside_tmp_denied deny 'mkdir -p /root/workspaces/projects/x' false /tmp
+hard_case 213 lead_rm_outside_tmp_denied deny 'rm -rf /root/workspaces/projects/x' false /tmp
+hard_case 214 lead_mv_to_tmp_allowed allow 'mv /tmp/a /tmp/b' false /tmp
+hard_case 215 lead_timeout_inner_allowed allow 'timeout 5 ls /tmp' false /tmp
+hard_case 216 lead_timeout_commit_denied deny 'timeout 5 git commit -m x' false /tmp
+hard_case 217 lead_tar_list_allowed allow 'tar -tzf /tmp/a.tar' false /tmp
+hard_case 218 lead_tar_extract_tmp_allowed allow 'tar -xzf /tmp/a.tar -C /tmp' false /tmp
+hard_case 219 lead_pre_commit_denied deny 'pre-commit run --files /tmp/x' false /tmp
+hard_case 220 lead_uv_denied deny 'uv run python x.py' false /tmp
+hard_case 221 lead_cmp_allowed allow 'cmp /tmp/a /tmp/b' false /tmp
+hard_case 222 lead_sysctl_allowed allow 'sysctl -n kernel.ostype' false /tmp
+hard_case 223 lead_which_allowed allow 'which jq' false /tmp
+hard_case 224 lead_mktemp_tmp_allowed allow 'mktemp -d /tmp/x.XXXXXX' false /tmp
+hard_case 225 lead_mktemp_outside_tmp_denied deny 'mktemp /root/workspaces/projects/x.XXXXXX' false /tmp
+
+amp_ok=0
+for amp_cmd in 'echo hi & git commit -m x' 'echo hi&git commit -m x' 'echo hi >/tmp/f&git commit -m x'; do
+  out=$(jq -cn --arg cwd /tmp --arg cmd "$amp_cmd" \
+    '{hook_event_name:"PreToolUse",cwd:$cwd,tool_name:"Bash",tool_input:{command:$cmd}}' | run_hook)
+  dec=$(jq -r '.hookSpecificOutput.permissionDecision // empty' <<<"$out" 2>/dev/null)
+  [[ $dec == deny ]] && amp_ok=$((amp_ok+1))
+done
+if [[ $amp_ok == 3 ]]; then
+  echo 'PASS 226: lead_amp_separator_denied'; ok=$((ok+1))
+else
+  echo "FAIL 226: lead_amp_separator_denied $amp_ok/3"
+fi
+hard_case 227 lead_backslash_quote_denied deny 'echo hi \" ; git commit -m x' false /tmp
+hard_case 228 lead_find_escaped_exec_denied deny 'find /tmp -ex\ec git commit -m x \;' false /tmp
+hard_case 229 lead_git_output_denied deny 'git log -1 --format=x --output=/root/workspaces/tools/state/code-channel/permit.json' false /tmp
+hard_case 230 lead_sort_o_denied deny 'sort -o /root/workspaces/projects/x /tmp/f' false /tmp
+hard_case 231 lead_uniq_out_denied deny 'uniq /tmp/f /root/workspaces/projects/x' false /tmp
+hard_case 232 lead_find_fls_denied deny 'find /tmp -fls /root/workspaces/projects/x' false /tmp
+hard_case 233 lead_worktree_add_outside_denied deny 'git worktree add /root/workspaces/projects/wt x' false /tmp
+hard_case 234 lead_amp_redirect_allowed allow 'echo hi 2>&1' false /tmp
+hard_case 235 git_log_tmp_output_allowed allow 'git log -1 --output=/tmp/x' false /tmp
 
 ca_ok=0; ca_fail=0
 for ca in 'x.sh deny' 'x.md allow'; do
