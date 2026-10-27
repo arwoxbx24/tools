@@ -93,7 +93,7 @@ else
 		leave 20 gitleaks
 	fi
 	first=$(sed -n '1p' "${tz%%#*}" 2>/dev/null)
-	g commit -q -m "$atom: ${first:-$atom}" \
+	g commit -q -m "chore($atom): ${first:-$atom}" \
 		--trailer "Atom: $atom" --trailer "ТЗ: $tz" --trailer "Agent: $agent" \
 		|| leave 30 commit
 fi
@@ -180,7 +180,7 @@ ci_bootstrap(){
 	g worktree add -q --detach "$tmp/w" "origin/$base" || return 1
 	{ "$bin/git-ci-enable" "$tmp/w" >/dev/null \
 		&& git -C "$tmp/w" add .github/workflows \
-		&& git -C "$tmp/w" commit -q -m "ci: enable min-ci" --trailer "Atom: $atom" --trailer "ТЗ: $tz" --trailer "Agent: $agent" \
+		&& git -C "$tmp/w" commit -q -m "chore(ci): enable min-ci" --trailer "Atom: $atom" --trailer "ТЗ: $tz" --trailer "Agent: $agent" \
 		&& git -C "$tmp/w" push -q origin "+HEAD:refs/heads/$cb" \
 		&& { gh pr create -R "$slug" --head "$cb" --base "$base" --title "ci: enable min-ci" --body "ship: repository had no pull_request CI (atom $atom)" >/dev/null || gh pr view "$cb" -R "$slug" >/dev/null; } \
 		&& { gh pr merge "$cb" -R "$slug" --merge --delete-branch >/dev/null || gh pr merge "$cb" -R "$slug" --squash --delete-branch >/dev/null; }; } || rc=1

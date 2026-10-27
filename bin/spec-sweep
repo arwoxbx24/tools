@@ -96,7 +96,7 @@ if [[ $apply == 1 ]]; then
     printf 'spec-sweep %s\n\nspecs: %s\ndocs: %s\ntasks: %s\natom: %s\n' \
       "$today" "$specs" "$docs" "$bd_ok" "$atom" >"$body"
     out=""; rc=0; pr=
-    o=$(git -C "$wt" commit -q -m "$title" 2>&1) || rc=$?; out+=$o$nl
+    o=$(git -C "$wt" commit -q -m "chore(spec-sweep): $title" 2>&1) || rc=$?; out+=$o$nl
     if [[ $rc -eq 0 ]]; then
       o=$(git -C "$wt" push -u origin "claude/sweep-$today" 2>&1) || rc=$?; out+=$o$nl
     fi

@@ -298,7 +298,7 @@ do_submit(){
 		( cd "$wt_real" && gitleaks git --pre-commit --staged --redact --no-banner ) || { cp -f -- "$index_backup" "$index_path"; rm -f -- "$index_backup"; die "gitleaks failed"; }
 		local tz_title short_sha
 		tz_title=$(awk '/^---[[:space:]]*$/ { if (in_fm) { in_fm=2; next } else { in_fm=1; next } } in_fm==1 { next } NF { sub(/^[[:space:]]*#+[[:space:]]*/, ""); print; exit }' "$tz_abs" 2>/dev/null)
-		git -C "$wt_real" commit -q -m "$atom: ${tz_title:-$atom}" \
+		git -C "$wt_real" commit -q -m "chore($atom): ${tz_title:-$atom}" \
 			-m "$(printf 'ТЗ: %s\nAtom: %s\nAgent: %s' "$tz_stored" "$atom" "$caller")" || {
 			local rc=$?
 			cp -f -- "$index_backup" "$index_path"; rm -f -- "$index_backup"
