@@ -331,9 +331,35 @@ else
   case_fail budget-caps-timeouts-at-100s "rc=$rc el=$el last=$last out=$out"
 fi
 
-if [ "$passed" -eq 25 ]; then
-  echo "PASS 25/25"
+# 26) git -C <dir> and gh repo view are read-only and accepted
+mkdir -p "$d/bin-gh"
+cat >"$d/bin-gh/gh" <<'STUB'
+#!/usr/bin/env bash
+printf '{"visibility":"PRIVATE"}\n'
+STUB
+chmod 755 "$d/bin-gh/gh"
+cat > "$d/26.txt" <<EOF
+AC1: git -C /tmp log -1 => x
+AC2: git -C /tmp branch --list x => x
+AC3: gh repo view o/r --json visibility => PRIVATE
+EOF
+out=$(PATH="$d/bin-gh:$PATH" "$gc" --file "$d/26.txt"); rc=$?
+ok=0
+if [ "$rc" -eq 0 ] && [[ $out != *git-subcmd* ]] && [[ $out != *gh-subcmd* ]] && [[ $out == *"AC3 PASS"* ]]; then ok=1; fi
+for c in "git -C /tmp push" "git -C /tmp commit" "gh repo delete o/r"; do
+  printf 'AC1: %s => x\n' "$c" > "$d/26n.txt"
+  outn=$(PATH="$d/bin-gh:$PATH" "$gc" --file "$d/26n.txt"); rcn=$?
+  if [ "$rcn" -ne 2 ] || [[ $outn != *"REFUSED AC1 reason="* ]]; then ok=0; out="$out neg=$c rcn=$rcn outn=$outn"; fi
+done
+if [ "$ok" -eq 1 ]; then
+  passed=$((passed+1)); echo "PASS git-C-and-gh-repo-view"
+else
+  case_fail git-C-and-gh-repo-view "rc=$rc out=$out"
+fi
+
+if [ "$passed" -eq 26 ]; then
+  echo "PASS 26/26"
   exit 0
 fi
-echo "FAIL $passed/25"
+echo "FAIL $passed/26"
 exit 1

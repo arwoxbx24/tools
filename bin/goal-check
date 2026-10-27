@@ -130,11 +130,14 @@ for i in "${!nums[@]}"; do
         done
         ;;
       git)
-        g=1; case ${argv[1]:-} in --git-dir=*) g=2 ;; esac
+        g=1
+        while :; do
+          case ${argv[g]:-} in --git-dir=*) g=$((g+1)) ;; -C) g=$((g+2)) ;; *) break ;; esac
+        done
         case ${argv[g]:-} in log|show|diff|rev-parse|ls-files|status) ;; branch) [ "${argv[g+1]:-}" = --list ] || reason=git-subcmd ;; *) reason=git-subcmd ;; esac
         ;;
       gh)
-        case "${argv[1]:-} ${argv[2]:-}" in "pr view"|"pr list"|"pr checks") ;; *) reason=gh-subcmd ;; esac
+        case "${argv[1]:-} ${argv[2]:-}" in "pr view"|"pr list"|"pr checks"|"repo view") ;; *) reason=gh-subcmd ;; esac
         ;;
       bd)
         case ${argv[1]:-} in show|list|search) ;; comments) [ ${#argv[@]} -eq 3 ] && [ "${argv[2]}" != add ] || reason=bd-subcmd ;; *) reason=bd-subcmd ;; esac
