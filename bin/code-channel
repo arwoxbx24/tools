@@ -79,8 +79,16 @@ while IFS= read -r p; do
     [[ $(realpath -m -- "$project/$p") == "$tz_abs" ]] && { fail "ТЗ в собственном Files: $p"; exit 3; }
 done < <(grep -m1 '^Files:' <<<"$prompt" | tr '\140' '\n' | sed -n '2~2p')
 cd -- "$project" || exit 3
-exec 9>"$S/worktree.$(printf '%s\n' "$PWD" | sha1sum | cut -c-16).lock" || exit 3
-flock -n 9 || { fail "worktree занят другим запуском: $PWD"; exit 25; }
+lockf="$S/worktree.$(printf '%s\n' "$PWD" | sha1sum | cut -c-16).lock"
+exec 9>>"$lockf" || exit 3
+if ! flock -n 9; then
+    holder=$(head -n1 -- "$lockf" 2>/dev/null | tr -cd '0-9')
+    hcmd=
+    [[ $holder =~ ^[0-9]+$ ]] && hcmd=$(tr '\0' ' ' <"/proc/$holder/cmdline" 2>/dev/null)
+    fail "worktree занят другим запуском: $PWD lock=$lockf pid=${holder:-?} cmd=${hcmd:-?}"
+    exit 25
+fi
+printf '%s\n' "$$" > "$lockf"
 form_snap() { local s; s=$( { git rev-parse HEAD 2>/dev/null; git status --porcelain --untracked-files=all 2>/dev/null; git diff HEAD 2>/dev/null; git ls-files -z --others --exclude-standard 2>/dev/null | xargs -0 -r cksum 2>/dev/null; } ); [[ -z $s ]] && return 0; printf '%s\n' "$s" | cksum; }
 cc_status() { git status --porcelain --untracked-files=all 2>/dev/null | cut -c4- | sed 's/.* -> //' | sort; }
 cc_scope_check() {
@@ -136,25 +144,31 @@ guarded() {
 }
 tz_test() {
     local line r
-    local -a words
     [[ $mode == audit ]] && return 0
     line=$(grep -m1 '^Test: ' -- "$tz_abs") || return 0
-    read -ra words <<<"${line#Test: }"
-    "$root/bin/test-once" "$project" "${words[@]}"; r=$?
+    "$root/bin/test-once" "$project" bash -c "${line#Test: }"; r=$?
     printf 'code-channel: test rc=%s\n' "$r" >&2
     case $r in 0) return 0;; 29) exit 29;; *) exit 31;; esac
 }
 run_sdk() {
-    local sub=code r
+    local sub=code r outf
     [[ $mode == audit ]] && sub=read
     cc_pre=$(cc_status)
-    CODE_CHANNEL_ACTIVE=1 guarded "$sdk_agent" "$sub" "$PWD" "$tz_abs"; r=$?
+    outf=$(mktemp "${TMPDIR:-/tmp}/code-channel-sdkout-XXXXXX") || exit 3
+    CODE_CHANNEL_ACTIVE=1 guarded "$sdk_agent" "$sub" "$PWD" "$tz_abs" | tee -- "$outf"; r=${PIPESTATUS[0]}
     printf 'code-channel: mode=%s form=sdk rc=%s\n' "$mode" "$r" >&2
     if [[ $r == 0 ]]; then
         rc=0 run=0
-        cc_scope_check || exit $?
+        cc_scope_check || { local s=$?; unlink -- "$outf"; exit "$s"; }
+        if [[ $mode == code && ! -s $outf && $(cc_status) == "$cc_pre" ]]; then
+            unlink -- "$outf"
+            fail 'worker made no change and no report'
+            exit 17
+        fi
+        unlink -- "$outf"
         return 0
     fi
+    unlink -- "$outf"
     return "$r"
 }
 run_form() (

@@ -30,7 +30,7 @@ printf '%s\n' '{"switch":{"channel":"go","owner_word":"test"},"ladder":[{"id":"g
 printf '%s\n' '#!/usr/bin/env bash' 'printf "opencode active=%s %s\\n" "${CODE_CHANNEL_ACTIVE:-}" "$*" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "env OPENCODE_CONFIG=%s\\n" "${OPENCODE_CONFIG:-}" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "env OPENCODE_DISABLE_MODELS_FETCH=%s\\n" "${OPENCODE_DISABLE_MODELS_FETCH:-}" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "env OPENCODE_DISABLE_AUTOUPDATE=%s\\n" "${OPENCODE_DISABLE_AUTOUPDATE:-}" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "env OPENCODE_DISABLE_CLAUDE_CODE=%s\\n" "${OPENCODE_DISABLE_CLAUDE_CODE:-}" >>"$CODE_CHANNEL_TEST_LOG"' 'printf "PATH=%s\\n" "$PATH" >>"$CODE_CHANNEL_TEST_LOG"' 'if [[ ${OPENCODE_STDIN_COPY:-} ]]; then cat >"$OPENCODE_STDIN_COPY"; else cat >>"$CODE_CHANNEL_TEST_LOG"; printf "\\n" >>"$CODE_CHANNEL_TEST_LOG"; fi' 'printf "stdin=%s\\n" "$(readlink /proc/$$/fd/0)" >>"$CODE_CHANNEL_TEST_LOG"' '[[ ${OPENCODE_SLEEP:-} ]] && sleep "$OPENCODE_SLEEP"' '[[ ${OPENCODE_OUT:-} ]] && printf "%s\n" "$OPENCODE_OUT"' 'printf "REPORT\\n"' '[[ ${OPENCODE_ERR:-} ]] && printf "%s\n" "$OPENCODE_ERR" >&2' '[[ ${OPENCODE_TOUCH:-} ]] && mkdir -p -- "$(dirname -- "$CODE_CHANNEL_TEST_PROJECT/$OPENCODE_TOUCH")" && printf x >"$CODE_CHANNEL_TEST_PROJECT/$OPENCODE_TOUCH"' 'rc=${OPENCODE_RC:-0}' 'if [[ ${OPENCODE_SEQUENCE:-} ]]; then IFS=, read -ra seq <<<"$OPENCODE_SEQUENCE"; n=$(grep -c "^opencode " "$CODE_CHANNEL_TEST_LOG"); rc=${seq[$((n - 1))]:-$rc}; fi' 'exit "$rc"' >"$bin/opencode"
 printf '%s\n' '#!/usr/bin/env bash' 'printf "%s\n" "${CC_CANARY_OUT:-channel-canary: down (stub)}"' 'exit "${CC_CANARY_RC:-0}"' >"$bin/channel-canary-stub"
 printf '%s\n' '#!/usr/bin/env bash' 'if [[ $* == *"select id from session"* ]]; then printf "%s\n" "${SQLITE_SESSION_ID:-}"; else printf "%s\n" "${SQLITE_RESULT:-opencode-go|mimo-v2.6-flash}"; fi' >"$bin/sqlite3"
-printf '%s\n' '#!/usr/bin/env bash' 'printf "sdk-agent %s\\n" "$*" >>"$CODE_CHANNEL_TEST_LOG"' '[[ ${SDK_TOUCH:-} ]] && printf x >"$CODE_CHANNEL_TEST_PROJECT/$SDK_TOUCH"' '[[ ${SDK_ERR:-} ]] && printf "%s\n" "$SDK_ERR" >&2' 'exit "${SDK_RC:-0}"' >"$bin/sdk-agent-fake"
+printf '%s\n' '#!/usr/bin/env bash' 'printf "sdk-agent %s\\n" "$*" >>"$CODE_CHANNEL_TEST_LOG"' '[[ ${SDK_TOUCH:-} ]] && printf x >"$CODE_CHANNEL_TEST_PROJECT/$SDK_TOUCH"' '[[ ${SDK_ERR:-} ]] && printf "%s\n" "$SDK_ERR" >&2' '[[ ${SDK_OUT:-} ]] && printf "%s\n" "$SDK_OUT"' 'exit "${SDK_RC:-0}"' >"$bin/sdk-agent-fake"
 for f in "$go" "$goaudit" "$goidle" "$goalt" "$resume" "$ocfg" "$sdkgo" "$gosdk" "$tmp/repogo.json"; do
   jq '.ladder |= map(.owner_word = "test")' "$f" >"$f.t" && mv -f -- "$f.t" "$f"
   for fid in $(jq -r '.ladder[].id' "$f"); do
@@ -115,6 +115,16 @@ CC_CONFIG=$go check tz_test_rc0 '[[ $rc == 0 && $(wc -l <"$tzcount") == 1 ]] && 
   env TEST_ONCE_DIR="$tmp/to-state" OPENCODE_RC=0 OPENCODE_TOUCH=tz-touched.txt SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tztestfile"
 git -C "$project" clean -fdq
 rm -f -- "$tzcount"
+tzpipe=$tmp/tz-pipe tzand=$tmp/tz-and
+printf '%s\n' 'test' "Test: $tztest | grep TZTEST-RAN" >"$tzpipe"
+CC_CONFIG=$go check tz_test_pipe_rc0 '[[ $rc == 0 ]] && grep -Fq -- TZTEST-RAN <<<"$out"' \
+  env TEST_ONCE_DIR="$tmp/to-pipe" OPENCODE_RC=0 OPENCODE_TOUCH=tz-pipe.txt SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tzpipe"
+git -C "$project" clean -fdq
+printf '%s\n' 'test' "Test: $tztest && echo AND-OK" >"$tzand"
+CC_CONFIG=$go check tz_test_and_rc0 '[[ $rc == 0 ]] && grep -Fq -- AND-OK <<<"$out"' \
+  env TEST_ONCE_DIR="$tmp/to-and" OPENCODE_RC=0 OPENCODE_TOUCH=tz-and.txt SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tzand"
+git -C "$project" clean -fdq
+rm -f -- "$tzcount"
 CC_CONFIG=$go check tz_test_absent '[[ $rc == 0 && ! -s "$tzcount" ]] && ! grep -Fq -- "code-channel: test rc=" "$tmp/err"' \
   env OPENCODE_RC=0 OPENCODE_TOUCH=tz-none.txt SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
 git -C "$project" clean -fdq
@@ -124,7 +134,7 @@ CC_CONFIG=$go check tz_test_prompt '[[ $rc == 0 ]] && grep -Fq -- "via /root/wor
 git -C "$project" clean -fdq
 tzstall=$tmp/tz-stall
 printf '%s\n' 'test' "Test: $tztest" >"$tzstall"
-pair=$(printf '%s\0' "$(realpath -- "$project")" "$tztest" | sha256sum | cut -d' ' -f1)
+pair=$(printf '%s\0' "$(realpath -- "$project")" bash -c "$tztest" | sha256sum | cut -d' ' -f1)
 mkdir -p "$tmp/to-stall/fail"
 printf '3\n%s\n' "$(date +%s)" >"$tmp/to-stall/fail/$pair"
 CC_CONFIG=$go check tz_test_rc29 '[[ $rc == 29 ]] && grep -Fq -- "test rc=29" "$tmp/err"' \
@@ -172,12 +182,17 @@ CC_CONFIG=$go check go_stdin_prompt_file '[[ $rc == 0 ]] && grep -Eq -- "^stdin=
 CC_CONFIG=$ocfg check opencode_config_env '[[ $rc == 0 ]] && grep -Fxq -- "env OPENCODE_CONFIG=$root/config/opencode-channel.json" "$log"' \
   env OPENCODE_RC=0 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
 lock=$tmp/state/worktree.$(printf '%s\n' "$project" | sha1sum | cut -c-16).lock
-exec 8>"$lock"
+exec 8>>"$lock"
 flock -n 8
-CC_CONFIG=$go check worktree_busy_rc25 '[[ $rc == 25 ]] && grep -Fq -- "worktree занят другим запуском" "$tmp/err" && [[ ! -s $log ]]' \
+printf '%s\n' $$ >"$lock"
+CC_CONFIG=$go check worktree_busy_rc25 '[[ $rc == 25 ]] && grep -Fq -- "worktree занят другим запуском" "$tmp/err" && grep -Fq -- "pid=$$" "$tmp/err" && grep -Fq -- "lock=$lock" "$tmp/err" && ! grep -Fq -- "cmd=?" "$tmp/err" && [[ ! -s $log ]]' \
   "$root/bin/code-channel" go "$project" "$tz"
 flock -u 8
 exec 8>&-
+printf '%s\n' 99999999 >"$lock"
+CC_CONFIG=$go check stale_lock_cleared '[[ $rc == 0 ]] && ! grep -Fq -- "worktree занят" "$tmp/err" && grep -q "^opencode " "$log" && [[ $(head -n1 "$lock") != 99999999 ]]' \
+  env OPENCODE_RC=0 OPENCODE_TOUCH=stale-ok.txt SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
+git -C "$project" clean -fdq
 CC_CONFIG=$go check go_resume_session '[[ $rc == 0 ]] && [[ $(grep -c "^opencode " "$log") == 2 ]] && grep -Fq -- "--session session-123" "$log"' \
   env OPENCODE_SEQUENCE=1,0 OPENCODE_TOUCH=checkpoint-progress.txt SQLITE_SESSION_ID=session-123 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
 CC_CONFIG=$goidle check go_idle_limit '[[ $rc == 0 && $(grep -c "^opencode " "$log") == 2 ]] && [[ $(grep "^opencode " "$log" | sed -n 2p) == *"--session session-123"* ]]' \
@@ -201,6 +216,13 @@ CC_CONFIG=$sdkgo check sdk_no_evidence_no_switch '[[ $rc == 6 ]] && grep -Fq -- 
   env SDK_RC=6 CODE_CHANNEL_SDK_AGENT="$bin/sdk-agent-fake" "$root/bin/code-channel" auto "$project" "$tz"
 CC_CONFIG=$sdkgo check sdk_audit_read '[[ $rc == 0 ]] && grep -Fq -- "sdk-agent read" "$log"' \
   env CODE_CHANNEL_SDK_AGENT="$bin/sdk-agent-fake" "$root/bin/code-channel" audit "$project" "$tz"
+CC_CONFIG=$sdkgo check sdk_no_change_no_report_rc17 '[[ $rc == 17 ]] && grep -Fqx -- "code-channel: worker made no change and no report" "$tmp/err"' \
+  env CODE_CHANNEL_SDK_AGENT="$bin/sdk-agent-fake" "$root/bin/code-channel" sdk "$project" "$tz"
+CC_CONFIG=$sdkgo check sdk_no_change_with_report_rc0 '[[ $rc == 0 ]] && grep -Fq -- REPORT-SDK <<<"$out"' \
+  env SDK_OUT=REPORT-SDK CODE_CHANNEL_SDK_AGENT="$bin/sdk-agent-fake" "$root/bin/code-channel" sdk "$project" "$tz"
+CC_CONFIG=$sdkgo check sdk_change_no_report_rc0 '[[ $rc == 0 ]]' \
+  env SDK_TOUCH=sdk-change.txt CODE_CHANNEL_SDK_AGENT="$bin/sdk-agent-fake" "$root/bin/code-channel" sdk "$project" "$tz"
+rm -f -- "$project/sdk-change.txt"
 
 git -C "$project" clean -fdq
 CC_CONFIG=$sdkgo check sdk_out_of_scope '[[ $rc == 26 && $(grep -c "^opencode " "$log") == 0 ]] && grep -Fq -- "out-of-scope: sdk-oos.txt" "$tmp/err"' \
@@ -214,6 +236,11 @@ CC_CONFIG=$sdkgo check sdk_error_rc7 '[[ $rc == 7 && ! -e "$project/go-made" && 
 git -C "$project" clean -fdq
 tznofile=$tmp/tz-no-file
 printf 'test\n' >"$tznofile"
+CC_CONFIG=$sdkgo check sdk_audit_no_file_ok '[[ $rc == 0 ]] && grep -Fq -- "sdk-agent read" "$log"' \
+  env CODE_CHANNEL_SDK_AGENT="$bin/sdk-agent-fake" "$root/bin/code-channel" audit "$project" "$tznofile"
+CC_CONFIG=$go check delivery_no_file_ok '[[ $rc == 0 ]] && grep -q "^opencode " "$log"' \
+  env OPENCODE_RC=0 OPENCODE_TOUCH=delivery-nofile.txt SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" delivery "$project" "$tznofile"
+git -C "$project" clean -fdq
 CC_CONFIG=$sdkgo check auto_sdk_to_go_no_file '[[ $rc == 0 && $err == *"code-channel: route sdk->go (TZ has no FILE lines)"* ]] && grep -q "^opencode " "$log" && ! grep -q "^sdk-agent " "$log"' \
   env OPENCODE_TOUCH=route-go.txt SQLITE_RESULT='opencode-go|mimo-v2.6-flash' CODE_CHANNEL_SDK_AGENT="$bin/sdk-agent-fake" "$root/bin/code-channel" auto "$project" "$tznofile"
 git -C "$project" clean -fdq

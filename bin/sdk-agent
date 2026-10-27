@@ -408,7 +408,7 @@ load_listed() {
   for f in "${FILES[@]}"; do
     [[ $f != *[[:space:]]* ]] || die "FILE path must be one token: use the form FILE: <path> with nothing after the path (got: $f)"
   done
-  (( ${#FILES[@]} >= 1 && ${#FILES[@]} <= 20 )) || die "TZ must list 1..20 paths ('FILE: <path>' lines or a 'Files:' line) (found ${#FILES[@]})"
+  (( ${#FILES[@]} >= 1 && ${#FILES[@]} <= 20 )) || die "TZ must list 1..20 paths: add 'FILE: <path>' lines (one path each) or a 'Files: \`path\`' line (found ${#FILES[@]})"
 
   for f in "${FILES[@]}"; do
     check_path "$WT_REAL" "$f"
