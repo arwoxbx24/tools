@@ -158,4 +158,49 @@ err=$(ga_roots 2>&1 >/dev/null)
 names=$(ga_roots 2>/dev/null | cut -f1)
 [[ -z $err ]] && ! grep -qx 'real/.git' <<<"$names" && pass T10 || fail "T10: err=$err"
 
-[[ $sum == 15 ]]
+# T16: repo without workflows ("no checks reported", rc 1) -> 0 with the CI-free route line
+mkdir -p "$d/noci"
+git init -q -b main "$d/noci"
+git -C "$d/noci" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+mkdir -p "$d/gh-noci"
+cat > "$d/gh-noci/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "no checks reported on the 'main' branch" >&2
+exit 1
+EOF
+chmod +x "$d/gh-noci/gh"
+out=$(cd "$d/noci" && PATH="$d/gh-noci:$PATH" GA_CI_BACKOFF=0 ga_ci_watch 7 x/rep 2>&1); rc=$?
+[[ $rc == 0 && $out == *'no CI: merge on the test output in the PR body'* ]] && pass T16 || fail "T16: rc=$rc out=$out"
+
+# T17: workflows present + "no checks reported" on every try -> non-zero, route line, no merge
+mkdir -p "$d/ci/.github/workflows"
+git init -q -b main "$d/ci"
+printf 'on: push\n' > "$d/ci/.github/workflows/ci.yml"
+git -C "$d/ci" add .github/workflows/ci.yml
+git -C "$d/ci" -c user.email=t@t -c user.name=t commit -q -m ci
+mkdir -p "$d/gh-pending"
+cat > "$d/gh-pending/gh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_LOG"
+echo "no checks reported on the 'main' branch" >&2
+exit 1
+EOF
+chmod +x "$d/gh-pending/gh"
+: > "$d/gh-pending.log"
+out=$(cd "$d/ci" && GH_LOG="$d/gh-pending.log" PATH="$d/gh-pending:$PATH" GA_CI_BACKOFF=0 ga_ci_watch 7 x/rep 2>&1); rc=$?
+[[ $rc != 0 && $out == *'CI not started after 3 tries: run gh pr checks 7 --watch later; do not merge'* ]] \
+	&& [[ $(grep -c '^pr checks' "$d/gh-pending.log") -ge 2 ]] \
+	&& ! grep -q '^pr merge' "$d/gh-pending.log" && pass T17 || fail "T17: rc=$rc out=$out"
+
+# T18: real failed check (rc 1) keeps a non-zero rc
+mkdir -p "$d/gh-fail"
+cat > "$d/gh-fail/gh" <<'EOF'
+#!/usr/bin/env bash
+echo 'min-ci	fail	1m	https://example.test/job/1' >&2
+exit 1
+EOF
+chmod +x "$d/gh-fail/gh"
+PATH="$d/gh-fail:$PATH" GA_CI_BACKOFF=0 ga_ci_watch 7 x/rep >/dev/null 2>&1; rc=$?
+[[ $rc != 0 ]] && pass T18 || fail "T18: rc=$rc"
+
+[[ $sum == 18 ]]
