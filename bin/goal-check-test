@@ -30,8 +30,8 @@ AC2: cat $d/a.txt => absent-word
 EOF
 out=$("$gc" --file "$d/2.txt"); rc=$?
 last=$(printf '%s\n' "$out" | tail -n1)
-if [ "$rc" -eq 1 ] && [ "$last" = "GOAL=NOT_MET" ]; then
-  passed=$((passed+1)); echo "PASS one-fail GOAL=NOT_MET rc=1"
+if [ "$rc" -eq 0 ] && [ "$last" = "GOAL=NOT_MET" ]; then
+  passed=$((passed+1)); echo "PASS one-fail GOAL=NOT_MET rc=0"
 else
   case_fail one-fail "rc=$rc last=$last out=$out"
 fi
@@ -136,7 +136,7 @@ EOF
 out1=$(TEST_ONCE_DIR=$d/to-state "$gc" --file "$d/11.txt"); rc1=$?
 printf 'two\n' > "$d/live.txt"
 out2=$(TEST_ONCE_DIR=$d/to-state "$gc" --file "$d/11.txt"); rc2=$?
-if [ "$rc1" -eq 1 ] && [ "$rc2" -eq 0 ] && [[ $out1 == *GOAL=NOT_MET* ]] && [[ $out2 == *GOAL=MET* ]] && [[ $out2 != *cached* ]]; then
+if [ "$rc1" -eq 0 ] && [ "$rc2" -eq 0 ] && [[ $out1 == *GOAL=NOT_MET* ]] && [[ $out2 == *GOAL=MET* ]] && [[ $out2 != *cached* ]]; then
   passed=$((passed+1)); echo "PASS other-ac-live"
 else
   case_fail other-ac-live "rc1=$rc1 rc2=$rc2 out1=$out1 out2=$out2"
@@ -147,7 +147,7 @@ cat > "$d/12.txt" <<EOF
 AC1: ls $d/missing/tasks.md => tasks.md
 EOF
 out=$("$gc" --file "$d/12.txt"); rc=$?
-if [ "$rc" -eq 1 ] && [[ $out == *"AC1 FAIL rc=2"* ]] && [[ $out == *GOAL=NOT_MET* ]]; then
+if [ "$rc" -eq 0 ] && [[ $out == *"AC1 FAIL rc=2"* ]] && [[ $out == *GOAL=NOT_MET* ]]; then
   passed=$((passed+1)); echo "PASS rc-error-fail FAIL rc=2"
 else
   case_fail rc-error-fail "rc=$rc out=$out"
@@ -244,7 +244,7 @@ EXCLUDE AC2: atom=dcfg-zz2 owner=«$quote»
 EOF
 out=$(PATH="$d/bin-ok:$PATH" GOAL_CHECK_OWNER_LOG="$d/owner.jsonl" GOAL_CHECK_SINCE_MS=1000 "$gc" --file "$d/ex.txt"); rc=$?
 last=$(printf '%s\n' "$out" | tail -n1)
-if [ "$rc" -eq 3 ] && [ "$last" = "GOAL=CLOSED" ] && [[ $out == *"AC2 EXCLUDED atom=dcfg-zz2 owner=found"* ]]; then
+if [ "$rc" -eq 0 ] && [ "$last" = "GOAL=CLOSED" ] && [[ $out == *"AC2 EXCLUDED atom=dcfg-zz2 owner=found"* ]]; then
   passed=$((passed+1)); echo "PASS closed_by_exclusion"
 else
   case_fail closed_by_exclusion "rc=$rc last=$last out=$out"
@@ -258,7 +258,7 @@ EXCLUDE AC2: owner=«$quote»
 EOF
 out20a=$(PATH="$d/bin-ok:$PATH" GOAL_CHECK_OWNER_LOG="$d/owner.jsonl" GOAL_CHECK_SINCE_MS=1000 "$gc" --file "$d/noatom.txt"); rc20a=$?
 out20b=$(PATH="$d/bin-missing:$PATH" GOAL_CHECK_OWNER_LOG="$d/owner.jsonl" GOAL_CHECK_SINCE_MS=1000 "$gc" --file "$d/ex.txt"); rc20b=$?
-if [ "$rc20a" -eq 1 ] && [ "$rc20b" -eq 1 ] && [[ $out20a == *"AC2 EXCLUDE_INVALID reason=no-atom"* ]] && [[ $out20a == *GOAL=NOT_MET* ]] && [[ $out20b == *"AC2 EXCLUDE_INVALID reason=atom-not-found"* ]] && [[ $out20b == *GOAL=NOT_MET* ]]; then
+if [ "$rc20a" -eq 0 ] && [ "$rc20b" -eq 0 ] && [[ $out20a == *"AC2 EXCLUDE_INVALID reason=no-atom"* ]] && [[ $out20a == *GOAL=NOT_MET* ]] && [[ $out20b == *"AC2 EXCLUDE_INVALID reason=atom-not-found"* ]] && [[ $out20b == *GOAL=NOT_MET* ]]; then
   passed=$((passed+1)); echo "PASS exclusion_without_atom_not_closed"
 else
   case_fail exclusion_without_atom_not_closed "rc20a=$rc20a rc20b=$rc20b out20a=$out20a out20b=$out20b"
@@ -267,7 +267,7 @@ fi
 # 21) exclusion_without_owner_quote_not_closed
 printf '{"display":"совсем другой текст","timestamp":2000}\n' >"$d/owner-other.jsonl"
 out=$(PATH="$d/bin-ok:$PATH" GOAL_CHECK_OWNER_LOG="$d/owner-other.jsonl" GOAL_CHECK_SINCE_MS=1000 "$gc" --file "$d/ex.txt"); rc=$?
-if [ "$rc" -eq 1 ] && [[ $out == *"AC2 EXCLUDE_INVALID reason=quote-not-found"* ]] && [[ $out == *GOAL=NOT_MET* ]]; then
+if [ "$rc" -eq 0 ] && [[ $out == *"AC2 EXCLUDE_INVALID reason=quote-not-found"* ]] && [[ $out == *GOAL=NOT_MET* ]]; then
   passed=$((passed+1)); echo "PASS exclusion_without_owner_quote_not_closed"
 else
   case_fail exclusion_without_owner_quote_not_closed "rc=$rc out=$out"
@@ -280,7 +280,7 @@ printf '{"display":"%s","timestamp":500}\n' "$quote" >"$d/owner-old.jsonl"
 ok=1; detail=""
 for f in owner-agent owner-ts owner-old; do
   out=$(PATH="$d/bin-ok:$PATH" GOAL_CHECK_OWNER_LOG="$d/$f.jsonl" GOAL_CHECK_SINCE_MS=1000 "$gc" --file "$d/ex.txt"); rc=$?
-  if [ "$rc" -ne 1 ] || [[ $out != *"AC2 EXCLUDE_INVALID reason=quote-not-found"* ]] || [[ $out != *GOAL=NOT_MET* ]]; then
+  if [ "$rc" -ne 0 ] || [[ $out != *"AC2 EXCLUDE_INVALID reason=quote-not-found"* ]] || [[ $out != *GOAL=NOT_MET* ]]; then
     ok=0; detail="$detail $f rc=$rc out=$out"
   fi
 done
@@ -303,9 +303,37 @@ else
   case_fail ac_timeout_override "rc=$rc el=$el out=$out"
 fi
 
-if [ "$passed" -eq 23 ]; then
-  echo "PASS 23/23"
+# 24) refused_ac_is_not_an_answer
+cat > "$d/24.txt" <<EOF
+AC1: curl http://example.invalid => 200
+EOF
+out=$("$gc" --file "$d/24.txt"); rc=$?
+last=$(printf '%s\n' "$out" | tail -n1)
+if [ "$rc" -ne 0 ] && [[ $out == *"REFUSED AC1 reason=bad-command"* ]] && [ "$last" = "GOAL=REFUSED" ]; then
+  passed=$((passed+1)); echo "PASS refused-ac rc=$rc GOAL=REFUSED"
+else
+  case_fail refused-ac "rc=$rc last=$last out=$out"
+fi
+
+# 25) budget-caps-timeouts-at-100s
+cat > "$d/25.txt" <<EOF
+AC1@60: tail -f /dev/null => x
+AC2@60: tail -f /dev/null => x
+AC3@60: tail -f /dev/null => x
+EOF
+t0=$SECONDS
+out=$("$gc" --file "$d/25.txt"); rc=$?
+el=$((SECONDS - t0))
+last=$(printf '%s\n' "$out" | tail -n1)
+if [ "$rc" -ne 0 ] && [[ $out == *"AC1 FAIL rc=124 expected=x"* ]] && [[ $out == *"AC2 FAIL rc=124 expected=x"* ]] && [[ $out == *"AC3 FAIL rc=124 budget"* ]] && [ "$last" = "GOAL=NOT_MET" ] && [ "$el" -lt 110 ]; then
+  passed=$((passed+1)); echo "PASS budget-caps-timeouts-at-100s"
+else
+  case_fail budget-caps-timeouts-at-100s "rc=$rc el=$el last=$last out=$out"
+fi
+
+if [ "$passed" -eq 25 ]; then
+  echo "PASS 25/25"
   exit 0
 fi
-echo "FAIL $passed/23"
+echo "FAIL $passed/25"
 exit 1
