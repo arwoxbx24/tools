@@ -6,8 +6,9 @@ usage() {
   echo "usage: goal-check <epic-id> | goal-check --file <path>"
   echo "goal-check <epic-id> — acceptance_criteria эпика через bd show --json."
   echo "goal-check --file <path> — acceptance-текст из файла (для теста)."
-  echo "AC-строка: AC<n>: <команда> => <ожидание>; ожидание — текст, >=N или <empty>."
-  echo "Вердикт: GOAL=MET (rc 0) / GOAL=NOT_MET (rc 1) / GOAL=REFUSED (rc 2)."
+  echo "AC-строка: AC<n>[@<sec>]: <команда> => <ожидание>; ожидание — текст, >=N или <empty>; @<sec> — таймаут 1..3600 (по умолчанию 300)."
+  echo "EXCLUDE AC<n>: atom=<bd-id> owner=«<цитата владельца>» — исключение AC, если цитата есть в логе владельца."
+  echo "Вердикт: GOAL=MET (rc 0) / GOAL=CLOSED (rc 3, есть EXCLUDED) / GOAL=NOT_MET (rc 1) / GOAL=REFUSED (rc 2)."
 }
 
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
@@ -18,36 +19,60 @@ fi
 if [ "${1:-}" = "--file" ]; then
   [ $# -eq 2 ] || { usage >&2; exit 2; }
   acc=$(cat -- "$2") || { echo "goal-check: не прочитать $2" >&2; exit 1; }
+  exsrc=$acc
+  since=${GOAL_CHECK_SINCE_MS:-0}
 elif [ $# -eq 1 ] && [ -n "$1" ] && [ "${1#-}" = "$1" ]; then
   command -v bd >/dev/null || { echo "goal-check: bd не найден" >&2; exit 1; }
   command -v jq >/dev/null || { echo "goal-check: jq не найден" >&2; exit 1; }
-  acc=$(bd -C /root/workspaces/projects show "$1" --json | jq -r 'if type=="array" then .[0] else . end | .acceptance_criteria // .acceptance // empty') || { echo "goal-check: bd show $1 не удался" >&2; exit 1; }
+  js=$(bd -C /root/workspaces/projects show "$1" --json) || { echo "goal-check: bd show $1 не удался" >&2; exit 1; }
+  acc=$(jq -r 'if type=="array" then .[0] else . end | .acceptance_criteria // .acceptance // empty' <<< "$js") || { echo "goal-check: bd show $1 не удался" >&2; exit 1; }
+  exsrc=$(jq -r 'if type=="array" then .[0] else . end | .notes // empty' <<< "$js") || { echo "goal-check: bd show $1 не удался" >&2; exit 1; }
+  since=$(jq -r 'if type=="array" then .[0] else . end | (.created_at // "") | if . == "" then 0 else fromdateiso8601 * 1000 end' <<< "$js") || { echo "goal-check: bd show $1 не удался" >&2; exit 1; }
 else
   usage >&2
   exit 2
 fi
 
-nums=(); cmds=(); exps=(); parse_refs=()
+owner_quoted() {
+  local log=${GOAL_CHECK_OWNER_LOG:-/root/.claude/history.jsonl} m
+  m=$(jq -Rr --argjson since "$since" 'fromjson? | select(type == "object") | select((.display | type) == "string") | select((.display | startswith("Here is a note offered by a side agent") | not) and (.display | contains("[ts:") | not) and ((.timestamp | type) == "number") and (.timestamp >= $since)) | .display' "$log" 2>/dev/null) || return 1
+  grep -F -q -- "$1" <<< "$m"
+}
+
+nums=(); cmds=(); exps=(); parse_refs=(); tmos=(); ex_nums=(); ex_atoms=(); ex_quotes=()
 while IFS= read -r line; do
   line=${line#"${line%%[![:space:]]*}"}
   [[ $line == AC* ]] || continue
-  if [[ $line =~ ^AC([0-9]+[A-Za-z]?):[[:space:]]*(.*)$ ]]; then
+  if [[ $line =~ ^AC([0-9]+[A-Za-z]?)(@([0-9]+))?:[[:space:]]*(.*)$ ]]; then
     n=${BASH_REMATCH[1]}
-    rest=${BASH_REMATCH[2]}
-    if [[ $rest == *" => "* ]]; then
+    sec=${BASH_REMATCH[3]:-300}
+    rest=${BASH_REMATCH[4]}
+    if [[ $rest == *" => "* ]] && [[ $sec =~ ^[0-9]{1,4}$ ]] && (( 10#$sec >= 1 && 10#$sec <= 3600 )); then
       cmd=${rest%' => '*}
       exp=${rest##*' => '}
       cmd=${cmd%"${cmd##*[![:space:]]}"}
       cmd=${cmd#"${cmd%%[![:space:]]*}"}
       exp=${exp%"${exp##*[![:space:]]}"}
       exp=${exp#"${exp%%[![:space:]]*}"}
-      nums+=("$n"); cmds+=("$cmd"); exps+=("$exp")
+      nums+=("$n"); cmds+=("$cmd"); exps+=("$exp"); tmos+=("$sec")
       continue
     fi
   fi
   ref=${line%%[[:space:]]*}; ref=${ref%:}
   parse_refs+=("$ref")
 done <<< "$acc"
+
+while IFS= read -r line; do
+  line=${line#"${line%%[![:space:]]*}"}
+  [[ $line == EXCLUDE* ]] || continue
+  [[ $line =~ ^EXCLUDE[[:space:]]+AC([0-9]+[A-Za-z]?):[[:space:]]*(.*)$ ]] || continue
+  en=${BASH_REMATCH[1]}
+  erest=${BASH_REMATCH[2]}
+  ea=""; eq=""
+  if [[ $erest =~ atom=([^[:space:]]*) ]]; then ea=${BASH_REMATCH[1]}; fi
+  if [[ $erest =~ owner=«(.*)»[[:space:]]*$ ]]; then eq=${BASH_REMATCH[1]}; fi
+  ex_nums+=("$en"); ex_atoms+=("$ea"); ex_quotes+=("$eq")
+done <<< "$exsrc"
 
 if [ ${#parse_refs[@]} -gt 0 ]; then
   for ref in "${parse_refs[@]}"; do echo "REFUSED $ref reason=parse"; done
@@ -130,13 +155,31 @@ if [ "$refused" -eq 1 ]; then
 fi
 
 allpass=1
+nexcl=0
 for i in "${!nums[@]}"; do
   n=${nums[i]}; cmd=${cmds[i]}; exp=${exps[i]}
+  excl=""
+  for k in "${!ex_nums[@]}"; do
+    [ "${ex_nums[k]}" = "$n" ] || continue
+    ea=${ex_atoms[k]}; eq=${ex_quotes[k]}; xr=""
+    if ! [[ $ea =~ ^[a-z]+-[a-z0-9]+(\.[0-9]+)?$ ]]; then xr=no-atom
+    elif ! bd -C /root/workspaces/projects show "$ea" --json >/dev/null 2>&1; then xr=atom-not-found
+    elif [ "${#eq}" -lt 12 ]; then xr=short-quote
+    elif ! owner_quoted "$eq"; then xr=quote-not-found
+    fi
+    if [ -z "$xr" ]; then excl=$ea; break; fi
+    echo "AC$n EXCLUDE_INVALID reason=$xr"
+  done
+  if [ -n "$excl" ]; then
+    echo "AC$n EXCLUDED atom=$excl owner=found"
+    nexcl=$((nexcl+1))
+    continue
+  fi
   # shortcut: no quoting, args split on spaces; upgrade if an AC needs a spaced pattern
   read -ra argv <<< "$cmd"
   first=${argv[0]}
   [[ ${argv[0]} =~ ^/root/workspaces/tools/bin/[A-Za-z0-9._-]+-test$ ]] && argv=("$(dirname -- "$0")/test-once" /root/workspaces/tools "${argv[@]}")
-  out=$(timeout 60 "${argv[@]}" 2>&1); rc=$?
+  out=$(timeout "${tmos[i]}" "${argv[@]}" 2>&1); rc=$?
   firstline=${out%%$'\n'*}
   shown=${firstline:0:160}
   [ -n "$shown" ] || shown=empty
@@ -173,6 +216,10 @@ for i in "${!nums[@]}"; do
 done
 
 if [ "$allpass" -eq 1 ]; then
+  if [ "$nexcl" -gt 0 ]; then
+    echo "GOAL=CLOSED"
+    exit 3
+  fi
   echo "GOAL=MET"
   exit 0
 fi

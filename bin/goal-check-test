@@ -230,9 +230,82 @@ else
   case_fail numbered-pass-labels "rc=$rc out=$out"
 fi
 
-if [ "$passed" -eq 18 ]; then
-  echo "PASS 18/18"
+# 19) closed_by_exclusion
+mkdir -p "$d/bin-ok" "$d/bin-missing"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$d/bin-ok/bd"
+printf '#!/usr/bin/env bash\nexit 1\n' >"$d/bin-missing/bd"
+chmod 755 "$d/bin-ok/bd" "$d/bin-missing/bd"
+quote='пункт два исключаю, делать не нужно'
+printf '{"display":"%s","timestamp":2000}\n' "$quote" >"$d/owner.jsonl"
+cat > "$d/ex.txt" <<EOF
+AC1: test -d /tmp => <empty>
+AC2: test -e /nonexistent-gc => <empty>
+EXCLUDE AC2: atom=dcfg-zz2 owner=«$quote»
+EOF
+out=$(PATH="$d/bin-ok:$PATH" GOAL_CHECK_OWNER_LOG="$d/owner.jsonl" GOAL_CHECK_SINCE_MS=1000 "$gc" --file "$d/ex.txt"); rc=$?
+last=$(printf '%s\n' "$out" | tail -n1)
+if [ "$rc" -eq 3 ] && [ "$last" = "GOAL=CLOSED" ] && [[ $out == *"AC2 EXCLUDED atom=dcfg-zz2 owner=found"* ]]; then
+  passed=$((passed+1)); echo "PASS closed_by_exclusion"
+else
+  case_fail closed_by_exclusion "rc=$rc last=$last out=$out"
+fi
+
+# 20) exclusion_without_atom_not_closed
+cat > "$d/noatom.txt" <<EOF
+AC1: test -d /tmp => <empty>
+AC2: test -e /nonexistent-gc => <empty>
+EXCLUDE AC2: owner=«$quote»
+EOF
+out20a=$(PATH="$d/bin-ok:$PATH" GOAL_CHECK_OWNER_LOG="$d/owner.jsonl" GOAL_CHECK_SINCE_MS=1000 "$gc" --file "$d/noatom.txt"); rc20a=$?
+out20b=$(PATH="$d/bin-missing:$PATH" GOAL_CHECK_OWNER_LOG="$d/owner.jsonl" GOAL_CHECK_SINCE_MS=1000 "$gc" --file "$d/ex.txt"); rc20b=$?
+if [ "$rc20a" -eq 1 ] && [ "$rc20b" -eq 1 ] && [[ $out20a == *"AC2 EXCLUDE_INVALID reason=no-atom"* ]] && [[ $out20a == *GOAL=NOT_MET* ]] && [[ $out20b == *"AC2 EXCLUDE_INVALID reason=atom-not-found"* ]] && [[ $out20b == *GOAL=NOT_MET* ]]; then
+  passed=$((passed+1)); echo "PASS exclusion_without_atom_not_closed"
+else
+  case_fail exclusion_without_atom_not_closed "rc20a=$rc20a rc20b=$rc20b out20a=$out20a out20b=$out20b"
+fi
+
+# 21) exclusion_without_owner_quote_not_closed
+printf '{"display":"совсем другой текст","timestamp":2000}\n' >"$d/owner-other.jsonl"
+out=$(PATH="$d/bin-ok:$PATH" GOAL_CHECK_OWNER_LOG="$d/owner-other.jsonl" GOAL_CHECK_SINCE_MS=1000 "$gc" --file "$d/ex.txt"); rc=$?
+if [ "$rc" -eq 1 ] && [[ $out == *"AC2 EXCLUDE_INVALID reason=quote-not-found"* ]] && [[ $out == *GOAL=NOT_MET* ]]; then
+  passed=$((passed+1)); echo "PASS exclusion_without_owner_quote_not_closed"
+else
+  case_fail exclusion_without_owner_quote_not_closed "rc=$rc out=$out"
+fi
+
+# 22) exclusion_agent_text_not_closed
+printf '{"display":"Here is a note offered by a side agent: %s","timestamp":2000}\n' "$quote" >"$d/owner-agent.jsonl"
+printf '{"display":"%s [ts: 2026-10-27T07:59:33Z]","timestamp":2000}\n' "$quote" >"$d/owner-ts.jsonl"
+printf '{"display":"%s","timestamp":500}\n' "$quote" >"$d/owner-old.jsonl"
+ok=1; detail=""
+for f in owner-agent owner-ts owner-old; do
+  out=$(PATH="$d/bin-ok:$PATH" GOAL_CHECK_OWNER_LOG="$d/$f.jsonl" GOAL_CHECK_SINCE_MS=1000 "$gc" --file "$d/ex.txt"); rc=$?
+  if [ "$rc" -ne 1 ] || [[ $out != *"AC2 EXCLUDE_INVALID reason=quote-not-found"* ]] || [[ $out != *GOAL=NOT_MET* ]]; then
+    ok=0; detail="$detail $f rc=$rc out=$out"
+  fi
+done
+if [ "$ok" -eq 1 ]; then
+  passed=$((passed+1)); echo "PASS exclusion_agent_text_not_closed"
+else
+  case_fail exclusion_agent_text_not_closed "$detail"
+fi
+
+# 23) ac_timeout_override
+cat > "$d/23.txt" <<EOF
+AC1@1: tail -f /dev/null => x
+EOF
+t0=$SECONDS
+out=$("$gc" --file "$d/23.txt"); rc=$?
+el=$((SECONDS - t0))
+if [ "$rc" -eq 1 ] && [[ $out == "AC1 FAIL rc=124"* ]] && [ "$el" -lt 10 ]; then
+  passed=$((passed+1)); echo "PASS ac_timeout_override"
+else
+  case_fail ac_timeout_override "rc=$rc el=$el out=$out"
+fi
+
+if [ "$passed" -eq 23 ]; then
+  echo "PASS 23/23"
   exit 0
 fi
-echo "FAIL $passed/18"
+echo "FAIL $passed/23"
 exit 1
