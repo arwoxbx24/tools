@@ -160,7 +160,7 @@ git -C "$GA_PROJECTS/p-fetch" remote set-url origin "$d/no-such-origin.git"
 out=$(cd "$GA_PROJECTS/p-fetch" && "$bin/git-sync" p-fetch 2>&1); rc=$?
 { grep -qF 'err:fetch' <<<"$out" && [[ $rc == 1 ]]; } && p 11 || f 11
 
-# 12: unknown name — rc 2, stderr lists valid names from ga_roots, no bd call
+# 12: unknown name — rc 3, one stderr line: reason, valid names from ga_roots, route; no bd call
 mkdir -p "$d/stubbin"
 printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"$BD_CALLS"\n' >"$d/stubbin/bd"
 chmod +x "$d/stubbin/bd"
@@ -169,7 +169,8 @@ err=$( (unset GA_NO_BD; PATH="$d/stubbin:$PATH" "$bin/git-sync" no-such-repo 2>&
 names=$(. "$bin/git-auto-lib"; ga_roots | cut -f1)
 allnames=1
 while IFS= read -r n; do [[ -z $n ]] || grep -qF -- "$n" <<<"$err" || allnames=0; done <<<"$names"
-{ [[ $rc == 2 ]] && grep -qF "git-sync: unknown name 'no-such-repo'; valid:" <<<"$err" \
+{ [[ $rc == 3 ]] && [[ $(wc -l <<<"$err") == 1 ]] && grep -qF "git-sync: unknown name 'no-such-repo' (not registered under" <<<"$err" \
+	&& grep -qF 'valid:' <<<"$err" && grep -qF 'route: cd <repo> && git fetch origin && git pull --ff-only' <<<"$err" \
 	&& (( allnames )) && [[ ! -s $BD_CALLS ]]; } && p 12 || f 12
 
 usnap(){ # <tag> <cmd...> — snapshot `git ls-files --others` of a repo (sc 19)
@@ -480,5 +481,14 @@ ha=$(git -C "$GA_PROJECTS/p-localahead" rev-parse HEAD)
 	&& [[ -z $(git -C "$GA_PROJECTS/p-localahead" for-each-ref refs/rescue) ]]; } \
 	&& p local_main_ahead_fast_forward || f local_main_ahead_fast_forward
 
-[[ $ok == 31 ]]
+# 32: registered name failing — rc 1, err line carries the git error and the route
+repo "$GA_PROJECTS/p-fail"; mkbare "$GA_PROJECTS/p-fail" "$d/origin-fail.git"
+git -C "$GA_PROJECTS/p-fail" remote set-url origin "$d/no-such-fail.git"
+out=$(cd "$GA_PROJECTS/p-fail" && "$bin/git-sync" p-fail 2>&1); rc=$?
+{ [[ $rc == 1 ]] && grep -qE '^[^ ]+ p-fail err:fetch ' <<<"$out" \
+	&& grep -qF 'no-such-fail' <<<"$out" \
+	&& grep -qF "route: cd $GA_PROJECTS/p-fail && git fetch origin && git pull --ff-only" <<<"$out"; } \
+	&& p 32 || f 32
+
+[[ $ok == 32 ]]
 
