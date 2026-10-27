@@ -36,7 +36,10 @@
       "prompt": "{file:../sdk-agent/system-prompt.md}",
       "permission": {
         "bash": {
-          "bd --readonly *": "allow"
+          "bd --readonly *": "allow",
+          "git show *": "allow",
+          "git log *": "allow",
+          "git diff *": "allow"
         }
       }
     }

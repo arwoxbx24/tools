@@ -40,7 +40,8 @@ These bans apply to every run, whatever the task says.
 - Deletion: `rm`, `unlink`, `git rm` and `git worktree remove` are denied.
   Delete only with /root/workspaces/tools/bin/safe-delete
   <file|dir|worktree|tmp|branch> <path>... (all paths in one call); undo with
-  safe-delete restore <N>. Check that no live process has its cwd inside a
+  safe-delete restore <N>. paths under /tmp → /root/workspaces/tools/bin/safe-delete tmp <path>.
+  Check that no live process has its cwd inside a
   directory or worktree before deleting it. Remove your own temp files at the
   end of the task.
 - Places: work only in the worktree given by the task; scratch only in /tmp.
