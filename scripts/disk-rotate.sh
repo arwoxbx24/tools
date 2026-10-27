@@ -1010,6 +1010,7 @@ codex_clean_gate() { # dir -> CC_VERDICT; гейт restic, затем удале
     CC_VERDICT=pending
     if [ "$rc" -eq "$RC_GATE_CLOSED" ]; then CC_VERDICT=gate-closed; fi
   else
+    find -P "$d" -type l -delete 2>/dev/null
     find -P "$d" -depth -type d -empty -delete 2>/dev/null
     CC_VERDICT=deleted
     if [ -e "$d" ]; then CC_VERDICT=pending; fi

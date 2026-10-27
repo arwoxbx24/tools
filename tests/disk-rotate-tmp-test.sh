@@ -153,6 +153,31 @@ expect_eq busy-run2 "$(ledger_state codex-clean.busy1)" in-use
 check_kept "$LIVE_CX" sibling-live-file-kept
 expect_eq sibling-content "$(cat "$LIVE_CX" 2>/dev/null)" live
 
+# codex-clean: в каталоге не осталось регулярных файлов, только симлинки — симлинки
+# и пустые каталоги удаляются, цель симлинка цела, verdict deleted.
+echo target >"$CX/linktarget.txt"
+mkdir -p "$CX/codex-clean.linkonly/sub" "$CX/codex-clean.linkonly/emptydir"
+ln -s "$CX/linktarget.txt" "$CX/codex-clean.linkonly/lnk"
+ln -s "$CX/linktarget.txt" "$CX/codex-clean.linkonly/sub/lnk2"
+touch -h -d '2 days ago' "$CX/codex-clean.linkonly/lnk" "$CX/codex-clean.linkonly/sub/lnk2"
+touch -d '2 days ago' "$CX/linktarget.txt" "$CX/codex-clean.linkonly/sub" \
+  "$CX/codex-clean.linkonly/emptydir" "$CX/codex-clean.linkonly"
+
+# codex-clean: пока в каталоге есть регулярный файл, симлинк не удаляется, verdict pending.
+mkdir -p "$CX/codex-clean.linksafe"
+echo g >"$CX/codex-clean.linksafe/g.log"
+ln -s "$CX/linktarget.txt" "$CX/codex-clean.linksafe/lnk"
+touch -h -d '2 days ago' "$CX/codex-clean.linksafe/lnk"
+touch -d '2 days ago' "$CX/codex-clean.linksafe/g.log" "$CX/codex-clean.linksafe"
+
+run_codex
+check_gone "$CX/codex-clean.linkonly" linkonly-dir-deleted
+check_kept "$CX/linktarget.txt" linkonly-target-kept
+expect_eq linkonly "$(ledger_state codex-clean.linkonly)" deleted
+check_kept "$CX/codex-clean.linksafe/lnk" linksafe-symlink-kept
+check_kept "$CX/codex-clean.linksafe/g.log" linksafe-file-kept
+expect_eq linksafe "$(ledger_state codex-clean.linksafe)" pending
+
 # codex-clean: битый DR_CODEX_CLEAN_IDLE_MIN — bad-config, без гейта и без удаления.
 mkdir -p "$CX/codex-clean.badcfg1"
 echo e >"$CX/codex-clean.badcfg1/e.log"
