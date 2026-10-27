@@ -2,6 +2,7 @@
 # Read-only token usage for one Claude Code session transcript (JSONL).
 set -u
 
+case ${1:-} in -h|--help) echo "usage: session-tokens <transcript.jsonl>"; exit 0;; esac
 f=${1-}
 if [[ $# -ne 1 || -z $f ]]; then
     echo "usage: session-tokens <transcript.jsonl>" >&2
