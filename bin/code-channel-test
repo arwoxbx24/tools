@@ -71,7 +71,7 @@ check() {
 
 check audit_go_agent '[[ $rc == 0 && $out == *REPORT* ]] && grep -Fq -- "--agent audit" "$log" && grep -Fq -- "-m opencode-go/mimo-v2.6-flash" "$log"' \
   "$root/bin/code-channel" audit "$project" "$root/AGENTS.md"
-check audit_changes_rc22 '[[ $rc == 22 ]]' env OPENCODE_TOUCH=audit-change "$root/bin/code-channel" audit "$project" "$root/AGENTS.md"
+check audit_changes_rc22 '[[ $rc == 22 ]] && grep -Fq -- "route: run audit in a clean worktree" "$tmp/err"' env OPENCODE_TOUCH=audit-change "$root/bin/code-channel" audit "$project" "$root/AGENTS.md"
 check usage_bash_n '[[ $rc == 0 ]]' bash -c 'bash -n "$1"' _ "$root/bin/code-channel"
 check go_developer_agent '[[ $rc == 0 && $out == *REPORT* ]] && grep -Fq -- "--agent developer" "$log" && ! grep -Fq -- "--agent audit" "$log"' \
   env OPENCODE_TOUCH=go-dev "$root/bin/code-channel" go "$project" "$root/AGENTS.md"
@@ -97,6 +97,11 @@ CC_CONFIG=$resume check go_resume_after_timeout '[[ $rc == 0 ]] && [[ $(grep -cx
   env OPENCODE_SEQUENCE=124,0 SQLITE_SESSION_ID=session-123 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
 : >"$tlog"
 CC_CONFIG=$go check go_single_timeout '[[ $rc == 0 ]] && grep -qx 1800 "$tlog"' \
+  env OPENCODE_RC=0 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
+rtcfg=$tmp/run-timeout.json
+printf '%s\n' '{"switch":{"channel":"go","owner_word":"test"},"run_timeout":7,"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash"}]}' >"$rtcfg"
+: >"$tlog"
+CC_CONFIG=$rtcfg check run_timeout_from_config '[[ $rc == 0 ]] && grep -qx 7 "$tlog"' \
   env OPENCODE_RC=0 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
 
 tzbig=$tmp/tz-big
@@ -142,7 +147,7 @@ CC_CONFIG=$go check tz_test_rc29 '[[ $rc == 29 ]] && grep -Fq -- "test rc=29" "$
 git -C "$project" clean -fdq
 tzfail=$tmp/tz-fail
 printf '%s\n' 'test' 'Test: /bin/false' >"$tzfail"
-CC_CONFIG=$go check tz_test_rc31 '[[ $rc == 31 ]] && grep -Fq -- "test rc=1" "$tmp/err"' \
+CC_CONFIG=$go check tz_test_rc31 '[[ $rc == 31 ]] && grep -Fq -- "test rc=1" "$tmp/err" && grep -Fq -- "route: fix the cause, do not re-run" "$tmp/err"' \
   env TEST_ONCE_DIR="$tmp/to-fail" OPENCODE_RC=0 OPENCODE_TOUCH=tz-fail.txt SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tzfail"
 git -C "$project" clean -fdq
 
@@ -185,7 +190,7 @@ lock=$tmp/state/worktree.$(printf '%s\n' "$project" | sha1sum | cut -c-16).lock
 exec 8>>"$lock"
 flock -n 8
 printf '%s\n' $$ >"$lock"
-CC_CONFIG=$go check worktree_busy_rc25 '[[ $rc == 25 ]] && grep -Fq -- "worktree занят другим запуском" "$tmp/err" && grep -Fq -- "pid=$$" "$tmp/err" && grep -Fq -- "lock=$lock" "$tmp/err" && ! grep -Fq -- "cmd=?" "$tmp/err" && [[ ! -s $log ]]' \
+CC_CONFIG=$go check worktree_busy_rc25 '[[ $rc == 25 ]] && grep -Fq -- "worktree занят другим запуском" "$tmp/err" && grep -Fq -- "pid=$$" "$tmp/err" && grep -Fq -- "lock=$lock" "$tmp/err" && ! grep -Fq -- "cmd=?" "$tmp/err" && grep -Fq -- "route: run this atom in its own worktree" "$tmp/err" && [[ ! -s $log ]]' \
   "$root/bin/code-channel" go "$project" "$tz"
 flock -u 8
 exec 8>&-
@@ -199,6 +204,16 @@ CC_CONFIG=$goidle check go_idle_limit '[[ $rc == 0 && $(grep -c "^opencode " "$l
   env OPENCODE_SEQUENCE=1,0 OPENCODE_TOUCH=resume-any-error.txt SQLITE_SESSION_ID=session-123 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
 CC_CONFIG=$go check go_upstream_retries '[[ $rc == 1 && $(grep -c "^opencode " "$log") == 3 ]] && ! grep -q -- "--session" "$log" && grep -Fq -- "канал go недоступен" "$tmp/err"' \
   env OPENCODE_RC=1 OPENCODE_ERR='Error: Upstream request failed: test' SQLITE_SESSION_ID=session-123 SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" go "$project" "$tz"
+
+resumebin=$tmp/resumebin
+mkdir -p "$resumebin"
+printf '%s\n' '#!/usr/bin/env bash' 'echo "opencode $*" >>"$CODE_CHANNEL_TEST_LOG"' 'printf x >>"$CODE_CHANNEL_TEST_PROJECT/progress.txt"' 'exit 1' >"$resumebin/opencode"
+chmod +x "$resumebin/opencode"
+resumecfg=$tmp/resume-cap.json
+printf '%s\n' '{"switch":{"channel":"go","owner_word":"test"},"resume_attempt_limit":2,"ladder":[{"id":"go","enabled":true,"model":"opencode-go/mimo-v2.6-flash"}]}' >"$resumecfg"
+CC_CONFIG=$resumecfg check resume_cap_stops '[[ $rc == 1 && $(grep -c "^opencode " "$log") == 3 ]] && grep -Fq -- "route: fix the cause" "$tmp/err"' \
+  env SQLITE_SESSION_ID=session-resume SQLITE_RESULT='opencode-go|mimo-v2.6-flash' PATH="$resumebin:$bin:$PATH" "$root/bin/code-channel" go "$project" "$tz"
+git -C "$project" clean -fdq
 
 git -C "$project" clean -fdq
 tzfiles=$tmp/tz-files
@@ -216,7 +231,7 @@ CC_CONFIG=$sdkgo check sdk_no_evidence_no_switch '[[ $rc == 6 ]] && grep -Fq -- 
   env SDK_RC=6 CODE_CHANNEL_SDK_AGENT="$bin/sdk-agent-fake" "$root/bin/code-channel" auto "$project" "$tz"
 CC_CONFIG=$sdkgo check sdk_audit_read '[[ $rc == 0 ]] && grep -Fq -- "sdk-agent read" "$log"' \
   env CODE_CHANNEL_SDK_AGENT="$bin/sdk-agent-fake" "$root/bin/code-channel" audit "$project" "$tz"
-CC_CONFIG=$sdkgo check sdk_no_change_no_report_rc17 '[[ $rc == 17 ]] && grep -Fqx -- "code-channel: worker made no change and no report" "$tmp/err"' \
+CC_CONFIG=$sdkgo check sdk_no_change_no_report_rc17 '[[ $rc == 17 ]] && grep -Fq -- "code-channel: worker made no change and no report" "$tmp/err" && grep -Fq -- "route: re-run once with FILE lines or switch form" "$tmp/err"' \
   env CODE_CHANNEL_SDK_AGENT="$bin/sdk-agent-fake" "$root/bin/code-channel" sdk "$project" "$tz"
 CC_CONFIG=$sdkgo check sdk_no_change_with_report_rc0 '[[ $rc == 0 ]] && grep -Fq -- REPORT-SDK <<<"$out"' \
   env SDK_OUT=REPORT-SDK CODE_CHANNEL_SDK_AGENT="$bin/sdk-agent-fake" "$root/bin/code-channel" sdk "$project" "$tz"
@@ -332,7 +347,7 @@ slrun "$sl_ok"; cgr2=$?
 git -C "$project" clean -fdq
 : >"$log"
 env -u CODE_CHANNEL_ACTIVE "TMPDIR=$tmp" "PATH=$bin:$PATH" "CODE_CHANNEL_TEST_LOG=$log" "CODE_CHANNEL_TEST_PROJECT=$project" "CODE_CHANNEL_STATE=$tmp/state" "CODE_CHANNEL_RUNS_LOG=$runs" "CODE_CHANNEL_PERMIT=$permit" CC_RETRY_SLEEP=0 "CODE_CHANNEL_CONFIG=$go" SQLITE_RESULT='opencode-go|mimo-v2.6-flash' "$root/bin/code-channel" auto "$project" "$tz" >/dev/null 2>"$tmp/cg-err"; cgr3=$?
-[[ $cgr3 != 0 && $(<"$tmp/cg-err") == *'empty run'* ]] && ((cg_ok++))
+[[ $cgr3 != 0 && $(<"$tmp/cg-err") == *'empty run'* && $(<"$tmp/cg-err") == *'route:'* ]] && ((cg_ok++))
 ((cg_ok == 8)) || { echo "FAIL channel-guard $cg_ok/8"; ((fails++)); }
 
 sn_ok=0 sn_i=0
