@@ -376,6 +376,10 @@ auto_success() {
 auto_run() {
     local start other r r2 dir g=-1 s=-1 canary_out c
     start=$active
+    if [[ $start == sdk ]] && ! grep -q '^FILE:' -- "$tz_abs" && ! grep -q '^Files:' -- "$tz_abs"; then
+        printf 'code-channel: route sdk->go (TZ has no FILE lines)\n' >&2
+        start=go
+    fi
     case $start in
         go) other=sdk;;
         sdk) other=go;;

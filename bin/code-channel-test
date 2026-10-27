@@ -12,7 +12,7 @@ git -C "$project" init -q
 git -C "$project" config user.email test@example.invalid
 git -C "$project" config user.name test
 printf 'base\n' >"$project/base"
-printf 'test\n' >"$tz"
+printf 'FILE: bin/x\ntest\n' >"$tz"
 git -C "$project" add base
 git -C "$project" commit -qm init
 mkdir -p "$tmp/config/opencode"
@@ -212,6 +212,14 @@ git -C "$project" clean -fdq
 CC_CONFIG=$sdkgo check sdk_error_rc7 '[[ $rc == 7 && ! -e "$project/go-made" && $(grep -c "^opencode " "$log") == 0 ]]' \
   env SDK_RC=7 SDK_TOUCH=x OPENCODE_TOUCH=go-made CODE_CHANNEL_SDK_AGENT="$bin/sdk-agent-fake" "$root/bin/code-channel" auto "$project" "$tz"
 git -C "$project" clean -fdq
+tznofile=$tmp/tz-no-file
+printf 'test\n' >"$tznofile"
+CC_CONFIG=$sdkgo check auto_sdk_to_go_no_file '[[ $rc == 0 && $err == *"code-channel: route sdk->go (TZ has no FILE lines)"* ]] && grep -q "^opencode " "$log" && ! grep -q "^sdk-agent " "$log"' \
+  env OPENCODE_TOUCH=route-go.txt SQLITE_RESULT='opencode-go|mimo-v2.6-flash' CODE_CHANNEL_SDK_AGENT="$bin/sdk-agent-fake" "$root/bin/code-channel" auto "$project" "$tznofile"
+git -C "$project" clean -fdq
+CC_CONFIG=$sdkgo check auto_sdk_kept_with_file '[[ $rc == 0 && $err != *"route sdk->go"* ]] && grep -Fq -- "sdk-agent code" "$log" && ! grep -q "^opencode " "$log"' \
+  env SDK_TOUCH=route-sdk.txt CODE_CHANNEL_SDK_AGENT="$bin/sdk-agent-fake" "$root/bin/code-channel" auto "$project" "$tz"
+rm -f -- "$project/route-sdk.txt"
 
 selftz=$tmp/tz-self.md
 printf '%s\n' 'Files: `../tz-self.md` only.' 'test' >"$selftz"

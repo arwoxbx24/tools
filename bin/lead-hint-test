@@ -5,7 +5,7 @@ dir=$(cd -- "$(dirname -- "$0")" && pwd)
 d=$(mktemp -d /tmp/lead-hint-test.XXXXXX)
 trap 'rm -rf "$d"' EXIT
 ok=0
-total=247
+total=259
 crdir=/tmp/lead-hint-stop
 srun="lh-$$-$RANDOM"
 clean_sid() { rm -f "$crdir/$1"; }
@@ -1089,6 +1089,18 @@ hard_case 232 lead_find_fls_denied deny 'find /tmp -fls /root/workspaces/project
 hard_case 233 lead_worktree_add_outside_denied deny 'git worktree add /root/workspaces/projects/wt x' false /tmp
 hard_case 234 lead_amp_redirect_allowed allow 'echo hi 2>&1' false /tmp
 hard_case 235 git_log_tmp_output_allowed allow 'git log -1 --output=/tmp/x' false /tmp
+hard_case 239 lead_allow_git_C_status allow 'git -C /root/workspaces/tools status' false /tmp
+hard_case 240 lead_allow_git_gitdir_worktree_list allow 'git --git-dir=/root/workspaces/git-dirs/agent-contour.git worktree list' false /tmp
+hard_case 241 lead_allow_git_C_fetch allow 'git -C /x fetch -q origin main' false /tmp
+hard_case 242 lead_git_C_push_denied deny 'git -C /x push origin main' false /tmp
+hard_case 243 lead_git_gitdir_commit_denied deny 'git --git-dir=/y commit -m x' false /tmp
+hard_case 244 lead_git_C_reset_denied deny 'git -C /x reset --hard' false /tmp
+hard_case 245 lead_allow_channel_help_foreground allow 'code-channel --help' false /tmp
+hard_case 246 lead_allow_channel_h_foreground allow 'code-channel -h' false /tmp
+hard_case 247 lead_allow_channel_plan_foreground allow 'code-channel --plan' false /tmp
+hard_case 248 lead_allow_sdk_agent_help_foreground allow 'sdk-agent --help' false /tmp
+hard_case 249 lead_channel_auto_foreground_denied deny 'code-channel auto /x /y/tz.md' false /tmp
+hard_case 250 lead_channel_audit_foreground_denied deny 'code-channel audit /x /y/tz.md' false /tmp
 
 ca_ok=0; ca_fail=0
 for ca in 'x.sh deny' 'x.md allow'; do
