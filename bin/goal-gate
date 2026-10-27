@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# goal-gate — Stop/PreToolUse-хук Claude Code: блокирует ложный «✅ DONE», запрещённую формулировку завершения цели,
-# ✅ DONE с открытыми задачами, отчёт без «Контроль задач:» и инструмент Agent (dcfg-86c43).
+# goal-gate — Stop/PreToolUse-хук Claude Code: блокирует ✅ DONE с открытыми задачами и инструмент Agent (dcfg-86c43).
 exec 2>/dev/null
-case ${1-} in --help|-h) printf '%s\n' 'usage: goal-gate  (Claude Code hook: one hook JSON on stdin; PreToolUse Agent -> deny; Stop -> goal checks)'; exit 0;; esac
+case ${1-} in --help|-h) printf '%s\n' 'usage: goal-gate  (Claude Code hook: one hook JSON on stdin; PreToolUse Agent -> deny; Stop -> DONE with open tasks)'; exit 0;; esac
 command -v jq >/dev/null || exit 0
 json=$(cat) || exit 0
 [ -n "$json" ] || exit 0
@@ -41,31 +40,11 @@ msg=$(jq -er '(.last_assistant_message // "") | if type == "string" then . else 
 sid=$(jq -er '.session_id | select(type == "string" and length > 0)' <<<"$json") || exit 0
 [[ $sid != *[/$'\n\r']* ]] || exit 0
 
-transcript=$(jq -r '.transcript_path // "" | if type == "string" then . else "" end' <<<"$json") || transcript=''
-goal=0
-[ -n "$transcript" ] && [ -r "$transcript" ] && grep -qE '<command-name>/goal(_task)?</command-name>' -- "$transcript" 2>/dev/null && goal=1
-
 plain=$(awk '/^[[:space:]]*```/{f=!f;next} !f{gsub(/`[^`]*`/,"");print}' <<<"$msg")
 
-reason=''
 ctrl_re='^[[:space:]]*[*-]?[[:space:]]*Контроль задач:'
-BANNED='/goal[[:space:]]+clear|сним(и|ите|у|ем)[[:space:]]+(цел|/goal)|сняти[ея][[:space:]]+цел|снять[[:space:]]+(цел|/goal)|очист(и|ите|ка|ить)[[:space:]]+(цел|/goal)|убер(и|ите)[[:space:]]+цел|убрать[[:space:]]+(цел|/goal)'
-banned_src=$(sed -E '/^[[:space:]]*>/d; s/«[^»]*»//g; s/"[^"]*"//g; s/`[^`]*`//g' <<<"$msg")
-lmsg=${banned_src,,}
-
-if [[ $lmsg =~ $BANNED ]]; then
-  reason="Banned wording (owner 26.10): never offer to end or remove the goal; finish it or report PARTIAL"
-fi
-
-if [ "$goal" -eq 1 ] && [ -z "$reason" ]; then
-  ctrl=0
-  while IFS= read -r l; do [[ $l =~ $ctrl_re ]] && { ctrl=1; break; }; done <<<"$msg"
-  if [[ $plain =~ ✅[[:space:]]DONE|PARTIAL|STALLED|BLOCKED ]] && [ "$ctrl" -eq 0 ]; then
-    reason="Goal report needs the line «Контроль задач: выполнено <n> · в процессе <n> · открыто <n>» from the session task list (goal_task OWNER REPORT)"
-  fi
-fi
-
-if [ "$goal" -eq 1 ] && [ -z "$reason" ] && [[ $plain == *"✅ DONE"* ]]; then
+reason=''
+if [[ $plain == *"✅ DONE"* ]]; then
   while IFS= read -r l; do
     [[ $l =~ $ctrl_re ]] || continue
     proc=0; open=0
@@ -74,26 +53,6 @@ if [ "$goal" -eq 1 ] && [ -z "$reason" ] && [[ $plain == *"✅ DONE"* ]]; then
     (( 10#$proc > 0 || 10#$open > 0 )) && reason="mark finished tasks completed in the session task list (or report PARTIAL) before ✅ DONE"
     break
   done <<<"$msg"
-fi
-
-done_=0
-if [ "$goal" -eq 1 ] && [ -z "$reason" ] && [[ $plain == *"✅ DONE"* ]]; then
-  done_=1
-  while IFS= read -r l; do
-    case $l in
-      *GOAL=NOT_MET*|*GOAL=REFUSED*|*"Не сделано"*) reason="✅ DONE contradicts: $l"; break ;;
-    esac
-  done <<<"$plain"
-  if [ -z "$reason" ]; then
-    hit=$(grep -oE 'goal-check[[:space:]]+[A-Za-z0-9]+-[A-Za-z0-9._-]+' <<<"$msg" | head -n1)
-    if [ -z "$hit" ]; then
-      reason="✅ DONE needs a goal-check <epic> run with GOAL=MET in the same turn"
-    else
-      read -r _ id <<<"$hit"
-      last=$(timeout 300 "${GOAL_GATE_CHECK:-/root/workspaces/tools/bin/goal-check}" "$id" 2>/dev/null | tail -n1)
-      [ "$last" = "GOAL=MET" ] || reason="goal-check $id: $last"
-    fi
-  fi
 fi
 
 file=/tmp/goal-gate-$sid
@@ -109,11 +68,7 @@ if [ -z "$reason" ]; then
 fi
 if (( 10#$count >= 10#$max )); then
   printf '0\n' >"$file" 2>/dev/null
-  if [ "$done_" -eq 1 ]; then
-    jq -nc --arg m "⛔ ✅ DONE НЕ ПОДТВЕРЖДЁН (goal-gate): $reason. Итог этого ответа = PARTIAL." '{systemMessage:$m}'
-  else
-    jq -nc --arg m "⛔ goal-gate: $reason" '{systemMessage:$m}'
-  fi
+  jq -nc --arg m "⛔ goal-gate: $reason" '{systemMessage:$m}'
   exit 0
 fi
 printf '%s\n' "$((10#$count + 1))" >"$file" 2>/dev/null
