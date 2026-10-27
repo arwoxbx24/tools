@@ -3,6 +3,7 @@
 name=$(basename "$0")
 Z=0000000000000000000000000000000000000000
 SG=/root/workspaces/tools/bin/secret-gate
+CG=/root/workspaces/tools/bin/commit-gate
 MIRROR_REPOS_DIR="/home/gitmirror/repos/"
 
 # U13: barrier only warns — never blocks commit/push. Prints a WARN to stderr
@@ -14,6 +15,7 @@ warn() {
 }
 
 if [ "$name" = "pre-commit" ]; then
+  [ -x "$CG" ] && { "$CG" pre-commit || exit $?; }
   if ! "$SG" check --staged; then
     warn "secret-gate check --staged"
   fi
@@ -22,6 +24,10 @@ if [ "$name" = "pre-commit" ]; then
       /root/.local/bin/pre-commit run --config "$(git rev-parse --show-toplevel)/.pre-commit-config.yaml" --hook-stage pre-commit || exit 1
     fi
   fi
+fi
+
+if [ "$name" = "commit-msg" ]; then
+  [ -x "$CG" ] && { "$CG" commit-msg "$1" || exit $?; }
 fi
 
 if [ "$name" = "pre-push" ]; then
