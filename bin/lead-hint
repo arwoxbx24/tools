@@ -68,11 +68,11 @@ lead_allowlist() {
     fi
     if [[ $quote == '"' ]]; then
       if [[ $c == '`' ]]; then
-        printf '%s' 'lead allowlist (owner 26.10): command substitution and backticks are not allowed outside single quotes; move the work to code-channel'
+        printf '%s' 'lead allowlist (owner 26.10): command substitution and backticks are not allowed outside single quotes; move the work to code-channel — route: /root/workspaces/tools/bin/code-channel auto <worktree> <TZ>'
         return 0
       fi
       if [[ $c == '$' || $c == '<' || $c == '>' ]] && [[ $nxt == '(' ]]; then
-        printf '%s' 'lead allowlist (owner 26.10): process substitution is not allowed; move the work to code-channel'
+        printf '%s' 'lead allowlist (owner 26.10): process substitution is not allowed; move the work to code-channel — route: /root/workspaces/tools/bin/code-channel auto <worktree> <TZ>'
         return 0
       fi
       [[ $c == '"' ]] && quote=''
@@ -83,11 +83,11 @@ lead_allowlist() {
     case $c in
       "'"|'"') quote=$c; seg+=$c ;;
       '`')
-        printf '%s' 'lead allowlist (owner 26.10): command substitution and backticks are not allowed outside single quotes; move the work to code-channel'
+        printf '%s' 'lead allowlist (owner 26.10): command substitution and backticks are not allowed outside single quotes; move the work to code-channel — route: /root/workspaces/tools/bin/code-channel auto <worktree> <TZ>'
         return 0 ;;
       '$'|'<'|'>')
         if [[ $nxt == '(' ]]; then
-          printf '%s' 'lead allowlist (owner 26.10): process substitution is not allowed; move the work to code-channel'
+          printf '%s' 'lead allowlist (owner 26.10): process substitution is not allowed; move the work to code-channel — route: /root/workspaces/tools/bin/code-channel auto <worktree> <TZ>'
           return 0
         fi
         seg+=$c ;;
@@ -172,7 +172,7 @@ lead_allowlist() {
           [[ $target =~ ^\&[0-9]+$ ]] && continue
           out_ok "$target" && continue ;;
       esac
-      printf '%s' 'lead allowlist (owner 26.10): the lead redirects only to /dev/null or /tmp (normalised); everything else goes to code-channel'
+      printf '%s' 'lead allowlist (owner 26.10): the lead redirects only to /dev/null or /tmp (normalised); everything else goes to code-channel — route: redirect to /tmp/<name> or run /root/workspaces/tools/bin/code-channel auto <worktree> <TZ>'
       return 0
     done
 
@@ -203,7 +203,7 @@ lead_allowlist() {
     [[ -n $found ]] || continue
     base=${found##*/}
     if [[ $found == */* && $found != /root/workspaces/tools/bin/* ]]; then
-      printf '%s' 'lead allowlist (owner 26.10): the lead runs allowlisted tools bare or as /root/workspaces/tools/bin/<name>; send other paths to code-channel'
+      printf '%s' 'lead allowlist (owner 26.10): the lead runs allowlisted tools bare or as /root/workspaces/tools/bin/<name>; send other paths to code-channel — route: /root/workspaces/tools/bin/code-channel auto <worktree> <TZ>'
       return 0
     fi
 
@@ -211,18 +211,18 @@ lead_allowlist() {
     # editors can write anything, so they stay denied whatever else is listed.
     case $base in
       python|python*|node|nodejs|perl|ruby|php|php*|bash|sh|zsh|dash|deno|bun|pwsh|npx|opencode|codex|claude|gemini|kimi|patch|ed|vi|vim|nano|tee|uv|pre-commit|systemd-run)
-        printf '%s' 'lead allowlist (owner 26.10): interpreters, shells, editors, patch, tee, code runners and agent CLIs stay denied; move the work to code-channel'
+        printf '%s' 'lead allowlist (owner 26.10): interpreters, shells, editors, patch, tee, code runners and agent CLIs stay denied; move the work to code-channel — route: /root/workspaces/tools/bin/code-channel auto <worktree> <TZ>'
         return 0 ;;
     esac
 
     if [[ $base == code-channel || $base == sdk-agent ]]; then
       if [[ $bg != true ]]; then
         fgarg=${tok[idx+1]:-}
-        if [[ $base == code-channel && ( $fgarg == --help || $fgarg == -h || $fgarg == --plan ) ]] ||
+        if [[ $base == code-channel && ( $fgarg == --help || $fgarg == -h || $fgarg == --plan || $fgarg == use ) ]] ||
            [[ $base == sdk-agent && $fgarg == --help ]]; then
           continue
         fi
-        printf '%s' 'lead allowlist (owner 26.10): the lead starts code-channel/sdk-agent only in background; run it in background (tool_input.run_in_background=true)'
+        printf '%s' 'lead allowlist (owner 26.10): the lead starts code-channel/sdk-agent only in background; run it in background (tool_input.run_in_background=true) — route: /root/workspaces/tools/bin/code-channel auto <worktree> <TZ>'
         return 0
       fi
       continue
@@ -240,16 +240,16 @@ lead_allowlist() {
           case ${tok[k]} in
             -o|--output)
               out_ok "${tok[k+1]:-}" || {
-                printf '%s' 'lead allowlist (owner 26.10): sort -o writes only into /tmp'
+                printf '%s' 'lead allowlist (owner 26.10): sort -o writes only into /tmp — route: sort -o /tmp/<name> <file>'
                 return 0; }
               k=$((k+1)) ;;
             -o?*)
               out_ok "${tok[k]#-o}" || {
-                printf '%s' 'lead allowlist (owner 26.10): sort -o writes only into /tmp'
+                printf '%s' 'lead allowlist (owner 26.10): sort -o writes only into /tmp — route: sort -o /tmp/<name> <file>'
                 return 0; } ;;
             --output=*)
               out_ok "${tok[k]#*=}" || {
-                printf '%s' 'lead allowlist (owner 26.10): sort -o writes only into /tmp'
+                printf '%s' 'lead allowlist (owner 26.10): sort -o writes only into /tmp — route: sort -o /tmp/<name> <file>'
                 return 0; } ;;
           esac
         done ;;
@@ -264,21 +264,21 @@ lead_allowlist() {
               positionals=$((positionals+1))
               if (( positionals == 2 )); then
                 out_ok "${tok[k]}" || {
-                  printf '%s' 'lead allowlist (owner 26.10): uniq IN OUT writes only into /tmp'
+                  printf '%s' 'lead allowlist (owner 26.10): uniq IN OUT writes only into /tmp — route: uniq <in> /tmp/<out>'
                   return 0; }
               fi ;;
           esac
         done ;;
-      bd|goal-check|test-once|git-sync|safe-delete|tmux-send|channel-canary|where|ls|cat|grep|wc|jq|head|tail|cut|sort|uniq|tr|pgrep|date|echo|printf|pwd|cd|stat|test|true) ;;
+      bd|goal-check|test-once|git-sync|safe-delete|tmux-send|channel-canary|where|ls|cat|grep|wc|jq|head|tail|cut|sort|uniq|comm|tr|pgrep|date|echo|printf|pwd|cd|stat|test|true) ;;
       find)
         for (( k=idx+1; k<nt; k++ )); do
           case ${tok[k]} in
             -exec*|-execdir*|-delete|-ok*)
-              printf '%s' 'lead allowlist (owner 26.10): find with -exec/-delete/-ok is not allowed for the lead'
+              printf '%s' 'lead allowlist (owner 26.10): find with -exec/-delete/-ok is not allowed for the lead — route: /root/workspaces/tools/bin/code-channel auto <worktree> <TZ>'
               return 0 ;;
             -fls|-fprint*)
               out_ok "${tok[k+1]:-}" || {
-                printf '%s' 'lead allowlist (owner 26.10): find -fls/-fprint writes only into /tmp'
+                printf '%s' 'lead allowlist (owner 26.10): find -fls/-fprint writes only into /tmp — route: find <path> -fls /tmp/<name>'
                 return 0; }
               k=$((k+1)) ;;
           esac
@@ -294,7 +294,7 @@ lead_allowlist() {
         done
         op=${tok[gidx]:-}
         case $op in
-          status|log|diff|show|ls-files|rev-parse|fetch|format-patch|archive) ;;
+          status|log|diff|show|ls-files|ls-tree|rev-parse|fetch|format-patch|archive) ;;
           worktree)
             case ${tok[gidx+1]:-} in
               list) ;;
@@ -304,23 +304,23 @@ lead_allowlist() {
                   norm=$(lead_norm_path "$target")
                   if [[ $norm == /tmp || $norm == /tmp/* || $norm =~ ^/root/workspaces/[^/]+/\.worktrees(/|$) ]]; then :
                   else
-                    printf '%s' 'lead allowlist (owner 26.10): git worktree add writes only under /root/workspaces/*/.worktrees or /tmp'
+                    printf '%s' 'lead allowlist (owner 26.10): git worktree add writes only under /root/workspaces/*/.worktrees or /tmp — route: git worktree add /root/workspaces/<repo>/.worktrees/<name> <ref>'
                     return 0
                   fi
                 fi ;;
-              *) printf '%s' 'lead allowlist (owner 26.10): git worktree allows only list|add'
+              *) printf '%s' 'lead allowlist (owner 26.10): git worktree allows only list|add — route: git worktree list'
                  return 0 ;;
             esac ;;
           branch)
             for (( k=gidx+1; k<nt; k++ )); do
               case ${tok[k]} in
                 -d|-D|-m|-M|-d*|-D*|-m*|-M*)
-                  printf '%s' 'lead allowlist (owner 26.10): git branch -d/-D/-m/-M is not allowed for the lead'
+                  printf '%s' 'lead allowlist (owner 26.10): git branch -d/-D/-m/-M is not allowed for the lead — route: git branch --list'
                   return 0 ;;
               esac
             done ;;
           *)
-            printf '%s' 'lead allowlist (owner 26.10): git subcommand is not allowlisted (status, log, diff, show, ls-files, rev-parse, fetch, worktree list|add, branch, format-patch|archive to /tmp); send delivery to code-channel'
+            printf '%s' 'lead allowlist (owner 26.10): git subcommand is not allowlisted (status, log, diff, show, ls-files, ls-tree, rev-parse, fetch, worktree list|add, branch, format-patch|archive to /tmp); send delivery to code-channel — route: /root/workspaces/tools/bin/code-channel auto <worktree> <TZ>'
             return 0 ;;
         esac
         case $op in
@@ -331,35 +331,35 @@ lead_allowlist() {
                 --output=*|--output-directory=*)
                   git_out=1
                   out_ok "${tok[k]#*=}" || {
-                    printf '%s' 'lead allowlist (owner 26.10): git output files write only into /tmp'
+                    printf '%s' 'lead allowlist (owner 26.10): git output files write only into /tmp — route: git <cmd> --output=/tmp/<name>'
                     return 0; } ;;
                 --output|--output-directory|-o)
                   git_out=1
                   out_ok "${tok[k+1]:-}" || {
-                    printf '%s' 'lead allowlist (owner 26.10): git output files write only into /tmp'
+                    printf '%s' 'lead allowlist (owner 26.10): git output files write only into /tmp — route: git <cmd> --output=/tmp/<name>'
                     return 0; }
                   k=$((k+1)) ;;
                 -o?*)
                   git_out=1
                   out_ok "${tok[k]#-o}" || {
-                    printf '%s' 'lead allowlist (owner 26.10): git output files write only into /tmp'
+                    printf '%s' 'lead allowlist (owner 26.10): git output files write only into /tmp — route: git <cmd> --output=/tmp/<name>'
                     return 0; } ;;
               esac
             done
             if [[ $op == format-patch ]] && (( ! git_out )); then
-              printf '%s' 'lead allowlist (owner 26.10): git format-patch needs -o under /tmp'
+              printf '%s' 'lead allowlist (owner 26.10): git format-patch needs -o under /tmp — route: git format-patch -o /tmp/<dir> <range>'
               return 0
             fi ;;
         esac ;;
       gh)
         if [[ ${tok[idx+1]:-} == run && ${tok[idx+2]:-} == view ]] || [[ ${tok[idx+1]:-} == repo && ${tok[idx+2]:-} == view ]]; then :
         elif [[ ${tok[idx+1]:-} != pr ]]; then
-          printf '%s' 'lead allowlist (owner 26.10): gh allows only pr view|checks|list|diff|create|merge and run view, repo view'
+          printf '%s' 'lead allowlist (owner 26.10): gh allows only pr view|checks|list|diff|create|merge and run view, repo view — route: gh pr view <N>'
           return 0
         else
           case ${tok[idx+2]:-} in
             view|checks|list|diff|create|merge) ;;
-            *) printf '%s' 'lead allowlist (owner 26.10): gh allows only pr view|checks|list|diff|create|merge and run view, repo view'
+            *) printf '%s' 'lead allowlist (owner 26.10): gh allows only pr view|checks|list|diff|create|merge and run view, repo view — route: gh pr view <N>'
                return 0 ;;
           esac
         fi ;;
@@ -374,7 +374,7 @@ lead_allowlist() {
           case ${tok[k]} in
             -*) ;;
             *) out_ok "${tok[k]}" || {
-                 printf '%s' 'lead allowlist (owner 26.10): filesystem writes go only into /tmp; send repo edits to code-channel'
+                 printf '%s' 'lead allowlist (owner 26.10): filesystem writes go only into /tmp; send repo edits to code-channel — route: /root/workspaces/tools/bin/code-channel auto <worktree> <TZ>'
                  return 0; } ;;
           esac
         done ;;
@@ -389,7 +389,7 @@ lead_allowlist() {
           esac
           [[ $target == /* ]] || continue
           out_ok "$target" || {
-            printf '%s' 'lead allowlist (owner 26.10): mktemp writes only into /tmp; send repo edits to code-channel'
+            printf '%s' 'lead allowlist (owner 26.10): mktemp writes only into /tmp; send repo edits to code-channel — route: mktemp -d /tmp/<name>.XXXXXX'
             return 0; }
         done ;;
       mv)
@@ -401,7 +401,7 @@ lead_allowlist() {
             *) target=${tok[k]} ;;
           esac
           out_ok "$target" || {
-            printf '%s' 'lead allowlist (owner 26.10): mv writes/removes only inside /tmp; send repo edits to code-channel'
+            printf '%s' 'lead allowlist (owner 26.10): mv writes/removes only inside /tmp; send repo edits to code-channel — route: mv /tmp/<src> /tmp/<dst>'
             return 0; }
         done ;;
       install|ln)
@@ -417,7 +417,7 @@ lead_allowlist() {
           esac
         done
         out_ok "$target" || {
-          printf '%s' 'lead allowlist (owner 26.10): install/ln write only into /tmp; send repo edits to code-channel'
+          printf '%s' 'lead allowlist (owner 26.10): install/ln write only into /tmp; send repo edits to code-channel — route: ln -s /tmp/<src> /tmp/<dst>'
           return 0; } ;;
       dd)
         target=''; tset=0
@@ -428,7 +428,7 @@ lead_allowlist() {
         done
         if (( tset )); then
           out_ok "$target" || {
-            printf '%s' 'lead allowlist (owner 26.10): dd writes only into /tmp; send repo edits to code-channel'
+            printf '%s' 'lead allowlist (owner 26.10): dd writes only into /tmp; send repo edits to code-channel — route: dd of=/tmp/<name> if=<src>'
             return 0; }
         fi ;;
       tar)
@@ -456,11 +456,11 @@ lead_allowlist() {
         if [[ $tset == *t* && $tset != *x* && $tset != *c* && $tset != *r* && $tset != *u* ]]; then :
         else
           out_ok "$archive" || {
-            printf '%s' 'lead allowlist (owner 26.10): tar writes only archives inside /tmp; send repo edits to code-channel'
+            printf '%s' 'lead allowlist (owner 26.10): tar writes only archives inside /tmp; send repo edits to code-channel — route: tar -czf /tmp/<name>.tar <path>'
             return 0; }
           if [[ $tset == *x* || $tset == *r* || $tset == *u* ]]; then
             out_ok "$cdir" || {
-              printf '%s' 'lead allowlist (owner 26.10): tar extraction writes only into /tmp (-C /tmp)'
+              printf '%s' 'lead allowlist (owner 26.10): tar extraction writes only into /tmp (-C /tmp) — route: tar -xzf /tmp/<name>.tar -C /tmp'
               return 0; }
           fi
         fi ;;
@@ -471,37 +471,37 @@ lead_allowlist() {
           compose)
             case ${tok[idx+2]:-} in
               ps|logs) ;;
-              *) printf '%s' 'lead allowlist (owner 26.10): docker compose allows only ps|logs'
+              *) printf '%s' 'lead allowlist (owner 26.10): docker compose allows only ps|logs — route: docker compose ps'
                  return 0 ;;
             esac ;;
-          *) printf '%s' 'lead allowlist (owner 26.10): docker allows only ps|logs|inspect|compose ps|compose logs|images'
+          *) printf '%s' 'lead allowlist (owner 26.10): docker allows only ps|logs|inspect|compose ps|compose logs|images — route: docker ps'
              return 0 ;;
         esac ;;
       curl)
         for (( k=idx+1; k<nt; k++ )); do
           case ${tok[k]} in
             -T|--upload-file|-T?*|--upload-file=*|-[A-Za-z]*T*|-O|--remote-name|--remote-name-all|-[A-Za-z]*O*)
-              printf '%s' 'lead allowlist (owner 26.10): curl upload (-T) and remote-name (-O) writes are not allowed'
+              printf '%s' 'lead allowlist (owner 26.10): curl upload (-T) and remote-name (-O) writes are not allowed — route: curl -o /tmp/<name> <url>'
               return 0 ;;
             -o|--output|--output-dir)
               out_ok "${tok[k+1]:-}" || {
-                printf '%s' 'lead allowlist (owner 26.10): curl -o writes only into /tmp'
+                printf '%s' 'lead allowlist (owner 26.10): curl -o writes only into /tmp — route: curl -o /tmp/<name> <url>'
                 return 0; }
               k=$((k+1)) ;;
             -o?*)
               out_ok "${tok[k]#-o}" || {
-                printf '%s' 'lead allowlist (owner 26.10): curl -o writes only into /tmp'
+                printf '%s' 'lead allowlist (owner 26.10): curl -o writes only into /tmp — route: curl -o /tmp/<name> <url>'
                 return 0; } ;;
             -[A-Za-z]*o*)
               flag=${tok[k]#-}
               target=${flag#*o}
               if [[ -z $target ]]; then target=${tok[k+1]:-}; k=$((k+1)); fi
               out_ok "$target" || {
-                printf '%s' 'lead allowlist (owner 26.10): curl -o writes only into /tmp'
+                printf '%s' 'lead allowlist (owner 26.10): curl -o writes only into /tmp — route: curl -o /tmp/<name> <url>'
                 return 0; } ;;
             --output=*|--output-dir=*)
               out_ok "${tok[k]#*=}" || {
-                printf '%s' 'lead allowlist (owner 26.10): curl -o writes only into /tmp'
+                printf '%s' 'lead allowlist (owner 26.10): curl -o writes only into /tmp — route: curl -o /tmp/<name> <url>'
                 return 0; } ;;
           esac
         done ;;
@@ -515,11 +515,11 @@ lead_allowlist() {
           esac
         done
         if [[ -z $target ]]; then
-          printf '%s' 'lead allowlist (owner 26.10): wget needs -O /tmp/... or -q -O -'
+          printf '%s' 'lead allowlist (owner 26.10): wget needs -O /tmp/... or -q -O - — route: wget -O /tmp/<name> <url>'
           return 0
         fi
         if [[ $target != - ]] && ! out_ok "$target"; then
-          printf '%s' 'lead allowlist (owner 26.10): wget -O writes only into /tmp (or -)'
+          printf '%s' 'lead allowlist (owner 26.10): wget -O writes only into /tmp (or -) — route: wget -O /tmp/<name> <url>'
           return 0
         fi ;;
       xargs)
@@ -537,27 +537,27 @@ lead_allowlist() {
           *)
             if [[ -x /root/workspaces/tools/bin/$base && $base != code-channel && $base != sdk-agent ]]; then :
             else
-              printf '%s' 'lead allowlist (owner 26.10): xargs runs only an allowlisted non-interpreter command'
+              printf '%s' 'lead allowlist (owner 26.10): xargs runs only an allowlisted non-interpreter command — route: xargs <allowlisted command>'
               return 0
             fi ;;
         esac ;;
       tmux)
         case ${tok[idx+1]:-} in
           list-*|display-message|capture-pane) ;;
-          *) printf '%s' 'lead allowlist (owner 26.10): tmux allows only list-*, display-message, capture-pane'
+          *) printf '%s' 'lead allowlist (owner 26.10): tmux allows only list-*, display-message, capture-pane — route: tmux list-sessions'
              return 0 ;;
         esac ;;
       npm|pnpm)
         case ${tok[idx+1]:-} in
           run|test|ls|ci|install|view|outdated) ;;
-          *) printf '%s' 'lead allowlist (owner 26.10): npm/pnpm allows only run,test,ls,ci,install,view,outdated (never exec/x/dlx)'
+          *) printf '%s' 'lead allowlist (owner 26.10): npm/pnpm allows only run,test,ls,ci,install,view,outdated (never exec/x/dlx) — route: npm run <script>'
              return 0 ;;
         esac ;;
       sed)
         for (( k=idx+1; k<nt; k++ )); do
           case ${tok[k]} in
             -i*|--in-place*)
-              printf '%s' 'lead allowlist (owner 26.10): sed -i is not allowed; send file edits to code-channel'
+              printf '%s' 'lead allowlist (owner 26.10): sed -i is not allowed; send file edits to code-channel — route: /root/workspaces/tools/bin/code-channel auto <worktree> <TZ>'
               return 0 ;;
           esac
         done ;;
@@ -565,12 +565,12 @@ lead_allowlist() {
         for (( k=idx+1; k<nt; k++ )); do
           case ${tok[k]} in
             -i|-i?*|--include|--include=*|-f|--file|--file=*|-E|--exec|--exec=*|--load|--load=*)
-              printf '%s' 'lead allowlist (owner 27.10): awk -i/-f/--include/--exec/--load is not read-only; send work to code-channel'
+              printf '%s' 'lead allowlist (owner 27.10): awk -i/-f/--include/--exec/--load is not read-only; send work to code-channel — route: /root/workspaces/tools/bin/code-channel auto <worktree> <TZ>'
               return 0 ;;
           esac
           case ${tok[k]} in
             *system*|*getline*|*'|'*|*'@include'*|*'@load'*|*'>>'*|*print*'>'*)
-              printf '%s' 'lead allowlist (owner 27.10): awk is read-only here (no system/getline/pipe/redirect); send writes to code-channel'
+              printf '%s' 'lead allowlist (owner 27.10): awk is read-only here (no system/getline/pipe/redirect); send writes to code-channel — route: /root/workspaces/tools/bin/code-channel auto <worktree> <TZ>'
               return 0 ;;
           esac
         done ;;
@@ -587,11 +587,11 @@ lead_allowlist() {
           esac
         done
         if [[ -z $target ]] || ! out_ok "$target"; then
-          printf '%s' 'lead allowlist (owner 26.10): cp writes only into /tmp; send code edits to code-channel'
+          printf '%s' 'lead allowlist (owner 26.10): cp writes only into /tmp; send code edits to code-channel — route: cp <src> /tmp/<name>'
           return 0
         fi ;;
       *)
-        printf '%s' 'lead runs only the allowlist; send work to code-channel in background'
+        printf '%s' 'lead runs only the allowlist; send work to code-channel in background — route: /root/workspaces/tools/bin/code-channel auto <worktree> <TZ>'
         return 0 ;;
     esac
   done
@@ -637,7 +637,7 @@ case $event in
         < <(timeout 3 bd -C /root/workspaces/projects list -l channel-down --status open --json 2>/dev/null); then
         exit 0
       fi
-      jq -cn --arg reason 'lead-hint code-lock (owner 24.10): the lead session (any cwd under /root) edits only .md/.txt; send code and config to /root/workspaces/tools/bin/code-channel auto <worktree> <TZ>' \
+      jq -cn --arg reason 'lead-hint code-lock (owner 24.10): the lead session (any cwd under /root) edits only .md/.txt — route: /root/workspaces/tools/bin/code-channel auto <worktree> <TZ>' \
         '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$reason}}' \
         2>/dev/null || exit 0
       exit 0
@@ -675,7 +675,7 @@ case $event in
                     and ((["test","run"] | index($w[1] // "")) != null)
                     and ($cwd | under_ws))))
     ' >/dev/null 2>&1 <<<"$payload"; then
-      jq -cn --arg reason 'lead-run-lock (owner 24.10): the lead does not run scripts; route: /root/workspaces/tools/bin/code-channel auto|audit <worktree> <TZ>' \
+      jq -cn --arg reason 'lead-run-lock (owner 24.10): the lead does not run scripts — route: /root/workspaces/tools/bin/code-channel auto|audit <worktree> <TZ>' \
         '{hookSpecificOutput:{hookEventName:"PreToolUse",permissionDecision:"deny",permissionDecisionReason:$reason}}' \
         2>/dev/null || exit 0
       exit 0
