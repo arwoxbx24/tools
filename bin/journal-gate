@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+# journal-gate — блокирующий гейт журнала: обязательные разделы и журнал у bd-атома.
+set -u
+BIN=$(cd -- "$(dirname -- "$0")" && pwd)
+CONF=${JOURNAL_GATE_CONF:-$BIN/../config/journal-gate.json}
+BD=${JOURNAL_GATE_BD:-bd}
+SECTIONS=(
+  "Повторный запуск"
+  "Сравнение сборок"
+  "Сбой на середине и откат"
+  "Проверка секретов"
+  "Провал через месяц"
+  "Решение"
+)
+
+case ${1-} in
+  --help|-h)
+    printf '%s\n' 'usage: journal-gate check <journal.md> | hook'
+    exit 0 ;;
+esac
+
+fail() {
+  local section=$1 reason=$2 route=$3
+  printf 'journal-gate: %s: %s\n' "$section" "$reason" >&2
+  printf 'route: %s\n' "$route" >&2
+  exit 2
+}
+
+has_fence() {
+  awk '
+    /^[[:space:]]*```/ { inb = !inb; next }
+    inb && $0 !~ /^[[:space:]]*$/ { found = 1 }
+    END { exit(found ? 0 : 1) }
+  ' <<<"$1"
+}
+
+section_body() {
+  awk -v name="$2" '
+    $0 ~ /^##[[:space:]]/ {
+      if (inb) exit
+      h=$0; sub(/^##[[:space:]]+/, "", h); sub(/[[:space:]]+$/, "", h)
+      if (h == name) { inb=1; next }
+    }
+    inb { print }
+  ' "$1"
+}
+
+section_found() {
+  awk -v name="$2" '
+    $0 ~ /^##[[:space:]]/ {
+      h=$0; sub(/^##[[:space:]]+/, "", h); sub(/[[:space:]]+$/, "", h)
+      if (h == name) { print 1; exit }
+    }
+  ' "$1"
+}
+
+na_reason() {
+  sed -n 's/^[[:space:]]*не применимо:[[:space:]]*//p' <<<"$1" | head -1
+}
+
+decision_link() {
+  local body=$1 dir=$2 link
+  while IFS= read -r link; do
+    [ -n "$link" ] || continue
+    case $link in /*) ;; *) link="$dir/$link" ;; esac
+    [ -f "$link" ] && return 0
+  done < <(grep -oE 'decisions/[0-9]{4}-[A-Za-z0-9._-]+\.md' <<<"$body")
+  return 1
+}
+
+check_journal() {
+  local file=$1 dir body name reason re
+  [ -r "$file" ] || fail "journal" "not readable: $file" "create $file with all required sections"
+  dir=$(cd -- "$(dirname -- "$file")" 2>/dev/null && pwd -P) || dir=$PWD
+  for name in "${SECTIONS[@]}"; do
+    if [ -z "$(section_found "$file" "$name")" ]; then
+      fail "$name" "missing section" "fill $file section \"$name\" with a fenced command output or «не применимо: <причина>»"
+    fi
+    body=$(section_body "$file" "$name")
+    reason=$(na_reason "$body")
+    case $name in
+      "Повторный запуск")
+        if [ -n "$reason" ]; then
+          [ -n "$(printf '%s' "$reason" | tr -d '[:space:]')" ] || fail "$name" "bare «не применимо»" "fill $file section \"$name\" with «не применимо: <причина>; вместо повтора: <проверка>»"
+          re=';[[:space:]]*вместо[[:space:]]+повтора:[[:space:]]*[^[:space:]]'
+          [[ $reason =~ $re ]] || fail "$name" "«не применимо» without «; вместо повтора: <проверка>»" "fill $file section \"$name\" with «не применимо: <причина>; вместо повтора: <проверка>»"
+          continue
+        fi ;;
+      "Решение")
+        if [ -n "$reason" ]; then
+          [ -n "$(printf '%s' "$reason" | tr -d '[:space:]')" ] || fail "$name" "bare «не применимо»" "fill $file section \"$name\" with a link to decisions/NNNN-*.md or «не применимо: <причина>»"
+          continue
+        fi
+        decision_link "$body" "$dir" || fail "$name" "no link to an existing decisions/NNNN-*.md" "add a link to decisions/NNNN-*.md in $file section \"$name\" or «не применимо: <причина>»"
+        continue ;;
+    esac
+    if [ -n "$reason" ]; then
+      [ -n "$(printf '%s' "$reason" | tr -d '[:space:]')" ] || fail "$name" "bare «не применимо»" "fill $file section \"$name\" with a fenced command output or «не применимо: <причина>»"
+      continue
+    fi
+    has_fence "$body" || fail "$name" "empty: no fenced command output and no «не применимо»" "fill $file section \"$name\" with a fenced command output or «не применимо: <причина>»"
+  done
+  exit 0
+}
+
+hook() {
+  local json cmd seg id dir out created since c s journal rc
+  json=$(cat) || exit 0
+  [ -n "$json" ] || exit 0
+  [ "$(jq -r '.tool_name // empty' <<<"$json" 2>/dev/null)" = "Bash" ] || exit 0
+  cmd=$(jq -r '.tool_input.command // empty' <<<"$json" 2>/dev/null) || exit 0
+  [ -n "$cmd" ] || exit 0
+
+  [[ $cmd =~ (^|[[:space:];&|])bd[[:space:]]+([^;&|]*[[:space:]])?close[[:space:]]+([^[:space:];&|]+) ]] || exit 0
+  seg=${BASH_REMATCH[0]}
+  id=${BASH_REMATCH[3]}
+  id=${id#\"}; id=${id%\"}; id=${id#\'}; id=${id%\'}
+
+  dir=
+  if [[ $seg =~ (^|[[:space:]])-C[[:space:]]+(\"[^\"]*\"|\'[^\']*\'|[^[:space:]]+) ]]; then
+    dir=${BASH_REMATCH[2]}
+    dir=${dir#\"}; dir=${dir%\"}; dir=${dir#\'}; dir=${dir%\'}
+  fi
+
+  if [ -n "$dir" ]; then
+    out=$("$BD" -C "$dir" show "$id" --json 2>/dev/null) || exit 0
+  else
+    out=$("$BD" show "$id" --json 2>/dev/null) || exit 0
+  fi
+  [ -n "$out" ] || exit 0
+
+  created=$(jq -r 'if type == "array" then .[0] else . end | .created_at // ""' <<<"$out" 2>/dev/null) || exit 0
+  journal=$(jq -r 'if type == "array" then .[0] else . end | .metadata.journal // ""' <<<"$out" 2>/dev/null) || exit 0
+  [ -n "$created" ] || exit 0
+  since=$(jq -r '.since // ""' "$CONF" 2>/dev/null) || since=
+  [ -n "$since" ] || exit 0
+  c=$(date -u -d "$created" +%s 2>/dev/null) || exit 0
+  s=$(date -u -d "$since" +%s 2>/dev/null) || exit 0
+  [ "$c" -lt "$s" ] && exit 0
+
+  if [ -z "$journal" ]; then
+    printf 'journal-gate: atom %s has no journal metadata\n' "$id" >&2
+    printf 'route: bd update %s --metadata '\''{"journal":"<path>"}'\''\n' "$id" >&2
+    exit 2
+  fi
+  case $journal in /*) ;; *) journal="${dir:-$PWD}/$journal" ;; esac
+  out=$("$BIN/journal-gate" check "$journal" 2>&1)
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf '%s\n' "$out" >&2
+    exit 2
+  fi
+  exit 0
+}
+
+case ${1-} in
+  check)
+    [ $# -ge 2 ] || { printf 'journal-gate: check needs a journal path\n' >&2; exit 2; }
+    check_journal "$2" ;;
+  hook)
+    hook ;;
+  *)
+    printf 'journal-gate: unknown mode: %s\n' "${1-}" >&2
+    exit 1 ;;
+esac
