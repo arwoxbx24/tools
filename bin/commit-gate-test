@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+set -u
+TOP="$(cd "$(dirname "$0")/.." && pwd)"
+SANDBOX="/tmp/test-commit-gate-$$"
+rm -rf "$SANDBOX"
+mkdir -p "$SANDBOX/empty"
+IN="$SANDBOX/in"
+OUT="$SANDBOX/out"
+export COMMIT_GATE_CONF="$SANDBOX/conf.json"
+export COMMIT_GATE_SECRET_GATE="$SANDBOX/secret-gate"
+printf '#!/bin/sh\nexit "${FAKE_SECRET_RC:-0}"\n' > "$SANDBOX/secret-gate"
+chmod 700 "$SANDBOX/secret-gate"
+printf '{"repos":["%s"]}\n' "$IN" > "$COMMIT_GATE_CONF"
+
+PASS=0; FAIL=0
+ok() { PASS=$((PASS + 1)); }
+bad() { FAIL=$((FAIL + 1)); echo "FAIL[$1] ${2:-}"; }
+mk() {
+  rm -rf "$IN"
+  git init -q "$IN"
+  git -C "$IN" config user.email t@example.com
+  git -C "$IN" config user.name t
+  git -C "$IN" config core.hooksPath "$SANDBOX/empty"
+  git -C "$IN" config commit.gpgsign false
+}
+gate() { ( cd "$IN" && "$TOP/bin/commit-gate" "$@" ) 2>"$SANDBOX/err"; }
+err() { cat "$SANDBOX/err"; }
+hook() { python3 -c 'import json,sys; print(json.dumps({"tool_name":"Bash","tool_input":{"command":sys.argv[1]}}))' "$1" | ( cd "$IN" && "$TOP/bin/commit-gate" hook ) 2>"$SANDBOX/err"; }
+expect() { local n=$1 w=$2 g=$3; [ "$g" -eq "$w" ] && ok || bad "$n" "rc=$g want=$w"; }
+has() { grep -qF "$2" "$SANDBOX/err" && ok || bad "$1" "missing: $2"; }
+
+# baseline: clean repo, good message
+mk; echo hi > "$IN/f.txt"; git -C "$IN" add f.txt
+gate pre-commit; expect pre-commit-clean 0 $?
+printf 'feat(x): ok\n' > "$SANDBOX/msg"
+gate commit-msg "$SANDBOX/msg"; expect commit-msg-good 0 $?
+
+# (a) secrets: blocking and passing
+mk; echo hi > "$IN/f.txt"; git -C "$IN" add f.txt
+FAKE_SECRET_RC=1; export FAKE_SECRET_RC
+gate pre-commit; expect secret-block 2 $?
+has secret-reason secret
+has secret-route 'route:'
+FAKE_SECRET_RC=0
+gate pre-commit; expect secret-pass 0 $?
+unset FAKE_SECRET_RC
+
+# (b) manifest without lockfile, then with lockfile
+mk; printf '{"dependencies":{"a":"1.2.3"}}\n' > "$IN/package.json"
+git -C "$IN" add package.json
+gate pre-commit; expect lock-block 2 $?
+has lock-reason lockfile
+printf '{}\n' > "$IN/package-lock.json"
+git -C "$IN" add package-lock.json
+gate pre-commit; expect lock-pass 0 $?
+
+# (c) range version blocks; exact version passes
+mk; printf '{"dependencies":{"a":"^1.2.3"}}\n' > "$IN/package.json"
+printf '{}\n' > "$IN/package-lock.json"
+git -C "$IN" add package.json package-lock.json
+gate pre-commit; expect range-block 2 $?
+has range-reason 'not pinned'
+git -C "$IN" commit -qm 'feat(x): seed'
+printf '{"dependencies":{"a":"1.2.3"}}\n' > "$IN/package.json"
+git -C "$IN" add package.json
+gate pre-commit; expect range-pass 0 $?
+
+# (c) only ADDED lines are checked: old range already in HEAD never blocks
+mk
+printf '{\n  "dependencies": {\n    "old": "^1.0.0",\n    "z": "1.0.0"\n  }\n}\n' > "$IN/package.json"
+printf '{}\n' > "$IN/package-lock.json"
+git -C "$IN" add package.json package-lock.json
+git -C "$IN" commit -qm 'feat(x): seed'
+printf '{\n  "dependencies": {\n    "old": "^1.0.0",\n    "new": "2.0.0",\n    "z": "1.0.0"\n  }\n}\n' > "$IN/package.json"
+git -C "$IN" add package.json
+gate pre-commit; expect added-lines-only 0 $?
+
+# (d) message: hook -m, commit-msg file
+mk; echo hi > "$IN/f.txt"; git -C "$IN" add f.txt
+hook "git -C $IN commit -m 'bad message'"; expect hook-msg-block 2 $?
+has hook-msg-route 'route: git commit -m "fix(scope): <what>"'
+hook "git -C $IN commit -m 'fix(x): ok'"; expect hook-msg-pass 0 $?
+printf 'bad message\n' > "$SANDBOX/msg"
+gate commit-msg "$SANDBOX/msg"; expect commitmsg-block 2 $?
+printf 'chore(x): ok\n' > "$SANDBOX/msg"
+gate commit-msg "$SANDBOX/msg"; expect commitmsg-pass 0 $?
+
+# non-commit command and no message -> exit 0
+hook "git status"; expect hook-noncommit 0 $?
+hook "git -C $IN commit"; expect hook-nomsg 0 $?
+
+# (a)-(c) are scoped: outside repo exits 0 even on violations
+rm -rf "$OUT"; git init -q "$OUT"
+git -C "$OUT" config user.email t@example.com; git -C "$OUT" config user.name t
+git -C "$OUT" config core.hooksPath "$SANDBOX/empty"; git -C "$OUT" config commit.gpgsign false
+printf '{"dependencies":{"a":"latest"}}\n' > "$OUT/package.json"
+git -C "$OUT" add package.json
+FAKE_SECRET_RC=1; export FAKE_SECRET_RC
+( cd "$OUT" && "$TOP/bin/commit-gate" pre-commit ) 2>"$SANDBOX/err"; expect outside-precommit 0 $?
+[ -s "$SANDBOX/err" ] && bad outside-silent "stderr not empty" || ok
+hook "git -C $OUT commit -m 'bad message'"; expect outside-hook 0 $?
+unset FAKE_SECRET_RC
+
+# run twice on one input -> identical output
+mk; printf '{"dependencies":{"a":"^1.0.0"}}\n' > "$IN/package.json"
+printf '{}\n' > "$IN/package-lock.json"; git -C "$IN" add package.json package-lock.json
+o1=$( ( cd "$IN" && "$TOP/bin/commit-gate" pre-commit ) 2>&1 ); r1=$?
+o2=$( ( cd "$IN" && "$TOP/bin/commit-gate" pre-commit ) 2>&1 ); r2=$?
+if [ "$r1" -eq 2 ] && [ "$r2" -eq 2 ] && [ "$o1" = "$o2" ]; then ok; else bad twice "r1=$r1 r2=$r2"; fi
+
+# versioned hooks call the gate
+grep -q 'CG=.*commit-gate' "$TOP/git-hooks/pre-commit" && ok || bad hook-precommit
+grep -q 'CG" commit-msg' "$TOP/git-hooks/commit-msg" && ok || bad hook-commitmsg
+
+echo "PASS $PASS FAIL $FAIL"
+rm -rf "$SANDBOX"
+[ "$FAIL" -eq 0 ]
