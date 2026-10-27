@@ -105,6 +105,24 @@ perl -0pe 's/(## Решение\n).*?(?=## |\z)/$1не применимо: ре�
 run "$GATE" check "$D/dec-na.md"
 case_ decision-na 0
 
+write_decision_journal() {
+  DEC_LINK=$2 perl -0pe 's/(## Решение\n).*?(?=## |\z)/$1$ENV{DEC_LINK}\n/s' "$D/good.md" >"$1"
+}
+mkdir -p "$D/proj/docs/journal" "$D/proj/docs/decisions"
+echo '# decision' >"$D/proj/docs/decisions/0001-x.md"
+write_decision_journal "$D/proj/docs/journal/j.md" '[decisions/0001-x.md](../decisions/0001-x.md)'
+run "$GATE" check "$D/proj/docs/journal/j.md"
+case_ decision-prefix-relative 0
+
+write_decision_journal "$D/proj/docs/journal/missing.md" '[decisions/0002-x.md](../decisions/0002-x.md)'
+run "$GATE" check "$D/proj/docs/journal/missing.md"
+case_ decision-prefix-relative-missing 2 'Решение'
+
+echo '# decision' >"$D/decisions/0009-abs.md"
+write_decision_journal "$D/proj/docs/journal/abs.md" "[decisions/0009-abs.md]($D/decisions/0009-abs.md)"
+run "$GATE" check "$D/proj/docs/journal/abs.md"
+case_ decision-absolute 0
+
 write_bd '[{"id":"a","created_at":"2020-01-01T00:00:00Z","metadata":{}}]'
 run hook 'bd close a'
 case_ old-atom-exempt 0
