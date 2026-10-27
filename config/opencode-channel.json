@@ -16,6 +16,12 @@
     "repowise": { "enabled": false },
     "codebase-memory-mcp": { "enabled": false }
   },
+  "permission": {
+    "external_directory": {
+      "*": "deny",
+      "/tmp/**": "allow"
+    }
+  },
   "agent": {
     "developer": {
       "description": "Senior developer for code-channel Go runs: minimal exact change inside the TZ FILE lines.",
