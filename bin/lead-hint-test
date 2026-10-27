@@ -5,7 +5,7 @@ dir=$(cd -- "$(dirname -- "$0")" && pwd)
 d=$(mktemp -d /tmp/lead-hint-test.XXXXXX)
 trap 'rm -rf "$d"' EXIT
 ok=0
-total=271
+total=273
 crdir=/tmp/lead-hint-stop
 srun="lh-$$-$RANDOM"
 clean_sid() { rm -f "$crdir/$1"; }
@@ -449,6 +449,25 @@ if [[ $rc == 0 && -z $out ]]; then
   echo 'PASS 37: read-only gh pr view exempt -> empty'; ok=$((ok+1))
 else
   echo "FAIL 37: rc=$rc out=$out"
+fi
+
+tx239=$d/tx239.jsonl
+{ mk_user; for _ in $(seq 4); do mk_read; done; } >"$tx239"
+out=$(mk_pre "$tx239" Bash '{"command":"gh repo view arwoxbx24/x --json visibility"}' | run_hook); rc=$?
+if [[ $rc == 0 && -z $out ]]; then
+  echo 'PASS 239: read-only gh repo view exempt -> empty'; ok=$((ok+1))
+else
+  echo "FAIL 239: rc=$rc out=$out"
+fi
+
+tx240=$d/tx240.jsonl
+{ mk_user; for _ in $(seq 4); do mk_read; done; } >"$tx240"
+out=$(mk_pre "$tx240" Bash '{"command":"gh repo delete arwoxbx24/x"}' | run_hook); rc=$?
+dec=$(jq -r '.hookSpecificOutput.permissionDecision // empty' <<<"$out" 2>/dev/null)
+if [[ $rc == 0 && $dec == deny ]]; then
+  echo 'PASS 240: gh repo delete -> deny'; ok=$((ok+1))
+else
+  echo "FAIL 240: rc=$rc out=$out"
 fi
 
 tx38=$d/tx38.jsonl
