@@ -152,6 +152,12 @@ denied_top() { # dir -> 0 если сам каталог напрямую вхо
   return 1
 }
 
+CODEX_CLEAN_ONLY=0
+_args=()
+for _a in "$@"; do
+  if [ "$_a" = --codex-clean ]; then CODEX_CLEAN_ONLY=1; else _args+=("$_a"); fi
+done
+set -- "${_args[@]+"${_args[@]}"}"
 MODE=run
 DRY_RUN_ONLY_GATEROSS=0
 GATE_RC=0
@@ -164,9 +170,10 @@ case "${1:-}" in
   --restore-drill)  MODE=drill ;;
   --help)
     cat <<'EOF'
-Usage: disk-rotate.sh [--dry-run|--report|--check-declared|--restore-drill|--help]
+Usage: disk-rotate.sh [--codex-clean] [--dry-run|--report|--check-declared|--restore-drill|--help]
   (нет аргументов)  обычный прогон из cron: уборка по классам + алерт при необходимости
   --dry-run         ничего не удаляет; печатает перечень кандидатов и прогноз
+  --codex-clean     только класс codex-clean (с --dry-run: вердикты без удаления)
   --report          только измерение и строка в ledger; без уборки и алерта
   --check-declared  сверяет пути скриптов из crontab и ecosystem.config.js
   --restore-drill   репетиция восстановления: сверяет последний снимок predelete с живыми файлами
@@ -514,7 +521,7 @@ mode_ledger=live
 
 # «Объявленное существует» — при обычном прогоне (spec:054 п.4).
 DECLARED_MISSING=0
-if [ "$MODE" = run ] && [ "$DR_TEST_ONLY" != 1 ]; then
+if [ "$MODE" = run ] && [ "$DR_TEST_ONLY" != 1 ] && [ "$CODEX_CLEAN_ONLY" != 1 ]; then
   check_declared
   if [ "$DECLARED_MISSING" -gt 0 ]; then
     echo "DECLARED-MISSING $DECLARED_MISSING" >>"$DR_LOG"
@@ -699,6 +706,7 @@ verify_and_delete() { # class -> удаление по гейту: провер�
       codex-sessions) for p in "$DR_CODEX_HOME/sessions" "$DR_CODEX_HOME/archived_sessions"; do [[ "$path" == "$p/"* ]] && { own=1; break; }; done ;;
       codex-tmp) for p in "$DR_CODEX_HOME/.tmp" "$DR_CODEX_HOME/tmp"; do [[ "$path" == "$p/"* ]] && { own=1; break; }; done ;;
       test-irreplaceable) [ -n "${DR_TEST_IRREPLACEABLE_DIR:-}" ] && [[ "$path" == "$DR_TEST_IRREPLACEABLE_DIR/"* ]] && own=1 ;;
+      codex-clean) [[ "$path" == "$DR_CODEX_HOME"/codex-clean.*/* ]] && own=1 ;;
     esac
     if [ "$own" -eq 0 ] || [ "${#rec[@]}" -ne 6 ]; then
       printf '%s\n' "$line" >>"$tmp"
@@ -979,6 +987,76 @@ cleanup_codex() {
   fi
 }
 
+# codex-clean (TZ dcfg-x0iaq): прямые подкаталоги CODEX_HOME/codex-clean.*; простаивающие уходят через гейт целиком.
+codex_dir_in_use() { # dir -> 0, если cwd, exe или открытый fd живого процесса лежит внутри каталога
+  local d=$1 l t
+  for l in /proc/[0-9]*/cwd /proc/[0-9]*/exe /proc/[0-9]*/fd/*; do
+    t=$(readlink -- "$l" 2>/dev/null) || continue
+    if [ "$t" = "$d" ] || [[ "$t" == "$d"/* ]]; then return 0; fi
+  done
+  return 1
+}
+
+codex_clean_gate() { # dir -> CC_VERDICT; гейт restic, затем удаление проверенных файлов и пустых каталогов
+  local d=$1 list rc=0
+  list=$(mktemp) || { CC_VERDICT=failed; return; }
+  find -P "$d" -type f 2>/dev/null >"$list"
+  if [ -s "$list" ]; then
+    REFIX_PATHS=()
+    gate_process codex-clean "$list" || rc=$?
+  fi
+  rm -f -- "$list"
+  if [ -n "$(find -P "$d" -type f -print -quit 2>/dev/null)" ]; then
+    CC_VERDICT=pending
+    if [ "$rc" -eq "$RC_GATE_CLOSED" ]; then CC_VERDICT=gate-closed; fi
+  else
+    find -P "$d" -depth -type d -empty -delete 2>/dev/null
+    CC_VERDICT=deleted
+    if [ -e "$d" ]; then CC_VERDICT=pending; fi
+  fi
+}
+
+codex_clean_ledger() { # name verdict size_mb -> строка ledger с именем каталога
+  local freed=0 pct
+  if [ "$2" = deleted ]; then freed=$3; fi
+  pct=$(use_pct)
+  ledger_init
+  printf '%s\tcodex-clean:%s\t%s\t%s\t%s\t%s\t-\t-\t%s\n' \
+    "$ts" "$1" "$pct" "$pct" "$freed" "$2" "${DECLARED_MISSING:-0}" >>"$DR_LEDGER"
+}
+
+cleanup_codex_clean() {
+  local idle_min=${DR_CODEX_CLEAN_IDLE_MIN:-1440} d name size_mb verdict bad=0
+  if ! [[ "$idle_min" =~ ^[0-9]+$ ]] || [ "$idle_min" -lt 1 ]; then
+    bad=1
+    echo "codex-clean: bad-config $idle_min" | tee -a "$DR_LOG"
+  fi
+  for d in "$DR_CODEX_HOME"/codex-clean.*; do
+    [ -d "$d" ] && [ ! -L "$d" ] || continue
+    [ "$(realpath -e -- "$d" 2>/dev/null)" = "$d" ] || continue
+    name=${d##*/}
+    size_mb=$(du -sm "$d" 2>/dev/null | awk '{print $1}')
+    if [ "$bad" -eq 1 ]; then
+      verdict=bad-config
+    elif [ -n "$(find -P "$d" -mmin -"$idle_min" -print -quit 2>/dev/null)" ]; then
+      verdict=fresh
+    elif codex_dir_in_use "$d"; then
+      verdict=in-use
+    elif [ "$MODE" = dry-run ]; then
+      verdict=eligible
+    else
+      codex_clean_gate "$d"
+      verdict=$CC_VERDICT
+    fi
+    echo "codex-clean $name: $verdict" >>"$DR_LOG"
+    if [ "$MODE" = dry-run ]; then
+      echo "codex-clean $name: $verdict"
+    else
+      codex_clean_ledger "$name" "$verdict" "${size_mb:-0}"
+    fi
+  done
+}
+
 # Класс backups (владелец 10.10, spec:054 FR-027/029): в каждом правиле N новейших
 # элементов маски остаются локально, остальные идут только через гейт restic.
 cleanup_backups() {
@@ -1139,6 +1217,22 @@ s3_line() {
   if [ "$MODE" = run ]; then if [ "${pct:-0}" -ge "${S3_ALERT_PCT:-80}" ]; then maybe_alert s3 "Резервное хранилище заполнено на ${pct}% — нужен атом."; else clear_alert s3; fi; fi
 }
 
+# --codex-clean: только класс codex-clean; лок и restic-настройка как у обычного прогона, затем выход.
+if [ "$CODEX_CLEAN_ONLY" = 1 ]; then
+  if [ "$MODE" = run ]; then
+    restic_env
+    if ! gate_open; then
+      GATE_RC=$RC_GATE_CLOSED
+      echo "GATE-REASON $GATE_REASON" >>"$DR_LOG"
+    fi
+  fi
+  if [ "$GATE_RC" -eq 0 ]; then
+    cleanup_codex_clean
+  fi
+  echo "=== $(date '+%F %T') END ===" >>"$DR_LOG"
+  exit $GATE_RC
+fi
+
 # Тестовый режим (DR_TEST_ONLY=1): только тестовые классы, реальная уборка не выполняется.
 if [ "$DR_TEST_ONLY" = 1 ]; then
   REFIX_PATHS=()
@@ -1165,6 +1259,7 @@ if [ "$DR_TEST_ONLY" = 1 ]; then
   # иначе прогон тронул бы боевой /root/.codex.
   if [ -n "$CODEX_HOME_EXPLICIT" ]; then
     cleanup_codex
+    cleanup_codex_clean
   fi
   [ -n "$RUNNER_EXPLICIT" ] && runner_gate
 elif [ "$MODE" != report ]; then
@@ -1179,6 +1274,7 @@ elif [ "$MODE" != report ]; then
     cleanup_always
     cleanup_tmp
     cleanup_codex
+    cleanup_codex_clean
     cleanup_backups
     cleanup_cache
     projects_gate
