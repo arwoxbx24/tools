@@ -55,6 +55,10 @@ mkdir -p "$S" || exit 3
 entry_for() { jq -cer --arg id "$1" '.ladder[] | select(.id == $id)' "$config"; }
 resume_idle_limit=$(jq -er '.resume_idle_limit // 1' "$config") || exit 3
 [[ $resume_idle_limit =~ ^[1-9][0-9]*$ ]] || { fail "неверный resume_idle_limit: $resume_idle_limit"; exit 3; }
+resume_attempt_limit=$(jq -er '.resume_attempt_limit // 3' "$config") || exit 3
+[[ $resume_attempt_limit =~ ^[1-9][0-9]*$ ]] || { fail "неверный resume_attempt_limit: $resume_attempt_limit"; exit 3; }
+run_timeout=$(jq -er '.run_timeout // 1800' "$config") || exit 3
+[[ $run_timeout =~ ^[1-9][0-9]*$ ]] || { fail "неверный run_timeout: $run_timeout"; exit 3; }
 [[ $# == 3 || $# == 5 ]] || { fail 'usage: form project tz [--model provider/model]'; exit 3; }
 form=$1; project=$2; tz=$3; override=${5:-}
 [[ $project == /* ]] || { fail 'project must be absolute path'; exit 3; }
@@ -78,14 +82,14 @@ while IFS= read -r p; do
     [[ -n $p ]] || continue
     [[ $(realpath -m -- "$project/$p") == "$tz_abs" ]] && { fail "ТЗ в собственном Files: $p"; exit 3; }
 done < <(grep -m1 '^Files:' <<<"$prompt" | tr '\140' '\n' | sed -n '2~2p')
-cd -- "$project" || exit 3
+cd -- "$project" || { fail "нет каталога проекта: $project — route: pass an existing worktree path"; exit 3; }
 lockf="$S/worktree.$(printf '%s\n' "$PWD" | sha1sum | cut -c-16).lock"
 exec 9>>"$lockf" || exit 3
 if ! flock -n 9; then
     holder=$(head -n1 -- "$lockf" 2>/dev/null | tr -cd '0-9')
     hcmd=
     [[ $holder =~ ^[0-9]+$ ]] && hcmd=$(tr '\0' ' ' <"/proc/$holder/cmdline" 2>/dev/null)
-    fail "worktree занят другим запуском: $PWD lock=$lockf pid=${holder:-?} cmd=${hcmd:-?}"
+    fail "worktree занят другим запуском: $PWD lock=$lockf pid=${holder:-?} cmd=${hcmd:-?} — route: run this atom in its own worktree"
     exit 25
 fi
 printf '%s\n' "$$" > "$lockf"
@@ -148,7 +152,7 @@ tz_test() {
     line=$(grep -m1 '^Test: ' -- "$tz_abs") || return 0
     "$root/bin/test-once" "$project" bash -c "${line#Test: }"; r=$?
     printf 'code-channel: test rc=%s\n' "$r" >&2
-    case $r in 0) return 0;; 29) exit 29;; *) exit 31;; esac
+    case $r in 0) return 0;; 29) exit 29;; *) fail "failing test: ${line#Test: } — route: fix the cause, do not re-run"; exit 31;; esac
 }
 run_sdk() {
     local sub=code r outf
@@ -162,7 +166,7 @@ run_sdk() {
         cc_scope_check || { local s=$?; unlink -- "$outf"; exit "$s"; }
         if [[ $mode == code && ! -s $outf && $(cc_status) == "$cc_pre" ]]; then
             unlink -- "$outf"
-            fail 'worker made no change and no report'
+            fail 'worker made no change and no report — route: re-run once with FILE lines or switch form'
             exit 17
         fi
         unlink -- "$outf"
@@ -206,11 +210,11 @@ run_form() (
         session=$(sqlite3 -readonly "$db" "select id from session where title='$id_run' order by time_created desc limit 1" 2>/dev/null)
         write_journal "$pa" "$ma" "$r" "$session"
         if [[ -z $pa || $pa != "$provider" ]]; then
-            printf 'code-channel: сверка провайдера не прошла\n' >&2
+            printf 'code-channel: сверка провайдера не прошла: ожидался %s, факт %s — route: check OPENCODE_CONFIG/model\n' "$provider" "${pa:-?}" >&2
             return 23
         fi
         if [[ $ma != "${model#*/}" ]]; then
-            printf 'code-channel: сверка модели не прошла: ожидалась %s, факт %s\n' "${model#*/}" "$ma" >&2
+            printf 'code-channel: сверка модели не прошла: ожидалась %s, факт %s — route: check OPENCODE_CONFIG/model\n' "${model#*/}" "$ma" >&2
             return 23
         fi
         return 0
@@ -246,10 +250,11 @@ run_form() (
     pfile=$(mktemp "${TMPDIR:-/tmp}/code-channel-prompt-XXXXXX") || exit 3
     if [[ $mode == audit ]]; then
         printf '%s' "$prompt" >"$pfile"
-        guarded "$helper_scope" timeout 1800 opencode run --agent audit --title "$id_run" -m "$model" < "$pfile"; run=$?
+        guarded "$helper_scope" timeout "$run_timeout" opencode run --agent audit --title "$id_run" -m "$model" < "$pfile"; run=$?
     else
         oc_args=(--title "$id_run") oc_prompt=$prompt
         idle=0
+        resumes=0
         primary_model=$model
         retry_sleep=${CC_RETRY_SLEEP:-15}
         [[ $retry_sleep =~ ^[0-9]+$ ]] || retry_sleep=15
@@ -260,7 +265,7 @@ run_form() (
         id_sid_sql="select id from session where title='$id_run' order by time_created desc limit 1"
         while :; do
             printf '%s' "$oc_prompt" >"$pfile"
-            guarded "$helper_scope" timeout 1800 env OPENCODE_DISABLE_MODELS_FETCH=1 OPENCODE_DISABLE_AUTOUPDATE=1 opencode --pure run "${oc_args[@]}" --agent developer -m "$model" < "$pfile" 2>"$oc_err" | tee "$oc_out"; run=${PIPESTATUS[0]}
+            guarded "$helper_scope" timeout "$run_timeout" env OPENCODE_DISABLE_MODELS_FETCH=1 OPENCODE_DISABLE_AUTOUPDATE=1 opencode --pure run "${oc_args[@]}" --agent developer -m "$model" < "$pfile" 2>"$oc_err" | tee "$oc_out"; run=${PIPESTATUS[0]}
             cat -- "$oc_err" >&2
             [[ $run != 27 ]] || exit 27
             [[ $run == 0 ]] && break
@@ -293,6 +298,11 @@ run_form() (
             else
                 idle=0
             fi
+            if (( resumes >= resume_attempt_limit )); then
+                fail "resume cap reached: $resumes/$resume_attempt_limit — route: fix the cause from the last output, do not resume again"
+                exit "$run"
+            fi
+            resumes=$((resumes + 1))
             printf 'code-channel: сбой rc=%s, продолжаю сессию %s (простоев подряд %s/%s)\n' "$run" "$sid" "$idle" "$resume_idle_limit" >&2
             seg_before=$seg_after oc_args=(--session "$sid") oc_prompt='Продолжи задачу из этой сессии с места остановки и доведи её до конца.'
         done
@@ -319,7 +329,7 @@ if [[ $form == audit ]]; then
     before=$(form_snap)
     if [[ $active == sdk ]]; then run_sdk; rc=$?; else run_form "$active"; rc=$?; fi
     if [[ $(form_snap) != "$before" ]]; then
-        printf 'code-channel: mode=audit form=%s изменено рабочее дерево — отчёт не принят\n' "$active" >&2
+        printf 'code-channel: mode=audit form=%s изменено рабочее дерево — отчёт не принят — route: run audit in a clean worktree\n' "$active" >&2
         exit 22
     fi
     exit "$rc"
@@ -376,13 +386,13 @@ auto_success() {
     after=$(form_snap)
     if [[ $mode == audit ]]; then
         if [[ $after != "$before" ]]; then
-            printf 'code-channel: mode=audit изменено рабочее дерево — отчёт не принят\n' >&2
+            printf 'code-channel: mode=audit изменено рабочее дерево — отчёт не принят — route: run audit in a clean worktree\n' >&2
             rm -rf -- "$dir"; exit 22
         fi
         rm -rf -- "$dir"; exit 0
     fi
     if git rev-parse --is-inside-work-tree >/dev/null 2>&1 && [[ -z $(git status --porcelain 2>/dev/null) ]]; then
-        fail 'empty run (rc 0, no diff)'
+        fail 'empty run (rc 0, no diff) — route: the TZ has no effective FILE/test; rewrite the TZ'
         rm -rf -- "$dir"; exit 16
     fi
     rm -rf -- "$dir"; tz_test; exit 0
