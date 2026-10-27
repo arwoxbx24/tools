@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Self-test for bin/session-tokens: fixed JSONL fixtures, exact expected line.
+set -u
+
+here="$(cd -- "$(dirname -- "$(readlink -f "$0")")" && pwd)"
+bin="$here/session-tokens"
+fix="$here/../tests/fixtures/session-tokens"
+
+pass=0
+fail=0
+ok() { printf 'PASS %s\n' "$1"; pass=$((pass + 1)); }
+bad() { printf 'FAIL %s\n' "$1"; fail=$((fail + 1)); }
+
+want='calls=3 first_ctx=17 max_ctx=30 cache_read=6 cache_write=6 output=19'
+out=$("$bin" "$fix/good.jsonl" 2>/dev/null); rc=$?
+if [[ $rc -eq 0 && $out == "$want" ]]; then ok good; else bad good; fi
+
+"$bin" "$fix/bad.jsonl" >/dev/null 2>&1; rc=$?
+if [[ $rc -ne 0 ]]; then ok bad-json; else bad bad-json; fi
+
+"$bin" "$fix/missing.jsonl" >/dev/null 2>&1; rc=$?
+if [[ $rc -ne 0 ]]; then ok missing-file; else bad missing-file; fi
+
+if [[ $fail -eq 0 ]]; then
+    printf 'PASS\n'
+    exit 0
+fi
+exit 1

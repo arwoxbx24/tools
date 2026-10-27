@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Read-only token usage for one Claude Code session transcript (JSONL).
+set -u
+
+f=${1-}
+if [[ $# -ne 1 || -z $f ]]; then
+    echo "usage: session-tokens <transcript.jsonl>" >&2
+    exit 2
+fi
+if [[ ! -f $f || ! -r $f ]]; then
+    echo "session-tokens: cannot read file: $f" >&2
+    exit 1
+fi
+
+out=$(jq -s -r '
+  [ .[] | select(.type == "assistant" and .message.usage) | {id: .message.id, u: .message.usage} ]
+  | reduce .[] as $x ({seen: {}, calls: []};
+      if .seen[$x.id] then . else .seen[$x.id] = true | .calls += [$x] end)
+  | .calls
+  | if length == 0 then error("no assistant calls with usage") else
+      map({ctx: ((.u.input_tokens // 0) + (.u.cache_read_input_tokens // 0) + (.u.cache_creation_input_tokens // 0)),
+           cr: (.u.cache_read_input_tokens // 0),
+           cw: (.u.cache_creation_input_tokens // 0),
+           o: (.u.output_tokens // 0)})
+      | "calls=\(length) first_ctx=\(.[0].ctx) max_ctx=\(map(.ctx) | max) cache_read=\(map(.cr) | add) cache_write=\(map(.cw) | add) output=\(map(.o) | add)"
+    end
+' "$f" 2>/dev/null) || { echo "session-tokens: invalid JSON or no assistant calls: $f" >&2; exit 1; }
+
+[[ -n $out ]] || { echo "session-tokens: no assistant calls: $f" >&2; exit 1; }
+printf '%s\n' "$out"
