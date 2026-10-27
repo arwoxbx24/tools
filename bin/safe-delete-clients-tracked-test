@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+set -u
+export SAFE_DELETE_GH=false
+bin=$(cd -- "$(dirname -- "$0")" && pwd)
+d=$(mktemp -d /tmp/safe-delete-clients-tracked.XXXXXX)
+trap 'rm -rf "$d"' EXIT
+export SAFE_DELETE_ROOTS="$d"
+bk="$d/bk"
+ok=0; fail=0
+pass(){ echo "PASS $1"; ok=$((ok+1)); }
+bad(){ echo "FAIL $1: $2"; fail=$((fail+1)); }
+git init -q --bare "$d/origin.git"
+git clone -q "$d/origin.git" "$d/w" 2>/dev/null
+git -C "$d/w" config user.email t@t
+git -C "$d/w" config user.name t
+git -C "$d/w" checkout -q -b main
+git -C "$d/w" commit -q --allow-empty -m main
+git -C "$d/w" push -q origin main
+git -C "$d/w" checkout -q -b feat/c
+mkdir -p "$d/w/backups/clients/x.git"
+printf 'ref\n' > "$d/w/backups/clients/x.git/HEAD"
+git -C "$d/w" add backups/clients/x.git/HEAD
+git -C "$d/w" commit -q -m clients
+git -C "$d/w" push -q origin feat/c
+git -C "$d/w" checkout -q main
+for n in ok mod untr file local; do git -C "$d/w" worktree add -q -b "wt-$n" "$d/wt-$n" feat/c; done
+git -C "$d/wt-local" commit -q --allow-empty -m local
+
+"$bin/safe-delete" --bk "$bk" file "$d/wt-file/backups/clients/x.git/HEAD" >/dev/null 2>&1; r6=$?
+if [[ $r6 == 2 && -f $d/wt-file/backups/clients/x.git/HEAD ]]; then pass 6; else bad 6 "file rc=$r6"; fi
+
+"$bin/safe-delete" --bk "$bk" worktree "$d/wt-ok" >/dev/null 2>&1; r1=$?
+if [[ $r1 == 0 && ! -d $d/wt-ok ]]; then pass 1; else bad 1 "rc=$r1"; fi
+
+printf 'changed\n' >> "$d/wt-mod/backups/clients/x.git/HEAD"
+err2=$("$bin/safe-delete" --bk "$bk" worktree "$d/wt-mod" 2>&1); r2=$?
+if [[ $r2 == 2 && -f $d/wt-mod/backups/clients/x.git/HEAD ]]; then pass 2; else bad 2 "rc=$r2 $err2"; fi
+
+printf 'extra\n' > "$d/wt-untr/backups/clients/x.git/extra"
+err3=$("$bin/safe-delete" --bk "$bk" worktree "$d/wt-untr" 2>&1); r3=$?
+if [[ $r3 == 2 && -f $d/wt-untr/backups/clients/x.git/extra ]]; then pass 3; else bad 3 "rc=$r3 $err3"; fi
+
+err4=$("$bin/safe-delete" --bk "$bk" worktree "$d/wt-local" 2>&1); r4=$?
+if [[ $r4 == 2 && -d $d/wt-local ]]; then pass 4; else bad 4 "rc=$r4 $err4"; fi
+
+mkdir -p "$d/proj/clients/c1"
+git -C "$d/proj/clients/c1" init -q
+printf 'f\n' > "$d/proj/clients/c1/file"
+git -C "$d/proj/clients/c1" add file
+git -C "$d/proj/clients/c1" -c user.email=t@t -c user.name=t commit -q -m f
+"$bin/safe-delete" --bk "$bk" file "$d/proj/clients/c1/file" >/dev/null 2>&1; r5a=$?
+err5=$("$bin/safe-delete" --bk "$bk" worktree "$d/proj/clients/c1" 2>&1); r5b=$?
+if [[ $r5a == 2 && $r5b == 2 && -f $d/proj/clients/c1/file && -d $d/proj/clients/c1 ]]; then pass 5; else bad 5 "file=$r5a worktree=$r5b $err5"; fi
+
+echo "итог: PASS $ok, FAIL $fail"
+[[ $fail == 0 ]]

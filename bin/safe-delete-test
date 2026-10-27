@@ -8,7 +8,7 @@ outside=/tmp/safe-delete-outside-$$
 trap 'rm -rf "$d" "$outside"' EXIT
 mkdir -p "$d"
 git init -q --bare "$d/origin.git"
-git clone -q "$d/origin.git" "$d/w"
+git clone -q "$d/origin.git" "$d/w" 2>/dev/null
 git -C "$d/w" config user.email t@t
 git -C "$d/w" config user.name t
 git -C "$d/w" checkout -q main 2>/dev/null || git -C "$d/w" checkout -q -b main
@@ -19,6 +19,52 @@ git -C "$d/w" commit -q --allow-empty -m feat
 git -C "$d/w" push -q origin feat/x
 bk="$d/bk"
 ok=0
+
+t122() {
+  # T122: a dir whose entries total more path bytes than ARG_MAX is resolved in batches
+  argmax122=$(getconf ARG_MAX)
+  prefix122=$(printf 'x%.0s' {1..240})
+  huge122="$d/huge-$$"
+  deep122=$huge122
+  mkdir -p "$deep122"
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do deep122="$deep122/$prefix122"; mkdir -- "$deep122"; done
+  per122=$(( ${#deep122} + 1 + 240 + 6 + 1 ))
+  nf122=$(( argmax122 / per122 * 45 / 100 ))
+  need122=$(( argmax122 * 115 / 100 - nf122 * per122 ))
+  nd122=$(( need122 / (${#deep122} + 1 + 240 + 6) + 1 ))
+  seq -f "$deep122/${prefix122}%06g" "$nf122" | xargs -d '\n' -n 200 -r touch --
+  seq -f "$deep122/${prefix122}d%05g" "$nd122" | xargs -d '\n' -n 200 -r mkdir -p --
+  out122=$("$bin/safe-delete" --bk "$d/bk122" dir "$huge122" 2>&1); r122=$?
+  gone122=0; [[ ! -e "$huge122" ]] && gone122=1
+  if [[ $r122 == 0 && $gone122 == 1 && $out122 != *'Argument list too long'* ]]; then echo 'PASS T122 huge_dir_argmax' > "$d/res122"; else echo "FAIL T122: rc=$r122 gone=$gone122 out=${out122:0:200}" > "$d/res122"; fi
+}
+
+t123() {
+  # T123: a linked worktree whose untracked file list exceeds ARG_MAX is deleted and backed up
+  git init -q --bare "$d/o123.git"
+  git clone -q "$d/o123.git" "$d/w123" 2>/dev/null
+  git -C "$d/w123" config user.email t@t
+  git -C "$d/w123" config user.name t
+  git -C "$d/w123" checkout -q -b main
+  git -C "$d/w123" commit -q --allow-empty -m main
+  git -C "$d/w123" push -q origin main
+  argmax123=$(getconf ARG_MAX)
+  prefix123=$(printf 'h%.0s' {1..220})
+  wt123="$d/wt-argmax-$$"
+  git -C "$d/w123" worktree add -q -b "wt-argmax-$$" "$wt123" main
+  deep123=$wt123
+  for _ in 1 2 3 4 5 6; do deep123="$deep123/$prefix123"; mkdir -- "$deep123"; done
+  per123=$(( ${#deep123} + 1 + ${#prefix123} + 6 + 1 ))
+  nf123=$(( argmax123 / per123 * 160 / 100 ))
+  (( nf123 < 1500 )) && nf123=1500
+  seq -f "$deep123/${prefix123}%06g" "$nf123" | xargs -d '\n' -n 200 -r touch --
+  out123=$("$bin/safe-delete" --bk "$d/bk123" worktree "$wt123" 2>&1); r123=$?
+  gone123=0; [[ ! -e "$wt123" ]] && gone123=1
+  if [[ $r123 == 0 && $gone123 == 1 && $out123 == *'восстановить: safe-delete restore'* && $out123 != *'Argument list too long'* ]]; then echo 'PASS T123 huge_worktree_argmax' > "$d/res123"; else echo "FAIL T123: rc=$r123 gone=$gone123 nf=$nf123 out=${out123:0:200}" > "$d/res123"; fi
+}
+
+t122 & p122=$!
+t123 & p123=$!
 
 "$bin/safe-delete" --bk "$bk" branch "$d/w" feat/x; rc=$?
 refs() { git -C "$d/origin.git" for-each-ref --format='%(refname)'; }
@@ -343,7 +389,7 @@ if [[ $r66 == 2 && -n $kept66 ]]; then echo 'PASS T66 no_tag'; ok=$((ok+1)); els
 rm -rf "$d/stand" "$d/proj" "$d/ext" "$d/outer"
 mkdir -p "$d/stand"
 git init -q --bare "$d/stand/origin.git"
-git clone -q "$d/stand/origin.git" "$d/stand/repo"
+git clone -q "$d/stand/origin.git" "$d/stand/repo" 2>/dev/null
 git -C "$d/stand/repo" config user.email t@t
 git -C "$d/stand/repo" config user.name t
 git -C "$d/stand/repo" commit -q --allow-empty -m init
@@ -365,7 +411,7 @@ if [[ $r49 == 2 && $err == *'запрещённый сегмент'* && -d $d/ex
 git init -q "$d/outer"
 mkdir -p "$d/outer/stand"
 git init -q --bare "$d/outer/stand/origin.git"
-git clone -q "$d/outer/stand/origin.git" "$d/outer/stand/repo"
+git clone -q "$d/outer/stand/origin.git" "$d/outer/stand/repo" 2>/dev/null
 git -C "$d/outer/stand/repo" config user.email t@t
 git -C "$d/outer/stand/repo" config user.name t
 git -C "$d/outer/stand/repo" commit -q --allow-empty -m init
@@ -376,7 +422,7 @@ if [[ $r50 == 2 && $err == *'запрещённый сегмент'* && -d $d/ou
 rm -rf "$d/stand2"
 mkdir -p "$d/stand2"
 git init -q --bare "$d/stand2/origin.git"
-git clone -q "$d/stand2/origin.git" "$d/stand2/repo"
+git clone -q "$d/stand2/origin.git" "$d/stand2/repo" 2>/dev/null
 git -C "$d/stand2/repo" config user.email t@t
 git -C "$d/stand2/repo" config user.name t
 git -C "$d/stand2/repo" commit -q --allow-empty -m init
@@ -741,7 +787,7 @@ if [[ $r90 == 0 && -z $gone90 && $nb90 == 1 && $bv90 == 0 ]]; then echo 'PASS T9
 # T91: master-only default branch is detected as the base for the bundle
 mkdir -p "$d/m91"
 git init -q --bare "$d/m91/origin.git"
-git clone -q "$d/m91/origin.git" "$d/m91/w"
+git clone -q "$d/m91/origin.git" "$d/m91/w" 2>/dev/null
 git -C "$d/m91/w" config user.email t@t
 git -C "$d/m91/w" config user.name t
 git -C "$d/m91/w" checkout -q -b master
@@ -912,37 +958,12 @@ printf 'gitdir: %s\n' "$d/nested-out-git-$$" > "$d/sb/nested-out-$$/sub/.git"
 out121=$(SAFE_DELETE_SANDBOX="$d/sb" "$bin/safe-delete" --bk "$bk" dir "$d/sb/nested-out-$$" 2>&1); r121=$?
 if [[ $r121 == 2 && -d "$d/sb/nested-out-$$" && -f "$d/sb/nested-out-$$/f" ]]; then echo 'PASS T121 nested_gitfile_outside_refused'; ok=$((ok+1)); else echo "FAIL T121: rc=$r121 out=$out121"; fi
 
-# T122: a dir whose entries total more path bytes than ARG_MAX is resolved in batches
-argmax122=$(getconf ARG_MAX)
-prefix122=$(printf 'x%.0s' {1..240})
-huge122="$d/huge-$$"
-deep122=$huge122
-mkdir -p "$deep122"
-for _ in 1 2 3 4 5 6 7 8 9 10 11 12; do deep122="$deep122/$prefix122"; mkdir -- "$deep122"; done
-per122=$(( ${#deep122} + 1 + 240 + 6 + 1 ))
-nf122=$(( argmax122 / per122 * 45 / 100 ))
-need122=$(( argmax122 * 115 / 100 - nf122 * per122 ))
-nd122=$(( need122 / (${#deep122} + 1 + 240 + 6) + 1 ))
-seq -f "$deep122/${prefix122}%06g" "$nf122" | xargs -d '\n' -n 200 -r touch --
-seq -f "$deep122/${prefix122}d%05g" "$nd122" | xargs -d '\n' -n 200 -r mkdir -p --
-out122=$("$bin/safe-delete" --bk "$bk" dir "$huge122" 2>&1); r122=$?
-gone122=0; [[ ! -e "$huge122" ]] && gone122=1
-if [[ $r122 == 0 && $gone122 == 1 && $out122 != *'Argument list too long'* ]]; then echo 'PASS T122 huge_dir_argmax'; ok=$((ok+1)); else echo "FAIL T122: rc=$r122 gone=$gone122 out=${out122:0:200}"; fi
-
-# T123: a linked worktree whose untracked file list exceeds ARG_MAX is deleted and backed up
-argmax123=$(getconf ARG_MAX)
-prefix123=$(printf 'h%.0s' {1..220})
-wt123="$d/wt-argmax-$$"
-git -C "$d/w" worktree add -q -b "wt-argmax-$$" "$wt123" main
-deep123=$wt123
-for _ in 1 2 3 4 5 6; do deep123="$deep123/$prefix123"; mkdir -- "$deep123"; done
-per123=$(( ${#deep123} + 1 + ${#prefix123} + 6 + 1 ))
-nf123=$(( argmax123 / per123 * 160 / 100 ))
-(( nf123 < 1500 )) && nf123=1500
-seq -f "$deep123/${prefix123}%06g" "$nf123" | xargs -d '\n' -n 200 -r touch --
-out123=$("$bin/safe-delete" --bk "$bk" worktree "$wt123" 2>&1); r123=$?
-gone123=0; [[ ! -e "$wt123" ]] && gone123=1
-if [[ $r123 == 0 && $gone123 == 1 && $out123 == *'восстановить: safe-delete restore'* && $out123 != *'Argument list too long'* ]]; then echo 'PASS T123 huge_worktree_argmax'; ok=$((ok+1)); else echo "FAIL T123: rc=$r123 gone=$gone123 nf=$nf123 out=${out123:0:200}"; fi
+# T122/T123 run in the background (started at the top) and report via result files
+wait "$p122"; wait "$p123"
+for f in "$d/res122" "$d/res123"; do
+  cat "$f"
+  [[ $(cat "$f") == PASS* ]] && ok=$((ok+1))
+done
 
 # T124: a *token* code file with no secret is deleted by dir
 mkdir -p "$d/t124-$$/lib"

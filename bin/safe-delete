@@ -14,12 +14,16 @@ force_copy=
 ok_repowise=
 declare -A nolink=() gblob=() grepo=() gmode=()
 allow_client_wt=
+allow_client_tracked=
 client_pins=()
+tmps=()
+trap 'rm -f -- "${tmps[@]}"' EXIT
 log_n=
 log(){ { flock -x 9 || return 1; printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date +%Y-%m-%dT%H:%M:%S)" "$@" >>"$led" || return 1; log_n=$(wc -l <"$led"); log_n=${log_n//[[:space:]]/}; } 9>>"$led.lock"; }
 log_batch(){ { flock -x 9 || return 1; local n; : >>"$led" || return 1; n=$(wc -l <"$led") || return 1; n=${n//[[:space:]]/}; printf '%s\n' "$@" >>"$led" || return 1; log_n=$((n+1)); } 9>>"$led.lock"; }
 fail(){ echo "safe-delete: $*" >&2; exit 1; }
 refuse(){ echo "safe-delete: $*" >&2; exit 2; }
+mkt(){ tf=$(mktemp "${TMPDIR:-/tmp}/safe-delete.XXXXXX") || return 1; tmps+=("$tf"); }
 repo_of(){ local u=$1; u=${u%.git}; [[ $u =~ ([^/:]+)/([^/]+)$ ]] && echo "${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"; }
 proc_state(){ local s; s=$(<"$1") || return 1; s=${s##*) }; s=${s%% *}; printf %s "$s"; }
 self_contained(){
@@ -59,20 +63,24 @@ git_batch(){
     grp[$root]+="$rel"$'\n'
   done
   for root in "${!grp[@]}"; do
-    mapfile -t rl < <(printf %s "${grp[$root]}")
+    mkt || return 1; f1=$tf; printf %s "${grp[$root]}" >"$f1"; mapfile -t rl <"$f1"
     lm=(); lt=(); lf=(); hd=()
+    mkt || return 1; f2=$tf; printf '%s\0' "${rl[@]}" | xargs -0 -r -n 200 git -C "$root" ls-files -s -v -z -- >"$f2"
     while IFS= read -r -d '' rec; do
       rel=${rec#*$'\t'}; rest=${rec:2}
       lm[$rel]=${rest%% *}; lt[$rel]=${rec:0:1}
-    done < <(printf '%s\0' "${rl[@]}" | xargs -0 -r -n 200 git -C "$root" ls-files -s -v -z --)
+    done <"$f2"
+    mkt || return 1; f3=$tf; printf '%s\0' "${rl[@]}" | git -C "$root" check-attr -z filter --stdin >"$f3"
     while IFS= read -r -d '' rel && IFS= read -r -d '' _ && IFS= read -r -d '' val; do
       [[ $val == lfs ]] && lf[$rel]=1
-    done < <(printf '%s\0' "${rl[@]}" | git -C "$root" check-attr -z filter --stdin)
-    mapfile -t hs < <(printf '%s\n' "${rl[@]}" | git -C "$root" hash-object --no-filters --stdin-paths)
+    done <"$f3"
+    mkt || return 1; f4=$tf; printf '%s\n' "${rl[@]}" | git -C "$root" hash-object --no-filters --stdin-paths >"$f4"
+    mapfile -t hs <"$f4"
     ((${#hs[@]} == ${#rl[@]})) || return 1
+    mkt || return 1; f5=$tf; printf '%s\0' "${rl[@]}" | xargs -0 -r -n 200 git -C "$root" ls-tree -z HEAD -- >"$f5"
     while IFS= read -r -d '' rec; do
       rel=${rec#*$'\t'}; read -r _ _ hh <<< "${rec%%$'\t'*}"; hd[$rel]=$hh
-    done < <(printf '%s\0' "${rl[@]}" | xargs -0 -r -n 200 git -C "$root" ls-tree -z HEAD --)
+    done <"$f5"
     for i in "${!rl[@]}"; do
       rel=${rl[i]}; hh=${hd[$rel]:-}
       [[ ${lm[$rel]:-} == 100644 || ${lm[$rel]:-} == 100755 ]] && [[ ${lt[$rel]:-} == H && -z ${lf[$rel]:-} && -n $hh && ${hs[i]} == "$hh" ]] || continue
@@ -83,6 +91,19 @@ git_batch(){
 check_path(){
   if [[ ${2:-} == link ]]; then p=$1; else p=$(realpath -e "$1") || refuse "нет пути: $1"; fi
   check_resolved "$p" "${2:-}"
+}
+client_tracked_ok(){
+  local p=$1 top rel gd gc
+  top=$(git -C "$(dirname -- "$p")" rev-parse --show-toplevel 2>/dev/null) || return 1
+  [[ $top != */clients/* ]] || return 1
+  rel=${p#"$top"/}; [[ -n $rel && $rel != "$p" ]] || return 1
+  gd=$(cd "$top" && realpath -e -- "$(git rev-parse --git-dir)") || return 1
+  gc=$(cd "$top" && realpath -e -- "$(git rev-parse --git-common-dir)") || return 1
+  [[ $gd != "$gc" ]] || return 1
+  git -C "$top" diff --quiet HEAD -- "$rel" || return 1
+  [[ -z $(git -C "$top" ls-files --others -- "$rel") && -z $(git -C "$top" ls-files --others --exclude-standard -- "$rel") ]] || return 1
+  [[ -n $(git -C "$top" ls-tree -r --name-only HEAD -- "$rel") ]] || return 1
+  [[ -n $(git -C "$top" branch -r --contains HEAD 2>/dev/null) ]] || return 1
 }
 check_resolved(){
   p=$1
@@ -109,7 +130,7 @@ check_resolved(){
     local cdir lw
     cdir=$p; [[ -d $p ]] || cdir=${p%/*}
     lw=$(cd "$cdir" 2>/dev/null && gd=$(realpath -e -- "$(git rev-parse --git-dir)") && gc=$(realpath -e -- "$(git rev-parse --git-common-dir)") && [[ $gd != "$gc" ]] && echo 1)
-    [[ -n $allow_client_wt && ${2:-} != link && $lw == 1 ]] || refuse "запрещённый сегмент: $p"
+    [[ -n $allow_client_wt && ${2:-} != link && $lw == 1 ]] || { [[ -n $allow_client_tracked && ${2:-} != link ]] && client_tracked_ok "$p"; } || refuse "запрещённый сегмент: $p"
     client_pins+=("$p")
   fi
   if [[ /$p/ == */.repowise*/* ]]; then case "
@@ -134,7 +155,8 @@ resolve_all(){
   rs=()
   (($#)) || return 0
   local r
-  while IFS= read -r -d '' r; do rs+=("$r"); done < <(printf '%s\0' "$@" | xargs -0 -r realpath -e -z --)
+  mkt || exit 1; printf '%s\0' "$@" | xargs -0 -r realpath -e -z -- >"$tf"
+  while IFS= read -r -d '' r; do rs+=("$r"); done <"$tf"
   (( ${#rs[@]} == $# )) || refuse "нет пути"
 }
 batch_delete(){
@@ -164,13 +186,13 @@ batch_delete(){
       copy[$p]=$c; ss+=("$p"); ds+=("$c")
     done
     if ((${#fresh[@]})); then
-      mapfile -t devs < <(printf '%s\0' "$cdir" "${fresh[@]}" | xargs -0 -r -n 200 stat -c %d --)
+      mkt || return 1; printf '%s\0' "$cdir" "${fresh[@]}" | xargs -0 -r -n 200 stat -c %d -- >"$tf"; mapfile -t devs <"$tf"
       same=1; for d in "${devs[@]}"; do [[ $d == "${devs[0]}" ]] || same=; done
       if [[ $same ]] && printf '%s\0' "${fresh[@]}" | xargs -0 -r -n 200 cp -p -l --parents -t "$cdir" --; then :; else printf '%s\0' "${fresh[@]}" | xargs -0 -r -n 200 cp -p --parents -t "$cdir" -- || return 1; fi
     fi
     printf '%s\0' "${ds[@]}" | xargs -0 -r -n 200 touch -- || return 1
-    mapfile -d '' hs < <(printf '%s\0' "${ss[@]}" | xargs -0 -r -n 200 sha256sum -z --)
-    mapfile -d '' hd < <(printf '%s\0' "${ds[@]}" | xargs -0 -r -n 200 sha256sum -z --)
+    mkt || return 1; printf '%s\0' "${ss[@]}" | xargs -0 -r -n 200 sha256sum -z -- >"$tf"; mapfile -d '' hs <"$tf"
+    mkt || return 1; printf '%s\0' "${ds[@]}" | xargs -0 -r -n 200 sha256sum -z -- >"$tf"; mapfile -d '' hd <"$tf"
     for k in "${!ss[@]}"; do
       a=${hs[k]:-}; b=${hd[k]:-}
       [[ -n $b && ${a:0:64} == "${b:0:64}" ]] || fail "копия не совпала: ${ss[k]}"
@@ -246,6 +268,7 @@ case "$cmd" in
     for raw in "$@"; do
       p=${rs[i]}; i=$((i+1))
       check_resolved "$p"
+      [[ $p == */clients/* && -n $(git -C "${p%/*}" ls-files -- "$p" 2>/dev/null) ]] && refuse "клиентский файл под git: $p"
       [[ -f $p ]] || refuse "не обычный файл: $p"
       [[ ${seen[$p]:-} ]] && continue
       seen[$p]=1; paths+=("$p"); [[ -L $raw ]] && nolink[$p]=1
@@ -257,7 +280,7 @@ case "$cmd" in
     ;;
   cache)
     [[ $# -ge 1 ]] || refuse 'usage'
-    mapfile -d '' rs < <(realpath -e -z -- "$@")
+    mkt || exit 1; realpath -e -z -- "$@" >"$tf"; mapfile -d '' rs <"$tf"
     (( ${#rs[@]} == $# )) || { for a in "$@"; do [[ -e $a ]] || refuse "нет пути: $a"; done; refuse "нет пути"; }
     declare -A seen=(); cps=()
     for p in "${rs[@]}"; do
@@ -295,13 +318,13 @@ case "$cmd" in
       done
     elif [[ $dir == "$sandbox"/* && ${dir#"$sandbox"/} != */* && -d $dir/.git ]] && self_contained "$dir"; then allow_git_under=$dir; force_copy=1
     elif [[ ! -d $dir/.git ]] && self_contained "$dir"; then allow_git_under=$dir; else allow_git_under=; fi
-    mapfile -d '' entries < <(find "$dir" -depth -print0); nl=(); for entry in "${entries[@]}"; do [[ -L $entry ]] || nl+=("$entry"); done
+    mkt || exit 1; find "$dir" -depth -print0 >"$tf"; mapfile -d '' entries <"$tf"; nl=(); for entry in "${entries[@]}"; do [[ -L $entry ]] || nl+=("$entry"); done
     resolve_all "${nl[@]}"; files=()
     for f in "${rs[@]}"; do check_resolved "$f"; [[ -f $f ]] && files+=("$f"); done
     git_batch "${files[@]}" || exit 1
     client_pinned
     batch_delete "${files[@]}" || exit 1
-    mapfile -d '' links < <(find "$dir" -type l -print0)
+    mkt || exit 1; find "$dir" -type l -print0 >"$tf"; mapfile -d '' links <"$tf"
     for link in "${links[@]}"; do
       [[ $link == "$dir" || $link == "$dir"/* ]] || refuse "ссылка вне dir: $link"
       t=$(readlink -- "$link") || exit 1
@@ -313,16 +336,20 @@ case "$cmd" in
     exit 0
     ;;
   worktree)
-    [[ $# -eq 1 ]] || refuse 'usage'; check_path "$1"; wt=$p; [[ -d $wt ]] || refuse "не каталог: $wt"
+    [[ $# -eq 1 ]] || refuse 'usage'; allow_client_tracked=1; check_path "$1"; wt=$p; [[ -d $wt ]] || refuse "не каталог: $wt"
     common=$(git -C "$wt" rev-parse --git-common-dir 2>/dev/null) || refuse "не worktree: $wt"; [[ $common != .git ]] || refuse "не linked worktree: $wt"
     common=$(realpath -e "$common") || exit 1
     for cwd in /proc/[0-9]*/cwd; do pid=${cwd#/proc/}; pid=${pid%/cwd}; if ! used=$(readlink -- "$cwd"); then [[ ! -d /proc/$pid || $(proc_state "/proc/$pid/stat" 2>/dev/null) == Z ]] && continue; refuse "нечитаемый cwd процесса: $pid"; fi; [[ $used == "$wt" || $used == "$wt"/* ]] && refuse "процесс использует worktree: $pid"; done
-    mapfile -d '' files < <({ git -C "$wt" ls-files -z --others; git -C "$wt" ls-files -z --modified; git -C "$wt" diff -z --name-only --cached HEAD; } | while IFS= read -r -d '' rel; do f=$wt/$rel; [[ -f $f && ! -L $f ]] && printf '%s\0' "$f"; done | sort -zu)
+    mkt || exit 1; { git -C "$wt" ls-files -z --others; git -C "$wt" ls-files -z --modified; git -C "$wt" diff -z --name-only --cached HEAD; } >"$tf"
+    mapfile -d '' rels <"$tf"; mkt || exit 1; ff=$tf
+    for rel in "${rels[@]}"; do f=$wt/$rel; [[ -f $f && ! -L $f ]] && printf '%s\0' "$f"; done | sort -zu >"$ff"
+    mapfile -d '' files <"$ff"
     ok_repowise=; for f in "${files[@]}"; do [[ $f == "$wt"/.repowise/* ]] && git -C "$wt" check-ignore -q -- "${f#"$wt"/}" 2>/dev/null && ok_repowise+="
 $f"; done
     resolve_all "${files[@]}"; files=("${rs[@]}")
     git_batch "${files[@]}" || exit 1
     copies=(); for f in "${files[@]}"; do [[ -n ${gblob[$f]:-} ]] && continue; check_resolved "$f"; [[ -f $f ]] || refuse "не обычный файл: $f"; copies+=("$f"); done
+    if git -C "$wt" ls-tree -r --name-only HEAD | grep -qE '(^|/)clients/' && [[ -z $(git -C "$wt" branch -r --contains HEAD 2>/dev/null) ]]; then refuse "HEAD клиентского worktree не на remote: $wt"; fi
     sha=$(git -C "$wt" rev-parse HEAD) || exit 1; ref="refs/safe-delete/wt-$(date +%Y%m%d%H%M%S%N)"
     git --git-dir="$common" update-ref "$ref" "$sha" || exit 1
     batch_delete "${copies[@]}" || exit 1
@@ -423,7 +450,7 @@ $f"; done
       avail=$(df --output=avail -B1 /tmp | tail -1)
       (( avail >= 2*$(stat -c %s -- "$copy") )) || refuse "мало места в /tmp для проверки: $copy"
       tmpd=$(mktemp -d /tmp/safe-delete-dup.XXXXXX) || exit 1
-      trap 'rm -rf "$tmpd"' EXIT
+      trap 'rm -rf "$tmpd"; rm -f -- "${tmps[@]}"' EXIT
       tar -xf "$copy" -C "$tmpd" --no-same-owner >/dev/null 2>&1
       gds=()
       while IFS= read -r o; do [[ -f ${o%/objects}/HEAD ]] && gds+=("${o%/objects}"); done < <(find "$tmpd" -maxdepth 4 -type d -name objects)
