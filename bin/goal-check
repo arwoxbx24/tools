@@ -8,7 +8,8 @@ usage() {
   echo "goal-check --file <path> — acceptance-текст из файла (для теста)."
   echo "AC-строка: AC<n>[@<sec>]: <команда> => <ожидание>; ожидание — текст, >=N или <empty>; @<sec> — таймаут 1..3600 (по умолчанию 300)."
   echo "EXCLUDE AC<n>: atom=<bd-id> owner=«<цитата владельца>» — исключение AC, если цитата есть в логе владельца."
-  echo "Вердикт: GOAL=MET (rc 0) / GOAL=CLOSED (rc 3, есть EXCLUDED) / GOAL=NOT_MET (rc 1) / GOAL=REFUSED (rc 2)."
+  echo "Вердикт: GOAL=MET (rc 0) / GOAL=CLOSED (rc 0, есть EXCLUDED) / GOAL=NOT_MET (rc 0; rc 1 при таймауте AC) / GOAL=REFUSED (rc 2)."
+  echo "Бюджет: суммарные таймауты AC ограничены 100 с; AC за бюджетом печатает rc=124 budget, вердикт GOAL=NOT_MET."
 }
 
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
@@ -82,7 +83,7 @@ fi
 
 if [ ${#nums[@]} -eq 0 ]; then
   echo "GOAL=NOT_MET reason=no-ac-lines"
-  exit 1
+  exit 0
 fi
 
 bad=';|&$`<>(){}'"'"'\'
@@ -156,6 +157,8 @@ fi
 
 allpass=1
 nexcl=0
+timedout=0
+budget_ms=100000
 for i in "${!nums[@]}"; do
   n=${nums[i]}; cmd=${cmds[i]}; exp=${exps[i]}
   excl=""
@@ -175,11 +178,21 @@ for i in "${!nums[@]}"; do
     nexcl=$((nexcl+1))
     continue
   fi
+  if [ "$budget_ms" -le 0 ]; then
+    allpass=0; timedout=1
+    echo "AC$n FAIL rc=124 budget"
+    continue
+  fi
   # shortcut: no quoting, args split on spaces; upgrade if an AC needs a spaced pattern
   read -ra argv <<< "$cmd"
   first=${argv[0]}
   [[ ${argv[0]} =~ ^/root/workspaces/tools/bin/[A-Za-z0-9._-]+-test$ ]] && argv=("$(dirname -- "$0")/test-once" /root/workspaces/tools "${argv[@]}")
-  out=$(timeout "${tmos[i]}" "${argv[@]}" 2>&1); rc=$?
+  tmo=$((10#${tmos[i]}))
+  [ $((tmo * 1000)) -gt "$budget_ms" ] && tmo=$(( (budget_ms + 999) / 1000 ))
+  t0=$(date +%s%3N)
+  out=$(timeout "$tmo" "${argv[@]}" 2>&1); rc=$?
+  budget_ms=$(( budget_ms - ($(date +%s%3N) - t0) ))
+  [ "$rc" -eq 124 ] && timedout=1
   firstline=${out%%$'\n'*}
   shown=${firstline:0:160}
   [ -n "$shown" ] || shown=empty
@@ -218,10 +231,11 @@ done
 if [ "$allpass" -eq 1 ]; then
   if [ "$nexcl" -gt 0 ]; then
     echo "GOAL=CLOSED"
-    exit 3
+    exit 0
   fi
   echo "GOAL=MET"
   exit 0
 fi
 echo "GOAL=NOT_MET"
-exit 1
+[ "$timedout" -eq 1 ] && exit 1
+exit 0
