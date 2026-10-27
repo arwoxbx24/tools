@@ -159,11 +159,38 @@ ga_billing_refused(){ # <slug> <check-run id>... — 0 if GitHub did not start a
 	return 1
 }
 
+ga_ci_watch(){ # <num> <slug> [<head>] — no CI -> 0; CI not started after retries -> 40; other rc kept
+	local num=$1 slug=$2 head=${3:-} out rc delay s wf
+	local -a delays=(10 20 40)
+	out=$(timeout "${GA_CI_CAP:-900}" gh pr checks "$num" -R "$slug" --watch 2>&1); rc=$?
+	[[ $rc == 0 ]] && return 0
+	[[ $out == *"no checks reported"* ]] || return "$rc"
+	if [[ -n ${GA_CI_BACKOFF:-} ]]; then
+		read -r -a delays <<< "$GA_CI_BACKOFF"
+		if [[ ${#delays[@]} -eq 1 ]]; then
+			s=${delays[0]}
+			delays=( $((10*s)) $((20*s)) $((40*s)) )
+		fi
+	fi
+	head=${head:-$(git rev-parse HEAD 2>/dev/null)}
+	if [[ -n $head ]] && wf=$(git ls-tree -r --name-only "$head" .github/workflows 2>/dev/null); then
+		[[ -n $wf ]] || { printf 'no CI: merge on the test output in the PR body\n'; return 0; }
+	fi
+	for delay in "${delays[@]}"; do
+		sleep "$delay"
+		out=$(timeout "${GA_CI_CAP:-900}" gh pr checks "$num" -R "$slug" --watch 2>&1); rc=$?
+		[[ $rc == 0 ]] && return 0
+		[[ $out == *"no checks reported"* ]] || return "$rc"
+	done
+	printf 'CI not started after 3 tries: run gh pr checks %s --watch later; do not merge\n' "$num" >&2
+	return 40
+}
+
 ga_ci_wait(){ # pr <slug> <num> [<sha> [<since>]] | sha <slug> <sha> <branch> — 0 ok, 30 absent, 40 fail/timeout, 70 billing/quota
 	local kind=$1 slug=$2 b ok bad
 	case $kind in
 		pr)
-			local num=$3 sha=${4:-} since=${5:-} buckets deadline now runs ids
+			local num=$3 sha=${4:-} since=${5:-} buckets deadline now runs ids rc
 			deadline=$(( $(date +%s) + ${GA_CI_APPEAR:-60} ))
 			while :; do
 				if [[ -n $sha ]]; then
@@ -182,8 +209,9 @@ ga_ci_wait(){ # pr <slug> <num> [<sha> [<since>]] | sha <slug> <sha> <branch> �
 				(( now >= deadline )) && return 30
 				sleep "${GA_CI_POLL:-15}"
 			done
-			timeout "${GA_CI_CAP:-900}" gh pr checks "$num" -R "$slug" --watch >/dev/null 2>&1
-			[[ $? == 124 ]] && return 40
+			ga_ci_watch "$num" "$slug" "$sha"; rc=$?
+			[[ $rc == 0 ]] && return 0
+			[[ $rc == 40 || $rc == 124 ]] && return 40
 			buckets=$(gh pr checks "$num" -R "$slug" --json bucket -q '.[].bucket' 2>/dev/null) || return 40
 			[[ -n $buckets ]] || return 40
 			ok=1
