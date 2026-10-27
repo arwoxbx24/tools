@@ -5,7 +5,7 @@ dir=$(cd -- "$(dirname -- "$0")" && pwd)
 d=$(mktemp -d)
 trap 'rm -rf "$d"' EXIT
 ok=0
-total=20
+total=22
 
 printf '%s\n' '{"message":"<command-name>/goal_task</command-name>"}' >"$d/goal.jsonl"
 printf '%s\n' '{"message":"hello"}' >"$d/plain.jsonl"
@@ -149,5 +149,15 @@ out=$(agent_in haiku | "$dir/goal-gate"); rc=$?
 if [[ $rc == 0 ]] && jq -e '.hookSpecificOutput.permissionDecision == "deny"' <<<"$out" >/dev/null 2>&1; then
   echo 'PASS 20 permit_missing_worktree_denied'; ok=$((ok+1))
 else echo "FAIL 20 permit_missing_worktree_denied: rc=$rc out=$out"; fi
+
+out=$(stop "g21-$$" $'Итог готов.\n/goal clear\n')
+if isblock "$out" && jq -e '(.reason | contains("Banned wording")) and ((.reason | contains("МЕТОД")) | not)' <<<"$out" >/dev/null 2>&1; then
+  echo 'PASS 21 goal_clear_line_banned_reason'; ok=$((ok+1))
+else echo "FAIL 21 goal_clear_line_banned_reason: $out"; fi
+
+out=$(stop "g22-$$" '/goal сделать X')
+if isblock "$out" && jq -e '.reason | contains("МЕТОД")' <<<"$out" >/dev/null 2>&1; then
+  echo 'PASS 22 goal_line_without_method_still_method_reason'; ok=$((ok+1))
+else echo "FAIL 22 goal_line_without_method_still_method_reason: $out"; fi
 
 if [ "$ok" -eq "$total" ]; then echo "PASS $ok/$total"; else echo "FAIL $ok/$total"; exit 1; fi

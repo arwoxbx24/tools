@@ -459,5 +459,26 @@ log=$GA_LOG_DIR/git-sync.log
 	&& grep -qF 'p-errline err:checkout' "$log" && grep -qF 'would be overwritten' "$log" \
 	&& [[ $(cat "$GA_PROJECTS/p-errline/d") == blocker ]]; } && p '30 err-line-carries-git-message' || f '30 err-line-carries-git-message'
 
-[[ $ok == 30 ]]
+# 31: local main ahead of origin — a) local commit kept, nothing reset; b) origin merge containing it -> ff
+repo "$GA_PROJECTS/p-localahead"; mkbare "$GA_PROJECTS/p-localahead" "$d/origin-localahead.git"
+git -C "$GA_PROJECTS/p-localahead" commit -q --allow-empty -m localc
+lc=$(git -C "$GA_PROJECTS/p-localahead" rev-parse HEAD)
+out=$(cd "$GA_PROJECTS/p-localahead" && "$bin/git-sync" p-localahead 2>&1)
+ha=$(git -C "$GA_PROJECTS/p-localahead" rev-parse HEAD)
+oka=0
+{ ! grep -qE 'err:|rescued' <<<"$out" && [[ $ha == "$lc" ]] && [[ -z $(git -C "$GA_PROJECTS/p-localahead" for-each-ref refs/rescue) ]]; } && oka=1
+git clone -q "$d/origin-localahead.git" "$d/adv-localahead"
+git -C "$d/adv-localahead" config user.email t@t; git -C "$d/adv-localahead" config user.name t
+git -C "$d/adv-localahead" fetch -q "$GA_PROJECTS/p-localahead" main
+git -C "$d/adv-localahead" merge -q --no-ff -m merge FETCH_HEAD
+git -C "$d/adv-localahead" push -q origin main
+m=$(git -C "$d/origin-localahead.git" rev-parse main)
+out=$(cd "$GA_PROJECTS/p-localahead" && "$bin/git-sync" p-localahead 2>&1)
+ha=$(git -C "$GA_PROJECTS/p-localahead" rev-parse HEAD)
+{ (( oka )) && grep -qF ' p-localahead ff' <<<"$out" && [[ $ha == "$m" ]] \
+	&& git -C "$GA_PROJECTS/p-localahead" merge-base --is-ancestor "$lc" HEAD \
+	&& [[ -z $(git -C "$GA_PROJECTS/p-localahead" for-each-ref refs/rescue) ]]; } \
+	&& p local_main_ahead_fast_forward || f local_main_ahead_fast_forward
+
+[[ $ok == 31 ]]
 

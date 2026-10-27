@@ -53,14 +53,14 @@ ctrl_re='^[[:space:]]*[*-]?[[:space:]]*Контроль задач:'
 BANNED='/goal[[:space:]]+clear|сним(и|ите|у|ем)[[:space:]]+(цел|/goal)|сняти[ея][[:space:]]+цел|снять[[:space:]]+(цел|/goal)|очист(и|ите|ка|ить)[[:space:]]+(цел|/goal)|убер(и|ите)[[:space:]]+цел|убрать[[:space:]]+(цел|/goal)'
 lmsg=${msg,,}
 
-while IFS= read -r l; do
+if [[ $lmsg =~ $BANNED ]]; then
+  reason="Banned wording (owner 26.10): never offer to end or remove the goal; finish it or report PARTIAL"
+fi
+
+while [ -z "$reason" ] && IFS= read -r l; do
   [[ $l =~ $goal_re ]] || continue
   [[ $l == *"МЕТОД:"* ]] || { reason="The /goal line needs МЕТОД: <method from the methodology catalog> (goal_task METHOD GATE)"; break; }
 done <<<"$msg"
-
-if [ -z "$reason" ] && [[ $lmsg =~ $BANNED ]]; then
-  reason="Banned wording (owner 26.10): never offer to end or remove the goal; finish it or report PARTIAL"
-fi
 
 if [ "$goal" -eq 1 ] && [ -z "$reason" ]; then
   ctrl=0
