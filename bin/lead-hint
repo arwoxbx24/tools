@@ -320,6 +320,11 @@ lead_allowlist() {
 
     if [[ $base == code-channel || $base == sdk-agent ]]; then
       if [[ $bg != true ]]; then
+        fgarg=${tok[idx+1]:-}
+        if [[ $base == code-channel && ( $fgarg == --help || $fgarg == -h || $fgarg == --plan ) ]] ||
+           [[ $base == sdk-agent && $fgarg == --help ]]; then
+          continue
+        fi
         printf '%s' 'lead allowlist (owner 26.10): the lead starts code-channel/sdk-agent only in background; run it in background (tool_input.run_in_background=true)'
         return 0
       fi
@@ -382,14 +387,22 @@ lead_allowlist() {
           esac
         done ;;
       git)
-        op=${tok[idx+1]:-}
+        gidx=$((idx+1))
+        while (( gidx < nt )); do
+          case ${tok[gidx]} in
+            -C|--git-dir|-c) gidx=$((gidx+2)) ;;
+            --git-dir=*|--work-tree=*) gidx=$((gidx+1)) ;;
+            *) break ;;
+          esac
+        done
+        op=${tok[gidx]:-}
         case $op in
           status|log|diff|show|ls-files|rev-parse|fetch|format-patch|archive) ;;
           worktree)
-            case ${tok[idx+2]:-} in
+            case ${tok[gidx+1]:-} in
               list) ;;
               add)
-                target=${tok[idx+3]:-}
+                target=${tok[gidx+2]:-}
                 if [[ $target == /* ]]; then
                   norm=$(lead_norm_path "$target")
                   if [[ $norm == /tmp || $norm == /tmp/* || $norm =~ ^/root/workspaces/[^/]+/\.worktrees(/|$) ]]; then :
@@ -402,7 +415,7 @@ lead_allowlist() {
                  return 0 ;;
             esac ;;
           branch)
-            for (( k=idx+2; k<nt; k++ )); do
+            for (( k=gidx+1; k<nt; k++ )); do
               case ${tok[k]} in
                 -d|-D|-m|-M|-d*|-D*|-m*|-M*)
                   printf '%s' 'lead allowlist (owner 26.10): git branch -d/-D/-m/-M is not allowed for the lead'
@@ -416,7 +429,7 @@ lead_allowlist() {
         case $op in
           diff|log|show|format-patch|archive)
             git_out=0
-            for (( k=idx+2; k<nt; k++ )); do
+            for (( k=gidx+1; k<nt; k++ )); do
               case ${tok[k]} in
                 --output=*|--output-directory=*)
                   git_out=1
