@@ -10,7 +10,7 @@ export COMMIT_GATE_CONF="$SANDBOX/conf.json"
 export COMMIT_GATE_SECRET_GATE="$SANDBOX/secret-gate"
 printf '#!/bin/sh\nexit "${FAKE_SECRET_RC:-0}"\n' > "$SANDBOX/secret-gate"
 chmod 700 "$SANDBOX/secret-gate"
-printf '{"repos":["%s"]}\n' "$IN" > "$COMMIT_GATE_CONF"
+printf '{"git_dirs":["%s"]}\n' "$IN/.git" > "$COMMIT_GATE_CONF"
 
 PASS=0; FAIL=0
 ok() { PASS=$((PASS + 1)); }
@@ -100,6 +100,33 @@ FAKE_SECRET_RC=1; export FAKE_SECRET_RC
 [ -s "$SANDBOX/err" ] && bad outside-silent "stderr not empty" || ok
 hook "git -C $OUT commit -m 'bad message'"; expect outside-hook 0 $?
 unset FAKE_SECRET_RC
+
+# scope is the git common dir, exact equality only: a listed parent does not include children
+PROJ="$SANDBOX/projects"; CHILD="$PROJ/child"
+rm -rf "$PROJ"; mkdir -p "$PROJ"
+git init -q "$CHILD"
+git -C "$CHILD" config user.email t@example.com; git -C "$CHILD" config user.name t
+git -C "$CHILD" config core.hooksPath "$SANDBOX/empty"; git -C "$CHILD" config commit.gpgsign false
+echo hi > "$CHILD/f.txt"; git -C "$CHILD" add f.txt
+printf '{"git_dirs":["%s"]}\n' "$PROJ" > "$COMMIT_GATE_CONF"
+printf 'bad message\n' > "$SANDBOX/msg"
+( cd "$CHILD" && "$TOP/bin/commit-gate" commit-msg "$SANDBOX/msg" ) 2>"$SANDBOX/err"; expect scope-prefix-out 0 $?
+[ -s "$SANDBOX/err" ] && bad scope-prefix-silent "stderr not empty" || ok
+printf '{"git_dirs":["%s"]}\n' "$IN/.git" > "$COMMIT_GATE_CONF"
+
+# a worktree whose common dir is listed is in scope
+mk; git -C "$IN" commit -q --allow-empty -m 'feat(x): seed'
+WT="$SANDBOX/wt"; rm -rf "$WT"
+git -C "$IN" worktree add -q "$WT" -b wt 2>/dev/null
+printf 'bad message\n' > "$SANDBOX/msg"
+( cd "$WT" && "$TOP/bin/commit-gate" commit-msg "$SANDBOX/msg" ) 2>"$SANDBOX/err"; expect worktree-in-scope 2 $?
+
+# git-generated subjects are not blocked
+mk
+for subj in "Merge branch 'x'" "Merge pull request #1 from a/b" 'Revert "feat(x): y"'; do
+  printf '%s\n' "$subj" > "$SANDBOX/msg"
+  gate commit-msg "$SANDBOX/msg"; expect "generated-subject: $subj" 0 $?
+done
 
 # run twice on one input -> identical output
 mk; printf '{"dependencies":{"a":"^1.0.0"}}\n' > "$IN/package.json"
