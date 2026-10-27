@@ -5,7 +5,7 @@ dir=$(cd -- "$(dirname -- "$0")" && pwd)
 d=$(mktemp -d /tmp/lead-hint-test.XXXXXX)
 trap 'rm -rf "$d"' EXIT
 ok=0
-total=259
+total=271
 crdir=/tmp/lead-hint-stop
 srun="lh-$$-$RANDOM"
 clean_sid() { rm -f "$crdir/$1"; }
@@ -989,7 +989,7 @@ hard_case 160 lead_bypass_perl_e deny "perl -e 'print 1'" false /tmp
 hard_case 161 lead_bypass_dd_of deny 'dd of=/root/workspaces/projects/x.py' false /tmp
 hard_case 162 lead_bypass_find_exec deny 'find /tmp -exec rm {} +' false /tmp
 hard_case 163 lead_bypass_git_branch_delete deny 'git branch -D x' false /tmp
-hard_case 164 lead_bypass_gh_run deny 'gh run view 1' false /tmp
+hard_case 164 lead_allow_gh_run_view allow 'gh run view 1' false /tmp
 
 hard_case 165 lead_allow_bd_note_semicolon allow 'bd update x --append-notes "a; git commit b"' false /tmp
 hard_case 166 lead_allow_git_worktree_list allow 'git worktree list' false /tmp
@@ -1101,6 +1101,19 @@ hard_case 247 lead_allow_channel_plan_foreground allow 'code-channel --plan' fal
 hard_case 248 lead_allow_sdk_agent_help_foreground allow 'sdk-agent --help' false /tmp
 hard_case 249 lead_channel_auto_foreground_denied deny 'code-channel auto /x /y/tz.md' false /tmp
 hard_case 250 lead_channel_audit_foreground_denied deny 'code-channel audit /x /y/tz.md' false /tmp
+
+hard_case 251 lead_allow_git_C_log allow 'git -C /root/workspaces/tools log -1 --oneline' false /tmp
+hard_case 252 lead_allow_git_gitdir_show allow 'git --git-dir=/root/workspaces/tools/.git show HEAD' false /tmp
+hard_case 253 lead_git_C_clean_denied deny 'git -C /x clean -fd' false /tmp
+hard_case 254 lead_gh_run_rerun_denied deny 'gh run rerun 1' false /tmp
+hard_case 255 lead_allow_awk_print allow "awk '{print}' /tmp/f" false /tmp
+hard_case 256 lead_allow_awk_compare allow "awk 'NR>1 {print \$1}' /tmp/f" false /tmp
+hard_case 257 lead_allow_awk_field allow "awk -F: '{print \$1}' /tmp/f" false /tmp
+hard_case 258 lead_awk_system_denied deny "awk 'BEGIN{system(\"id\")}'" false /tmp
+hard_case 259 lead_awk_redirect_denied deny "awk '{print > \"/tmp/x\"}' /tmp/f" false /tmp
+hard_case 260 lead_awk_inplace_denied deny "awk -i inplace '{print}' /tmp/f" false /tmp
+hard_case 261 lead_awk_program_file_denied deny 'awk -f /tmp/p.awk /tmp/f' false /tmp
+hard_case 262 lead_disk_rotate_denied deny '/root/workspaces/tools/scripts/disk-rotate.sh' false /tmp
 
 ca_ok=0; ca_fail=0
 for ca in 'x.sh deny' 'x.md allow'; do

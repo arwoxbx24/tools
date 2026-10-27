@@ -455,15 +455,17 @@ lead_allowlist() {
             fi ;;
         esac ;;
       gh)
-        if [[ ${tok[idx+1]:-} != pr ]]; then
-          printf '%s' 'lead allowlist (owner 26.10): gh allows only pr view|checks|list|diff|create|merge'
+        if [[ ${tok[idx+1]:-} == run && ${tok[idx+2]:-} == view ]]; then :
+        elif [[ ${tok[idx+1]:-} != pr ]]; then
+          printf '%s' 'lead allowlist (owner 26.10): gh allows only pr view|checks|list|diff|create|merge and run view'
           return 0
-        fi
-        case ${tok[idx+2]:-} in
-          view|checks|list|diff|create|merge) ;;
-          *) printf '%s' 'lead allowlist (owner 26.10): gh allows only pr view|checks|list|diff|create|merge'
-             return 0 ;;
-        esac ;;
+        else
+          case ${tok[idx+2]:-} in
+            view|checks|list|diff|create|merge) ;;
+            *) printf '%s' 'lead allowlist (owner 26.10): gh allows only pr view|checks|list|diff|create|merge and run view'
+               return 0 ;;
+          esac
+        fi ;;
       # Operations and reads stay allowed (owner 26.10, T2).
       pm2|systemctl|journalctl|uptime|du|df|free|ps|ss|lsof|file|diff|md5sum|sha256sum|basename|dirname|realpath|readlink|transcribe|gitleaks) ;;
       # Ops/read tools used by the lead in the last 7 days with count >= 3
@@ -659,6 +661,19 @@ lead_allowlist() {
           case ${tok[k]} in
             -i*|--in-place*)
               printf '%s' 'lead allowlist (owner 26.10): sed -i is not allowed; send file edits to code-channel'
+              return 0 ;;
+          esac
+        done ;;
+      awk)
+        for (( k=idx+1; k<nt; k++ )); do
+          case ${tok[k]} in
+            -i|-i?*|--include|--include=*|-f|--file|--file=*|-E|--exec|--exec=*|--load|--load=*)
+              printf '%s' 'lead allowlist (owner 27.10): awk -i/-f/--include/--exec/--load is not read-only; send work to code-channel'
+              return 0 ;;
+          esac
+          case ${tok[k]} in
+            *system*|*getline*|*'|'*|*'@include'*|*'@load'*|*'>>'*|*print*'>'*)
+              printf '%s' 'lead allowlist (owner 27.10): awk is read-only here (no system/getline/pipe/redirect); send writes to code-channel'
               return 0 ;;
           esac
         done ;;
