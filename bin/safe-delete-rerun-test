@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -u
+export SAFE_DELETE_GH=false
+bin=$(cd -- "$(dirname -- "$0")" && pwd)
+d=$(mktemp -d /tmp/safe-delete-rerun.XXXXXX)
+trap 'rm -rf "$d"' EXIT
+export SAFE_DELETE_ROOTS="$d"
+bk="$d/bk"
+ok=0; fail=0
+pass(){ echo "PASS $1"; ok=$((ok+1)); }
+bad(){ echo "FAIL $1: $2"; fail=$((fail+1)); }
+git init -q "$d/repo"
+git -C "$d/repo" config user.email t@t
+git -C "$d/repo" config user.name t
+printf 'base\n' > "$d/repo/base.txt"
+git -C "$d/repo" add base.txt
+git -C "$d/repo" commit -q -m base
+
+git -C "$d/repo" worktree add -q "$d/wt1" -b wt1
+printf 'dirty\n' > "$d/wt1/backup.txt"
+c1="$bk/files/$(date +%Y%m%d)/${d#/}/wt1/backup.txt"
+mkdir -p "${c1%/*}"
+ln "$d/wt1/backup.txt" "$c1"
+err1=$("$bin/safe-delete" --bk "$bk" worktree "$d/wt1" 2>&1); r1=$?
+n1=$(find "$bk/files" -type f -name 'backup.txt*' | wc -l); n1=${n1//[[:space:]]/}
+if [[ $r1 == 0 && ! -d $d/wt1 && $n1 == 1 && -f $c1 ]]; then pass 1; else bad 1 "rc=$r1 copies=$n1 $err1"; fi
+
+git -C "$d/repo" worktree add -q "$d/wt2" -b wt2
+mkdir -p "$d/wt2/sub"
+printf 'blocked\n' > "$d/wt2/sub/new.txt"
+c2="$bk/files/$(date +%Y%m%d)/${d#/}/wt2/sub"
+mkdir -p "${c2%/*}"
+printf 'not a dir\n' > "$c2"
+err2=$("$bin/safe-delete" --bk "$bk" worktree "$d/wt2" 2>&1); r2=$?
+if [[ $r2 != 0 && -d $d/wt2 && -f "$d/wt2/sub/new.txt" ]]; then pass 2; else bad 2 "rc=$r2 $err2"; fi
+
+echo "итог: PASS $ok, FAIL $fail"
+[[ $fail == 0 ]]

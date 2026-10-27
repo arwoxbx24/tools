@@ -181,14 +181,17 @@ batch_delete(){
     cdir="$BK/files/$(date +%Y%m%d)"; mkdir -p "$cdir" || return 1
     for p in "${cps[@]}"; do
       c="$cdir/${p#/}"
-      if [[ -e $c || -L $c ]]; then c="$c.$(date +%H%M%S%N)"; mkdir -p "$(dirname -- "$c")" && cp -p -- "$p" "$c" || return 1
+      if [[ -e $c || -L $c ]]; then
+        [[ $c -ef $p ]] || { c="$c.$(date +%H%M%S%N)"; mkdir -p "$(dirname -- "$c")" && cp -p -- "$p" "$c" || return 1; }
       else fresh+=("$p"); fi
       copy[$p]=$c; ss+=("$p"); ds+=("$c")
     done
     if ((${#fresh[@]})); then
       mkt || return 1; printf '%s\0' "$cdir" "${fresh[@]}" | xargs -0 -r -n 200 stat -c %d -- >"$tf"; mapfile -t devs <"$tf"
       same=1; for d in "${devs[@]}"; do [[ $d == "${devs[0]}" ]] || same=; done
-      if [[ $same ]] && printf '%s\0' "${fresh[@]}" | xargs -0 -r -n 200 cp -p -l --parents -t "$cdir" --; then :; else printf '%s\0' "${fresh[@]}" | xargs -0 -r -n 200 cp -p --parents -t "$cdir" -- || return 1; fi
+      if [[ $same ]] && printf '%s\0' "${fresh[@]}" | xargs -0 -r -n 200 cp -p -l --parents -t "$cdir" --; then :; else
+        for p in "${fresh[@]}"; do c="$cdir/${p#/}"; [[ -e $c && $c -ef $p ]] && continue; cp -p --parents -t "$cdir" -- "$p" || return 1; done
+      fi
     fi
     printf '%s\0' "${ds[@]}" | xargs -0 -r -n 200 touch -- || return 1
     mkt || return 1; printf '%s\0' "${ss[@]}" | xargs -0 -r -n 200 sha256sum -z -- >"$tf"; mapfile -d '' hs <"$tf"
