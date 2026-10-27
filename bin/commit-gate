@@ -217,6 +217,12 @@ PY
 
 mode=${1:-}
 case "$mode" in
+  -h|--help)
+    echo "usage: commit-gate hook|pre-commit|commit-msg <file>"
+    exit 0
+    ;;
+esac
+case "$mode" in
   hook)
     parsed=$(parse_hook) || exit 0
     repo=$(printf '%s\n' "$parsed" | sed -n '1p')
