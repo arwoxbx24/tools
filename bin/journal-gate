@@ -105,7 +105,7 @@ check_journal() {
 }
 
 hook() {
-  local json cmd seg id dir out created since c s journal rc
+  local json cmd seg id dir out created since c s journal rc prefixes p matched
   json=$(cat) || exit 0
   [ -n "$json" ] || exit 0
   [ "$(jq -r '.tool_name // empty' <<<"$json" 2>/dev/null)" = "Bash" ] || exit 0
@@ -116,6 +116,16 @@ hook() {
   seg=${BASH_REMATCH[0]}
   id=${BASH_REMATCH[3]}
   id=${id#\"}; id=${id%\"}; id=${id#\'}; id=${id%\'}
+
+  prefixes=$(jq -r 'if (.prefixes | type) == "array" then .prefixes[] else empty end' "$CONF" 2>/dev/null) || prefixes=
+  if [ -n "$prefixes" ]; then
+    matched=
+    while IFS= read -r p; do
+      [ -n "$p" ] || continue
+      case $id in "$p"*) matched=1; break ;; esac
+    done <<<"$prefixes"
+    [ -n "$matched" ] || exit 0
+  fi
 
   dir=
   if [[ $seg =~ (^|[[:space:]])-C[[:space:]]+(\"[^\"]*\"|\'[^\']*\'|[^[:space:]]+) ]]; then
