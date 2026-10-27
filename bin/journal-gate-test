@@ -152,4 +152,16 @@ case_ new-atom-missing-journal 2 'journal-gate'
 run hook 'bd close'
 case_ close-without-id 0
 
+printf '{"since":"2026-01-01T00:00:00Z","prefixes":["dcfg-"]}\n' >"$D/journal-gate-prefixes.json"
+export JOURNAL_GATE_CONF="$D/journal-gate-prefixes.json"
+
+write_bd '[{"id":"eu-abc1","created_at":"2026-06-01T00:00:00Z","metadata":{}}]'
+run hook 'bd close eu-abc1'
+case_ foreign-atom-exempt 0
+if [ -z "$OUT" ]; then PASS=$((PASS + 1)); else FAIL=$((FAIL + 1)); printf 'FAIL foreign-atom-stderr: out=%s\n' "$OUT"; fi
+
+write_bd '[{"id":"dcfg-abc1","created_at":"2026-06-01T00:00:00Z","metadata":{}}]'
+run hook 'bd close dcfg-abc1'
+case_ dcfg-atom-blocked 2 'bd update dcfg-abc1 --metadata'
+
 if [ "$FAIL" -eq 0 ]; then echo "PASS $PASS/$((PASS + FAIL))"; else echo "FAIL $PASS/$((PASS + FAIL))"; exit 1; fi
