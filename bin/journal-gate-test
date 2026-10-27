@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+set -u
+BIN=$(cd -- "$(dirname -- "$0")" && pwd)
+GATE=$BIN/journal-gate
+D=$(mktemp -d)
+trap 'rm -rf "$D"' EXIT
+PASS=0
+FAIL=0
+OUT=
+RC=0
+
+printf '{"since":"2026-01-01T00:00:00Z"}\n' >"$D/journal-gate.json"
+export JOURNAL_GATE_CONF="$D/journal-gate.json"
+mkdir -p "$D/decisions" "$D/bin"
+echo '# decision' >"$D/decisions/0001-x.md"
+
+write_journal() {
+  cat >"$1" <<'EOF'
+## Повторный запуск
+```
+make test
+PASS 1/1
+```
+## Сравнение сборок
+```
+diff -r build1 build2
+```
+## Сбой на середине и откат
+```
+./rollback && echo restored
+```
+## Проверка секретов
+```
+secret-gate check --staged
+```
+## Провал через месяц
+```
+smoke-test: ok
+```
+## Решение
+decisions/0001-x.md
+EOF
+}
+
+run() { OUT=$("$@" 2>&1); RC=$?; }
+case_() {
+  local name=$1 want=$2 pat=${3-}
+  if [ "$RC" -eq "$want" ] && { [ -z "$pat" ] || grep -q -- "$pat" <<<"$OUT"; }; then
+    PASS=$((PASS + 1))
+  else
+    FAIL=$((FAIL + 1))
+    printf 'FAIL %s: want rc=%s pat=%s got rc=%s out=%s\n' "$name" "$want" "$pat" "$RC" "$OUT"
+  fi
+}
+hook() {
+  jq -nc --arg c "$1" --arg w "$D" '{tool_name:"Bash",tool_input:{command:$c},cwd:$w}' | "$GATE" hook
+}
+write_bd() { printf '%s\n' "$1" >"$D/bd.json"; }
+
+cat >"$D/bin/bd" <<'EOF'
+#!/usr/bin/env bash
+cat "$BD_FILE"
+EOF
+chmod +x "$D/bin/bd"
+export PATH="$D/bin:$PATH"
+export BD_FILE="$D/bd.json"
+
+write_journal "$D/good.md"
+run "$GATE" check "$D/good.md"
+case_ good 0
+
+perl -0pe 's/## Проверка секретов.*?(?=## )//s' "$D/good.md" >"$D/missing.md"
+run "$GATE" check "$D/missing.md"
+case_ missing-section 2 'Проверка секретов'
+
+perl -0pe 's/(## Сравнение сборок\n).*?(?=## )/$1/s' "$D/good.md" >"$D/empty.md"
+run "$GATE" check "$D/empty.md"
+case_ empty-section 2 'Сравнение сборок'
+
+perl -0pe 's/(## Сравнение сборок\n).*?(?=## )/$1не применимо:\n/s' "$D/good.md" >"$D/bare.md"
+run "$GATE" check "$D/bare.md"
+case_ bare-na 2 'Сравнение сборок'
+
+perl -0pe 's/(## Сравнение сборок\n).*?(?=## )/$1не применимо: нет второй сборки\n/s' "$D/good.md" >"$D/na.md"
+run "$GATE" check "$D/na.md"
+case_ valid-na 0
+
+perl -0pe 's/(## Повторный запуск\n).*?(?=## )/$1не применимо: ручной запуск\n/s' "$D/good.md" >"$D/repeat-no.md"
+run "$GATE" check "$D/repeat-no.md"
+case_ repeat-without-check 2 'вместо повтора'
+
+perl -0pe 's/(## Повторный запуск\n).*?(?=## )/$1не применимо: ручной запуск; вместо повтора: make test\n/s' "$D/good.md" >"$D/repeat-ok.md"
+run "$GATE" check "$D/repeat-ok.md"
+case_ repeat-with-check 0
+
+perl -0pe 's/(## Решение\n).*?(?=## |\z)/$1```\necho ok\n```\n/s' "$D/good.md" >"$D/dec-no-link.md"
+run "$GATE" check "$D/dec-no-link.md"
+case_ decision-without-link 2 'Решение'
+
+perl -0pe 's/(## Решение\n).*?(?=## |\z)/$1decisions\/0002-missing.md\n/s' "$D/good.md" >"$D/dec-missing.md"
+run "$GATE" check "$D/dec-missing.md"
+case_ decision-missing-link 2 'Решение'
+
+perl -0pe 's/(## Решение\n).*?(?=## |\z)/$1не применимо: решение не требуется\n/s' "$D/good.md" >"$D/dec-na.md"
+run "$GATE" check "$D/dec-na.md"
+case_ decision-na 0
+
+write_bd '[{"id":"a","created_at":"2020-01-01T00:00:00Z","metadata":{}}]'
+run hook 'bd close a'
+case_ old-atom-exempt 0
+
+run hook 'bd update a --append-notes x'
+case_ non-close 0
+
+write_bd '[{"id":"a","created_at":"2026-06-01T00:00:00Z","metadata":{}}]'
+run hook 'bd close a'
+case_ new-atom-no-journal 2 'bd update a --metadata'
+
+run hook 'bd -C /tmp close a'
+case_ new-atom-dash-C 2 'bd update a --metadata'
+
+write_bd "[{\"id\":\"a\",\"created_at\":\"2026-06-01T00:00:00Z\",\"metadata\":{\"journal\":\"$D/good.md\"}}]"
+run hook 'bd close a'
+case_ new-atom-good-journal 0
+
+write_bd "[{\"id\":\"a\",\"created_at\":\"2026-06-01T00:00:00Z\",\"metadata\":{\"journal\":\"$D/empty.md\"}}]"
+run hook 'bd close a'
+case_ new-atom-bad-journal 2 'journal-gate'
+
+write_bd '[{"id":"a","created_at":"2026-06-01T00:00:00Z","metadata":{"journal":"/tmp/no-such-journal-$$.md"}}]'
+run hook 'bd close a'
+case_ new-atom-missing-journal 2 'journal-gate'
+
+run hook 'bd close'
+case_ close-without-id 0
+
+if [ "$FAIL" -eq 0 ]; then echo "PASS $PASS/$((PASS + FAIL))"; else echo "FAIL $PASS/$((PASS + FAIL))"; exit 1; fi
