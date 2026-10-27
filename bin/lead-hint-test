@@ -5,7 +5,7 @@ dir=$(cd -- "$(dirname -- "$0")" && pwd)
 d=$(mktemp -d /tmp/lead-hint-test.XXXXXX)
 trap 'rm -rf "$d"' EXIT
 ok=0
-total=243
+total=247
 crdir=/tmp/lead-hint-stop
 srun="lh-$$-$RANDOM"
 clean_sid() { rm -f "$crdir/$1"; }
@@ -1139,8 +1139,9 @@ echo "code-lock-path ok=$pt_ok failed=$pt_fail"
 tx_strict=$d/txstrict.jsonl
 { mk_user; for _ in $(seq 9); do mk_read; done; } >"$tx_strict"
 out=$(mk_pre "$tx_strict" Read '{"file_path":"/tmp/x"}' | env -u LEAD_HINT_STRICT CODE_CHANNEL="$d/code-channel" HELPER_SHARE="$d/helper-share" "$dir/lead-hint"); rc=$?
-if [[ $rc == 0 && -z $out ]]; then
-  echo 'PASS 237: strict_default_off 9 calls -> allow'; ok=$((ok+1))
+dec=$(jq -r '.hookSpecificOutput.permissionDecision // empty' <<<"$out" 2>/dev/null)
+if [[ $rc == 0 && $dec == deny ]]; then
+  echo 'PASS 237: strict_default_on 9 calls -> deny'; ok=$((ok+1))
 else
   echo "FAIL 237: rc=$rc out=$out"
 fi
@@ -1153,6 +1154,24 @@ if [[ $rc == 0 && $dec == deny && $reason == "$reason_deny" ]]; then
 else
   echo "FAIL 238: rc=$rc out=$out"
 fi
+
+default_case() {
+  local name=$1 want=$2 cwd=$3 cmd=$4 agent=${5:-} out rc dec
+  out=$(jq -cn --arg cwd "$cwd" --arg cmd "$cmd" \
+    '{hook_event_name:"PreToolUse",cwd:$cwd,tool_name:"Bash",tool_input:{command:$cmd}}' \
+    | jq -c --arg a "$agent" 'if $a == "" then . else .agent_id = $a end' \
+    | env -u LEAD_HINT_STRICT CODE_CHANNEL="$d/code-channel" HELPER_SHARE="$d/helper-share" "$dir/lead-hint"); rc=$?
+  dec=$(jq -r '.hookSpecificOutput.permissionDecision // empty' <<<"$out" 2>/dev/null)
+  if [[ $rc == 0 && $want == deny && $dec == deny ]] || [[ $rc == 0 && $want == allow && -z $out ]]; then
+    echo "PASS $name"; ok=$((ok+1))
+  else
+    echo "FAIL $name: rc=$rc out=$out"
+  fi
+}
+default_case lead_default_git_status_allowed allow /root 'git status'
+default_case lead_default_git_switch_denied deny /root 'git switch -c x'
+default_case lead_default_tmp_script_denied deny /root 'bash /tmp/exp.txt'
+default_case worker_default_tmp_script_allowed allow /root 'bash /tmp/exp.txt' sub
 
 if [[ $ok == $total ]]; then
   echo "lead-hint-test: PASS $ok/$total"
