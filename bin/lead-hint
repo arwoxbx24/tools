@@ -352,14 +352,14 @@ lead_allowlist() {
             fi ;;
         esac ;;
       gh)
-        if [[ ${tok[idx+1]:-} == run && ${tok[idx+2]:-} == view ]]; then :
+        if [[ ${tok[idx+1]:-} == run && ${tok[idx+2]:-} == view ]] || [[ ${tok[idx+1]:-} == repo && ${tok[idx+2]:-} == view ]]; then :
         elif [[ ${tok[idx+1]:-} != pr ]]; then
-          printf '%s' 'lead allowlist (owner 26.10): gh allows only pr view|checks|list|diff|create|merge and run view'
+          printf '%s' 'lead allowlist (owner 26.10): gh allows only pr view|checks|list|diff|create|merge and run view, repo view'
           return 0
         else
           case ${tok[idx+2]:-} in
             view|checks|list|diff|create|merge) ;;
-            *) printf '%s' 'lead allowlist (owner 26.10): gh allows only pr view|checks|list|diff|create|merge and run view'
+            *) printf '%s' 'lead allowlist (owner 26.10): gh allows only pr view|checks|list|diff|create|merge and run view, repo view'
                return 0 ;;
           esac
         fi ;;
