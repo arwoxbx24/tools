@@ -989,5 +989,57 @@ printf 'plain\n' > "$d/t126-$$/api_token.txt"
 out126=$("$bin/safe-delete" --bk "$bk" dir "$d/t126-$$" 2>&1); r126=$?
 if [[ $r126 == 2 && -f "$d/t126-$$/api_token.txt" ]]; then echo 'PASS T126 token_other_ext_refused'; ok=$((ok+1)); else echo "FAIL T126: rc=$r126 out=$out126"; fi
 
-[[ $ok == 124 ]] || exit 1
+# T127-T129: squash-merged client worktree with equal content is archived and removed; diverged and dirty ones are refused with a route
+git init -q --bare "$d/o127.git"
+git clone -q "$d/o127.git" "$d/w127" 2>/dev/null
+git -C "$d/w127" config user.email t@t
+git -C "$d/w127" config user.name t
+git -C "$d/w127" checkout -q -b main
+mkdir -p "$d/w127/clients/x"; printf 'base\n' > "$d/w127/clients/x/f"
+git -C "$d/w127" add clients/x/f; git -C "$d/w127" commit -q -m base; git -C "$d/w127" push -q origin main
+git -C "$d/w127" checkout -q -b sq/t127
+printf 'more\n' >> "$d/w127/clients/x/f"; git -C "$d/w127" commit -q -am work
+git -C "$d/w127" checkout -q main
+git -C "$d/w127" worktree add -q "$d/wt127" sq/t127
+git -C "$d/w127" merge -q --squash sq/t127; git -C "$d/w127" commit -q -m squash
+git -C "$d/w127" push -q origin main
+out127=$("$bin/safe-delete" --bk "$d/bk127" worktree "$d/wt127" 2>&1); r127=$?
+gone127=0; [[ ! -e "$d/wt127" ]] && gone127=1
+tag127=$(git -C "$d/o127.git" for-each-ref --format='%(refname)' 'refs/tags/archive/sq-t127-*')
+b127=$(ls "$d/bk127"/*sq-t127*.bundle 2>/dev/null | head -1)
+bv127=1; [[ -n $b127 ]] && git -C "$d/w127" bundle verify "$b127" >/dev/null 2>&1 && bv127=0
+if [[ $r127 == 0 && $gone127 == 1 && -n $tag127 && $bv127 == 0 ]]; then echo 'PASS T127 squash_worktree_archived'; ok=$((ok+1)); else echo "FAIL T127: rc=$r127 gone=$gone127 tag=$tag127 bundle=$b127 bv=$bv127 out=${out127:0:200}"; fi
+
+git init -q --bare "$d/o128.git"
+git clone -q "$d/o128.git" "$d/w128" 2>/dev/null
+git -C "$d/w128" config user.email t@t
+git -C "$d/w128" config user.name t
+git -C "$d/w128" checkout -q -b main
+mkdir -p "$d/w128/clients/x"; printf 'base\n' > "$d/w128/clients/x/f"
+git -C "$d/w128" add clients/x/f; git -C "$d/w128" commit -q -m base; git -C "$d/w128" push -q origin main
+git -C "$d/w128" checkout -q -b sq/t128
+printf 'unmerged\n' >> "$d/w128/clients/x/f"; git -C "$d/w128" commit -q -am work
+git -C "$d/w128" checkout -q main
+git -C "$d/w128" worktree add -q "$d/wt128" sq/t128
+out128=$("$bin/safe-delete" --bk "$d/bk128" worktree "$d/wt128" 2>&1); r128=$?
+if [[ $r128 == 2 && $out128 == *'— route:'* && $out128 == *'push -u origin HEAD'* && -d $d/wt128 ]]; then echo 'PASS T128 squash_content_missing_refused'; ok=$((ok+1)); else echo "FAIL T128: rc=$r128 dir=$([[ -d $d/wt128 ]] && echo 1) out=${out128:0:200}"; fi
+
+git init -q --bare "$d/o129.git"
+git clone -q "$d/o129.git" "$d/w129" 2>/dev/null
+git -C "$d/w129" config user.email t@t
+git -C "$d/w129" config user.name t
+git -C "$d/w129" checkout -q -b main
+mkdir -p "$d/w129/clients/x"; printf 'base\n' > "$d/w129/clients/x/f"
+git -C "$d/w129" add clients/x/f; git -C "$d/w129" commit -q -m base; git -C "$d/w129" push -q origin main
+git -C "$d/w129" checkout -q -b sq/t129
+printf 'more\n' >> "$d/w129/clients/x/f"; git -C "$d/w129" commit -q -am work
+git -C "$d/w129" checkout -q main
+git -C "$d/w129" worktree add -q "$d/wt129" sq/t129
+git -C "$d/w129" merge -q --squash sq/t129; git -C "$d/w129" commit -q -m squash
+git -C "$d/w129" push -q origin main
+printf 'dirty\n' > "$d/wt129/dirty.txt"
+out129=$("$bin/safe-delete" --bk "$d/bk129" worktree "$d/wt129" 2>&1); r129=$?
+if [[ $r129 == 2 && $out129 == *'— route:'* && $out129 == *'status --short'* && -d $d/wt129 ]]; then echo 'PASS T129 squash_dirty_refused'; ok=$((ok+1)); else echo "FAIL T129: rc=$r129 dir=$([[ -d $d/wt129 ]] && echo 1) out=${out129:0:200}"; fi
+
+[[ $ok == 127 ]] || exit 1
 echo "итог: PASS $ok, FAIL 0"

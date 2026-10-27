@@ -22,7 +22,7 @@ log_n=
 log(){ { flock -x 9 || return 1; printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date +%Y-%m-%dT%H:%M:%S)" "$@" >>"$led" || return 1; log_n=$(wc -l <"$led"); log_n=${log_n//[[:space:]]/}; } 9>>"$led.lock"; }
 log_batch(){ { flock -x 9 || return 1; local n; : >>"$led" || return 1; n=$(wc -l <"$led") || return 1; n=${n//[[:space:]]/}; printf '%s\n' "$@" >>"$led" || return 1; log_n=$((n+1)); } 9>>"$led.lock"; }
 fail(){ echo "safe-delete: $*" >&2; exit 1; }
-refuse(){ echo "safe-delete: $*" >&2; exit 2; }
+refuse(){ local m=$*; [[ $m == *'— route: '* ]] || m+=" — route: safe-delete --help"; echo "safe-delete: $m" >&2; exit 2; }
 mkt(){ tf=$(mktemp "${TMPDIR:-/tmp}/safe-delete.XXXXXX") || return 1; tmps+=("$tf"); }
 repo_of(){ local u=$1; u=${u%.git}; [[ $u =~ ([^/:]+)/([^/]+)$ ]] && echo "${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"; }
 proc_state(){ local s; s=$(<"$1") || return 1; s=${s##*) }; s=${s%% *}; printf %s "$s"; }
@@ -352,9 +352,31 @@ $f"; done
     resolve_all "${files[@]}"; files=("${rs[@]}")
     git_batch "${files[@]}" || exit 1
     copies=(); for f in "${files[@]}"; do [[ -n ${gblob[$f]:-} ]] && continue; check_resolved "$f"; [[ -f $f ]] || refuse "не обычный файл: $f"; copies+=("$f"); done
-    if git -C "$wt" ls-tree -r --name-only HEAD | grep -qE '(^|/)clients/' && [[ -z $(git -C "$wt" branch -r --contains HEAD 2>/dev/null) ]]; then refuse "HEAD клиентского worktree не на remote: $wt"; fi
+    squash=
+    if git -C "$wt" ls-tree -r --name-only HEAD | grep -qE '(^|/)clients/' && [[ -z $(git -C "$wt" branch -r --contains HEAD 2>/dev/null) ]]; then
+      [[ -z $(git -C "$wt" status --porcelain 2>/dev/null) ]] || refuse "worktree не на remote с незакоммиченными изменениями: $wt — route: git -C $wt status --short"
+      git -C "$wt" fetch -q origin main 2>/dev/null || refuse "не получен origin/main: $wt — route: git -C $wt fetch origin main"
+      mb=$(git -C "$wt" merge-base HEAD origin/main 2>/dev/null) || refuse "нет общей истории с origin/main: $wt — route: git -C $wt log --oneline --all"
+      mapfile -t chg < <(git -C "$wt" diff --name-only "$mb" HEAD)
+      git -C "$wt" diff --quiet HEAD origin/main -- "${chg[@]}" || refuse "HEAD не на remote и содержимое не на origin/main: $wt — route: git -C $wt push -u origin HEAD"
+      br=$(git -C "$wt" symbolic-ref -q --short HEAD) || refuse "worktree без ветки: $wt — route: git -C $wt status"
+      squash=1
+    fi
     sha=$(git -C "$wt" rev-parse HEAD) || exit 1; ref="refs/safe-delete/wt-$(date +%Y%m%d%H%M%S%N)"
     git --git-dir="$common" update-ref "$ref" "$sha" || exit 1
+    if [[ -n $squash ]]; then
+      est=$(git -C "$wt" bundle create - HEAD --not origin/main 2>/dev/null | wc -c)
+      avail=$(df --output=avail -B1 "$BK" | tail -1)
+      (( avail >= 2*est )) || fail "мало места в $BK"
+      tag="archive/${br//\//-}-$(date +%Y%m%d)"
+      st=$(git -C "$wt" ls-remote origin "refs/tags/$tag" | awk -v r="refs/tags/$tag" '$2==r{print $1}') || exit 1
+      [[ -n $st && $st != "$sha" ]] && tag="$tag-$(date +%H%M%S)"
+      git -C "$wt" push -q origin "$sha:refs/tags/$tag" || exit 1
+      repo_dir=$common; [[ ${repo_dir##*/} == .git ]] && repo_dir=${repo_dir%/.git}
+      f="$BK/$(basename "$repo_dir")-${br//\//-}-$(date +%Y%m%d%H%M%S).bundle"
+      git -C "$wt" bundle create "$f" HEAD --not origin/main >/dev/null 2>&1 || fail "bundle не создан: $f"
+      git -C "$wt" bundle verify "$f" >/dev/null 2>&1 || exit 1
+    fi
     batch_delete "${copies[@]}" || exit 1
     git --git-dir="$common" worktree remove --force "$wt" || exit 1
     log worktree "$wt" "$sha" "$common" "$ref" - deleted || exit 1
