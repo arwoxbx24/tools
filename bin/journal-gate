@@ -59,12 +59,13 @@ na_reason() {
 }
 
 decision_link() {
-  local body=$1 dir=$2 link
+  local body=$1 dir=$2 link re
+  re='[^][()<>[:space:]"'\''`]*decisions/[0-9]{4}-[A-Za-z0-9._-]+\.md'
   while IFS= read -r link; do
     [ -n "$link" ] || continue
     case $link in /*) ;; *) link="$dir/$link" ;; esac
     [ -f "$link" ] && return 0
-  done < <(grep -oE 'decisions/[0-9]{4}-[A-Za-z0-9._-]+\.md' <<<"$body")
+  done < <(grep -oE "$re" <<<"$body")
   return 1
 }
 
