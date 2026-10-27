@@ -51,7 +51,8 @@ reason=''
 goal_re='^[[:space:]]*`?/goal[[:space:]]'
 ctrl_re='^[[:space:]]*[*-]?[[:space:]]*Контроль задач:'
 BANNED='/goal[[:space:]]+clear|сним(и|ите|у|ем)[[:space:]]+(цел|/goal)|сняти[ея][[:space:]]+цел|снять[[:space:]]+(цел|/goal)|очист(и|ите|ка|ить)[[:space:]]+(цел|/goal)|убер(и|ите)[[:space:]]+цел|убрать[[:space:]]+(цел|/goal)'
-lmsg=${msg,,}
+banned_src=$(sed -E '/^[[:space:]]*>/d; s/«[^»]*»//g; s/"[^"]*"//g; s/`[^`]*`//g' <<<"$msg")
+lmsg=${banned_src,,}
 
 if [[ $lmsg =~ $BANNED ]]; then
   reason="Banned wording (owner 26.10): never offer to end or remove the goal; finish it or report PARTIAL"
