@@ -5,7 +5,7 @@ dir=$(cd -- "$(dirname -- "$0")" && pwd)
 d=$(mktemp -d)
 trap 'rm -rf "$d"' EXIT
 ok=0
-total=24
+total=25
 
 printf '%s\n' '{"message":"<command-name>/goal_task</command-name>"}' >"$d/goal.jsonl"
 printf '%s\n' '{"message":"hello"}' >"$d/plain.jsonl"
@@ -49,8 +49,8 @@ out=$(stop "g5-$$" 'Можно написать /goal clear')
 out5b=$(stop "g5b-$$" 'Можно снять цель')
 isblock "$out" && isblock "$out5b" && { echo 'PASS 5 banned_wording_blocks'; ok=$((ok+1)); } || echo "FAIL 5 banned_wording_blocks: $out $out5b"
 
-out=$(stop "g6-$$" '/goal AC1: ls => x')
-isblock "$out" && { echo 'PASS 6 goal_without_method_blocks'; ok=$((ok+1)); } || echo "FAIL 6 goal_without_method_blocks: $out"
+out=$(stop "g6-$$" '/goal AC1: ls => x'); rc=$?
+if [[ $rc == 0 && -z $out ]]; then echo 'PASS goal-line-without-method-allowed'; ok=$((ok+1)); else echo "FAIL goal-line-without-method-allowed: rc=$rc out=$out"; fi
 
 out=$(stop "g7-$$" '/goal МЕТОД: TDD; AC1: ls => x'); rc=$?
 if [[ $rc == 0 && -z $out ]]; then echo 'PASS 7 goal_with_method_passes'; ok=$((ok+1)); else echo "FAIL 7 goal_with_method_passes: rc=$rc out=$out"; fi
@@ -155,11 +155,6 @@ if isblock "$out" && jq -e '(.reason | contains("Banned wording")) and ((.reason
   echo 'PASS 21 goal_clear_line_banned_reason'; ok=$((ok+1))
 else echo "FAIL 21 goal_clear_line_banned_reason: $out"; fi
 
-out=$(stop "g22-$$" '/goal сделать X')
-if isblock "$out" && jq -e '.reason | contains("МЕТОД")' <<<"$out" >/dev/null 2>&1; then
-  echo 'PASS 22 goal_line_without_method_still_method_reason'; ok=$((ok+1))
-else echo "FAIL 22 goal_line_without_method_still_method_reason: $out"; fi
-
 out=$(stop "g23-$$" $'Не предлагаю «/goal clear», "/goal clear" или `/goal clear`.\n> /goal clear\nПродолжаю работу.')
 if [[ -z $out ]]; then
   echo 'PASS 23 quoted_banned_wording_passes'; ok=$((ok+1))
@@ -169,5 +164,16 @@ out=$(stop "g24-$$" $'Цитата «/goal clear» не считается, но
 if isblock "$out" && jq -e '.reason | contains("Banned wording")' <<<"$out" >/dev/null 2>&1; then
   echo 'PASS 24 bare_banned_wording_still_blocks'; ok=$((ok+1))
 else echo "FAIL 24 bare_banned_wording_still_blocks: $out"; fi
+
+export GOAL_CHECK_RESULT=GOAL=MET
+out=$(stop "g25a-$$" $'goal-check dcfg-x\nКонтроль задач: выполнено 5 · в процессе 0 · открыто 1\n✅ DONE')
+if isblock "$out" && jq -e '.reason | contains("mark finished tasks completed")' <<<"$out" >/dev/null 2>&1; then
+  echo 'PASS done-open-tasks-blocked'; ok=$((ok+1))
+else echo "FAIL done-open-tasks-blocked: $out"; fi
+
+out=$(stop "g25b-$$" $'goal-check dcfg-x\nКонтроль задач: выполнено 5 · в процессе 0 · открыто 0\n✅ DONE')
+if [[ -z $out ]]; then
+  echo 'PASS done-all-closed-allowed'; ok=$((ok+1))
+else echo "FAIL done-all-closed-allowed: $out"; fi
 
 if [ "$ok" -eq "$total" ]; then echo "PASS $ok/$total"; else echo "FAIL $ok/$total"; exit 1; fi
