@@ -65,6 +65,16 @@ code_files_line_refuses_path() {
   expect_rc_err 2 "refused path" "$ag" code "$TMP/wt" "$tz"
 }
 
+code_no_file_lines_refused() {
+  local wt="$TMP/wt-nofile" tz="$TMP/tz-nofile.md" err rc
+  mkdir -p "$wt"
+  git -C "$wt" init -q
+  printf 'do it\n' > "$tz"
+  err=$(env SDK_AGENT_ENGINE=/bin/false "$ag" code "$wt" "$tz" 2>&1 >/dev/null)
+  rc=$?
+  [[ $rc -eq 2 && $(wc -l <<<"$err") -eq 1 && $err == *"FILE: <path>"* && $err == *'Files: `path`'* ]]
+}
+
 check_listed_refused() {
   local wt="$TMP/wt-listed" tz="$TMP/tz-listed.md"
   mkdir -p "$wt"
@@ -563,6 +573,7 @@ check "model is claude-haiku-5-5" bash -c '[[ $(grep -c claude-haiku-5-5 "$1") -
 check "no other claude model names" bash -c '[[ $(grep -cE "claude-(sonnet|opus|fable)" "$1") -eq 0 ]]' _ "$ag"
 check "daily cap refuses ask (rc 6)" daily_cap_refuses
 check "Files: line ../outside.txt refused" code_files_line_refuses_path
+check "code with no FILE lines -> one-line required form (rc 2)" code_no_file_lines_refused
 check "Check: names a listed file -> refused check (rc 7)" check_listed_refused
 check "read with no args -> rc 2" expect_rc_err 2 "read needs" "$ag" read
 check "listed symlink notes.md -> .env refused" symlink_to_env_refused
