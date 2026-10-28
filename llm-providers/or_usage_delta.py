@@ -22,7 +22,7 @@ def fetch_current_usage():
     key = get_api_key()
     url = "https://openrouter.ai/api/v1/key"
     req = Request(url, headers={"Authorization": f"Bearer {key}"})
-    with urlopen(req) as resp:
+    with urlopen(req, timeout=30) as resp:
         data = json.load(resp)
     if "data" not in data or "usage" not in data["data"]:
         sys.stderr.write("Error: Expected data['data']['usage'] not found in response\n")
