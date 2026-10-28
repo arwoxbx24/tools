@@ -71,7 +71,7 @@ def main():
                 sys.exit(1)
         
         context_imap = ssl.create_default_context()
-        with imaplib.IMAP4_SSL(imap_host, 993, ssl_context=context_imap) as imap:
+        with imaplib.IMAP4_SSL(imap_host, 993, ssl_context=context_imap, timeout=30) as imap:
             status, _ = imap.login(smtp_user, smtp_pass)
             
             if os.environ.get('MAIL_DEBUG') == '1':
