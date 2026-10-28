@@ -99,7 +99,7 @@ Go-запуск не тратит время на то, что воркеру н
 
 ## Рекурсия и журнал
 
-Внутри исполнителя задан `CODE_CHANNEL_ACTIVE`: любой вызов канала — exit 30. При ошибке не повторяйте канал: прочитайте stderr и permit, исправьте причину, затем один повтор. Исполнитель не делает git add/commit: коммит делает оркестратор (ship-post).
+Внутри исполнителя задан `CODE_CHANNEL_ACTIVE`: любой вызов канала — exit 30. При ошибке не повторяйте канал: прочитайте stderr и permit, исправьте причину, затем один повтор. Исполнитель режимов `auto|audit` не делает git add/commit: локальный коммит, push и PR делает `code-channel delivery <worktree> <ТЗ>` (ship-post закрыт 22.10).
 
 Журнал: `state/code-channel/runs.jsonl` — поля `provider_expected`, `provider_actual`, `model_actual`, `rc`, `retries`, `session`. Permit: `state/code-channel/permit.json` — доказательства обоих воркеров для решения ведущего.
 
