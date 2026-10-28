@@ -6,7 +6,7 @@
 #
 # Срабатывает на:
 #   - Read tool: любой путь из списка секретных
-#   - Bash tool: cat/less/head/tail/jq на секретных файлах
+#   - Bash tool: cat/less/more/head/tail/jq/grep/egrep/fgrep/rg/sed/awk/nl/tac/strings/xxd/od/base64/python3/python/perl/node на секретных файлах
 #
 # Выход 2 = блок (агент видит сообщение из stderr), 0 = пропустить.
 
@@ -59,7 +59,7 @@ MSG
 if [[ "$TOOL_NAME" == "Bash" ]]; then
     CMD="$(jq -r '.tool_input.command // ""' 2>/dev/null <<< "$INPUT_JSON" || echo "")"
     # Команды чтения на секретных файлах
-    if echo "$CMD" | grep -qE '\b(cat|less|head|tail|jq)\b'; then
+    if echo "$CMD" | grep -qE '\b(cat|less|more|head|tail|jq|grep|egrep|fgrep|rg|sed|awk|nl|tac|strings|xxd|od|base64|python3?|perl|node)\b'; then
         # Проверяем вхождение паттернов секретных путей
         if echo "$CMD" | grep -qE '\.mc/config|data/(notify|cabinet|hub_api|litestream)\.env|data/[^/]+\.env|secrets/'; then
             _block
