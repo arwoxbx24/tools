@@ -60,12 +60,17 @@ EOF
 )
 
 # Call API
-RESPONSE=$(curl -s https://api.openai.com/v1/chat/completions \
+RESPONSE=$(curl -s --max-time 60 --connect-timeout 10 https://api.openai.com/v1/chat/completions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $OPENAI_API_KEY" \
-  -d "$REQUEST")
+  -d "$REQUEST") || { echo "Error: OpenAI API request failed" >&2; exit 1; }
 
 # Extract response
-RESULT=$(echo "$RESPONSE" | jq -r '.choices[0].message.content // .error.message // "Error"')
+RESULT=$(echo "$RESPONSE" | jq -r '.choices[0].message.content // empty' 2>/dev/null) || RESULT=""
+
+if [[ -z "$RESULT" ]]; then
+  echo "$RESPONSE" | jq -r '.error.message // .' >&2 || echo "$RESPONSE" >&2
+  exit 1
+fi
 
 echo "$RESULT"
