@@ -455,7 +455,7 @@ send_telegram_notification() {
         done
     fi
 
-    curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
+    curl -s --max-time 10 --connect-timeout 5 -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
         -d "chat_id=${CHAT_ID}" \
         -d "text=${message}" \
         -d "parse_mode=Markdown" \
