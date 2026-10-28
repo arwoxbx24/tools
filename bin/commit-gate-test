@@ -101,6 +101,16 @@ FAKE_SECRET_RC=1; export FAKE_SECRET_RC
 hook "git -C $OUT commit -m 'bad message'"; expect outside-hook 0 $?
 unset FAKE_SECRET_RC
 
+# scope all: every git repo is gated, even outside git_dirs
+ALLOUT="$SANDBOX/out-all"; rm -rf "$ALLOUT"; git init -q "$ALLOUT"
+git -C "$ALLOUT" config user.email t@example.com; git -C "$ALLOUT" config user.name t
+git -C "$ALLOUT" config core.hooksPath "$SANDBOX/empty"; git -C "$ALLOUT" config commit.gpgsign false
+echo hi > "$ALLOUT/f.txt"; git -C "$ALLOUT" add f.txt
+printf '{"git_dirs":["%s"],"scope":"all"}\n' "$IN/.git" > "$COMMIT_GATE_CONF"
+hook "git -C $ALLOUT commit -m 'spec fix'"; expect scope-all-outside-hook 2 $?
+has scope-all-msg 'type(scope): what'
+printf '{"git_dirs":["%s"]}\n' "$IN/.git" > "$COMMIT_GATE_CONF"
+
 # scope is the git common dir, exact equality only: a listed parent does not include children
 PROJ="$SANDBOX/projects"; CHILD="$PROJ/child"
 rm -rf "$PROJ"; mkdir -p "$PROJ"

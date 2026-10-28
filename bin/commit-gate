@@ -16,6 +16,8 @@ try:
     d = json.load(open(sys.argv[1], encoding='utf-8'))
 except Exception:
     sys.exit(0)
+if isinstance(d, dict) and d.get('scope') == 'all':
+    print('all')
 for r in d.get('git_dirs', []) if isinstance(d, dict) else []:
     if isinstance(r, str) and r.strip():
         print(r.rstrip('/'))
@@ -24,8 +26,10 @@ PY
 
 in_scope() {
   local dir=$1 common e
+  git -C "$dir" rev-parse --git-common-dir >/dev/null 2>&1 || return 1
   common=$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
   while IFS= read -r e; do
+    [ "$e" = all ] && return 0
     [ -n "$e" ] || continue
     [ "$common" = "$e" ] && return 0
   done < <(scope_repos)
