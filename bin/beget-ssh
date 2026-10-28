@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+case ${1:-} in
+  -h|--help)
+    cat <<'EOF'
+usage: beget-ssh init          создать ключ /root/workspaces/secrets/projects/beget_ssh_ed25519 и напечатать команду установки на сервер
+       beget-ssh revoke-line   напечатать команду удаления строк с ключом
+       beget-ssh check         выполнить "php -v | head -1" на сервере
+       beget-ssh <command...>  выполнить команду на сервере по ssh
+EOF
+    exit 0
+    ;;
+esac
+
+BEGET_ENV_FILE=${BEGET_ENV_FILE:-/root/workspaces/secrets/projects/beget.env}
+BEGET_SSH_KEY=${BEGET_SSH_KEY:-/root/workspaces/secrets/projects/beget_ssh_ed25519}
+BEGET_SSH_KNOWN_HOSTS=${BEGET_SSH_KNOWN_HOSTS:-/root/workspaces/secrets/projects/beget_ssh_known_hosts}
+key=$BEGET_SSH_KEY
+known_hosts=$BEGET_SSH_KNOWN_HOSTS
+
+load_env() {
+  if [ -z "${BEGET_LOGIN:-}" ] && [ -f "$BEGET_ENV_FILE" ]; then . "$BEGET_ENV_FILE"; fi
+  BEGET_LOGIN=${BEGET_LOGIN:-${login:-}}
+  BEGET_SSH_HOST=${BEGET_SSH_HOST:-"$BEGET_LOGIN.beget.tech"}
+  if [ -z "${BEGET_LOGIN:-}" ]; then
+    printf 'BEGET_LOGIN\n' >&2
+    exit 3
+  fi
+}
+
+case ${1:-} in
+  init)
+    key_dir=$(dirname "$key")
+    if [ ! -d "$key_dir" ]; then
+      mkdir -p "$key_dir"
+      chmod 700 "$key_dir"
+    fi
+    if [ ! -f "$key" ]; then
+      ssh-keygen -q -t ed25519 -N '' -C "agent-beget-$(date +%Y%m%d)" -f "$key"
+    fi
+    chmod 600 "$key"
+    chmod 644 "${key}.pub"
+    pub=$(cat "$key.pub")
+    printf "mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && (grep -qxF '%s' ~/.ssh/authorized_keys || echo '%s' >> ~/.ssh/authorized_keys) && echo OK\n" "$pub" "$pub"
+    ;;
+  revoke-line)
+    printf "sed -i '/ agent-beget-/d' ~/.ssh/authorized_keys && echo OK\n"
+    ;;
+  check)
+    load_env
+    [ -f "$key" ] || { printf 'run: beget-ssh init\n' >&2; exit 3; }
+    exec ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$known_hosts" "$BEGET_LOGIN@$BEGET_SSH_HOST" 'php -v | head -1'
+    ;;
+  *)
+    load_env
+    [ -f "$key" ] || { printf 'run: beget-ssh init\n' >&2; exit 3; }
+    exec ssh -i "$key" -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile="$known_hosts" "$BEGET_LOGIN@$BEGET_SSH_HOST" "$@"
+    ;;
+esac
