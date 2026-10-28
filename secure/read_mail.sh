@@ -113,7 +113,7 @@ def main():
     try:
         # Connect to IMAP server
         context = ssl.create_default_context()
-        with imaplib.IMAP4_SSL(imap_host, 993, ssl_context=context) as server:
+        with imaplib.IMAP4_SSL(imap_host, 993, ssl_context=context, timeout=30) as server:
             server.login(smtp_user, smtp_pass)
             
             if list_mode:
