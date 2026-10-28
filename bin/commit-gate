@@ -22,8 +22,23 @@ for r in d.get('git_dirs', []) if isinstance(d, dict) else []:
 PY
 }
 
+scope_all() {
+  [ -f "$CONF" ] || return 0
+  python3 - "$CONF" <<'PY'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1], encoding='utf-8'))
+except Exception:
+    sys.exit(0)
+if isinstance(d, dict) and d.get('scope') == 'all':
+    print('1')
+PY
+}
+
 in_scope() {
   local dir=$1 common e
+  git -C "$dir" rev-parse --git-common-dir >/dev/null 2>&1 || return 1
+  [ -n "$(scope_all)" ] && return 0
   common=$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || return 1
   while IFS= read -r e; do
     [ -n "$e" ] || continue
