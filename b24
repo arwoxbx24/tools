@@ -30,6 +30,7 @@ Webhook: env B24_WEBHOOK, иначе дефолт (arwox, user 1).
 """
 import json
 import os
+import random
 import shlex
 import sys
 import time
@@ -74,13 +75,13 @@ def call(method, data, headers, retries=3):
                     urllib.request.Request(url, data=data, headers=headers), timeout=30) as r:
                 parsed = json.loads(r.read())
             if parsed.get("error") in TRANSIENT and attempt < retries - 1:
-                time.sleep(2 ** attempt)
+                time.sleep(2 ** attempt + random.uniform(0, 1))
                 continue
             return parsed
         except urllib.error.HTTPError as exc:
             body = exc.read()
             if (exc.code == 429 or exc.code >= 500) and attempt < retries - 1:
-                time.sleep(2 ** attempt)
+                time.sleep(2 ** attempt + random.uniform(0, 1))
                 continue
             try:
                 return json.loads(body)  # Bitrix кладёт error в тело и на 4xx
@@ -88,7 +89,7 @@ def call(method, data, headers, retries=3):
                 sys.exit(f"HTTP {exc.code}: {body[:300]!r}")
         except Exception as exc:
             if attempt < retries - 1:
-                time.sleep(2 ** attempt)
+                time.sleep(2 ** attempt + random.uniform(0, 1))
                 continue
             sys.exit(f"network error: {exc}")
 
